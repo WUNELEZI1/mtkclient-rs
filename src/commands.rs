@@ -1,5 +1,5 @@
 use colored::Colorize;
-use log::{error, info};
+use log::{error, info, warn};
 use std::time::SystemTime;
 
 use crate::DeviceMode;
@@ -98,6 +98,17 @@ pub fn handle_command(
                 std::fs::write(&filename, &data)?;
                 info!("Preloader 已提取: {} ({} 字节)", filename, data.len());
                 auto_dumped_file = Some(filename);
+            }
+
+            // dump 后重新握手，恢复 BROM 通信状态
+            if let Err(e) = da.preloader.device.do_handshake() {
+                warn!("dump 后握手失败: {}，尝试重新初始化设备", e);
+                da.preloader.device.reopen(context).map_err(|e| {
+                    error!("重新连接设备失败: {}", e);
+                    e
+                })?;
+                da.preloader.is_preloader_mode = false;
+                da.preloader.chip = None;
             }
         }
 
@@ -212,6 +223,17 @@ pub fn handle_commands(
                 std::fs::write(&filename, &data)?;
                 info!("Preloader 已提取: {} ({} 字节)", filename, data.len());
                 auto_dumped_file = Some(filename);
+            }
+
+            // dump 后重新握手，恢复 BROM 通信状态
+            if let Err(e) = da.preloader.device.do_handshake() {
+                warn!("dump 后握手失败: {}，尝试重新初始化设备", e);
+                da.preloader.device.reopen(context).map_err(|e| {
+                    error!("重新连接设备失败: {}", e);
+                    e
+                })?;
+                da.preloader.is_preloader_mode = false;
+                da.preloader.chip = None;
             }
         }
     }
