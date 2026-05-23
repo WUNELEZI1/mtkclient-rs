@@ -1,0 +1,28 @@
+[package]
+name = "mtkclient-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+#rusb = "0.9"
+libusb1-sys = "0.7"
+log = "0.4"
+env_logger = "0.11"
+colored = "2"
+clap = { version = "4", features = ["derive"] }
+serialport = "4.7"
+sha2 = "0.10"
+aes = "0.8"
+cbc = "0.1"
+
+[profile.dev]
+opt-level = 0          # 不优化，编译最快
+debug = true           # 保留调试信息
+incremental = true     # 增量编译
+codegen-units = 256    # 最大并行
+lto = false            # 关闭链接时优化
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
