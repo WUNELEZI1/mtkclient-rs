@@ -365,36 +365,18 @@ impl Preloader {
         Ok(preloader)
     }
 
-    pub fn bypass_security(&mut self, context: &crate::usb::UsbContext) -> Result<(), String> {
+    pub fn bypass_security(&mut self) -> Result<(), String> {
         info!("正在绕过安全保护...");
 
         let payload_path = exe_relative_path("payloads/generic_patcher_payload.bin");
         let payload =
             std::fs::read(&payload_path).map_err(|e| format!("读取 patcher payload: {}", e))?;
 
-        // 注入 patcher payload（会触发设备重启）
+        // 注入 patcher payload
+        // 对齐 Python bypass_security：在 crasher 创建的已 init 连接上注入 payload，
+        // 设备执行 payload 后不重启，保持 BROM 状态，直接在同一个连接上握手
         self.inject_payload(&payload, 0xA1A2A3A4)?;
-        debug!("patcher payload 注入完成，设备将重启");
-
-        // 对齐 Python crasher：关闭旧连接，等待设备重启，重新打开
-        self.device.close();
-        std::thread::sleep(Duration::from_millis(500));
-        self.device.reopen(context)?;
-
-        // 清除旧状态，重新初始化
-        self.is_preloader_mode = false;
-        self.chip = None;
-
-        // 对齐 Python mtk.port.run_handshake()
-        // Python run_handshake 逐字节验证 + 不匹配时 i=0 重置，自动 drain 残留数据
-        // Rust do_handshake 一次性发 4 字节读 4 字节，有残留数据会错位
-        // 因此先手动 drain 再握手
-        self.device.set_timeout(Duration::from_millis(100));
-        let mut drain_buf = [0u8; 512];
-        for _ in 0..3 {
-            let _ = self.device.read(&mut drain_buf);
-        }
-        self.device.set_timeout(Duration::from_millis(1000));
+        debug!("patcher payload 注入完成");
 
         if !self.device.do_handshake()? {
             return Err("绕过安全保护后重握手失败".into());
