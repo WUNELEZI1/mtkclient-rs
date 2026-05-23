@@ -1,0 +1,579 @@
+[20:00:26] [()] [Information] : 参数: C:\Users\man\Downloads\ZybFlashTool\mtk_tool\MTKC.exe --debugmode printgpt
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:0003 设备在端口: COM9 设备名称: MediaTek USB Port (COM9)
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM9
+[20:00:26] [UltimateRipple.MtkClient.DaHandler()] [Information] : 请断开连接，然后重新打开工具后重新连接
+[20:00:26] [()] [Fatal] : ConfigureDa失败
+[20:00:26] [()] [Information] : 已经结束所有操作
+[20:00:26] [()] [Information] : 参数: C:\Users\man\Downloads\ZybFlashTool\mtk_tool\MTKC.exe --debugmode dumppreloader
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 状态: 正在等待Preloader VCOM,请重新连接至BROM模式
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:0003 设备在端口: COM9 设备名称: MediaTek USB Port (COM9)
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM9
+[20:00:26] [UltimateRipple.MtkClient.Port()] [Information] : ——————请连接设备并进入BROM or PRELOADER模式——————
+[20:00:26] [UltimateRipple.MtkClient.Port()] [Information] : 提示：连接前请关机
+[20:00:26] [UltimateRipple.MtkClient.Port()] [Information] : BROM模式: 按住音量加、音量减或所有按键，然后连接USB
+[20:00:26] [UltimateRipple.MtkClient.Port()] [Information] : PRELOADER模式: 什么都不要按，直接连接USB
+[20:00:26] [UltimateRipple.MtkClient.Port()] [Information] : 如果已经连接并是开机状态，请按住电源 10 秒钟进行重置。
+[20:00:26] [UltimateRipple.MtkClient.Port()] [Information] : ——————请连接设备并进入BROM or PRELOADER模式——————
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 1
+0000: A0
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 1
+0000: 5F
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 1
+0000: 0A
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 1
+0000: F5
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 1
+0000: 50
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 1
+0000: AF
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 1
+0000: 05
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 1
+0000: FA
+[20:00:26] [UltimateRipple.MtkClient.Port()] [Information] : 已检测到设备 :), works by jackson's MtkClient
+[20:00:26] [UltimateRipple.MtkClient.Port()] [Information] : 握手成功 :)
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 000000FD
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 000000FD
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 07070000
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	CPU:			MT6768/MT6769(Helio P65/G85 k68v1)
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	HW version:		0
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	WDT:			10007000
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	Uart:			11002000
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	Brom Payload 地址:	100A00
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	DA Payload 地址:	201000
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	CQ_DMA 地址:			10212000
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	Var1:			25
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 关闭 WatchdogTimer...
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 000000D4
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 000000D4
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 10007000
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 10007000
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000001
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000001
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0001
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 22000064
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 22000064
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0001
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : HW code:			707
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 000000D8
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 000000D8
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 6
+0000: 000000E00000
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 设备信息:		0xE0
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	SBC:		False
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	SLA:		False
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	DAA:		False
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	SWJTAG 状态:		False
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	EPP_PARAM at 0x600 after EMMC_BOOT/SDMMC_BOOT:	False
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	是否需要Root Cert:	False
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	Mem Read Auth:		True
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	Mem Write Auth:		True
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	Cmd 0xC8 blocked:	True
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 正在获取TARGET CONFIG
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 1
+0000: FE
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 1
+0000: FE
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 检测到BROM模式
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 1
+0000: FF
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 1
+0000: 05
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 000000FC
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 000000FC
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 8
+0000: 8A00CA0000000000
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	HW subcode:		8A00
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	HW Ver:			CA00
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : 	SW Ver:			0
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 1
+0000: FE
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 1
+0000: FE
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 1
+0000: E1
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 1
+0000: E1
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000010
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 16
+0000: 815C1C5284EE09A7FD02BB90C4137D45
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : ME_ID:			815C1C5284EE09A7FD02BB90C4137D45
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 1
+0000: FE
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 1
+0000: FE
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 1
+0000: E7
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 1
+0000: E7
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000020
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 32
+0000: 68E8A96C338A7AA8A5B0987344F78BC2A281E6EC3F3BA00CA30A5484C8CA069E
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:26] [UltimateRipple.MtkClient.Preloader()] [Information] : SOC_ID:			68E8A96C338A7AA8A5B0987344F78BC2A281E6EC3F3BA00CA30A5484C8CA069E
+[20:00:26] [UltimateRipple.MtkClient.PLTools()] [Information] : Kamakiri / DA Run
+[20:00:26] [UltimateRipple.MtkClient.PLTools()] [Information] : 从文件加载Payload数据: generic_preloader_dump_payload.bin, 592 字节
+[20:00:26] [UltimateRipple.MtkClient.Kamakiri2()] [Information] : 执行Kamakiri2漏洞 ... 
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 000000DA
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 000000DA
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000000
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000000
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000000
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000000
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000001
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000001
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 1
+0000: 00
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 000000D1
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 000000D1
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 10007050
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 10007050
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000001
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000001
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000000
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Information] : Is64: True
+[20:00:26] [UltimateRipple.MtkClient.SerialClass()] [Information] : C:\Users\man\Downloads\ZybFlashTool\mtk_tool\Binaries\LibUsb\x64\install-filter.exe
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 000000DA
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 000000DA
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 0000C150
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 0000C150
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000004
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000004
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 64281000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 000000DA
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 000000DA
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000001
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000001
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 1
+0000: 00
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 000000D1
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 000000D1
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 10007050
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 10007050
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000001
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000001
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 000000DA
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 000000DA
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000001
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000001
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 001009C0
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 001009C0
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000250
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000250
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 592
+0000: 01308FE213FF2FE1F0B5002385B00193019B1A684C4B9A424E4A08BF019B7A44
+0020: 04BF5B68019303230198019900F5807001F5A03100F0D8F848B1474A83687A44
+0040: 136003F11401454A7A44C2E90013019D0223019E424F05F5807506F500362846
+0060: 7F443146BA1D00F0BFF80446002858D040F001043B4B4FF404113B4A4FF40010
+0080: 7B447A44DC600C32032300F0ADF8044630B901F1F0714FF0007000F0A5F80446
+00A0: 324A0223314628467A44123200F09CF800282FD0043000F097F858B32C4D0426
+00C0: 50F81C3C7D442B6113F8071F50F8102C23F0030342F001020433AA6016FB0133
+00E0: 50F80C2C02A842F001026A6119689B688B603146154B02939047002303A80393
+0100: F4B1236A314603936B6998476B69204603999847174B7B44DB6805B0BDE8F040
+0120: 1847012307F10A02284600F05DF84368074A23F47F43934208BF40F0010499E7
+0140: 6B693146E5E700BF04F01FE5C1C2C3C4F40000210E0200000602000004020000
+0160: CC010000CC010000AA010000840100008801000036010000054B7B441A681368
+0180: 9B06FCD5034B7B445B681860704700BFD2000000C6000000064B07B504210DEB
+01A0: 01007B449B689847019800BA03B05DF804FB00BFAA0000000A28014608B502D1
+01C0: 0D20FFF7D9FFBDE808400846FFF7D4BF38B505460078002408B9204638BD0134
+01E0: FFF7EAFF285DF7E7F0B50024884210D30020F0BD30F8157032F81560B7420AD1
+0200: 0134E4B2A342F4D00135AB42F2D80230ECE70025F9E70024F9E7CBB212B1C1F3
+0220: 0221117020F00300043000EB83007047315F454E930FFFF7F4FF10B54D4D4D01
+0240: 3800A00A500500000020001100700010
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 000000DA
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 000000DA
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000001
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000001
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 1
+0000: 00
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 000000D1
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 000000D1
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 10007050
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 10007050
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000001
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000001
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 000000DA
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 000000DA
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000001
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000001
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 0010282C
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 0010282C
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 00000004
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 00000004
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 2
+0000: 0000
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+写:LEN 4
+0000: 000A1000
+[20:00:28] [UltimateRipple.MtkClient.ExploitHandler()] [Information] : Done sending payload...
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: C1C2C3C4
+[20:00:28] [UltimateRipple.MtkClient.Kamakiri2()] [Information] : Successfully sent payload.
+[20:00:28] [UltimateRipple.MtkClient.PLTools()] [Information] : 成功发送Payload: C:\Users\man\Downloads\ZybFlashTool\mtk_tool\Binaries\Mtk\Payloads\generic_preloader_dump_payload.bin
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 4
+0000: 80DE0400
+[20:00:28] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 
+读:LEN 319104
+0000: 4D4D4D013800000046494C455F494E464F0000000100000001000505100F2000
+0020: 80DE040000000800F00000006C060000F0000000010060C24D4D4D010C000100
+0040: 010000004D4D4D01640007009000000000000000000000000000000000000000
+0060: 0000000000000000000000000000000000000000000000000000000000000000
+0080: 0000000000000000000000000000000000000000000000000000000088130000
+00A0: 00000000000000004D4D4D01140002000000000010000000800000004D4D4D01
+00C0: 3000080000000000000000000000000000000000000000000000000000000000
+00E0: 0000000000000000000000000000000000000000050000EA00201000A4CF1000
+0100: 00702600AC412700000020004098240024619FE5004086E50000A0E30010A0E3
+0120: 0020A0E30030A0E30040A0E30050A0E30060A0E30070A0E30080A0E30090A0E3
+0140: 00A0A0E300B0A0E300C0A0E300D0A0E300E0A0E300000FE11F00C0E3D30080E3
+0160: 00F029E100000FE1C010A0E3010080E100F02FE110CF11EE01CA8CE304C0CCE3
+0180: 10CF01EE94001FE594101FE50020A0E3010050E10300000A002080E5040080E2
+01A0: 010050E1FBFFFF1AB0001FE5B0101FE50020A0E3010050E10300000A002080E5
+01C0: 040080E2010050E1FBFFFF1ACC001FE5CC101FE564209FE5002080E5001091E5
+01E0: 041041E2011080E001D0A0E148009FE5130000EA0140A0E10250A0E100F0A0E1
+0200: 0000A0E3150F07EE1EFF2FE16FF07FF51EFF2FE10000A0E3D50F07EE100F11EE
+0220: 060BC0E3100F01EE1EFF2FE1300F11EE4000C0E3300F01EE1EFF2FE100102000
+0240: FFBEADDE04F01FE5753D2200FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+0260: FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+0280: FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+02A0: FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+02C0: FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+02E0: FFFFFFFFFFFFFFFFFFFFFFFF414E445F524F4D494E464F5F7600000002000200
+0300: 4D54363735320000000000000000000043555354000000000000000000000000
+0320: 414E445F5345434354524C5F7600000001000000220000002200000001000000
+0340: 414E445F534543524F5F76000000000001000000314135324133363743423132
+0360: 43343538FFFFFFFFFFFFFFFFFFFFFFFF00BE01BE7047002805DA4042002905DA
+0380: 494200F021B80029FBDA494200B500F01BF8404200BD00280EDA4042002905DA
+03A0: 494200B500F010F8494200BD00B500F00BF84042494200BD002905DA494200B5
+03C0: 00F002F8404200BD002901D1FFF7D2BF01220023884206D9003104D452004900
+03E0: 01D48842FAD8884201D3401A134349085208F8D101461846704700291CDA10B5
+[20:00:28] [()] [Information] : 已经结束所有操作
+[20:09:41] [()] [Information] : 参数: C:\Users\man\Downloads\ZybFlashTool\mtk_tool\MTKC.exe --debugmode gettargetconfig
+[20:09:41] [UltimateRipple.MtkClient.Preloader()] [Information] : 状态: 正在等待Preloader VCOM,请重新连接至BROM模式
+[20:09:42] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:42] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:42] [UltimateRipple.MtkClient.Port()] [Information] : ——————请连接设备并进入BROM or PRELOADER模式——————
+[20:09:42] [UltimateRipple.MtkClient.Port()] [Information] : 提示：连接前请关机
+[20:09:42] [UltimateRipple.MtkClient.Port()] [Information] : BROM模式: 按住音量加、音量减或所有按键，然后连接USB
+[20:09:42] [UltimateRipple.MtkClient.Port()] [Information] : PRELOADER模式: 什么都不要按，直接连接USB
+[20:09:42] [UltimateRipple.MtkClient.Port()] [Information] : 如果已经连接并是开机状态，请按住电源 10 秒钟进行重置。
+[20:09:42] [UltimateRipple.MtkClient.Port()] [Information] : ——————请连接设备并进入BROM or PRELOADER模式——————
+[20:09:42] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:42] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:42] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:42] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:43] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:43] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:43] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:43] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:43] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:43] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:44] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:44] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:44] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:44] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:44] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:44] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:45] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:45] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:45] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:45] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:46] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:46] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:46] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:46] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:47] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:47] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:47] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:47] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:47] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:47] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:48] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:48] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:48] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:48] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:48] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:48] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:49] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:49] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:49] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:49] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:50] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:50] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:50] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:50] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
+[20:09:50] [UltimateRipple.MtkClient.SerialClass()] [Information] : 已检测: 0E8D:2000 设备在端口: COM8 设备名称: MediaTek PreLoader USB VCOM (Android) (COM8)
+[20:09:50] [UltimateRipple.MtkClient.SerialClass()] [Debug] : 初始化端口: COM8
