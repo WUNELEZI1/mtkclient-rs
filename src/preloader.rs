@@ -200,29 +200,15 @@ impl Preloader {
     ) -> Result<Option<Vec<u8>>, String> {
         let mode: u32 = if data.is_some() { 1 } else { 0 };
 
-        // Python: echo 发送 1 字节
+        // Python: echo(b"\xDA") → 1 byte
+        // Python: echo(pack(">I", mode)) → 4 bytes single echo
         self.echo(&[0xDA])
+            .map_err(|e| format!("brom_reg echo cmd: {}", e))?;
+        self.echo(&mode.to_be_bytes())
             .map_err(|e| format!("brom_reg echo mode: {}", e))?;
-
-        self.echo(&[mode as u8])
-            .map_err(|e| format!("brom_reg echo mode: {}", e))?;
-
-        self.echo(&[(address >> 24) as u8])
+        self.echo(&address.to_be_bytes())
             .map_err(|e| format!("brom_reg echo addr: {}", e))?;
-        self.echo(&[(address >> 16) as u8])
-            .map_err(|e| format!("brom_reg echo addr: {}", e))?;
-        self.echo(&[(address >> 8) as u8])
-            .map_err(|e| format!("brom_reg echo addr: {}", e))?;
-        self.echo(&[address as u8])
-            .map_err(|e| format!("brom_reg echo addr: {}", e))?;
-
-        self.echo(&[(length >> 24) as u8])
-            .map_err(|e| format!("brom_reg echo len: {}", e))?;
-        self.echo(&[(length >> 16) as u8])
-            .map_err(|e| format!("brom_reg echo len: {}", e))?;
-        self.echo(&[(length >> 8) as u8])
-            .map_err(|e| format!("brom_reg echo len: {}", e))?;
-        self.echo(&[length as u8])
+        self.echo(&length.to_be_bytes())
             .map_err(|e| format!("brom_reg echo len: {}", e))?;
 
         let mut st = [0u8; 2];
