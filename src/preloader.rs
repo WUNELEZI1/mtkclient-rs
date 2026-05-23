@@ -177,9 +177,10 @@ impl Preloader {
         // 等待设备处理
         std::thread::sleep(Duration::from_millis(35));
 
-        // 读校验和 + 状态
+        // 读校验和 + 状态（Python: rword(2) → 2 个 16-bit big-endian）
         let checksum = self.rword()?;
-        debug!("SEND_DA checksum: {:04X}", checksum);
+        let status2 = self.rword()?;
+        debug!("SEND_DA checksum: {:04X}, status2: {:04X}", checksum, status2);
 
         Ok(true)
     }
@@ -203,13 +204,20 @@ impl Preloader {
     }
 
     /// JUMP_BL: 跳转到 Bootloader
+    /// Python: echo(JUMP_BL) → rword() → if <=0xFF → rword() → if <=0xFF → True
     pub fn jump_bl(&mut self) -> Result<bool, String> {
         if !self.echo_1byte(0xD6)? {
             return Err("jump_bl: echo 0xD6 不匹配".into());
         }
         let status = self.rword()?;
         debug!("jump_bl status: {:04X}", status);
-        Ok(status <= 0xFF)
+        if status <= 0xFF {
+            let status2 = self.rword()?;
+            debug!("jump_bl status2: {:04X}", status2);
+            Ok(status2 <= 0xFF)
+        } else {
+            Ok(false)
+        }
     }
 
     /// BROM 寄存器访问（DA 注入核心操作）
@@ -288,17 +296,17 @@ impl Preloader {
         Ok(buf)
     }
 
-    /// 读 16 位字（2 字节，little-endian）
+    /// 读 16 位字（2 字节，big-endian，对齐 Python DeviceHandler.rword(little=False)）
     pub fn rword(&mut self) -> Result<u16, String> {
         let mut buf = [0u8; 2];
         self.device.read_exact(&mut buf)?;
-        Ok(u16::from_le_bytes(buf))
+        Ok(u16::from_be_bytes(buf))
     }
 
-    /// 读 32 位双字（4 字节，little-endian）
+    /// 读 32 位双字（4 字节，big-endian，对齐 Python DeviceHandler.rdword(little=False)）
     pub fn rdword(&mut self) -> Result<u32, String> {
         let mut buf = [0u8; 4];
         self.device.read_exact(&mut buf)?;
-        Ok(u32::from_le_bytes(buf))
+        Ok(u32::from_be_bytes(buf))
     }
 }
