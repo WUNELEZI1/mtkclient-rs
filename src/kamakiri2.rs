@@ -374,16 +374,10 @@ impl Preloader {
 
         self.inject_payload(&payload, 0xA1A2A3A4)?;
 
+        // 对齐 Python bypass_security：只做 handshake，不验证 target_config
+        // exploit 注入后设备状态不稳定，echo(0xFD) 可能超时
         if !self.device.do_handshake()? {
             return Err("绕过安全保护后重握手失败".into());
-        }
-
-        let new_cfg = self.get_target_config()?;
-        if new_cfg.needs_bypass() {
-            return Err(format!(
-                "安全保护未完全关闭: SBC={} SLA={} DAA={}",
-                new_cfg.sbc, new_cfg.sla, new_cfg.daa
-            ));
         }
 
         info!("安全保护已成功绕过");

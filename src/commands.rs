@@ -63,18 +63,10 @@ pub fn handle_command(
     let mut auto_dumped_file: Option<String> = None;
 
     if is_brom {
-        let mut _security_bypassed = false;
-        if let Ok(cfg) = da.preloader.get_target_config() {
-            info!("{}", cfg.format_info());
-            if cfg.needs_bypass() {
-                da.preloader.bypass_security().map_err(|e| {
-                    error!("{}", format!("安全绕过失败: {}", e).red());
-                    e
-                })?;
-                _security_bypassed = true;
-                info!("安全绕过完成");
-            }
-        }
+        // 对齐 Python configure_da 流程:
+        // 1. bypass_security（无条件执行，注入 patcher payload 关安全保护）
+        // 2. dump_preloader_from_ram（brom_register_access 逐块读，不污染 USB）
+        // 3. 后续 upload_da
 
         let cmd = app_config.command.as_deref().unwrap_or("");
         match cmd {
@@ -90,7 +82,7 @@ pub fn handle_command(
         }
 
         if preloader_file.is_empty() {
-            // 对齐 Python configure_da: bypass_security → dump_preloader_ram
+            // bypass_security → dump_preloader_ram（对齐 Python configure_da）
             da.preloader
                 .bypass_security()
                 .map_err(|e| format!("bypass_security 失败: {}", e))?;
@@ -100,7 +92,6 @@ pub fn handle_command(
                 .map_err(|e| format!("dump_preloader_ram 失败: {}", e))?;
 
             if !data.is_empty() {
-                // 从 data 中提取文件名（dump_preloader_from_ram 已保存文件）
                 let filename = if let Some(info_idx) = data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
                     let filename_start = info_idx + 0x1B;
                     let filename_end = std::cmp::min(filename_start + 0x30, data.len());
@@ -205,21 +196,8 @@ pub fn handle_commands(
     let mut auto_dumped_file: Option<String> = None;
 
     if is_brom {
-        let mut _security_bypassed = false;
-        if let Ok(cfg) = da.preloader.get_target_config() {
-            info!("{}", cfg.format_info());
-            if cfg.needs_bypass() {
-                da.preloader.bypass_security().map_err(|e| {
-                    error!("{}", format!("安全绕过失败: {}", e).red());
-                    e
-                })?;
-                _security_bypassed = true;
-                info!("安全绕过完成");
-            }
-        }
-
         if preloader_file.is_empty() {
-            // 对齐 Python configure_da: bypass_security → dump_preloader_ram
+            // bypass_security → dump_preloader_ram（对齐 Python configure_da）
             da.preloader
                 .bypass_security()
                 .map_err(|e| format!("bypass_security 失败: {}", e))?;
