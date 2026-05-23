@@ -87,15 +87,9 @@ impl Preloader {
         result
     }
 
-    /// 发送 1 字节命令（对齐 Python echo(0xFD) → 实际发送 4 字节）
+    /// 发送 1 字节命令
     pub fn sendcmd(&mut self, cmd: u8) -> Result<bool, String> {
-        // Python: echo(0xFD) → pack(">I", 0xFD) → 0x000000FD (4 bytes)
-        self.echo(&cmd.to_be_bytes())
-    }
-
-    /// 发送 4 字节命令（用于 echo 已经是 4 字节的情况）
-    fn echo32(&mut self, cmd: u32) -> Result<bool, String> {
-        self.echo(&cmd.to_be_bytes())
+        self.echo(&[cmd])
     }
 
     /// 获取硬件代码
@@ -135,7 +129,7 @@ impl Preloader {
         dadata: &[u8],
     ) -> Result<bool, String> {
         // echo 0xD7 确认设备就绪
-        if !self.echo(&0xD7u32.to_be_bytes())? {
+        if !self.echo(&[0xD7])? {
             return Err("SEND_DA failed: echo 0xD7 不匹配".into());
         }
 
@@ -176,7 +170,7 @@ impl Preloader {
     /// JUMP_DA: 跳转到 Download Agent
     pub fn jump_da(&mut self, addr: u32) -> Result<bool, String> {
         // echo 0xD5 确认
-        if !self.echo(&0xD5u32.to_be_bytes())? {
+        if !self.echo(&[0xD5])? {
             return Err("jump_da: echo 0xD5 不匹配".into());
         }
         // 发送跳转地址
@@ -188,7 +182,7 @@ impl Preloader {
 
     /// JUMP_BL: 跳转到 Bootloader（复位设备）
     pub fn jump_bl(&mut self) -> Result<(), String> {
-        if !self.echo(&0xD8u32.to_be_bytes())? {
+        if !self.echo(&[0xD8])? {
             return Err("jump_bl: echo 0xD8 不匹配".into());
         }
         Ok(())
@@ -206,21 +200,29 @@ impl Preloader {
     ) -> Result<Option<Vec<u8>>, String> {
         let mode: u32 = if data.is_some() { 1 } else { 0 };
 
-        // Python: echo(0xDA) → pack(">I", 0xDA) → 4 bytes
-        if !self.echo(&0xDAu32.to_be_bytes())? {
-            return Err("brom_register_access: echo 0xDA 不匹配".into());
-        }
-
-        // Python: echo(pack(">I", mode)) → 4 bytes
-        self.echo32(mode)
+        // Python: echo 发送 1 字节
+        self.echo(&[0xDA])
             .map_err(|e| format!("brom_reg echo mode: {}", e))?;
 
-        // Python: echo(pack(">I", address)) → 4 bytes
-        self.echo32(address)
+        self.echo(&[mode as u8])
+            .map_err(|e| format!("brom_reg echo mode: {}", e))?;
+
+        self.echo(&[(address >> 24) as u8])
+            .map_err(|e| format!("brom_reg echo addr: {}", e))?;
+        self.echo(&[(address >> 16) as u8])
+            .map_err(|e| format!("brom_reg echo addr: {}", e))?;
+        self.echo(&[(address >> 8) as u8])
+            .map_err(|e| format!("brom_reg echo addr: {}", e))?;
+        self.echo(&[address as u8])
             .map_err(|e| format!("brom_reg echo addr: {}", e))?;
 
-        // Python: echo(pack(">I", length)) → 4 bytes
-        self.echo32(length)
+        self.echo(&[(length >> 24) as u8])
+            .map_err(|e| format!("brom_reg echo len: {}", e))?;
+        self.echo(&[(length >> 16) as u8])
+            .map_err(|e| format!("brom_reg echo len: {}", e))?;
+        self.echo(&[(length >> 8) as u8])
+            .map_err(|e| format!("brom_reg echo len: {}", e))?;
+        self.echo(&[length as u8])
             .map_err(|e| format!("brom_reg echo len: {}", e))?;
 
         let mut st = [0u8; 2];
