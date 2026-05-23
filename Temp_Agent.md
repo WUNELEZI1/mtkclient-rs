@@ -435,4 +435,27 @@ usb_debug.log          — USB 通信追踪日志（--usb-log 启用时生成）
 3. Python `get_target_config` 读 6 字节，不是 4 字节
 4. BROM 握手 `do_handshake` 发送 4 字节 `0xA0A0A0A0`，设备回显 `0x5F5F5F5F`（取反）
 
+## 会话 28：sendcmd 改回 1 字节 + brom_register_access 逐字节 echo（2026-05-23）
+
+**根因**：BROM 模式（reopen USB 后）对命令 echo 的响应是 **1 字节**，不是 4 字节。
+- `echo(&[0xD7])` 发 4 字节 → 设备回 0 字节 → SEND_DA 失败
+- `echo(&[0xFD])` 发 4 字节 → 设备回 4 字节 ✅（preloader dump 成功因为 get_hw_code 用 4 字节）
+-  reopen USB 后设备回到 BROM 模式，但 echo 协议不同
+
+**修改**：
+- `sendcmd(cmd: u8)` → `echo(&[cmd])`（1 字节）
+- `echo32()` 方法删除
+- `brom_register_access`：
+  - `echo(&[0xDA])`（1 字节命令）
+  - `echo(&mode.to_be_bytes())`（4 字节，单次 echo）
+  - `echo(&address.to_be_bytes())`（4 字节，单次 echo）
+  - `echo(&length.to_be_bytes())`（4 字节，单次 echo）
+- `send_da`/`jump_da`/`jump_bl`：`echo(&[0xD7])`/`echo(&[0xD5])`/`echo(&[0xD8])`（1 字节）
+- `get_hw_code`/`get_target_config`：`sendcmd(0xFD)`/`sendcmd(0xC8)`（1 字节）
+
+**关键理解**：
+- `sendcmd` 发送的是 **命令字节**（如 0xFD, 0xC8, 0xD7），设备 1 字节回显
+- `brom_register_access` 的 mode/address/length 是 **参数**，用 `pack(">I", val)` 4 字节 echo（Python Port.echo 对 bytes 参数直接发送整个 bytes）
+- 两种 echo 模式共存：1 字节命令 + 4 字节参数
+
 

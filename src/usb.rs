@@ -635,7 +635,7 @@ impl UsbDevice {
     }
 
     /// 重新打开 USB 设备：关闭旧句柄，等待设备稳定，重新打开并 claim interface
-    /// 用于 payload 注入后重置 USB 状态（对齐 Python mtk.port.cdc.connected = mtk.port.cdc.connect()）
+    #[allow(dead_code)]
     pub fn reopen(&mut self, context: &UsbContext) -> Result<(), String> {
         self.close();
         // 等待设备稳定

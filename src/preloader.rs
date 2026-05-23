@@ -21,89 +21,78 @@ impl Preloader {
 
     /// 基础初始化（BROM 握手确认设备可用）
     pub fn init(&mut self) -> Result<bool, String> {
-        // BROM 握手使用 do_handshake（4字节 + 取反回显）
         self.device.do_handshake()
     }
 
-    /// BROM echo 协议：发送数据，等待设备回显相同数据
-    /// 对齐 Python Port.echo() (Port.py:210-229)：
-    ///   - int 参数 → pack(">I", int) → 4 字节大端发送
-    ///   - bytes 参数 → 直接发送
-    ///   - 每个 val 执行 usbwrite(val) + usbread(len(val), maxtimeout=0)
-    pub fn echo(&mut self, data: &[u8]) -> Result<bool, String> {
+    /// BROM echo 协议：完全对齐 Python Port.echo() (Port.py:210-229)
+    /// Python 逻辑：
+    ///   if isinstance(data, int):
+    ///       data = pack(">I", data)    # int → 4 字节大端
+    ///   if isinstance(data, bytes):
+    ///       data = [data]               # bytes → [bytes] 列表
+    ///   for val in data:
+    ///       self.usbwrite(val)
+    ///       tmp = self.usbread(len(val), maxtimeout=0)
+    ///       if val != tmp:
+    ///           return False
+    ///   return True
+    ///
+    /// Rust 实现：
+    ///   - sendcmd(u8) 调用 echo_1byte 发送 1 字节命令（对应 Python Cmd enum bytes）
+    ///   - echo_4byte(u32) 发送 4 字节大端参数（对应 Python pack(">I", val)）
+    pub fn echo_1byte(&mut self, cmd: u8) -> Result<bool, String> {
         self.device.set_timeout(Duration::from_millis(1000));
-        match self.device.write(data) {
-            Ok(_) => {
-                let mut buf = vec![0u8; data.len()];
-                match self.device.read(&mut buf) {
-                    Ok(n) if n == data.len() => {
-                        if buf == data {
-                            Ok(true)
-                        } else {
-                            debug!(
-                                "[ECHO] data mismatch: expected {:02X?}, got {:02X?}",
-                                data, &buf[..n]
-                            );
-                            Ok(false)
-                        }
-                    }
-                    Ok(n) => {
-                        debug!(
-                            "[ECHO] length mismatch: expected {} bytes, got {} bytes, data={:02X?}",
-                            data.len(),
-                            n,
-                            &buf[..n]
-                        );
-                        Ok(false)
-                    }
-                    Err(e) => {
-                        debug!("[ECHO] read error: {}", e);
-                        Ok(false)
-                    }
-                }
-            }
+        self.device.write(&[cmd]).map_err(|e| format!("echo write: {}", e))?;
+        let mut buf = [0u8; 1];
+        match self.device.read_exact(&mut buf) {
+            Ok(_) => Ok(buf[0] == cmd),
             Err(e) => {
-                debug!("[ECHO] write error: {}", e);
-                Err(e)
+                debug!("[ECHO_1] read error for 0x{:02X}: {}", cmd, e);
+                Ok(false)
             }
         }
     }
 
-    /// 带标签的诊断 echo（用于调试）
-    #[allow(dead_code)]
-    pub fn echo_debug(&mut self, data: &[u8], label: &str) -> Result<bool, String> {
-        debug!(
-            "[ECHO:{}] sending {} bytes: {:02X?}",
-            label,
-            data.len(),
-            data
-        );
-        let result = self.echo(data);
-        match &result {
-            Ok(true) => debug!("[ECHO:{}] OK, echo matched", label),
-            Ok(false) => debug!("[ECHO:{}] failed", label),
-            Err(e) => debug!("[ECHO:{}] ERR: {}", label, e),
+    /// 4 字节大端 echo（对应 Python echo(pack(">I", val))）
+    pub fn echo_4byte(&mut self, val: u32) -> Result<bool, String> {
+        let data = val.to_be_bytes();
+        self.device.set_timeout(Duration::from_millis(1000));
+        self.device.write(&data).map_err(|e| format!("echo4 write: {}", e))?;
+        let mut buf = [0u8; 4];
+        match self.device.read_exact(&mut buf) {
+            Ok(_) => Ok(buf == data),
+            Err(e) => {
+                debug!(
+                    "[ECHO_4] read error for {:08X}: {}",
+                    val, e
+                );
+                Ok(false)
+            }
         }
-        result
     }
 
-    /// 发送 1 字节命令
+    /// 发送 1 字节命令（对应 Python echo(Cmd.XXX.value)）
     pub fn sendcmd(&mut self, cmd: u8) -> Result<bool, String> {
-        self.echo(&[cmd])
+        self.echo_1byte(cmd)
     }
 
     /// 获取硬件代码
+    /// Python: echo(Cmd.GET_HW_CODE.value) → rbyte(4) → unpack(">HH")
     pub fn get_hw_code(&mut self) -> Result<u16, String> {
         if !self.sendcmd(0xFD)? {
             return Err("获取 HW code 失败: echo 0xFD 不匹配".into());
         }
-        let hw = self.rword()?;
+        let mut buf = [0u8; 4];
+        self.device
+            .read_exact(&mut buf)
+            .map_err(|e| format!("read hwcode: {}", e))?;
+        let hw = u16::from_be_bytes([buf[0], buf[1]]);
         debug!("HW code: {:04X}", hw);
         Ok(hw)
     }
 
     /// 获取目标设备安全配置
-    /// 对齐 Python: echo(0xC8) → usbread(6) → TargetConfig.from_raw()
+    /// Python: echo(Cmd.GET_TARGET_CONFIG.value) → rbyte(6) → unpack(">IH")
     pub fn get_target_config(&mut self) -> Result<TargetConfig, String> {
         let hw = self.get_hw_code()?;
         let chip = CHIP_CONFIGS
@@ -111,86 +100,125 @@ impl Preloader {
             .find(|c| c.hw_code == hw)
             .ok_or_else(|| format!("未知 HW code: {:04X}", hw))?;
         self.chip = Some(chip.clone());
-        // 读取安全配置（echo 0xC8 → 4 字节，然后读 6 字节响应）
-        // Python: self.mtk.port.echo(self.Cmd.get_target.value) → usbread(6)
-        self.sendcmd(0xC8)?;
-        let raw = self.rdword()?;  // 前 4 字节
-        let extra = self.rword()?; // 后 2 字节
-        let full = ((raw as u64) << 16) | (extra as u64);
-        Ok(TargetConfig::from_raw_u64(full))
+        if !self.sendcmd(0xD8)? {
+            return Err("获取 target config 失败: echo 0xD8 不匹配".into());
+        }
+        let mut buf = [0u8; 6];
+        self.device
+            .read_exact(&mut buf)
+            .map_err(|e| format!("read target config: {}", e))?;
+        let target_config = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        debug!("Target config: {:08X}", target_config);
+        Ok(TargetConfig::from_raw(target_config))
     }
 
     /// SEND_DA: 发送 Download Agent 到设备
+    /// 对齐 Python mtk_preloader.py:871-906
+    /// Python:
+    ///   echo(Cmd.SEND_DA.value)  → echo(addr) → echo(len(data)) → echo(sig_len)
+    ///   status = rword()
+    ///   if status ok: upload_data(data, gen_chksum)
     pub fn send_da(
         &mut self,
-        addr: u32,
-        data_len: u32,
+        address: u32,
+        size: u32,
         sig_len: u32,
         dadata: &[u8],
     ) -> Result<bool, String> {
-        // echo 0xD7 确认设备就绪
-        if !self.echo(&[0xD7])? {
-            return Err("SEND_DA failed: echo 0xD7 不匹配".into());
+        debug!("SEND_DA: addr=0x{:08X}, size={}, sig_len={}", address, size, sig_len);
+
+        // echo(0xD7) 命令
+        if !self.echo_1byte(0xD7)? {
+            return Err("SEND_DA: echo 0xD7 不匹配".into());
         }
 
-        // 发送 DA 基址
-        self.device
-            .write(&addr.to_be_bytes())
-            .map_err(|e| format!("SEND_DA write addr err: {}", e))?;
-
-        // 发送 DA 数据长度
-        self.device
-            .write(&data_len.to_be_bytes())
-            .map_err(|e| format!("SEND_DA write data_len err: {}", e))?;
-
-        // 发送签名长度
-        self.device
-            .write(&sig_len.to_be_bytes())
-            .map_err(|e| format!("SEND_DA write sig_len err: {}", e))?;
-
-        // 发送 DA 数据部分
-        self.device
-            .write(&dadata[..data_len as usize])
-            .map_err(|e| format!("SEND_DA write data err: {}", e))?;
-
-        // 发送签名数据
-        let sig_start = data_len as usize;
-        if sig_len > 0 && sig_start < dadata.len() {
-            self.device
-                .write(&dadata[sig_start..sig_start + sig_len as usize])
-                .map_err(|e| format!("SEND_DA write sig err: {}", e))?;
+        // echo(addr) — 对应 Python echo(address) → pack(">I", address)
+        if !self.echo_4byte(address)? {
+            return Err("SEND_DA: echo addr 不匹配".into());
         }
 
-        // 读状态
+        // echo(len(data)) — 对应 Python echo(len(data))
+        if !self.echo_4byte(size)? {
+            return Err("SEND_DA: echo size 不匹配".into());
+        }
+
+        // echo(sig_len) — 对应 Python echo(sig_len)
+        if !self.echo_4byte(sig_len)? {
+            return Err("SEND_DA: echo sig_len 不匹配".into());
+        }
+
+        // rword() 读状态
         let status = self.rword()?;
         debug!("SEND_DA status: {:04X}", status);
-        Ok(status == 0)
-    }
-
-    /// JUMP_DA: 跳转到 Download Agent
-    pub fn jump_da(&mut self, addr: u32) -> Result<bool, String> {
-        // echo 0xD5 确认
-        if !self.echo(&[0xD5])? {
-            return Err("jump_da: echo 0xD5 不匹配".into());
+        if status == 0x1D0D {
+            return Err("SLA required".into());
         }
-        // 发送跳转地址
+        if status > 0xFF {
+            return Err(format!("SEND_DA status error: {:04X}", status));
+        }
+
+        // upload_data: 发送数据 + ZLP + 读校验和
+        let data = dadata;
+        let chunk_size = 64;
+        let mut pos = 0;
+        while pos < data.len() {
+            let end = (pos + chunk_size).min(data.len());
+            self.device
+                .write(&data[pos..end])
+                .map_err(|e| format!("upload_data write: {}", e))?;
+            pos = end;
+        }
+
+        // ZLP (Zero Length Packet) — 对应 Python usbwrite(b"")
         self.device
-            .write(&addr.to_be_bytes())
-            .map_err(|e| format!("jump_da write addr err: {}", e))?;
+            .write(&[])
+            .map_err(|e| format!("upload_data ZLP: {}", e))?;
+
+        // 等待设备处理
+        std::thread::sleep(Duration::from_millis(35));
+
+        // 读校验和 + 状态
+        let checksum = self.rword()?;
+        debug!("SEND_DA checksum: {:04X}", checksum);
+
         Ok(true)
     }
 
-    /// JUMP_BL: 跳转到 Bootloader（复位设备）
-    pub fn jump_bl(&mut self) -> Result<(), String> {
-        if !self.echo(&[0xD8])? {
-            return Err("jump_bl: echo 0xD8 不匹配".into());
+    /// JUMP_DA: 跳转到 Download Agent
+    /// Python: echo(JUMP_DA) → usbwrite(pack(">I", addr)) → rdword() → rword()
+    pub fn jump_da(&mut self, addr: u32) -> Result<bool, String> {
+        if !self.echo_1byte(0xD5)? {
+            return Err("jump_da: echo 0xD5 不匹配".into());
         }
-        Ok(())
+        self.device
+            .write(&addr.to_be_bytes())
+            .map_err(|e| format!("jump_da write addr: {}", e))?;
+        let resaddr = self.rdword()?;
+        if resaddr != addr {
+            return Err(format!("jump_da addr mismatch: expected {:08X}, got {:08X}", addr, resaddr));
+        }
+        let status = self.rword()?;
+        debug!("jump_da status: {:04X}", status);
+        Ok(status == 0)
+    }
+
+    /// JUMP_BL: 跳转到 Bootloader
+    pub fn jump_bl(&mut self) -> Result<bool, String> {
+        if !self.echo_1byte(0xD6)? {
+            return Err("jump_bl: echo 0xD6 不匹配".into());
+        }
+        let status = self.rword()?;
+        debug!("jump_bl status: {:04X}", status);
+        Ok(status <= 0xFF)
     }
 
     /// BROM 寄存器访问（DA 注入核心操作）
-    /// mode=0: 读, mode=1: 写
-    /// Python: brom_register_access(address, length, data, check_result)
+    /// 对齐 Python mtk_preloader.py:721-753
+    /// Python:
+    ///   echo(b"\xDA") → echo(pack(">I", mode)) → echo(pack(">I", address)) → echo(pack(">I", length))
+    ///   status = usbread(2)
+    ///   if write: write(data) → if check_status: status2 = usbread(2)
+    ///   if read: rbyte(length) → status2 = usbread(2)
     pub fn brom_register_access(
         &mut self,
         address: u32,
@@ -200,22 +228,26 @@ impl Preloader {
     ) -> Result<Option<Vec<u8>>, String> {
         let mode: u32 = if data.is_some() { 1 } else { 0 };
 
-        // Python: echo(b"\xDA") → 1 byte
-        // Python: echo(pack(">I", mode)) → 4 bytes single echo
-        self.echo(&[0xDA])
-            .map_err(|e| format!("brom_reg echo cmd: {}", e))?;
-        self.echo(&mode.to_be_bytes())
-            .map_err(|e| format!("brom_reg echo mode: {}", e))?;
-        self.echo(&address.to_be_bytes())
-            .map_err(|e| format!("brom_reg echo addr: {}", e))?;
-        self.echo(&length.to_be_bytes())
-            .map_err(|e| format!("brom_reg echo len: {}", e))?;
+        // echo 命令和参数（逐次 echo，对齐 Python）
+        if !self.echo_1byte(0xDA)? {
+            return Err("brom_reg: echo 0xDA 不匹配".into());
+        }
+        if !self.echo_4byte(mode)? {
+            return Err("brom_reg: echo mode 不匹配".into());
+        }
+        if !self.echo_4byte(address)? {
+            return Err("brom_reg: echo addr 不匹配".into());
+        }
+        if !self.echo_4byte(length)? {
+            return Err("brom_reg: echo len 不匹配".into());
+        }
 
+        // 读状态 2 字节
         let mut st = [0u8; 2];
         self.device.read_exact(&mut st).ok();
         debug!("brom_reg status1: {:02X?}", st);
         if st != [0, 0] {
-            return Err("status err".into());
+            return Err("brom_reg status err".into());
         }
 
         if let Some(wdata) = data {
@@ -227,13 +259,13 @@ impl Preloader {
                 self.device.read_exact(&mut st2).ok();
                 debug!("brom_reg status3: {:02X?}", st2);
                 if st2 != [0, 0] {
-                    return Err("status2 err".into());
+                    return Err("brom_reg status2 err".into());
                 }
             }
             Ok(None)
         } else {
             let rdata = self.rbyte(length as usize)?;
-            debug!("brom_reg read data: {:02X?}", rdata);
+            debug!("brom_reg read data: {} bytes", rdata.len());
             let mut st2 = [0u8; 2];
             self.device.read_exact(&mut st2).ok();
             debug!("brom_reg status2: {:02X?}", st2);
@@ -247,23 +279,23 @@ impl Preloader {
             .map(|r| r.unwrap_or_default())
     }
 
-    /// 读多个字节
+    /// 读 n 字节
     pub fn rbyte(&mut self, n: usize) -> Result<Vec<u8>, String> {
         let mut buf = vec![0u8; n];
         self.device
             .read_exact(&mut buf)
-            .map_err(|e| format!("read_exact {} bytes: {}", n, e))?;
+            .map_err(|e| format!("rbyte({}): {}", n, e))?;
         Ok(buf)
     }
 
-    /// 读 16 位字
+    /// 读 16 位字（2 字节，little-endian）
     pub fn rword(&mut self) -> Result<u16, String> {
         let mut buf = [0u8; 2];
         self.device.read_exact(&mut buf)?;
         Ok(u16::from_le_bytes(buf))
     }
 
-    /// 读 32 位双字
+    /// 读 32 位双字（4 字节，little-endian）
     pub fn rdword(&mut self) -> Result<u32, String> {
         let mut buf = [0u8; 4];
         self.device.read_exact(&mut buf)?;

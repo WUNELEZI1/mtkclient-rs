@@ -126,11 +126,7 @@ pub fn handle_command(
         info!("Warning: EMI 加载失败: {}", e);
     }
 
-    // exploit 路径（dump_preloader）可能破坏 BROM echo 状态
-    // 重新打开 USB 设备重置连接（对齐 Python mtk.port.cdc.connected = mtk.port.cdc.connect()）
-    info!("重置 USB 连接...");
-    da.preloader.device.reopen(context)?;
-
+    // Python 全程使用同一个 USB 句柄，不做 reopen
     da.upload_da()
         .map_err(|e| format!("DA 加载失败: {}", e))
         .and_then(|ok| {
@@ -226,11 +222,7 @@ pub fn handle_commands(
         info!("Warning: EMI 加载失败: {}", e);
     }
 
-    // exploit 路径（dump_preloader）可能破坏 BROM echo 状态
-    // 重新打开 USB 设备重置连接（对齐 Python mtk.port.cdc.connected = mtk.port.cdc.connect()）
-    info!("重置 USB 连接...");
-    da.preloader.device.reopen(context)?;
-
+    // Python 全程使用同一个 USB 句柄，不做 reopen
     da.upload_da()
         .map_err(|e| format!("DA 加载失败: {}", e))
         .and_then(|ok| {
