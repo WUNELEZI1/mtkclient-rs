@@ -242,18 +242,24 @@ pub struct TargetConfig {
 }
 
 impl TargetConfig {
+    #[allow(dead_code)]
     pub fn from_raw(raw: u32) -> Self {
+        TargetConfig::from_raw_u64(raw as u64)
+    }
+
+    pub fn from_raw_u64(raw: u64) -> Self {
+        let raw32 = (raw & 0xFFFFFFFF) as u32;
         TargetConfig {
-            raw,
-            sbc: (raw & 0x01) != 0,
-            sla: (raw & 0x02) != 0,
-            daa: (raw & 0x04) != 0,
-            swjtag: (raw & 0x06) != 0,
-            epp: (raw & 0x08) != 0,
-            cert: (raw & 0x10) != 0,
-            memread: (raw & 0x20) != 0,
-            memwrite: (raw & 0x40) != 0,
-            cmd_c8: (raw & 0x80) != 0,
+            raw: raw32,
+            sbc: (raw32 & 0x01) != 0,
+            sla: (raw32 & 0x02) != 0,
+            daa: (raw32 & 0x04) != 0,
+            swjtag: (raw32 & 0x06) != 0,
+            epp: (raw32 & 0x08) != 0,
+            cert: (raw32 & 0x10) != 0,
+            memread: (raw32 & 0x20) != 0,
+            memwrite: (raw32 & 0x40) != 0,
+            cmd_c8: (raw32 & 0x80) != 0,
         }
     }
 

@@ -9,4 +9,4 @@ seccfg_*
 test_input*
 .vscode/
 .idea/
-.venv/
+*.exe

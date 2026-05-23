@@ -4,7 +4,7 @@
 
 MTKClient-RS 是 MediaTek 设备刷写工具的 Rust 实现，用于读写 MTK 设备的分区、解锁 bootloader 等操作。
 
----
+***
 
 ## 项目结构
 
@@ -32,11 +32,12 @@ d:\test\ZybClient\
 └── target/
 ```
 
----
+***
 
 ## 文件索引
 
 ### 1. Cargo.toml
+
 **路径**: `d:\test\ZybClient\Cargo.toml`
 
 项目配置文件，定义了项目名称、版本、依赖和编译配置。
@@ -72,9 +73,10 @@ codegen-units = 1
 strip = true
 ```
 
----
+***
 
 ### 2. src/main.rs
+
 **路径**: `d:\test\ZybClient\src\main.rs`
 
 程序主入口，处理命令行参数和设备初始化。
@@ -408,9 +410,10 @@ fn parse_sub_commands(first_cmd: &str, args: &[String]) -> Vec<(String, Vec<Stri
 }
 ```
 
----
+***
 
 ### 3. src/cli.rs
+
 **路径**: `d:\test\ZybClient\src\cli.rs`
 
 命令行参数定义，使用 clap 库。
@@ -502,9 +505,10 @@ pub struct Cli {
 }
 ```
 
----
+***
 
 ### 4. src/config.rs
+
 **路径**: `d:\test\ZybClient\src\config.rs`
 
 配置模块，包含设备类型、芯片配置、目标配置等常量和结构体。
@@ -764,9 +768,10 @@ impl TargetConfig {
 }
 ```
 
----
+***
 
 ### 5. src/usb.rs
+
 **路径**: `d:\test\ZybClient\src\usb.rs`
 
 USB 通信模块，使用 libusb1-sys 直接与设备通信。
@@ -1196,9 +1201,10 @@ impl Drop for UsbDevice {
 }
 ```
 
----
+***
 
 ### 6. src/preloader.rs
+
 **路径**: `d:\test\ZybClient\src\preloader.rs`
 
 Preloader 通信模块，处理与设备的低级通信协议。
@@ -1585,9 +1591,10 @@ impl Preloader {
 mod kamakiri2;
 ```
 
----
+***
 
 ### 7. src/driver.rs
+
 **路径**: `d:\test\ZybClient\src\driver.rs`
 
 驱动安装模块，用于自动安装 WinUSB 驱动。
@@ -1757,9 +1764,10 @@ pub fn check_driver() -> bool {
 }
 ```
 
----
+***
 
-### 8. src/usb_diag.rs
+### 8. src/usb\_diag.rs
+
 **路径**: `d:\test\ZybClient\src\usb_diag.rs`
 
 USB 诊断模块，用于检测设备和驱动状态。
@@ -1987,7 +1995,7 @@ pub fn diagnose_and_report() {
 }
 ```
 
----
+***
 
 ## 项目总结
 
@@ -2001,6 +2009,7 @@ MTKClient-RS 是一个 MediaTek 设备读写工具的 Rust 实现，主要功能
 6. **USB 诊断** - 检测设备和驱动状态
 
 核心模块：
+
 - `main.rs` - 程序入口，处理命令行参数
 - `config.rs` - 设备配置和芯片参数
 - `usb.rs` - 底层 USB 通信
@@ -2009,3 +2018,4 @@ MTKClient-RS 是一个 MediaTek 设备读写工具的 Rust 实现，主要功能
 - `commands.rs` - 命令处理逻辑
 - `driver.rs` - 驱动安装工具
 - `usb_diag.rs` - 设备诊断功能
+

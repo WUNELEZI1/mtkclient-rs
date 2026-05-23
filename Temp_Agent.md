@@ -410,3 +410,29 @@ usb_debug.log          — USB 通信追踪日志（--usb-log 启用时生成）
 - `brom_register_access`（含 BROM_REG trace）
 - `SEND_DA`（含 addr/len/sig_len 标记）
 
+---
+
+## 会话 27：echo 协议完全对齐 Python（2026-05-23）
+
+**根因**：重建的 preloader.rs 中 echo 发送 1 字节，但 Python Port.echo() 对 int 参数执行 `pack(">I", int)` → 发送 4 字节。
+- 日志显示：`echo(&[0xC8])` 期望回 C8 但收到 00 → 协议完全错位
+- `get_target_config` 读 4 字节但 Python 读 6 字节
+- `brom_register_access` echo 序列混乱
+
+**修改**：
+- `preloader.rs` 完全重写：
+  - `sendcmd(0xFD)` → `echo(&0xFD_u32.to_be_bytes())`（4 字节）
+  - 新增 `echo32(u32)` 方法发送 4 字节 echo
+  - `brom_register_access` 中 4 个 echo 全部用 `echo32()`（mode, address, length 均为 4 字节）
+  - `get_target_config` 读 6 字节：rdword() 读 4 字节 + rword() 读 2 字节
+  - 新增 `TargetConfig::from_raw_u64(u64)` 方法
+  - `init()` 恢复使用 `device.do_handshake()`（BROM 4 字节握手）
+- `config.rs`：TargetConfig 新增 `from_raw_u64`，旧 `from_raw` 标记 `#[allow(dead_code)]`
+
+**关键发现**：
+1. Python `echo(0xC8)` → `pack(">I", 0xC8)` → `b'\x00\x00\x00\xC8'`（4 字节）
+2. Python `brom_register_access` 的 mode/address/length 都通过 `echo(pack(">I", val))` 发送（4 字节 echo，不是 write）
+3. Python `get_target_config` 读 6 字节，不是 4 字节
+4. BROM 握手 `do_handshake` 发送 4 字节 `0xA0A0A0A0`，设备回显 `0x5F5F5F5F`（取反）
+
+
