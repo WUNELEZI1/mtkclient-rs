@@ -2211,6 +2211,19 @@ impl<'a> DAXFlash<'a> {
         if result.is_err() {
             let _ = self.ack();
             let _ = self.status();
+        } else {
+            // readflash_data 成功后 drain 残留状态包，防止污染下一次 readflash_data 调用
+            self.preloader.device.set_timeout(Duration::from_millis(100));
+            let mut drain_buf = [0u8; 512];
+            loop {
+                match self.preloader.device.read(&mut drain_buf) {
+                    Ok(n) if n > 0 => {
+                        debug!("[readflash_data] drain discarded {} bytes", n);
+                    }
+                    _ => break,
+                }
+            }
+            self.preloader.device.set_timeout(original_timeout);
         }
 
         result
