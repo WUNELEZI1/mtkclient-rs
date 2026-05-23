@@ -526,6 +526,9 @@ impl Preloader {
 
         debug!("dump_preloader_payload: done, filename={}", filename);
 
+        // dump 后复位 bulk IN 端点，否则后续 echo 会超时（已知问题，会话11修复）
+        self.device.clear_halt_in().ok();
+
         Ok((preloader, filename))
     }
 
