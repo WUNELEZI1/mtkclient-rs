@@ -1,5 +1,5 @@
 use colored::Colorize;
-use log::{error, info};
+use log::{error, info, warn};
 use std::time::SystemTime;
 
 use crate::DeviceMode;
@@ -82,6 +82,12 @@ pub fn handle_command(
         }
 
         if preloader_file.is_empty() {
+            // 对齐 Python preloader.init()：获取芯片信息和设备安全状态
+            match da.preloader.get_target_config() {
+                Ok(cfg) => info!("{}", cfg.format_info()),
+                Err(e) => warn!("获取 target config 失败: {}", e),
+            }
+
             // bypass_security → dump_preloader_ram（对齐 Python configure_da）
             da.preloader
                 .bypass_security(_context)
@@ -197,6 +203,12 @@ pub fn handle_commands(
 
     if is_brom {
         if preloader_file.is_empty() {
+            // 对齐 Python preloader.init()：获取芯片信息和设备安全状态
+            match da.preloader.get_target_config() {
+                Ok(cfg) => info!("{}", cfg.format_info()),
+                Err(e) => warn!("获取 target config 失败: {}", e),
+            }
+
             // bypass_security → dump_preloader_ram（对齐 Python configure_da）
             da.preloader
                 .bypass_security(_context)
