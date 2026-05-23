@@ -458,4 +458,101 @@ usb_debug.log          — USB 通信追踪日志（--usb-log 启用时生成）
 - `brom_register_access` 的 mode/address/length 是 **参数**，用 `pack(">I", val)` 4 字节 echo（Python Port.echo 对 bytes 参数直接发送整个 bytes）
 - 两种 echo 模式共存：1 字节命令 + 4 字节参数
 
+## 会话 29：完全重构 preloader.rs 对齐 Python 协议（2026-05-23）
+
+**核心问题**：经过多次迭代 echo 协议仍然混乱，需要完全按照 Python 源码重构。
+
+### Python 源码逐函数对齐分析
+
+#### Port.echo() (Port.py:210-229)
+```python
+def echo(self, data, cmd_name=None):
+    if isinstance(data, int):
+        data = pack(">I", data)     # int → 4 字节大端
+    if isinstance(data, bytes):
+        data = [data]                # bytes → [bytes]
+    for val in data:
+        self.usbwrite(val)
+        tmp = self.usbread(len(val), maxtimeout=0)
+        if val != tmp:
+            return False
+    return True
+```
+
+关键行为：
+1. `echo(0xD7)` → `pack(">I", 0xD7)` → 4 字节 → `[b'\x00\x00\x00\xD7']` → 循环 1 次：发送 4 字节，读回 4 字节
+2. `echo(b"\xD7")` → bytes → `[b"\xD7"]` → 循环 1 次：发送 1 字节，读回 1 字节
+3. `echo(pack(">I", addr))` → bytes → `[b'\x00\x00\x00\x01']` → 循环 1 次：发送 4 字节，读回 4 字节
+
+**Python Cmd enum 是 bytes**（如 `SEND_DA = b"\xD7"`），所以 `echo(Cmd.SEND_DA.value)` 走 **bytes 分支** → 发送 1 字节！
+
+#### usblib.py write() (lines 482-521)
+- PyUSB `EP_OUT.write()` 分块发送（pktsize = wMaxPacketSize = 512）
+- 空数据时发送 ZLP：`self.EP_OUT.write(b'')`
+- 有 `verify_data` 回调但只是调试
+
+#### send_da (mtk_preloader.py:871-906)
+```python
+echo(Cmd.SEND_DA.value)  # bytes → 1 字节
+echo(address)            # int → pack(">I", addr) → 4 字节
+echo(len(data))          # int → pack(">I", len) → 4 字节
+echo(sig_len)            # int → pack(">I", sig_len) → 4 字节
+status = rword()         # 2 字节
+if status ok:
+    upload_data(data, gen_chksum)
+```
+
+upload_data:
+```python
+while bytestowrite > 0:
+    _sz = min(bytestowrite, 64)  # 64 字节分块！
+    self.usbwrite(data[pos:pos + _sz])
+self.usbwrite(b"")               # ZLP!
+time.sleep(0.035)                # 35ms
+res = self.rword(2)              # 读校验和+状态
+```
+
+### 重构实现
+
+| 函数 | Python | Rust | 状态 |
+|------|--------|------|------|
+| `echo_1byte(cmd)` | `echo(b"\xD7")` → 1 字节 | `write(&[cmd])` + `read_exact(1)` | ✅ |
+| `echo_4byte(val)` | `echo(pack(">I", val))` → 4 字节 | `write(&val.to_be_bytes())` + `read_exact(4)` | ✅ |
+| `sendcmd(cmd)` | `echo(Cmd.XXX.value)` → 1 字节 | `echo_1byte(cmd)` | ✅ |
+| `get_hw_code` | `echo(0xFD)` → `rbyte(4)` → `unpack(">HH")` | `sendcmd(0xFD)` → `read_exact(4)` → big-endian HW | ✅ |
+| `get_target_config` | `echo(0xD8)` → `rbyte(6)` → `unpack(">IH")` | `sendcmd(0xD8)` → `read_exact(6)` → `from_raw()` | ✅ |
+| `send_da` | echo cmd(1) + echo addr(4) + echo len(4) + echo sig(4) → rword() → upload_data(64块+ZLP+sleep35ms+rword) | 完全对齐 | ✅ |
+| `jump_da` | echo(JUMP_DA) → usbwrite(addr) → rdword() → rword() | 完全对齐 | ✅ |
+| `jump_bl` | echo(JUMP_BL) → rword() → status <= 0xFF | echo_1byte(0xD6) → rword() | ✅ |
+| `brom_register_access` | echo(b"\xDA")(1) + echo(mode)(4) + echo(addr)(4) + echo(len)(4) → status(2) → write/read | 完全对齐 | ✅ |
+
+### 重要发现
+1. **`get_target_config` 命令字节是 0xD8**（`Cmd.GET_TARGET_CONFIG = b"\xD8"`），不是 0xC8！
+2. **`jump_bl` 命令字节是 0xD6**（`Cmd.JUMP_BL = b"\xD6"`），不是 0xD8！
+3. **`upload_data` 分块 64 字节**（不是 512），末尾发 ZLP，sleep 35ms
+4. **Python 全程用同一个 USB 句柄**，不做 reopen
+
+### 移除内容
+- `commands.rs` 中 2 处 `da.preloader.device.reopen(context)?` 调用
+- `UsbDevice::reopen()` 标记 `#[allow(dead_code)]`
+
+## 会话 30：逐函数审查修复（2026-05-23）
+
+### 审查发现的问题及修复
+
+| 问题 | Python 行为 | Rust 修复前 | 修复后 |
+|------|-------------|-------------|--------|
+| rword/rword 字节序 | 默认 big-endian (`">H"`, `">I"`) | little-endian | 改为 big-endian |
+| jump_bl 读取次数 | rword() → if <=0xFF → rword() | rword() 一次 | 读两次 rword |
+| send_da 返回读取 | rword(2) 返回 (checksum, status) | 只读一个 rword | 读两个 rword（checksum + status2） |
+
+### 确认对齐（无问题）
+- echo_1byte: `write([cmd])` + `read_exact(1)` ✅ 对齐 Python `echo(b"\xD7")`
+- echo_4byte: `write(&val.to_be_bytes())` + `read_exact(4)` ✅ 对齐 Python `echo(pack(">I", val))`
+- get_hw_code: `sendcmd(0xFD)` + `read_exact(4)` → big-endian HW code ✅ 对齐 Python `echo(0xFD)` + `rbyte(4)` + `unpack(">HH")`
+- get_target_config: `sendcmd(0xD8)` + `read_exact(6)` → `from_raw()` ✅ 对齐 Python `echo(Cmd.GET_TARGET_CONFIG.value)` + `rbyte(6)` + `unpack(">IH")`
+- send_da: echo cmd(1) + echo addr(4) + echo len(4) + echo sig(4) + rword() + upload_data(64块+ZLP+sleep35ms+rword×2) ✅
+- jump_da: echo(0xD5) + write(addr big-endian) + rdword() + rword() ✅
+- brom_register_access: echo 0xDA(1) + echo mode(4) + echo addr(4) + echo len(4) + status(2) + write/read ✅
+
 
