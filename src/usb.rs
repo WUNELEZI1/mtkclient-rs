@@ -399,9 +399,10 @@ impl UsbDevice {
         Ok(total)
     }
 
-    /// 精确读取：单次 bulk transfer，不重试循环
-    /// 用于 payload 响应等已知数据量的场景，避免 read() 的重试循环破坏端点状态
-    /// 对齐 Python usbread(length) — 精确读 length 字节，读完就停
+    /// 精确读取：循环 bulk transfer 直到读满 buf.len()
+    /// 对齐 Python usbread(length) — 精确读 length 字节
+    /// 修复：之前只调用一次 bulk_transfer，如果设备分多次返回数据（如先返回 2 字节再返回 2 字节），
+    ///       会导致读不完整，残留字节污染后续 echo 通信。
     pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<usize, String> {
         if buf.is_empty() {
             return Ok(0);
@@ -411,31 +412,44 @@ impl UsbDevice {
             buf.len(),
             self.timeout.as_millis()
         );
-        unsafe {
-            let mut transferred: i32 = 0;
-            let ret = libusb1_sys::libusb_bulk_transfer(
-                self.handle,
-                self.ep_in,
-                buf.as_mut_ptr(),
-                buf.len() as i32,
-                &mut transferred,
-                self.timeout.as_millis() as u32,
-            );
-            debug!(
-                "[USB READ EXACT] bulk_transfer returned: ret={}, transferred={}",
-                ret, transferred
-            );
-            if ret != 0 && ret != LIBUSB_ERROR_TIMEOUT {
-                return Err(format!("read_exact err {}", ret));
+        let mut total = 0usize;
+        while total < buf.len() {
+            unsafe {
+                let mut transferred: i32 = 0;
+                let ret = libusb1_sys::libusb_bulk_transfer(
+                    self.handle,
+                    self.ep_in,
+                    buf[total..].as_mut_ptr(),
+                    (buf.len() - total) as i32,
+                    &mut transferred,
+                    self.timeout.as_millis() as u32,
+                );
+                debug!(
+                    "[USB READ EXACT] bulk_transfer returned: ret={}, transferred={}",
+                    ret, transferred
+                );
+                if ret != 0 && ret != LIBUSB_ERROR_TIMEOUT {
+                    return Err(format!("read_exact err {}", ret));
+                }
+                if transferred == 0 {
+                    if ret == LIBUSB_ERROR_TIMEOUT {
+                        if total > 0 {
+                            debug!("[USB READ EXACT] partial read: {}/{} bytes before timeout", total, buf.len());
+                            break;
+                        }
+                        return Err("read_exact timeout".to_string());
+                    }
+                    break;
+                }
+                total += transferred as usize;
             }
-            if transferred == 0 && ret == LIBUSB_ERROR_TIMEOUT {
-                return Err("read_exact timeout".to_string());
-            }
-            debug!("[USB READ EXACT] returning transferred={}", transferred);
-            // RX trace: 记录读取的数据
-            usb_trace("RX", "UsbDevice::read_exact", &buf[..transferred as usize]);
-            Ok(transferred as usize)
         }
+        debug!("[USB READ EXACT] total read: {}/{} bytes", total, buf.len());
+        // RX trace
+        if total > 0 {
+            usb_trace("RX", "UsbDevice::read_exact", &buf[..total]);
+        }
+        Ok(total)
     }
 
     pub fn ctrl_transfer_in(

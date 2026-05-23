@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-MTKClient-RS 是 MediaTek 设备刷写工具的 Rust 实现，用于读写 MTK 设备的分区、解锁 bootloader 等操作。
+MTKClient-RS 是 MediaTek 设备刷写工具的 Rust 实现，用于读写 MTK 设备的分区、解锁 bootloader 等操作。基于 libusb1-sys 实现低层 USB 通信，对齐 Python mtkclient 的 BROM/Preloader/XFlash 协议。
 
 ***
 
@@ -21,9 +21,9 @@ d:\test\ZybClient\
 │   ├── da_xflash.rs
 │   ├── da_extension.rs
 │   ├── da_partition.rs
+│   ├── kamakiri2.rs
 │   ├── usb_diag.rs
 │   ├── driver.rs
-│   ├── kamakiri2.rs
 │   └── paths.rs
 ├── mtkclient-2.0.1/
 ├── mtkclient-2.1.4.1/
@@ -40,7 +40,7 @@ d:\test\ZybClient\
 
 **路径**: `d:\test\ZybClient\Cargo.toml`
 
-项目配置文件，定义了项目名称、版本、依赖和编译配置。
+项目配置文件。依赖 libusb1-sys（原生 C 库绑定）、clap（CLI 解析）、serialport（串口通信）、sha2/aes/cbc（加密操作）。
 
 ```toml
 [package]
@@ -58,19 +58,6 @@ serialport = "4.7"
 sha2 = "0.10"
 aes = "0.8"
 cbc = "0.1"
-
-[profile.dev]
-opt-level = 0          # 不优化，编译最快
-debug = true           # 保留调试信息
-incremental = true     # 增量编译
-codegen-units = 256    # 最大并行
-lto = false            # 关闭链接时优化
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
 ```
 
 ***
@@ -79,335 +66,20 @@ strip = true
 
 **路径**: `d:\test\ZybClient\src\main.rs`
 
-程序主入口，处理命令行参数和设备初始化。
+程序主入口。设置 UTF-8 控制台编码，解析 CLI 参数，初始化日志，执行命令调度。
+
+关键流程：
+- `smart_init`：等待设备连接，带 USB 诊断（UsbDiagState），区分 NoDevice/WrongDriver/Preloader/Brom/EndpointError/HandshakeFailed
+- BROM 模式下自动 dump preloader（`dump-preloader` 命令或无指定 preloader 文件时）
+- 支持 `--batch` 批量执行多个命令，保持 DA 会话
+- 支持 `--no-device` 离线模式处理 seccfg 文件
+- 支持 `dump-preloader`、`dumpbrom`、`printgpt`、`r`/`read`、`w`/`write`、`e`/`erase`、`vbmeta`、`unlock`、`lock`、`reset`、`enable-adb-on-da` 等命令
+- 诊断命令：`diagnose`、`list-usb`、`check-driver`
+- 驱动安装：`install-drivers`
 
 ```rust
-use clap::Parser;
-use colored::Colorize;
-use log::{error, info, warn};
-use std::process;
-use std::time::Duration;
-use usb::UsbContext;
-
-#[cfg(target_os = "windows")]
-unsafe extern "system" {
-    fn SetConsoleOutputCP(wCodePageID: u32) -> i32;
-    fn SetConsoleCP(wCodePageID: u32) -> i32;
-}
-
-mod cli;
-mod commands;
-mod config;
-mod da_xflash;
-mod da_extension;
-mod da_partition;
-mod driver;
-mod paths;
-mod preloader;
-mod usb;
-mod usb_diag;
-
-#[derive(Debug, PartialEq, Clone)]
-enum DeviceMode {
-    Brom,
-    Preloader,
-    Unknown,
-}
-
-fn detect_mode(vid: u16, pid: u16) -> DeviceMode {
-    match config::DeviceType::from_vid_pid(vid, pid) {
-        config::DeviceType::Brom => DeviceMode::Brom,
-        config::DeviceType::Preloader | config::DeviceType::PreloaderVariant => {
-            DeviceMode::Preloader
-        }
-        _ => DeviceMode::Unknown,
-    }
-}
-
-fn smart_init(context: &UsbContext) -> Result<(usb::UsbDevice, DeviceMode), String> {
-    use usb_diag::{diagnose_connection, print_connection_hint, UsbDiagState};
-
-    info!("{}", "等待设备连接 (BROM: Vol+ + Vol- + Power)".yellow());
-
-    let mut no_device_count = 0;
-    let mut handshake_fail_count = 0;
-    const MAX_NO_DEVICE_LOOPS: usize = 15;
-    const MAX_HANDSHAKE_LOOPS: usize = 10;
-
-    let usb_device = loop {
-        let diag = diagnose_connection();
-
-        match usb::UsbDevice::new(context) {
-            Ok(d) => {
-                break d;
-            }
-            Err(_e) => {
-                match diag {
-                    UsbDiagState::NoDevice => {
-                        no_device_count += 1;
-                        if no_device_count == MAX_NO_DEVICE_LOOPS {
-                            warn!("{}", "设备未连接，请重新插入".red());
-                            print_connection_hint();
-                        }
-                        if no_device_count >= MAX_NO_DEVICE_LOOPS + 15 {
-                            return Err("设备未连接超时，请检查 USB 线缆和设备状态".to_string());
-                        }
-                    }
-                    UsbDiagState::WrongDriver => {
-                        warn!("{}", "检测到设备但驱动异常 (可能需要安装 WinUSB)".red());
-                        warn!("运行以下命令安装驱动: mtkclient install-drivers");
-                        print_connection_hint();
-                        std::thread::sleep(Duration::from_secs(2));
-                    }
-                    UsbDiagState::Preloader => {
-                        warn!("{}", "检测到 Preloader 模式，需要 BROM 模式".red());
-                        warn!("请按住 音量+ + 音量- 插入 USB 进入 BROM 模式");
-                        std::thread::sleep(Duration::from_secs(1));
-                    }
-                    UsbDiagState::EndpointError | UsbDiagState::HandshakeFailed => {
-                        handshake_fail_count += 1;
-                        if handshake_fail_count == MAX_HANDSHAKE_LOOPS {
-                            warn!("{}", "设备通信异常，libusb 上下文可能已损坏".red());
-                            warn!("请断开设备，重新运行程序");
-                            print_connection_hint();
-                        }
-                        if handshake_fail_count >= MAX_HANDSHAKE_LOOPS + 5 {
-                            return Err("设备握手失败超时，请重新运行程序".to_string());
-                        }
-                    }
-                    UsbDiagState::Brom => {
-                        // BROM 模式但连接失败，可能是临时问题，继续重试
-                    }
-                }
-                std::thread::sleep(Duration::from_secs(1));
-            }
-        }
-    };
-
-    info!("  VID: {:04x}, PID: {:04x}", usb_device.vid, usb_device.pid);
-
-    let mode = detect_mode(usb_device.vid, usb_device.pid);
-    info!("  模式: {:?}", mode);
-
-    info!("{}", "正在打开设备...".yellow());
-
-    info!("{}", "连接成功".green().bold());
-    Ok((usb_device, mode))
-}
-
-fn handle_install_drivers(debug: bool, force: bool) {
-    match driver::install_winusb_driver(debug, force) {
-        Ok(_) => {}
-        Err(e) => {
-            error!("安装失败: {}", e);
-        }
-    }
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(target_os = "windows")]
-    unsafe {
-        SetConsoleCP(65001);
-        SetConsoleOutputCP(65001);
-    }
-
-    let raw_args: Vec<String> = std::env::args().collect();
-    let is_help = raw_args.iter().any(|a| a == "-h" || a == "--help");
-    if is_help {
-        commands::print_help();
-        return Ok(());
-    }
-
-    let cli = cli::Cli::parse();
-
-    let app_config = config::AppConfig::from_cli(&cli);
-
-    env_logger::builder()
-        .filter_level(app_config.log_level)
-        .parse_default_env()
-        .format(|buf, record| {
-            use std::io::Write;
-            let level = match record.level() {
-                log::Level::Error => "ERROR",
-                log::Level::Warn => "WARN ",
-                log::Level::Info => "INFO ",
-                log::Level::Debug => "DEBUG",
-                log::Level::Trace => "TRACE",
-            };
-            writeln!(buf, "[{}] {}", level, record.args())
-        })
-        .init();
-
-    let cmd = app_config.command.as_deref().unwrap_or("");
-
-    if cli.check_driver {
-        if driver::check_driver() {
-            info!("WinUSB 驱动已就绪");
-        } else {
-            info!("未检测到 WinUSB 驱动，运行 install-drivers 安装");
-        }
-        return Ok(());
-    }
-
-    if cmd.is_empty() {
-        commands::print_help();
-        return Ok(());
-    }
-
-    if cmd == "install-drivers" {
-        handle_install_drivers(cli.debug_mode, cli.force);
-        return Ok(());
-    }
-
-    if cmd == "diagnose" {
-        usb_diag::diagnose_and_report();
-        return Ok(());
-    }
-
-    if cmd == "list-usb" {
-        usb_diag::enumerate_usb_devices();
-        return Ok(());
-    }
-
-    if let Some(ref input_file) = cli.no_device {
-        if cmd == "unlock"
-            || (cmd == "da"
-                && cli.args.first().map(|s| s.as_str()) == Some("seccfg")
-                && cli.args.get(1).map(|s| s.as_str()) == Some("unlock"))
-        {
-            match da_xflash::seccfg_unlock_offline(input_file) {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    error!("离线解锁失败: {}", e);
-                    process::exit(1);
-                }
-            }
-        }
-        if cmd == "lock"
-            || (cmd == "da"
-                && cli.args.first().map(|s| s.as_str()) == Some("seccfg")
-                && cli.args.get(1).map(|s| s.as_str()) == Some("lock"))
-        {
-            match da_xflash::seccfg_lock_offline(input_file) {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    error!("离线锁定失败: {}", e);
-                    process::exit(1);
-                }
-            }
-        }
-        return Err(format!("不支持的离线命令: {}", cmd).into());
-    }
-
-    if cmd == "dump-preloader" {
-        let usb_context = UsbContext::new().inspect_err(|e| {
-            error!("{}", e);
-        })?;
-
-        let (usb_device, _mode) = smart_init(&usb_context).inspect_err(|e| {
-            error!("{}", e);
-        })?;
-
-        let mut preloader = preloader::Preloader::new(usb_device);
-
-        if !preloader.init().unwrap_or(false) {
-            return Err("设备初始化失败".into());
-        }
-
-        match preloader.dump_preloader_payload(false) {
-            Ok((data, filename)) => {
-                if data.is_empty() {
-                    error!("dump_preloader_payload 返回空数据");
-                    process::exit(1);
-                }
-                std::fs::write(&filename, &data).expect("保存 preloader 失败");
-                info!("Preloader 已提取: {} ({} 字节)", filename, data.len());
-            }
-            Err(e) => {
-                error!("提取 Preloader 失败: {}", e);
-                process::exit(1);
-            }
-        }
-
-        return Ok(());
-    }
-
-    let usb_context = UsbContext::new().inspect_err(|e| {
-        error!("{}", e);
-    })?;
-
-    let (usb_device, mode) = smart_init(&usb_context).inspect_err(|e| {
-        error!("{}", e);
-    })?;
-
-    let mut preloader = preloader::Preloader::new(usb_device);
-
-    if !preloader.init().unwrap_or(false) {
-        return Err("设备初始化失败".into());
-    }
-
-    let final_preloader_path = if let Some(ref path) = app_config.preloader_path {
-        info!("使用指定的 preloader 文件: {}", path);
-        path.clone()
-    } else if mode == DeviceMode::Brom {
-        String::new()
-    } else {
-        "preloader_k69v1_64_k419.bin".to_string()
-    };
-
-    let mut da = da_xflash::DAXFlash::new(&mut preloader);
-
-    let sub_commands = parse_sub_commands(cmd, &cli.args);
-    if sub_commands.len() > 1 {
-        commands::handle_commands(
-            &mut da,
-            &mode,
-            &app_config,
-            cli.debug_mode,
-            &final_preloader_path,
-            &sub_commands,
-        )?;
-    } else {
-        commands::handle_command(
-            &mut da,
-            &mode,
-            &app_config,
-            cli.debug_mode,
-            &final_preloader_path,
-        )?;
-    }
-
-    Ok(())
-}
-
-fn parse_sub_commands(first_cmd: &str, args: &[String]) -> Vec<(String, Vec<String>)> {
-    let known_da_cmds = [
-        "printgpt", "dumpbrom", "r", "read", "w", "write", "e", "erase", "vbmeta", "reset",
-        "unlock", "lock", "da", "enable-adb-on-da",
-    ];
-
-    let mut result = Vec::new();
-    let mut current_cmd = first_cmd.to_string();
-    let mut current_args: Vec<String> = Vec::new();
-
-    for arg in args {
-        if known_da_cmds.contains(&arg.as_str()) {
-            if !current_cmd.is_empty() {
-                result.push((current_cmd.clone(), current_args.clone()));
-            }
-            current_cmd = arg.clone();
-            current_args.clear();
-        } else {
-            current_args.push(arg.clone());
-        }
-    }
-
-    if !current_cmd.is_empty() {
-        result.push((current_cmd, current_args));
-    }
-
-    result
-}
+fn smart_init(context: &UsbContext) -> Result<(usb::UsbDevice, DeviceMode), String>
+fn parse_sub_commands(first_cmd: &str, args: &[String]) -> Vec<(String, Vec<String>)>
 ```
 
 ***
@@ -416,94 +88,9 @@ fn parse_sub_commands(first_cmd: &str, args: &[String]) -> Vec<(String, Vec<Stri
 
 **路径**: `d:\test\ZybClient\src\cli.rs`
 
-命令行参数定义，使用 clap 库。
+命令行参数定义，使用 clap derive 宏。
 
-```rust
-use clap::Parser;
-
-#[derive(Parser, Debug)]
-#[command(name = "mtkclient")]
-#[command(about = "MTKClient Rust 版本 - MTK 设备刷写工具", long_about = None)]
-pub struct Cli {
-    #[arg(long = "da2", help = "指定 DA2 文件路径")]
-    pub da2_path: Option<String>,
-
-    #[arg(long = "preloader", help = "指定 preloader 文件路径")]
-    pub preloader_path: Option<String>,
-
-    #[arg(long = "loader", help = "指定 DA loader 文件路径")]
-    pub loader_path: Option<String>,
-
-    #[arg(long = "parttype", help = "指定分区类型")]
-    pub parttype: Option<String>,
-
-    #[arg(long = "offset", help = "指定偏移地址")]
-    pub offset: Option<u64>,
-
-    #[arg(long = "length", help = "指定长度")]
-    pub length: Option<u64>,
-
-    #[arg(long = "sector", help = "指定扇区号")]
-    pub sector: Option<u32>,
-
-    #[arg(long = "sectors", help = "指定扇区数")]
-    pub sectors: Option<u32>,
-
-    #[arg(long = "verify", help = "写入后校验")]
-    pub verify: bool,
-
-    #[arg(
-        long = "debug-mode",
-        default_value_t = false,
-        help = "启用调试模式（详细日志 + dump 文件）"
-    )]
-    pub debug_mode: bool,
-
-    #[arg(long = "check-driver", action = clap::ArgAction::SetTrue, help = "检查 WinUSB 驱动状态")]
-    pub check_driver: bool,
-
-    #[arg(
-        long = "force",
-        default_value_t = false,
-        help = "强制安装驱动（跳过驱动检查）"
-    )]
-    pub force: bool,
-
-    #[arg(
-        long = "no-device",
-        help = "离线模式：不连接设备，直接处理 seccfg 文件"
-    )]
-    pub no_device: Option<String>,
-
-    #[arg(
-        help = "要执行的命令",
-        long_help = "可用命令:\n\
-          install-drivers - 自动安装 WinUSB 驱动（需要管理员权限）\n\
-          printgpt        - 打印 GPT 分区表\n\
-          dump-preloader  - 从 RAM 提取 Preloader\n\
-          dumpbrom        - 提取 BROM 到文件\n\
-          r <分区> <文件> - 读取分区到文件\n\
-          w <分区> <文件> - 写入文件到分区\n\
-          e <分区>       - 擦除分区\n\
-          vbmeta <模式>  - 修补 vbmeta 分区\n\
-          unlock          - 解锁 Bootloader\n\
-          lock            - 锁定 Bootloader\n\
-          reset           - 重置设备\n\
-          enable-adb-on-da - 在 DA 模式下开启 ADB\n\
-\n\
-          离线模式:\n\
-          unlock --no-device <seccfg文件> - 离线解锁 seccfg\n\
-          lock --no-device <seccfg文件>   - 离线锁定 seccfg\n\
-\n\
-          批量模式（一次连接执行多个命令）:\n\
-          mtkclient-rs printgpt r boot boot.img e userdata"
-    )]
-    pub command: Option<String>,
-
-    #[arg(help = "命令参数（批量模式下每个子命令的额外参数）")]
-    pub args: Vec<String>,
-}
-```
+参数包括：`--da2`、`--preloader`、`--loader`、`--parttype`、`--offset`、`--length`、`--sector`、`--sectors`、`--verify`、`--debug-mode`、`--check-driver`、`--force`、`--no-device`、`command`、`args`。
 
 ***
 
@@ -511,262 +98,29 @@ pub struct Cli {
 
 **路径**: `d:\test\ZybClient\src\config.rs`
 
-配置模块，包含设备类型、芯片配置、目标配置等常量和结构体。
+配置模块，统一管理设备类型、芯片参数、安全配置。
 
-```rust
-pub const MEDIATEK_VID: u16 = 0x0E8D;
+**DeviceType**：根据 VID/PID 判断 BROM/Preloader/PreloaderVariant/Unknown，影响握手策略。
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceType {
-    Brom,
-    Preloader,
-    PreloaderVariant,
-    Unknown,
-}
+**SUPPORTED_DEVICES**：MTK BROM (0x0003/F200/D1E9/D1E2/D1EEC/D1DD)、Preloader (0x2000)、Preloader Variant (0x2001)。
 
-impl DeviceType {
-    pub fn from_vid_pid(vid: u16, pid: u16) -> Self {
-        if vid != MEDIATEK_VID {
-            return DeviceType::Unknown;
-        }
-        match pid {
-            0x0003 | 0xF200 | 0xD1E9 | 0xD1E2 | 0xD1EC | 0xD1DD => DeviceType::Brom,
-            0x2000 => DeviceType::Preloader,
-            0x2001 => DeviceType::PreloaderVariant,
-            _ => DeviceType::Unknown,
-        }
-    }
+**ChipConfig**：芯片完整配置，包含：
+- hw_code、name、description、loader
+- watchdog、uart 地址
+- brom/da/pl payload 地址
+- gcpu/sej/dxcc/cqdma/ap_dma 基址
+- send_ptr/ctrl_buffer/cmd_handler
+- brom_register_access 地址
+- meid/socid/prov/misc_lock/efuse 地址
+- blacklist/blacklist_count
+- ptr_da_bra / ptr_send_addr（Kamakiri2 特殊地址）
 
-    pub fn is_brom(&self) -> bool {
-        matches!(self, DeviceType::Brom)
-    }
+支持芯片：MT6768/MT6769 (0x0707)、MT6771 (0x0788)。
 
-    pub fn is_preloader(&self) -> bool {
-        matches!(self, DeviceType::Preloader | DeviceType::PreloaderVariant)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct DeviceConfig {
-    pub vid: u16,
-    pub pid: u16,
-    pub device_type: DeviceType,
-    pub name: &'static str,
-    pub description: &'static str,
-}
-
-pub const SUPPORTED_DEVICES: &[DeviceConfig] = &[
-    DeviceConfig {
-        vid: MEDIATEK_VID,
-        pid: 0x0003,
-        device_type: DeviceType::Brom,
-        name: "MTK BROM",
-        description: "MediaTek Boot ROM mode",
-    },
-    DeviceConfig {
-        vid: MEDIATEK_VID,
-        pid: 0x2000,
-        device_type: DeviceType::Preloader,
-        name: "MTK Preloader",
-        description: "MediaTek Preloader mode",
-    },
-    DeviceConfig {
-        vid: MEDIATEK_VID,
-        pid: 0x2001,
-        device_type: DeviceType::PreloaderVariant,
-        name: "MTK Preloader Variant",
-        description: "MediaTek Preloader variant mode",
-    },
-];
-
-#[derive(Debug, Clone)]
-pub struct AppConfig {
-    pub log_level: log::LevelFilter,
-    pub da2_path: Option<String>,
-    pub preloader_path: Option<String>,
-    pub loader_path: Option<String>,
-    pub parttype: Option<String>,
-    pub offset: Option<u64>,
-    pub length: Option<u64>,
-    pub sector: Option<u32>,
-    pub sectors: Option<u32>,
-    pub verify: bool,
-    pub command: Option<String>,
-    pub cmd_args: Vec<String>,
-}
-
-impl AppConfig {
-    pub fn from_cli(cli: &crate::cli::Cli) -> Self {
-        let log_level = if cli.debug_mode {
-            log::LevelFilter::Trace
-        } else {
-            log::LevelFilter::Info
-        };
-
-        AppConfig {
-            log_level,
-            da2_path: cli.da2_path.clone(),
-            preloader_path: cli.preloader_path.clone(),
-            loader_path: cli.loader_path.clone(),
-            parttype: cli.parttype.clone(),
-            offset: cli.offset,
-            length: cli.length,
-            sector: cli.sector,
-            sectors: cli.sectors,
-            verify: cli.verify,
-            command: cli.command.clone(),
-            cmd_args: cli.args.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ChipConfig {
-    pub hw_code: u16,
-    pub name: &'static str,
-    pub description: &'static str,
-    pub loader: &'static str,
-    pub var1: u8,
-    pub watchdog: u32,
-    pub uart: u32,
-    pub brom_payload_addr: u32,
-    pub da_payload_addr: u32,
-    pub pl_payload_addr: u32,
-    pub gcpu_base: u32,
-    pub sej_base: u32,
-    pub dxcc_base: u32,
-    pub cqdma_base: u32,
-    pub ap_dma_mem: u32,
-    pub send_ptr: (u32, u32),
-    pub ctrl_buffer: u32,
-    pub cmd_handler: u32,
-    pub brom_register_access: (u32, u32),
-    pub meid_addr: u32,
-    pub socid_addr: u32,
-    pub prov_addr: u32,
-    pub misc_lock: u32,
-    pub efuse_addr: u32,
-    pub blacklist: &'static [(u32, u32)],
-    pub blacklist_count: u32,
-    pub ptr_da_bra: Option<u32>,
-    pub ptr_send_addr: Option<u32>,
-}
-
-pub static CHIP_CONFIGS: &[ChipConfig] = &[
-    ChipConfig {
-        hw_code: 0x0707,
-        name: "MT6768/MT6769",
-        description: "Helio P65/G85 k68v1",
-        loader: "mt6768_payload.bin",
-        var1: 0x25,
-        watchdog: 0x10007000,
-        uart: 0x11002000,
-        brom_payload_addr: 0x100A00,
-        da_payload_addr: 0x201000,
-        pl_payload_addr: 0x40200000,
-        gcpu_base: 0x10050000,
-        sej_base: 0x1000A000,
-        dxcc_base: 0x10210000,
-        cqdma_base: 0x10212000,
-        ap_dma_mem: 0x110001A0,
-        send_ptr: (0x10286C, 0xC190),
-        ctrl_buffer: 0x00102A28,
-        cmd_handler: 0x0000CF15,
-        brom_register_access: (0xC598, 0xC650),
-        meid_addr: 0x102AF8,
-        socid_addr: 0x102B08,
-        prov_addr: 0x1054F4,
-        misc_lock: 0x1001A100,
-        efuse_addr: 0x11CE0000,
-        blacklist: &[(0x10282C, 0x0), (0x00105994, 0)],
-        blacklist_count: 0x0000000A,
-        ptr_da_bra: Some(0xC650),
-        ptr_send_addr: Some(0xC190),
-    },
-    ChipConfig {
-        hw_code: 0x0788,
-        name: "MT6771",
-        description: "Helio P60/P70 k71v1",
-        loader: "mt6771_payload.bin",
-        var1: 0x0A,
-        watchdog: 0x10007000,
-        uart: 0x11002000,
-        brom_payload_addr: 0x100A00,
-        da_payload_addr: 0x201000,
-        pl_payload_addr: 0x40200000,
-        gcpu_base: 0x10050000,
-        sej_base: 0x1000A000,
-        dxcc_base: 0x10210000,
-        cqdma_base: 0x10212000,
-        ap_dma_mem: 0x11000158,
-        send_ptr: (0x102878, 0xDEBC),
-        ctrl_buffer: 0x00102A80,
-        cmd_handler: 0x0000EBE9,
-        brom_register_access: (0xE2D0, 0xE388),
-        meid_addr: 0x102B38,
-        socid_addr: 0x102B48,
-        prov_addr: 0x1065C0,
-        misc_lock: 0x1001A100,
-        efuse_addr: 0x11F10000,
-        blacklist: &[(0x102834, 0x0), (0x106A60, 0x0)],
-        blacklist_count: 0x0000000A,
-        ptr_da_bra: None,
-        ptr_send_addr: None,
-    },
-];
-
-pub fn get_chip_config(hw_code: u16) -> Option<&'static ChipConfig> {
-    CHIP_CONFIGS.iter().find(|c| c.hw_code == hw_code)
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct TargetConfig {
-    pub raw: u32,
-    pub sbc: bool,
-    pub sla: bool,
-    pub daa: bool,
-    pub swjtag: bool,
-    pub epp: bool,
-    pub cert: bool,
-    pub memread: bool,
-    pub memwrite: bool,
-    pub cmd_c8: bool,
-}
-
-impl TargetConfig {
-    pub fn from_raw(raw: u32) -> Self {
-        TargetConfig {
-            raw,
-            sbc: (raw & 0x01) != 0,
-            sla: (raw & 0x02) != 0,
-            daa: (raw & 0x04) != 0,
-            swjtag: (raw & 0x06) != 0,
-            epp: (raw & 0x08) != 0,
-            cert: (raw & 0x10) != 0,
-            memread: (raw & 0x20) != 0,
-            memwrite: (raw & 0x40) != 0,
-            cmd_c8: (raw & 0x80) != 0,
-        }
-    }
-
-    pub fn needs_bypass(&self) -> bool {
-        self.sbc || self.sla || self.daa
-    }
-
-    pub fn format_info(&self) -> String {
-        format!(
-            "设备信息: 0x{:02X}\n  SBC: {} / SLA: {} / DAA: {}\n  Mem Read Auth: {} / Mem Write Auth: {}\n  Cmd 0xC8 blocked: {}",
-            self.raw,
-            if self.sbc { "True" } else { "False" },
-            if self.sla { "True" } else { "False" },
-            if self.daa { "True" } else { "False" },
-            if self.memread { "True" } else { "False" },
-            if self.memwrite { "True" } else { "False" },
-            if self.cmd_c8 { "True" } else { "False" },
-        )
-    }
-}
-```
+**TargetConfig**：设备安全配置，解析 4 字节 big-endian 位域：
+- sbc (0x01)、sla (0x02)、daa (0x04)、swjtag (0x06)
+- epp (0x08)、cert (0x10)、memread (0x20)、memwrite (0x40)、cmd_c8 (0x80)
+- `needs_bypass()`：判断是否需要绕过安全保护
 
 ***
 
@@ -774,432 +128,22 @@ impl TargetConfig {
 
 **路径**: `d:\test\ZybClient\src\usb.rs`
 
-USB 通信模块，使用 libusb1-sys 直接与设备通信。
+USB 通信核心模块，基于 libusb1-sys。
 
-```rust
-use crate::config::{DeviceType, SUPPORTED_DEVICES};
-use log::{debug, info};
-use std::time::Duration;
+**UsbContext**：libusb 上下文管理，init/exit。
 
-const LIBUSB_ERROR_TIMEOUT: i32 = -7;
+**UsbDevice**：
+- `new()`：查找 MTK 设备，detach kernel driver，claim interface 0+1，扫描端点
+- `write()`：bulk OUT 传输，支持 ZLP（空数据），含 TX trace 日志
+- `read()`：bulk IN 传输，带 deadline 重试循环，支持 `QUIET_USB_READ` 静默模式
+- `read_exact()`：单次 bulk transfer 精确读取，不重试，用于 payload 响应
+- `ctrl_transfer_in/out()`：控制传输
+- `clear_halt_in/out()`：清除端点 halt/stall 状态
+- `do_handshake()`：4 字节握手协议（0xA0 0x0A 0x50 0x05），BROM 模式直接握手，Preloader 先发送 0xA0，最多 10 次尝试
+- `reopen()`：重新打开 USB 设备句柄
+- `set_timeout/get_timeout()`：超时管理
 
-pub struct UsbContext {
-    ctx: *mut libusb1_sys::libusb_context,
-}
-
-impl UsbContext {
-    pub fn new() -> Result<Self, String> {
-        unsafe {
-            let mut ctx: *mut libusb1_sys::libusb_context = std::ptr::null_mut();
-            if libusb1_sys::libusb_init(&mut ctx) != 0 {
-                return Err("libusb_init 失败".to_string());
-            }
-            Ok(UsbContext { ctx })
-        }
-    }
-
-    pub fn as_ptr(&self) -> *mut libusb1_sys::libusb_context {
-        self.ctx
-    }
-}
-
-impl Drop for UsbContext {
-    fn drop(&mut self) {
-        unsafe {
-            if !self.ctx.is_null() {
-                libusb1_sys::libusb_exit(self.ctx);
-                self.ctx = std::ptr::null_mut();
-            }
-        }
-    }
-}
-
-pub struct UsbDevice {
-    handle: *mut libusb1_sys::libusb_device_handle,
-    pub vid: u16,
-    pub pid: u16,
-    device_type: DeviceType,
-    ep_out: u8,
-    ep_in: u8,
-    ep_out_max_packet_size: u16,
-    timeout: Duration,
-}
-
-impl UsbDevice {
-    pub fn new(context: &UsbContext) -> Result<Self, String> {
-        let ctx = context.as_ptr();
-        unsafe {
-            let mut handle = std::ptr::null_mut();
-            let mut found_device_type = DeviceType::Unknown;
-            for dev_config in SUPPORTED_DEVICES {
-                handle = libusb1_sys::libusb_open_device_with_vid_pid(
-                    ctx,
-                    dev_config.vid,
-                    dev_config.pid,
-                );
-                if !handle.is_null() {
-                    info!(
-                        "[USB] 已连接: {} - {} (VID:0x{:04X} PID:0x{:04X})",
-                        dev_config.name, dev_config.description, dev_config.vid, dev_config.pid
-                    );
-                    found_device_type = dev_config.device_type;
-                    break;
-                }
-            }
-            if handle.is_null() {
-                return Err("未找到支持的设备".into());
-            }
-
-            libusb1_sys::libusb_detach_kernel_driver(handle, 1);
-            if libusb1_sys::libusb_claim_interface(handle, 1) != 0 {
-                return Err("claim_interface 1 failed".into());
-            }
-            libusb1_sys::libusb_detach_kernel_driver(handle, 0);
-            let _ = libusb1_sys::libusb_claim_interface(handle, 0);
-
-            let device = libusb1_sys::libusb_get_device(handle);
-            let mut desc: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
-            libusb1_sys::libusb_get_device_descriptor(device, &mut desc);
-
-            debug!("[USB] scanning endpoints...");
-            let mut config_ptr: *const libusb1_sys::libusb_config_descriptor = std::ptr::null();
-            let mut ep_out_addr: u8 = 0x01;
-            let mut ep_in_addr: u8 = 0x81;
-            let mut ep_out_max_pkt: u16 = 512;
-            let ret = libusb1_sys::libusb_get_active_config_descriptor(device, &mut config_ptr);
-            if ret != 0 || config_ptr.is_null() {
-                info!(
-                    "[USB] WARNING: get_active_config_descriptor failed (ret={}), trying known combos...",
-                    ret
-                );
-            } else {
-                let config = &*config_ptr;
-                for i in 0..config.bNumInterfaces as isize {
-                    let iface = &*config.interface.wrapping_add(i as usize);
-                    for j in 0..iface.num_altsetting {
-                        let alt = &*iface.altsetting.wrapping_add(j as usize);
-                        debug!(
-                            "[USB] interface {} altsetting {} num_endpoints={}",
-                            i, j, alt.bNumEndpoints
-                        );
-                        for k in 0..alt.bNumEndpoints as isize {
-                            let ep = &*alt.endpoint.wrapping_add(k as usize);
-                            let addr = ep.bEndpointAddress;
-                            let dir = if addr & 0x80 != 0 { "IN" } else { "OUT" };
-                            let ep_type = match ep.bmAttributes & 0x03 {
-                                0 => "Control",
-                                1 => "Isochronous",
-                                2 => "Bulk",
-                                3 => "Interrupt",
-                                _ => "Unknown",
-                            };
-                            debug!(
-                                "[USB]   EP: 0x{:02X} dir={} type={} size={}",
-                                addr, dir, ep_type, ep.wMaxPacketSize
-                            );
-                            if dir == "OUT" && ep_type == "Bulk" {
-                                ep_out_addr = addr;
-                                ep_out_max_pkt = ep.wMaxPacketSize;
-                            }
-                            if dir == "IN" && ep_type == "Bulk" {
-                                ep_in_addr = addr;
-                            }
-                        }
-                    }
-                }
-                libusb1_sys::libusb_free_config_descriptor(config_ptr);
-            }
-
-            info!(
-                "[USB] EP_OUT=0x{:02X} wMaxPacketSize={} EP_IN=0x{:02X}",
-                ep_out_addr, ep_out_max_pkt, ep_in_addr
-            );
-
-            Ok(UsbDevice {
-                handle,
-                vid: desc.idVendor,
-                pid: desc.idProduct,
-                device_type: found_device_type,
-                ep_out: ep_out_addr,
-                ep_in: ep_in_addr,
-                ep_out_max_packet_size: ep_out_max_pkt,
-                timeout: Duration::from_millis(1000),
-            })
-        }
-    }
-
-    pub fn write(&mut self, data: &[u8]) -> Result<usize, String> {
-        if data.is_empty() {
-            unsafe {
-                let mut transferred: i32 = 0;
-                let ret = libusb1_sys::libusb_bulk_transfer(
-                    self.handle,
-                    self.ep_out,
-                    std::ptr::null_mut(),
-                    0,
-                    &mut transferred,
-                    self.timeout.as_millis() as u32,
-                );
-                if ret != 0 {
-                    return Err(format!("write ZLP err {}", ret));
-                }
-            }
-            return Ok(0);
-        }
-
-        unsafe {
-            let mut transferred: i32 = 0;
-            let ret = libusb1_sys::libusb_bulk_transfer(
-                self.handle,
-                self.ep_out,
-                data.as_ptr() as *mut u8,
-                data.len() as i32,
-                &mut transferred,
-                self.timeout.as_millis() as u32,
-            );
-            if ret != 0 {
-                return Err(format!(
-                    "write err {} (transferred={}/{})",
-                    ret,
-                    transferred,
-                    data.len()
-                ));
-            }
-            Ok(transferred as usize)
-        }
-    }
-
-    pub fn ep_out_max_packet_size(&self) -> u16 {
-        self.ep_out_max_packet_size
-    }
-
-    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
-        let mut total = 0usize;
-        let deadline = std::time::Instant::now() + self.timeout;
-        debug!(
-            "[USB READ] starting, buf_len={}, timeout={:?}ms",
-            buf.len(),
-            self.timeout.as_millis()
-        );
-        while total < buf.len() {
-            let remaining = buf.len() - total;
-            unsafe {
-                let mut transferred: i32 = 0;
-                let now = std::time::Instant::now();
-                if now >= deadline {
-                    debug!("[USB READ] deadline reached, breaking, total={}", total);
-                    break;
-                }
-                let ms_left = match (deadline - now).checked_sub(Duration::ZERO) {
-                    Some(d) => {
-                        let ms = d.as_millis() as u32;
-                        if ms == 0 { 1 } else { ms }
-                    }
-                    None => break,
-                };
-                debug!(
-                    "[USB READ] calling bulk_transfer, remaining={}, timeout={}ms",
-                    remaining, ms_left
-                );
-                let ret = libusb1_sys::libusb_bulk_transfer(
-                    self.handle,
-                    self.ep_in,
-                    buf[total..].as_mut_ptr(),
-                    remaining as i32,
-                    &mut transferred,
-                    ms_left,
-                );
-                debug!(
-                    "[USB READ] bulk_transfer returned: ret={}, transferred={}",
-                    ret, transferred
-                );
-                if ret != 0 && ret != LIBUSB_ERROR_TIMEOUT {
-                    debug!("[USB READ] error, returning");
-                    return Err(format!("read err {}", ret));
-                }
-                total += transferred as usize;
-                if transferred == 0 {
-                    if now < deadline {
-                        debug!("[USB READ] transferred=0, retrying in 10ms");
-                        std::thread::sleep(Duration::from_millis(10));
-                        continue;
-                    } else {
-                        debug!("[USB READ] transferred=0 at deadline, breaking");
-                        break;
-                    }
-                }
-            }
-        }
-        debug!("[USB READ] returning total={}", total);
-        Ok(total)
-    }
-
-    pub fn ctrl_transfer_in(
-        &mut self,
-        rt: u8,
-        r: u8,
-        v: u16,
-        i: u16,
-        len: u16,
-    ) -> Result<Vec<u8>, String> {
-        debug!(
-            "[CTRL] IN rt=0x{:02X} r=0x{:02X} v=0x{:04X} i=0x{:04X} len={}",
-            rt, r, v, i, len
-        );
-        unsafe {
-            let mut buf = vec![0u8; len as usize];
-            let ret = libusb1_sys::libusb_control_transfer(
-                self.handle, rt, r, v, i, buf.as_mut_ptr(), len,
-                self.timeout.as_millis() as u32,
-            );
-            if ret < 0 {
-                debug!("[CTRL] IN error: {}", ret);
-                Err(format!("ctrl_in {}", ret))
-            } else {
-                buf.truncate(ret as usize);
-                debug!(
-                    "[CTRL] IN OK: {:02X?}",
-                    &buf[..std::cmp::min(buf.len(), 16)]
-                );
-                Ok(buf)
-            }
-        }
-    }
-
-    pub fn clear_halt_in(&mut self) -> Result<(), String> {
-        unsafe {
-            let ret = libusb1_sys::libusb_clear_halt(self.handle, self.ep_in);
-            if ret != 0 {
-                Err(format!("clear_halt_in err {}", ret))
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    pub fn ctrl_transfer_out(
-        &mut self,
-        rt: u8,
-        r: u8,
-        v: u16,
-        i: u16,
-        data: &[u8],
-    ) -> Result<(), String> {
-        debug!(
-            "[CTRL] OUT rt=0x{:02X} r=0x{:02X} v=0x{:04X} i=0x{:04X} data={:02X?}",
-            rt, r, v, i, data
-        );
-        unsafe {
-            let ret = libusb1_sys::libusb_control_transfer(
-                self.handle, rt, r, v, i,
-                data.as_ptr() as *mut u8, data.len() as u16,
-                self.timeout.as_millis() as u32,
-            );
-            if ret < 0 {
-                debug!("[CTRL] OUT error: {}", ret);
-                Err(format!("ctrl_out {}", ret))
-            } else {
-                debug!("[CTRL] OUT OK: {} bytes sent", ret);
-                Ok(())
-            }
-        }
-    }
-
-    pub fn set_timeout(&mut self, duration: Duration) {
-        self.timeout = duration;
-    }
-
-    pub fn get_timeout(&self) -> Duration {
-        self.timeout
-    }
-
-    pub fn do_handshake(&mut self) -> Result<bool, String> {
-        let cmd = [0xA0u8, 0x0A, 0x50, 0x05];
-        let maxinsize = 512u16;
-
-        if !self.device_type.is_brom() {
-            info!(
-                "[USB] non-BROM PID (0x{:04X}), sending 0xA0 first",
-                self.pid
-            );
-            let _ = self.write(&[0xA0]);
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        for attempt in 0..10 {
-            if attempt > 0 {
-                info!(
-                    "[USB] handshake attempt {}/10, waiting 300ms...",
-                    attempt + 1
-                );
-                std::thread::sleep(Duration::from_millis(300));
-            }
-            let orig_timeout = self.timeout;
-            self.timeout = Duration::from_millis(50);
-            let mut drain = [0u8; 64];
-            loop {
-                match self.read(&mut drain) {
-                    Ok(n) if n > 0 => continue,
-                    _ => break,
-                }
-            }
-            self.timeout = orig_timeout;
-
-            let mut ok = true;
-            let mut i = 0;
-            while i < 4 {
-                if let Err(e) = self.write(&[cmd[i]]) {
-                    info!("[USB] handshake write error at byte {}: {}", i, e);
-                    ok = false;
-                    break;
-                }
-                let mut r = vec![0u8; maxinsize as usize];
-                match self.read(&mut r) {
-                    Ok(n) if n > 0 => {
-                        let last_byte = r[n - 1];
-                        if last_byte == !cmd[i] {
-                            i += 1;
-                        } else {
-                            info!(
-                                "[USB] handshake mismatch at byte {}: got 0x{:02X}, expected 0x{:02X}",
-                                i, last_byte, !cmd[i]
-                            );
-                            i = 0;
-                        }
-                    }
-                    _ => {
-                        info!("[USB] handshake read error at byte {}", i);
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if ok {
-                info!("Handshake OK");
-                return Ok(true);
-            }
-        }
-        Err("Handshake failed after 10 attempts".into())
-    }
-
-    pub fn close(&mut self) {
-        unsafe {
-            if !self.handle.is_null() {
-                libusb1_sys::libusb_release_interface(self.handle, 1);
-                libusb1_sys::libusb_release_interface(self.handle, 0);
-                libusb1_sys::libusb_close(self.handle);
-            }
-            self.handle = std::ptr::null_mut();
-        }
-    }
-}
-
-impl Drop for UsbDevice {
-    fn drop(&mut self) {
-        self.close();
-    }
-}
-```
+**USB Trace**：`usb_trace()` 函数记录 TX/RX 数据到 `usb_debug.log`，格式 `[HH:MM:SS.mmm] [TX/RX] [file:line] hex_data`。可通过 `set_usb_log_enabled()` 开关。
 
 ***
 
@@ -1207,815 +151,254 @@ impl Drop for UsbDevice {
 
 **路径**: `d:\test\ZybClient\src\preloader.rs`
 
-Preloader 通信模块，处理与设备的低级通信协议。
+BROM/Preloader 协议处理，核心通信层。
 
-```rust
-use crate::config::{ChipConfig, get_chip_config};
-use crate::usb::{UsbContext, UsbDevice};
-use log::{debug, info};
-use std::time::Duration;
+**关键方法**（完全对齐 Python mtkclient）：
 
-pub struct Preloader {
-    pub device: UsbDevice,
-    pub is_preloader_mode: bool,
-    pub hw_code: u16,
-    pub chip: Option<&'static ChipConfig>,
-}
+- `init()`：基础握手确认（`do_handshake`）
+- `echo_1byte(cmd)`：1 字节 echo 协议，对齐 Python `Port.echo()`，write + read_exact 1 字节比较
+- `sendcmd(cmd)`：发送 1 字节命令（调用 `echo_1byte`）
+- `get_hw_code()`：echo(0xFD) → 读 4 字节 big-endian → 取高 16 位为 HW code
+- `get_target_config()`：先获取 HW code 设置 chip，echo(0xD8) → 读 6 字节 → 解析 TargetConfig
+- `send_da()`：echo(0xD7) → write(addr/size/sig_len 大端) → rword() 读状态 → 64 字节分块上传数据 → ZLP → 读 checksum + status2
+- `jump_da()`：echo(0xD5) → write(addr 大端) → rdword() 验证 → rword() 读状态
+- `jump_bl()`：echo(0xD6) → rword() → 若 <=0xFF 再 rword()
+- `brom_register_access()`：echo(0xDA) → write(mode/addr/len 大端) → 读状态 → 读/写数据 → 读状态2
+- `read32_brom()`：封装 `brom_register_access` 读 BROM 内存
+- `rbyte(n)`：读 n 字节
+- `rword()`：读 2 字节 big-endian u16
+- `rdword()`：读 4 字节 big-endian u32
 
-impl Preloader {
-    pub fn new(device: UsbDevice) -> Self {
-        Preloader {
-            device,
-            is_preloader_mode: false,
-            hw_code: 0,
-            chip: None,
-        }
-    }
-
-    fn ensure_chip(&self) -> Result<&'static ChipConfig, String> {
-        self.chip.ok_or_else(|| "未识别的处理器型号".to_string())
-    }
-
-    fn setreg_disablewatchdogtimer(&mut self) -> Result<bool, String> {
-        let chip = self.ensure_chip()?;
-        if !self.echo(&[0xD4])? {
-            return Ok(false);
-        }
-        if !self.echo(&chip.watchdog.to_be_bytes())? {
-            return Ok(false);
-        }
-        if !self.echo(&1u32.to_be_bytes())? {
-            return Ok(false);
-        }
-        let _ = self.rword()?;
-        if !self.echo(&0x22000064u32.to_be_bytes())? {
-            return Ok(false);
-        }
-        let _ = self.rword()?;
-        Ok(true)
-    }
-
-    fn rword(&mut self) -> Result<u16, String> {
-        let mut buf = [0u8; 2];
-        self.device.read(&mut buf).map(|_| u16::from_be_bytes(buf))
-    }
-
-    fn rdword(&mut self) -> Result<u32, String> {
-        let mut buf = [0u8; 4];
-        self.device.read(&mut buf).map(|_| u32::from_be_bytes(buf))
-    }
-
-    fn rbyte(&mut self, len: usize) -> Result<Vec<u8>, String> {
-        let mut buf = vec![0u8; len];
-        let n = self.device.read(&mut buf)?;
-        buf.truncate(n);
-        Ok(buf)
-    }
-
-    fn echo(&mut self, data: &[u8]) -> Result<bool, String> {
-        let orig_timeout = self.device.get_timeout();
-        self.device.set_timeout(Duration::from_millis(100));
-
-        let result = match self.device.write(data) {
-            Ok(_) => {
-                let mut buf = vec![0u8; data.len()];
-                match self.device.read(&mut buf) {
-                    Ok(n) if n == data.len() => buf == data,
-                    _ => false,
-                }
-            }
-            Err(_) => false,
-        };
-
-        self.device.set_timeout(orig_timeout);
-        Ok(result)
-    }
-
-    pub fn echo_debug(&mut self, data: &[u8], tag: &str) -> Result<bool, String> {
-        debug!("[ECHO:{}] sending {} bytes: {:02X?}", tag, data.len(), data);
-        let result = self.echo(data);
-        match &result {
-            Ok(true) => debug!("[ECHO:{}] OK, data={:02X?}", tag, data),
-            Ok(false) => debug!("[ECHO:{}] MISMATCH or short read", tag),
-            Err(e) => debug!("[ECHO:{}] ERR: {}", tag, e),
-        }
-        result
-    }
-
-    pub fn get_hw_code(&mut self) -> Result<u16, String> {
-        if !self.echo(&[0xFD])? {
-            return Err("HW Code echo failed".into());
-        }
-        let val = self.rdword()?;
-        Ok(((val >> 16) & 0xFFFF) as u16)
-    }
-
-    #[allow(dead_code)]
-    pub fn read32_brom(&mut self, addr: u32, dwords: usize) -> Result<Vec<u32>, String> {
-        if !self.echo(&[0xD1])? {
-            return Err("read32: echo CMD failed".to_string());
-        }
-        if !self.echo(&addr.to_be_bytes())? {
-            return Err("read32: echo addr failed".to_string());
-        }
-        if !self.echo(&(dwords as u32).to_be_bytes())? {
-            return Err("read32: echo dwords failed".to_string());
-        }
-        let _status = self.rword()?;
-
-        const PACKET_SIZE: usize = 512;
-        let total_bytes = dwords * 4;
-        let mut all_data = Vec::with_capacity(total_bytes);
-        let mut remaining = total_bytes;
-
-        while remaining > 0 {
-            let chunk_size = if remaining > PACKET_SIZE {
-                PACKET_SIZE
-            } else {
-                remaining
-            };
-            let mut buf = vec![0u8; chunk_size];
-
-            let orig_timeout = self.device.get_timeout();
-            self.device
-                .set_timeout(std::time::Duration::from_millis(1000));
-            let bytes_read = self
-                .device
-                .read(&mut buf)
-                .map_err(|e| format!("read32: bulk read 失败: {}", e))?;
-            self.device.set_timeout(orig_timeout);
-
-            if bytes_read == 0 {
-                return Err("read32: 读取 0 字节，设备无响应".to_string());
-            }
-
-            all_data.extend_from_slice(&buf[..bytes_read]);
-            remaining = remaining.saturating_sub(bytes_read);
-        }
-
-        let mut _status2 = [0u8; 2];
-        self.device
-            .read(&mut _status2)
-            .map_err(|e| format!("read32: status2 读取失败: {}", e))?;
-
-        if all_data.len() < total_bytes {
-            return Err(format!(
-                "read32: 期望 {} 字节，实际 {} 字节",
-                total_bytes,
-                all_data.len()
-            ));
-        }
-
-        let result: Vec<u32> = all_data
-            .chunks_exact(4)
-            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect();
-
-        Ok(result)
-    }
-
-    pub fn send_da(
-        &mut self,
-        address: u32,
-        _size: u32,
-        sig_len: u32,
-        dadata: &[u8],
-    ) -> Result<bool, String> {
-        let data_len = dadata.len() - sig_len as usize;
-        let data = &dadata[..data_len];
-        if !self.echo(&[0xD7])? {
-            return Err("SEND_DA failed".into());
-        }
-        if !self.echo(&address.to_be_bytes())? {
-            return Err("addr failed".into());
-        }
-        if !self.echo(&(data_len as u32).to_be_bytes())? {
-            return Err("size failed".into());
-        }
-        if !self.echo(&sig_len.to_be_bytes())? {
-            return Err("sig_len failed".into());
-        }
-        let status = self.rword()?;
-        if status <= 0xFF {
-            self.upload_data(data)?;
-            return Ok(true);
-        }
-        Err(format!("DA status: 0x{:04X}", status))
-    }
-
-    fn upload_data(&mut self, data: &[u8]) -> Result<(), String> {
-        let max_pkt = self.device.ep_out_max_packet_size() as usize;
-        let mut pos = 0;
-        while pos < data.len() {
-            let sz = std::cmp::min(max_pkt, data.len() - pos);
-            self.device.write(&data[pos..pos + sz])?;
-            pos += sz;
-        }
-        self.device.write(&[])?;
-        std::thread::sleep(Duration::from_millis(35));
-        let _ = self.rword()?;
-        let status = self.rword()?;
-        if status <= 0xFF {
-            Ok(())
-        } else {
-            Err(format!("upload: 0x{:04X}", status))
-        }
-    }
-
-    pub fn jump_da(&mut self, addr: u32) -> Result<bool, String> {
-        if !self.echo(&[0xD5])? {
-            return Ok(false);
-        }
-        self.device.write(&addr.to_be_bytes())?;
-        if self.rdword()? == addr && self.rword()? == 0 {
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    pub fn jump_bl(&mut self) -> Result<bool, String> {
-        if !self.echo(&[0xD6])? {
-            return Ok(false);
-        }
-        let status = self.rword()?;
-        if status <= 0xFF {
-            let _status2 = self.rword()?;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    pub fn brom_register_access(
-        &mut self,
-        address: u32,
-        length: u32,
-        data: Option<&[u8]>,
-        check_status: bool,
-    ) -> Result<Option<Vec<u8>>, String> {
-        let mode: u32 = if data.is_some() { 1 } else { 0 };
-        let mut retries = 3;
-        let mut ok = false;
-        while retries > 0 {
-            if self.echo(&[0xDA])? {
-                ok = true;
-                break;
-            }
-            retries -= 1;
-            if retries > 0 {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
-        if !ok {
-            return Err("echo DA failed after retries".into());
-        }
-        if !self.echo(&mode.to_be_bytes())? {
-            return Err("mode failed".into());
-        }
-        if !self.echo(&address.to_be_bytes())? {
-            return Err("addr failed".into());
-        }
-        if !self.echo(&length.to_be_bytes())? {
-            return Err("len failed".into());
-        }
-        let mut st = [0u8; 2];
-        self.device.read(&mut st)?;
-        debug!("brom_reg status1: {:02X?}", st);
-        if st != [0, 0] {
-            return Err("status err".into());
-        }
-        if let Some(wdata) = data {
-            self.device.write(wdata)?;
-            if check_status {
-                let mut st2 = [0u8; 2];
-                self.device.read(&mut st2)?;
-                debug!("brom_reg status3: {:02X?}", st2);
-                if st2 != [0, 0] {
-                    return Err("status2 err".into());
-                }
-            }
-        } else {
-            let rdata = self.rbyte(length as usize)?;
-            debug!("brom_reg read data: {:02X?}", rdata);
-            let mut st2 = [0u8; 2];
-            self.device.read(&mut st2)?;
-            debug!("brom_reg status2: {:02X?}", st2);
-            return Ok(Some(rdata));
-        }
-        Ok(None)
-    }
-
-    pub fn get_blver(&mut self) -> Result<u8, String> {
-        self.device.write(&[0xFE])?;
-        let mut res = [0u8; 1];
-        self.device.read(&mut res)?;
-        Ok(res[0])
-    }
-
-    #[allow(dead_code)]
-    pub fn reopen_device(&mut self, context: &UsbContext) -> Result<(), String> {
-        info!("等待设备重枚举...");
-        self.device.close();
-        std::thread::sleep(Duration::from_millis(500));
-
-        let max_retries = 20;
-        for i in 0..max_retries {
-            match UsbDevice::new(context) {
-                Ok(dev) => {
-                    info!(
-                        "设备重新连接成功 (VID: {:04X}, PID: {:04X})",
-                        dev.vid, dev.pid
-                    );
-                    self.device = dev;
-                    self.is_preloader_mode = self.device.pid == 0x2000;
-                    if !self.device.do_handshake()? {
-                        if i < max_retries - 1 {
-                            std::thread::sleep(Duration::from_millis(200));
-                            continue;
-                        }
-                        return Err("重枚举后握手失败".into());
-                    }
-                    self.hw_code = self.get_hw_code()?;
-                    self.chip = get_chip_config(self.hw_code);
-                    return Ok(());
-                }
-                Err(_) => {
-                    if i < max_retries - 1 {
-                        std::thread::sleep(Duration::from_millis(200));
-                    }
-                }
-            }
-        }
-        Err("设备重枚举超时".into())
-    }
-
-    pub fn init(&mut self) -> Result<bool, String> {
-        if !self.device.do_handshake()? {
-            return Err("Handshake failed".into());
-        }
-        self.hw_code = self.get_hw_code()?;
-        self.chip = get_chip_config(self.hw_code);
-        info!("HW Code: 0x{:04X}", self.hw_code);
-        if let Some(chip) = self.chip {
-            info!("处理器: {} ({})", chip.name, chip.description);
-        }
-        info!("Disabling watchdog...");
-        self.setreg_disablewatchdogtimer()?;
-        let blver = self.get_blver()?;
-        self.is_preloader_mode = blver != 0xFE;
-        info!("Init done, BROM={}", !self.is_preloader_mode);
-
-        Ok(true)
-    }
-
-    pub fn get_target_config(&mut self) -> Result<crate::config::TargetConfig, String> {
-        if !self.echo(&[0xD8])? {
-            return Err("GET_TARGET_CONFIG echo 失败".into());
-        }
-        let data = self.rbyte(6)?;
-        if data.len() < 6 {
-            return Err(format!(
-                "GET_TARGET_CONFIG 返回数据不足: {} 字节",
-                data.len()
-            ));
-        }
-        let raw = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-        let _status = u16::from_be_bytes([data[4], data[5]]);
-
-        let cfg = crate::config::TargetConfig::from_raw(raw);
-        Ok(cfg)
-    }
-}
-
-#[path = "kamakiri2.rs"]
-mod kamakiri2;
-```
+注意：所有参数发送使用 `device.write()` 而非 echo，对齐已验证的工作版本。
 
 ***
 
-### 7. src/driver.rs
+### 7. src/kamakiri2.rs
+
+**路径**: `d:\test\ZybClient\src\kamakiri2.rs`
+
+Kamakiri2 漏洞利用实现，作为 `Preloader` 的 impl 扩展模块（`#[path = "kamakiri2.rs"] mod kamakiri2` 在 preloader.rs 中引入）。
+
+**核心功能**：
+- `kamakiri2_step()`：通过 ctrl_transfer_out(0x21, 0x20) + ctrl_transfer_in 执行 exploit 步骤
+- `da_setup()`：brom_register_access + read32_brom + 3 步 kamakiri2
+- `da_read()`：通过 kamakiri2 漏洞读 BROM 内存（addr<0x40 和 addr>=0x40 不同路径）
+- `da_write()`：通过 kamakiri2 漏洞写 BROM 内存
+- `inject_payload()`：完整 payload 注入流程：获取 linecode → 读 ptr_send → da_write payload → 等待 ack (0xA1A2A3A4)
+- `run_kamakiri2()`：完整 exploit 流程，返回 preloader 数据和文件名
+- `run_payload()` / `run_payload_from_data()`：通用 payload 注入
+- `dump_preloader_from_ram()`：从 RAM 流式 dump preloader（read32_brom 循环）
+- `bypass_security()`：注入 patcher payload 绕过 SBC/SLA/DAA
+- `run_dump_brom_payload()`：通过 dump payload 提取 BROM
+- `dump_preloader_payload()`：通过 preloader dump payload 流式提取 preloader，支持 quiet 模式，自动从 MTK_BLOADER_INFO 提取文件名
+- `dump_brom()`：等待并接收 BROM 数据（分块读，显示进度）
+
+**ptr_send_addr/ptr_da_bra**：优先使用 ChipConfig 中的 `ptr_send_addr`/`ptr_da_bra`，否则回退到 `send_ptr.1`/`brom_register_access.1`。
+
+***
+
+### 8. src/da_xflash.rs
+
+**路径**: `d:\test\ZybClient\src\da_xflash.rs`
+
+XFlash 协议实现，DA 加载和分区操作核心。
+
+**XFlash 命令常量**：
+- CMD_MAGIC (0xFEEEEEEF)、CMD_SYNC_SIGNAL (0x434E5953)
+- CMD_SETUP_ENVIRONMENT (0x010100)、CMD_SETUP_HW_INIT_PARAMS (0x010101)
+- CMD_WRITE_DATA (0x010004)、CMD_FORMAT (0x010003)、CMD_READ_DATA (0x010005)
+- SET_META_BOOT_MODE (0x020006)
+
+**DAXFlash 结构体**：
+- `new()`：创建实例
+- `rword()/rdword()`：读 2/4 字节 little-endian（XFlash 协议用）
+- `load_preloader_emi()`：从 preloader 文件提取 EMI 数据
+- `extract_emi()`：查找 MTK_BLOADER_INFO_v 标记，解析 EMI 版本和数据
+- `xflash_sync()`：发送 SYNC_SIGNAL，不读响应
+- `setup_env()`：设置环境（da_log_level、log_channel、system_os、ufs_provision）
+- `setup_hw_init()`：初始化硬件参数
+- `upload_data()`：分块上传数据（64 字节块，每 0x2000 字节发 ZLP）
+- `send_emi()`：发送 EMI 数据初始化 DRAM
+- `boot_to()`：上传并跳转到指定地址（CMD_BOOT_TO → send_data → 等）
+- `upload_da1()`：上传 Stage1 DA，patch DA1，jump_da，XFlash 同步
+- `upload_da2()`：上传 Stage2 DA，patch DA2，boot_to
+- `upload_da()`：完整 DA 加载流程（DA1 → expire_date → reset_key → checksum_level → connection_agent → EMI → DA2 → SLA → reinit → extensions）
+- `send_devctrl()`：发送设备控制命令（DEVICE_CTRL → 具体命令 → 参数/响应）
+- `status()`：读 XFlash 状态（12 字节头 + 数据）
+- `xread_data()`：读 XFlash 数据包
+- `reinit()`：获取 RAM/芯片/EMMC/DA 版本/Random ID 信息
+- `readflash_data()`：读 flash 数据（READ_DATA → send_param → xread 循环 → ack）
+- `ack()`：发送 ack 包（3 字节 header + 4 字节 0）
+- `get_emmc_info()`：获取 EMMC Boot1/Boot2 大小
+- `generate_da_extensions()`：生成 DA extensions 二进制（调用 da_extension.rs）
+- `patch_vbmeta()`：修补 vbmeta（占位实现）
+- `close_device()`：关闭设备，可选发送 jump_bl 重启
+
+**SEJ 加密**（seccfg 处理）：
+- `sej_sec_cfg_sw_decrypt/encrypt`：AES-256-CBC 软件模式
+- `sej_sec_cfg_hw_v3_encrypt/decrypt`：AES-128-CBC 硬件模式 V3/V4
+- `sej_sec_cfg_hw_encrypt/decrypt`：AES-128-CBC 硬件模式 V2
+- `generate_custom_seed_iv()`：生成 V3/V4 硬件模式 IV
+
+**SecCfgV4**：解析和修改 V4 seccfg（magic=0x4D4D4D4D，SHA256 哈希 + AES 加密）
+**SecCfgV3**：解析和修改 V3 seccfg（info_header + 加密数据段 + endflag）
+
+**离线模式**：
+- `detect_seccfg_version()`：自动检测 V3/V4
+- `seccfg_unlock_offline()`：离线解锁 seccfg 文件
+- `seccfg_lock_offline()`：离线锁定 seccfg 文件
+
+**DA 文件解析**：
+- `parse_da_header()`：解析 AllInOne DA 文件格式，匹配 HW Code
+- `parse_da_regions()`：解析 DA region 信息
+
+**GPT 解析**：
+- `parse_gpt_from_data()`：从数据解析 GPT 分区表（自动检测偏移）
+- `generate_scatter_from_gpt()`：生成 SP Flash Tool scatter 文件
+- `read_gpt_from_file()`：从文件分析 GPT
+
+***
+
+### 9. src/da_extension.rs
+
+**路径**: `d:\test\ZybClient\src\da_extension.rs`
+
+DA 修补和扩展生成模块，作为 `DAXFlash` 的 impl 扩展。
+
+**DA 修补**：
+- `find_binary()`：搜索二进制模式（支持 `.` 0x2E 作为单字节通配符）
+- `apply_patches()`：应用修补补丁
+- `patch_da1()`：修补 DA1（oppo security、mt6739 c30、ram blacklist、seclib_sec_usbdl_enabled、hash_check3、version check、hash_check、hash_check2）
+- `patch_da2()`：修补 DA2（通用 + huawei/oppo security、hash binding/check、security check、anti-rollback、SBC、register read/write、write not allowed）
+
+**DA Extensions 生成**：
+- `generate_da_extensions()`：从 DA2 中查找关键函数地址（register_devctrl、mmc_get_card、mmc_set_part_config、mmc_rpmb_send_command、g_ufs_hba、ufshcd_get_free_tag、ufshcd_queuecommand），填充到 da_x.bin 模板的占位符（\x11\x11\x11\x11 等）
+- `find_binary_wildcard()`：带通配符的字节搜索
+
+**扩展功能**：
+- `custom_readmem()`：通过 DA2 读物理内存（CUSTOM_READMEM 0x0F0001，最大 0x10000 字节/块）
+- `set_meta()`：设置 meta boot 模式（usb/off）
+- `enable_adb_and_reboot()`：在 DA 模式下开启 ADB 并重启
+
+***
+
+### 10. src/da_partition.rs
+
+**路径**: `d:\test\ZybClient\src\da_partition.rs`
+
+分区操作模块，作为 `DAXFlash` 的 impl 扩展。
+
+**GPT 处理**：
+- `GptInfo`：GPT 分区表信息结构（base、num_part_entries、part_entry_size、part_entry_start_lba、first_usable_lba）
+- `parse()`：从 GPT 数据解析
+- `for_each_partition()`：遍历所有分区，调用回调
+
+**分区操作**：
+- `read_gpt()`：读取 GPT 分区表（USB 版本），保存原始数据到 `gpt_full.bin`
+- `find_partition_addr()`：查找分区的物理地址和大小
+- `read_partition()`：读取分区数据到文件（自动读 GPT → 找地址 → readflash_data → 写入文件）
+- `write_partition()`：写入文件到分区（cmd_write_data → 循环分包 [0x0(4B)][checksum(4B)][data] → status → CC_OPTIONAL_DOWNLOAD_ACT）
+- `write_partition_with_verify()`：写入并校验
+- `erase_partition()`：擦除分区（FORMAT 命令 → send_param → 等待 STATUS_COMPLETE 0x40040005）
+- `get_packet_length()`：获取写包长度
+- `cmd_write_data()`：发送写命令
+
+**Bootloader 操作**：
+- `unlock_bootloader()`：解锁 Bootloader（读 seccfg → 解析 V4/V3 → 修改 lock_state → 重新签名 → 写回）
+- `lock_bootloader()`：锁定 Bootloader
+
+**SecCfgV4/SecCfgV3**：简化的 seccfg 结构体（与 da_xflash.rs 中的完整版不同，用于在线模式）
+
+***
+
+### 11. src/commands.rs
+
+**路径**: `d:\test\ZybClient\src\commands.rs`
+
+命令执行调度模块。
+
+**单命令执行**：
+- `handle_command()`：完整流程（BROM 安全绕过 → auto dump preloader → 加载 EMI → upload_da → 执行命令 → jump_bl 复位）
+- `execute_single_command()`：执行单个 DA 命令（printgpt/read/write/erase/vbmeta/reset/unlock/lock/enable-adb-on-da）
+
+**批量命令执行**：
+- `handle_commands()`：批量执行多个命令，保持 DA 会话（流程同 handle_command，但循环执行 commands）
+
+**具体命令实现**：
+- `cmd_printgpt()`：读 GPT → 显示 EMMC 信息 → 生成 scatter.txt → 可选保存 gpt_debug.bin
+- `cmd_dumpbrom()`：通过 dump payload 提取 BROM
+- `cmd_read()`：读分区到文件
+- `cmd_write()`：写文件到分区（可选校验）
+- `cmd_erase()`：擦除分区
+- `cmd_vbmeta()`：修补 vbmeta
+- `cmd_reset()`：重启设备（jump_bl）
+- `cmd_unlock()` / `cmd_lock()`：解锁/锁定 Bootloader
+- `print_help()`：打印帮助信息
+
+***
+
+### 12. src/driver.rs
 
 **路径**: `d:\test\ZybClient\src\driver.rs`
 
-驱动安装模块，用于自动安装 WinUSB 驱动。
+Windows 驱动安装模块。
 
-```rust
-use crate::paths::exe_relative_path;
-use log::{debug, info};
-use std::process::Command;
-use std::thread::sleep;
-use std::time::Duration;
-
-macro_rules! debug_log {
-    ($debug:expr, $($arg:tt)*) => {
-        if $debug {
-            debug!($($arg)*);
-        }
-    };
-}
-
-pub fn install_winusb_driver(debug: bool, force: bool) -> Result<(), String> {
-    debug_log!(debug, "[DRV] install_winusb_driver start");
-
-    if !force && check_driver() {
-        info!("WinUSB 驱动已就绪");
-        info!("使用 --force 可重新安装");
-        return Ok(());
-    }
-
-    if let Some(com_port) = find_mediatek_com_port(debug) {
-        info!("找到 MediaTek USB Port: {}", com_port);
-        info!("正在关闭 Watchdog 稳定端口...");
-        disable_watchdog_serial(&com_port, debug)?;
-        info!("Watchdog 已关闭，等待端口稳定...");
-        sleep(Duration::from_secs(2));
-    } else {
-        info!("未检测到 MediaTek COM 端口，跳过 Watchdog 关闭");
-    }
-
-    info!("安装 MediaTek BROM WinUSB 驱动...");
-
-    install_driver_inf(debug)?;
-    info!("  驱动已安装");
-
-    install_certificates(debug)?;
-    info!("  证书已导入");
-
-    info!("");
-    info!("安装完成");
-    info!("");
-    info!("重新连接设备：");
-    info!("  1. 关机");
-    info!("  2. 按住音量加 + 音量减，插入 USB");
-    info!("  3. 等待 BROM 设备识别");
-
-    Ok(())
-}
-
-fn find_mediatek_com_port(debug: bool) -> Option<String> {
-    debug_log!(debug, "[DRV] searching for MediaTek COM port");
-    let ports = serialport::available_ports().ok()?;
-
-    for port in &ports {
-        debug_log!(debug, "[DRV] checking port: {}", port.port_name);
-        if port.port_name.to_lowercase().contains("mediatek") {
-            return Some(port.port_name.clone());
-        }
-    }
-
-    info!("serialport 枚举未找到 MediaTek 端口，尝试 wmic...");
-    if let Ok(output) = Command::new("wmic")
-        .args(["path", "Win32_SerialPort", "get", "DeviceID,Name"])
-        .output()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if line.to_lowercase().contains("mediatek") {
-                if let Some(start) = line.find("COM") {
-                    if let Some(end) = line[start..].find(|c: char| !c.is_alphanumeric()) {
-                        return Some(line[start..start + end].to_string());
-                    } else {
-                        return Some(line[start..].to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
-
-fn disable_watchdog_serial(port_name: &str, debug: bool) -> Result<(), String> {
-    debug_log!(
-        debug,
-        "[DRV] opening serial port {} to disable watchdog",
-        port_name
-    );
-
-    let mut port = serialport::new(port_name, 115200)
-        .timeout(Duration::from_millis(1000))
-        .open()
-        .map_err(|e| format!("无法打开串口 {}: {}", port_name, e))?;
-
-    let watchdog_disable_cmd: &[u8] = &[0xA0];
-    port.write(watchdog_disable_cmd)
-        .map_err(|e| format!("发送 Watchdog 关闭命令失败: {}", e))?;
-
-    let mut buf = [0u8; 64];
-    let _ = port.read(&mut buf);
-
-    debug_log!(debug, "[DRV] watchdog disable command sent successfully");
-    Ok(())
-}
-
-fn install_driver_inf(debug: bool) -> Result<(), String> {
-    let inf_path = exe_relative_path("usb_driver/MediaTek_USB_Port.inf");
-
-    if !inf_path.exists() {
-        return Err(format!("INF file not found: {:?}", inf_path));
-    }
-
-    let inf_str = inf_path.to_str().unwrap().replace('/', "\\");
-    debug_log!(debug, "[DRV] installing INF: {}", inf_str);
-
-    let status = Command::new("pnputil")
-        .args(["/add-driver", &inf_str, "/install"])
-        .status()
-        .map_err(|e| format!("pnputil failed: {}", e))?;
-
-    if !status.success() {
-        return Err("pnputil installation failed".to_string());
-    }
-
-    debug_log!(debug, "[DRV] pnputil success");
-    Ok(())
-}
-
-fn install_certificates(debug: bool) -> Result<(), String> {
-    let cat_path = exe_relative_path("usb_driver/MediaTek_USB_Port.cat");
-
-    if !cat_path.exists() {
-        return Err(format!("Certificate file not found: {:?}", cat_path));
-    }
-
-    let cat_str = cat_path.to_str().unwrap();
-    debug_log!(debug, "[DRV] importing certificate: {}", cat_str);
-
-    let _ = Command::new("certutil")
-        .args(["-add-store", "Root", cat_str])
-        .status();
-    let _ = Command::new("certutil")
-        .args(["-add-store", "TrustedPublisher", cat_str])
-        .status();
-
-    Ok(())
-}
-
-pub fn check_driver() -> bool {
-    let output = Command::new("pnputil").args(["/enum-drivers"]).output();
-
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout.contains("MediaTek") && (stdout.contains("WinUSB") || stdout.contains("oem"))
-        }
-        Err(_) => false,
-    }
-}
-```
+**功能**：
+- `install_winusb_driver()`：完整驱动安装流程（查找 MediaTek COM 端口 → 关闭 Watchdog → pnputil 安装 INF → certutil 导入证书）
+- `find_mediatek_com_port()`：通过 serialport 和 wmic 查找 MediaTek COM 端口
+- `disable_watchdog_serial()`：通过串口发送 0xA0 关闭 Watchdog
+- `install_driver_inf()`：pnputil 安装 INF 文件
+- `install_certificates()`：certutil 导入 Root 和 TrustedPublisher 证书
+- `check_driver()`：检查 WinUSB 驱动是否已安装（枚举 pnputil 驱动）
 
 ***
 
-### 8. src/usb\_diag.rs
+### 13. src/usb_diag.rs
 
 **路径**: `d:\test\ZybClient\src\usb_diag.rs`
 
-USB 诊断模块，用于检测设备和驱动状态。
+USB 诊断模块。
 
-```rust
-use crate::config::DeviceType;
-use log::{debug, info, warn};
+**UsbDiagState**：NoDevice / WrongDriver / Preloader / Brom / EndpointError / HandshakeFailed
 
-/// USB 设备状态
-#[derive(Debug, Clone, PartialEq)]
-pub enum UsbDiagState {
-    /// 未检测到任何 MediaTek 设备
-    NoDevice,
-    /// 检测到设备但驱动异常
-    WrongDriver,
-    /// 检测到 Preloader 模式
-    Preloader,
-    /// 检测到 BROM 模式
-    Brom,
-    /// 端点通信异常
-    EndpointError,
-    /// 设备连接但握手失败
-    HandshakeFailed,
-}
-
-/// 扫描系统中的 MediaTek 设备
-pub fn scan_mediatek_devices() -> Vec<(u16, u16, bool, String)> {
-    let mut results = Vec::new();
-    unsafe {
-        let mut ctx: *mut libusb1_sys::libusb_context = std::ptr::null_mut();
-        if libusb1_sys::libusb_init(&mut ctx) != 0 {
-            warn!("[USB诊断] libusb_init 失败");
-            return results;
-        }
-
-        let mut dev_list: *const *mut libusb1_sys::libusb_device = std::ptr::null_mut();
-        let dev_count = libusb1_sys::libusb_get_device_list(ctx, &mut dev_list);
-        if dev_count < 0 {
-            warn!("[USB诊断] get_device_list 失败: {}", dev_count);
-            libusb1_sys::libusb_exit(ctx);
-            return results;
-        }
-
-        for i in 0..dev_count as isize {
-            let dev = *dev_list.wrapping_offset(i);
-            let mut desc: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
-            if libusb1_sys::libusb_get_device_descriptor(dev, &mut desc) != 0 {
-                continue;
-            }
-
-            let vid = desc.idVendor;
-            let pid = desc.idProduct;
-
-            // 只关心中 MediaTek 设备
-            if vid != 0x0E8D {
-                continue;
-            }
-
-            let dev_config = DeviceType::from_vid_pid(vid, pid);
-            let is_brom = dev_config.is_brom();
-
-            // 尝试打开设备获取驱动信息
-            let mut handle: *mut libusb1_sys::libusb_device_handle = std::ptr::null_mut();
-            let driver_info = if libusb1_sys::libusb_open(dev, &mut handle) == 0 {
-                let claim_ret = libusb1_sys::libusb_claim_interface(handle, 1);
-                let info = if claim_ret == 0 {
-                    libusb1_sys::libusb_release_interface(handle, 1);
-                    "WinUSB/libusb 正常".to_string()
-                } else if claim_ret == -12 {
-                    "接口未找到".to_string()
-                } else {
-                    format!("claim_interface 失败: {}", claim_ret)
-                };
-                libusb1_sys::libusb_close(handle);
-                info
-            } else {
-                "设备被其他驱动占用".to_string()
-            };
-
-            results.push((vid, pid, is_brom, driver_info));
-        }
-
-        libusb1_sys::libusb_free_device_list(dev_list, 1);
-        libusb1_sys::libusb_exit(ctx);
-    }
-    results
-}
-
-/// 诊断 USB 连接状态
-pub fn diagnose_connection() -> UsbDiagState {
-    let devices = scan_mediatek_devices();
-    if devices.is_empty() {
-        return UsbDiagState::NoDevice;
-    }
-    for (vid, pid, is_brom, driver_info) in &devices {
-        debug!("[USB诊断] VID={:04X} PID={:04X} BROM={} 驱动={}", vid, pid, is_brom, driver_info);
-        if driver_info.contains("被其他驱动占用") {
-            return UsbDiagState::WrongDriver;
-        }
-        if !is_brom {
-            return UsbDiagState::Preloader;
-        }
-        return UsbDiagState::Brom;
-    }
-    UsbDiagState::NoDevice
-}
-
-/// 打印连接提示
-pub fn print_connection_hint() {
-    info!("");
-    info!("设备连接提示:");
-    info!("  1. 确保设备已关机");
-    info!("  2. BROM 模式: 按住 音量+ + 音量减，插入 USB");
-    info!("  3. Preloader 模式: 不要按任何键，直接插入 USB");
-    info!("  4. 如果已连接但无响应，按住电源键 10 秒重置");
-    info!("  5. 运行 'check-driver' 确认 WinUSB 驱动已安装");
-    info!("");
-}
-
-/// 枚举 USB 设备
-pub fn enumerate_usb_devices() {
-    info!("扫描 USB 设备...");
-    unsafe {
-        let mut ctx: *mut libusb1_sys::libusb_context = std::ptr::null_mut();
-        if libusb1_sys::libusb_init(&mut ctx) != 0 {
-            info!("libusb 初始化失败");
-            return;
-        }
-
-        let mut dev_list: *const *mut libusb1_sys::libusb_device = std::ptr::null_mut();
-        let dev_count = libusb1_sys::libusb_get_device_list(ctx, &mut dev_list);
-        if dev_count < 0 {
-            info!("获取设备列表失败: {}", dev_count);
-            libusb1_sys::libusb_exit(ctx);
-            return;
-        }
-
-        info!("找到 {} 个 USB 设备", dev_count);
-
-        for i in 0..dev_count as isize {
-            let dev = *dev_list.wrapping_offset(i);
-            let mut desc: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
-            if libusb1_sys::libusb_get_device_descriptor(dev, &mut desc) != 0 {
-                continue;
-            }
-
-            let vid = desc.idVendor;
-            let pid = desc.idProduct;
-
-            let is_mtk = vid == 0x0E8D;
-            let dev_config = DeviceType::from_vid_pid(vid, pid);
-
-            let mode = if is_mtk {
-                if dev_config.is_brom() {
-                    "BROM"
-                } else if dev_config.is_preloader() {
-                    "Preloader"
-                } else {
-                    "未知模式"
-                }
-            } else {
-                ""
-            };
-
-            if is_mtk {
-                info!("  [MediaTek] Bus {} Device {}: VID={:04X} PID={:04X} 模式={}",
-                    libusb1_sys::libusb_get_bus_number(dev),
-                    libusb1_sys::libusb_get_device_address(dev),
-                    vid, pid, mode);
-            } else {
-                debug!("  Bus {} Device {}: VID={:04X} PID={:04X}",
-                    libusb1_sys::libusb_get_bus_number(dev),
-                    libusb1_sys::libusb_get_device_address(dev),
-                    vid, pid);
-            }
-        }
-
-        libusb1_sys::libusb_free_device_list(dev_list, 1);
-        libusb1_sys::libusb_exit(ctx);
-    }
-}
-
-/// 综合诊断报告
-pub fn diagnose_and_report() {
-    info!("=== USB 连接诊断 ===");
-    info!("");
-
-    let devices = scan_mediatek_devices();
-    if devices.is_empty() {
-        warn!("未检测到任何 MediaTek USB 设备");
-        info!("");
-        info!("请检查:");
-        info!("  1. USB 线缆是否连接良好");
-        info!("  2. 设备是否已关机");
-        info!("  3. 是否已进入 BROM 模式");
-        return;
-    }
-
-    info!("检测到 {} 个 MediaTek 设备:", devices.len());
-    for (vid, pid, is_brom, driver_info) in &devices {
-        let mode = if *is_brom { "BROM" } else { "Preloader" };
-        info!("  VID={:04X} PID={:04X} 模式={} 驱动={}", vid, pid, mode, driver_info);
-    }
-    info!("");
-
-    let mut has_wrong_driver = false;
-    let mut has_correct_driver = false;
-    for (_, _, _, driver_info) in &devices {
-        if driver_info.contains("WinUSB/libusb 正常") {
-            has_correct_driver = true;
-        } else {
-            has_wrong_driver = true;
-        }
-    }
-
-    if has_correct_driver && !has_wrong_driver {
-        info!("驱动状态: WinUSB/libusb 正常");
-    } else if has_wrong_driver {
-        warn!("驱动状态异常: 设备未安装 WinUSB 驱动");
-        info!("请运行以下命令安装驱动: mtkclient install-drivers");
-    }
-
-    info!("");
-    info!("=== 诊断完成 ===");
-}
-```
+**功能**：
+- `scan_mediatek_devices()`：扫描所有 MediaTek USB 设备，检查驱动状态
+- `diagnose_connection()`：诊断 USB 连接状态
+- `print_connection_hint()`：打印连接提示（BROM/Preloader 模式进入方法）
+- `enumerate_usb_devices()`：枚举所有 USB 设备
+- `diagnose_and_report()`：综合诊断报告
 
 ***
 
-## 项目总结
+### 14. src/paths.rs
 
-MTKClient-RS 是一个 MediaTek 设备读写工具的 Rust 实现，主要功能包括：
+**路径**: `d:\test\ZybClient\src\paths.rs`
 
-1. **USB 通信** - 通过 libusb 与设备进行通信
-2. **设备握手** - 建立与设备的通信会话
-3. **分区操作** - 读取、写入、擦除设备分区
-4. **Bootloader 解锁/锁定** - 通过修改 seccfg 实现
-5. **驱动安装** - 自动安装 WinUSB 驱动
-6. **USB 诊断** - 检测设备和驱动状态
+路径解析工具。
 
-核心模块：
+- `exe_relative_path()`：获取相对于资源根目录的路径，支持开发模式（target/debug/）和发布模式（exe 与资源同目录）
 
-- `main.rs` - 程序入口，处理命令行参数
-- `config.rs` - 设备配置和芯片参数
-- `usb.rs` - 底层 USB 通信
-- `preloader.rs` - Preloader 协议实现
-- `da_xflash.rs` - DA 加载和分区操作
-- `commands.rs` - 命令处理逻辑
-- `driver.rs` - 驱动安装工具
-- `usb_diag.rs` - 设备诊断功能
+***
 
+## 模块关系图
+
+```
+main.rs
+  ├── cli.rs（CLI 参数）
+  ├── config.rs（设备/芯片配置）
+  ├── commands.rs（命令调度）
+  │     └── da_xflash.rs（XFlash 协议）
+  │           ├── da_partition.rs（分区操作）
+  │           └── da_extension.rs（DA 修补/扩展）
+  └── preloader.rs（BROM/Preloader 协议）
+        ├── usb.rs（USB 通信）
+        └── kamakiri2.rs（漏洞利用，作为 Preloader 的 impl）
+```
+
+## 协议对齐要点
+
+1. **Echo 协议**：1 字节命令用 `echo_1byte()`（write + read_exact 1 字节比较），参数用 `device.write()`（大端），不 echo 参数
+2. **rword/rdword**：BROM 阶段使用 big-endian（对齐 Python `>H`/`>I`），XFlash 阶段使用 little-endian
+3. **send_da**：echo(0xD7) → write(addr/size/sig_len 大端) → rword() → 64 字节分块上传 → ZLP → 读 checksum + status2
+4. **brom_register_access**：echo(0xDA) → write(mode/addr/len 大端) → 读状态 → 读/写数据
+5. **upload_data**：64 字节分块（对齐 Python maxinsize=64），每 0x2000 字节发 ZLP
