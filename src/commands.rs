@@ -84,7 +84,7 @@ pub fn handle_command(
         if preloader_file.is_empty() {
             // bypass_security → dump_preloader_ram（对齐 Python configure_da）
             da.preloader
-                .bypass_security()
+                .bypass_security(_context)
                 .map_err(|e| format!("bypass_security 失败: {}", e))?;
             let data = da
                 .preloader
@@ -199,7 +199,7 @@ pub fn handle_commands(
         if preloader_file.is_empty() {
             // bypass_security → dump_preloader_ram（对齐 Python configure_da）
             da.preloader
-                .bypass_security()
+                .bypass_security(_context)
                 .map_err(|e| format!("bypass_security 失败: {}", e))?;
             let data = da
                 .preloader

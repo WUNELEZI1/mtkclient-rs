@@ -649,7 +649,6 @@ impl UsbDevice {
     }
 
     /// 重新打开 USB 设备：关闭旧句柄，等待设备稳定，重新打开并 claim interface
-    #[allow(dead_code)]
     pub fn reopen(&mut self, context: &UsbContext) -> Result<(), String> {
         self.close();
         // 等待设备稳定

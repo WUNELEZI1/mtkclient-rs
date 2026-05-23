@@ -365,17 +365,27 @@ impl Preloader {
         Ok(preloader)
     }
 
-    pub fn bypass_security(&mut self) -> Result<(), String> {
+    pub fn bypass_security(&mut self, context: &crate::usb::UsbContext) -> Result<(), String> {
         info!("正在绕过安全保护...");
 
         let payload_path = exe_relative_path("payloads/generic_patcher_payload.bin");
         let payload =
             std::fs::read(&payload_path).map_err(|e| format!("读取 patcher payload: {}", e))?;
 
+        // 注入 patcher payload（会触发设备重启）
         self.inject_payload(&payload, 0xA1A2A3A4)?;
+        debug!("patcher payload 注入完成，设备将重启");
 
-        // 对齐 Python bypass_security：只做 handshake，不验证 target_config
-        // exploit 注入后设备状态不稳定，echo(0xFD) 可能超时
+        // 对齐 Python crasher：关闭旧连接，等待设备重启，重新打开
+        self.device.close();
+        std::thread::sleep(Duration::from_millis(500));
+        self.device.reopen(context)?;
+
+        // 清除旧状态，重新初始化
+        self.is_preloader_mode = false;
+        self.chip = None;
+
+        // 对齐 Python mtk.port.run_handshake()
         if !self.device.do_handshake()? {
             return Err("绕过安全保护后重握手失败".into());
         }
