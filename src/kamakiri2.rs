@@ -12,7 +12,6 @@ use std::time::Duration;
 use crate::paths::exe_relative_path;
 use crate::preloader::Preloader;
 use crate::usb::UsbContext;
-use crate::config::CHIP_CONFIGS;
 
 macro_rules! debug_log {
     ($debug:expr, $($arg:tt)*) => {
@@ -391,23 +390,7 @@ impl Preloader {
             return Err("绕过安全保护后重握手失败".into());
         }
 
-        // 对齐 Python init()：reopen 后通过 echo(0xFD) 验证 BROM 命令通道，并重新初始化 chip
-        // 这样后续 brom_register_access 才能正常工作
-        if !self.sendcmd(0xFD)? {
-            return Err("bypass_security: reopen 后 echo(0xFD) 不匹配".into());
-        }
-        let mut buf = [0u8; 4];
-        self.device
-            .read_exact(&mut buf)
-            .map_err(|e| format!("read hwcode: {}", e))?;
-        let hw = u16::from_be_bytes([buf[0], buf[1]]);
-        let chip = CHIP_CONFIGS
-            .iter()
-            .find(|c| c.hw_code == hw)
-            .ok_or_else(|| format!("未知 HW code: {:04X}", hw))?;
-        self.chip = Some(*chip);
-
-        info!("安全保护已成功绕过 (HW: {:04X})", hw);
+        info!("安全保护已成功绕过");
         Ok(())
     }
 
