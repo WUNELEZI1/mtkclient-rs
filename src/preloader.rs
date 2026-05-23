@@ -45,7 +45,17 @@ impl Preloader {
         self.device.write(&[cmd]).map_err(|e| format!("echo write: {}", e))?;
         let mut buf = [0u8; 1];
         match self.device.read_exact(&mut buf) {
-            Ok(_) => Ok(buf[0] == cmd),
+            Ok(_) => {
+                if buf[0] == cmd {
+                    Ok(true)
+                } else {
+                    debug!(
+                        "[ECHO_1] mismatch: expected 0x{:02X}, got 0x{:02X}",
+                        cmd, buf[0]
+                    );
+                    Ok(false)
+                }
+            }
             Err(e) => {
                 debug!("[ECHO_1] read error for 0x{:02X}: {}", cmd, e);
                 Ok(false)
@@ -53,21 +63,24 @@ impl Preloader {
         }
     }
 
-    /// 4 字节大端 echo（对应 Python echo(pack(">I", val))）
+    /// 发送 4 字节大端参数并校验回显，对齐 Python echo(pack(">I", val))
     pub fn echo_4byte(&mut self, val: u32) -> Result<bool, String> {
-        let data = val.to_be_bytes();
-        self.device.set_timeout(Duration::from_millis(1000));
-        self.device.write(&data).map_err(|e| format!("echo4 write: {}", e))?;
-        let mut buf = [0u8; 4];
-        match self.device.read_exact(&mut buf) {
-            Ok(_) => Ok(buf == data),
-            Err(e) => {
-                debug!(
-                    "[ECHO_4] read error for {:08X}: {}",
-                    val, e
-                );
-                Ok(false)
-            }
+        let be = val.to_be_bytes();
+        self.device
+            .write(&be)
+            .map_err(|e| format!("echo_4byte write: {}", e))?;
+        let mut echo = [0u8; 4];
+        self.device
+            .read_exact(&mut echo)
+            .map_err(|e| format!("echo_4byte read: {}", e))?;
+        if echo == be {
+            Ok(true)
+        } else {
+            debug!(
+                "[ECHO_4] mismatch: expected {:02X?}, got {:02X?}",
+                be, echo
+            );
+            Ok(false)
         }
     }
 
@@ -132,17 +145,13 @@ impl Preloader {
             return Err("SEND_DA: echo 0xD7 不匹配".into());
         }
 
-        // echo(addr) — 对应 Python echo(address) → pack(">I", address)
+        // 发送参数（echo，对齐 Python — 全部使用 echo）
         if !self.echo_4byte(address)? {
             return Err("SEND_DA: echo addr 不匹配".into());
         }
-
-        // echo(len(data)) — 对应 Python echo(len(data))
         if !self.echo_4byte(size)? {
             return Err("SEND_DA: echo size 不匹配".into());
         }
-
-        // echo(sig_len) — 对应 Python echo(sig_len)
         if !self.echo_4byte(sig_len)? {
             return Err("SEND_DA: echo sig_len 不匹配".into());
         }
@@ -236,10 +245,12 @@ impl Preloader {
     ) -> Result<Option<Vec<u8>>, String> {
         let mode: u32 = if data.is_some() { 1 } else { 0 };
 
-        // echo 命令和参数（逐次 echo，对齐 Python）
+        // echo 0xDA 命令（1 字节）
         if !self.echo_1byte(0xDA)? {
             return Err("brom_reg: echo 0xDA 不匹配".into());
         }
+
+        // 发送参数（echo，对齐 Python — 全部使用 echo）
         if !self.echo_4byte(mode)? {
             return Err("brom_reg: echo mode 不匹配".into());
         }

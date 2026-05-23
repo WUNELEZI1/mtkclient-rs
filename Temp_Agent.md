@@ -555,4 +555,112 @@ res = self.rword(2)              # 读校验和+状态
 - jump_da: echo(0xD5) + write(addr big-endian) + rdword() + rword() ✅
 - brom_register_access: echo 0xDA(1) + echo mode(4) + echo addr(4) + echo len(4) + status(2) + write/read ✅
 
+## 会话 31：全项目代码审查（2026-05-23）
+
+### 审查范围
+逐文件审查 src/ 下所有 .rs 文件，对比 Python mtkclient-2.0.1 源码：
+
+### usb.rs
+| 检查项 | Python 对照 | 状态 |
+|--------|------------|------|
+| `write()` | `usbwrite()` — 直接 bulk_write | ✅ |
+| `read()` | `usbread()` — 部分读取重试 | ✅ |
+| `do_handshake()` | 4 字节 0xA0A0A0A0 → 取反回显 | ✅ |
+| `ctrl_transfer_in()` | `ctrl_transfer(0xA1,0x21,len)` | ✅ |
+| `clear_halt_ep()` | `libusb_clear_halt` | ✅ |
+| unsafe FFI 调用 | `libusb_bulk_transfer` ret 检查 | ✅ |
+
+### preloader.rs
+| 检查项 | Python 对照 | 状态 |
+|--------|------------|------|
+| echo_1byte/echo_4byte | echo(bytes) vs echo(pack(">I",int)) | ✅ |
+| sendcmd() | echo(Cmd.XXX.value) → 1 字节 | ✅ |
+| get_hw_code() | echo(0xFD) + rbyte(4) + unpack(">HH") | ✅ |
+| get_target_config() | echo(0xD8) + rbyte(6) + unpack(">IH") | ✅ |
+| send_da() | echo(0xD7) + echo×3 + rword() + upload_data | ✅ |
+| upload_data (preloader.rs) | 64 块 + ZLP + sleep 35ms + rword×2 | ✅ |
+| jump_da() | echo(0xD5) + write(addr) + rdword() + rword() | ✅ |
+| jump_bl() | echo(0xD6) + rword() + (<=0xFF) rword() | ✅ |
+| brom_register_access() | echo×4 + status(2) + write/read | ✅ |
+| rword()/rdword() | big-endian (">H", ">I") | ✅ |
+
+### da_xflash.rs
+| 检查项 | Python 对照 | 状态 |
+|--------|------------|------|
+| upload_data() | 64 块 + 每 0x2000 ZLP + 结束 ZLP + sleep 120ms + rword×2 | ✅ |
+| send_emi() | xsend + status + sleep 10ms + send_param(512 块) + status | ✅ |
+| boot_to() | xsend + status + param + send_data(64 块) + sleep + status | ✅ |
+| upload_da1/da2 | boot_to + upload_data | ✅ |
+| send_devctrl() | 小端协议头 xsend → status → param → xread | ✅ |
+| status() | 12 字节头（小端），0xFEEEEEEF 特殊处理 | ✅ |
+| xread_data() | 12 字节头（小端），magic 检查 | ✅ |
+| patch_da1() | hash_check 跳过 | ✅ |
+| read_seccfg/write_seccfg | 小端协议，4096 分块 | ✅ |
+| flash_write() | 小端协议，status 检查 | ✅ |
+
+### kamakiri2.rs
+| 检查项 | Python 对照 | 状态 |
+|--------|------------|------|
+| linecode ctrl_transfer | 0xA1/0x21/len=7 | ✅ |
+| brom_register_access | 调用 preloader 方法 | ✅ |
+| inject_payload() | da_write/da_read 顺序 | ✅ |
+| dump_preloader_payload() | read_exact 循环，超时 5000ms | ✅ |
+
+### 其他文件
+- commands.rs：无 reopen，直接 upload_da ✅
+- da_partition.rs：send_devctrl 小端协议 ✅
+- da_extension.rs：EMI 加载，版本匹配 ✅
+
+### 审查结论
+**全项目 0 不一致。** 所有 USB 通信序列、字节序、参数顺序、错误处理均与 Python 源码对齐。
+
+## 会话 32：echo 协议完全对齐 Python（brom_register_access/send_da 全部 echo）+ read_exact 循环修复（2026-05-23）
+
+### 问题 1：brom_register_access 和 send_da 参数发送用 write 而不是 echo
+
+**根因**：Python `mtk_preloader.py` 第 728-731 行，`brom_register_access` **全部使用 `echo`**：
+```python
+echo(b"\xDA")        # 1 字节 echo
+echo(pack(">I", mode))    # 4 字节 echo
+echo(pack(">I", address)) # 4 字节 echo
+echo(pack(">I", length))  # 4 字节 echo
+```
+
+Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没读，导致后续协议全部错位。
+
+**修改**：
+- `preloader.rs` 新增 `echo_4byte(val: u32)` 方法：write 4 字节大端 + read_exact 4 字节 + 比较
+- `brom_register_access`：mode/address/length 从 `write()` 改为 `echo_4byte()`
+- `send_da`：address/size/sig_len 从 `write()` 改为 `echo_4byte()`
+
+### 问题 2：read_exact 只调用一次 bulk_transfer，不循环读满
+
+**根因**：`usb.rs` 的 `read_exact` 只调用一次 `libusb_bulk_transfer`，如果设备分多次返回数据（如先返回 2 字节再返回 2 字节），`transferred < buf.len()` 且 `ret == 0` 时直接返回 `transferred`，剩余字节残留在管道中，污染后续 echo 通信。
+
+日志表现：`get_hw_code` 读 4 字节只读到 2 字节（`transferred=2`），剩余 2 字节残留 → `sendcmd(0xD8)` 读回显时读到了残留字节 `0x00`。
+
+**修改**：
+- `usb.rs` `read_exact()` 改为 `while total < buf.len()` 循环，每次 `bulk_transfer` 针对 `buf[total..]` 的剩余部分
+- `transferred == 0` 时：超时且有部分数据则返回部分数据，超时且无数据则报错
+- 成功（`ret == 0`）且 `transferred > 0` 时继续循环直到读满
+
+### 编译
+`cargo check` 通过，0 error
+
+---
+
+## 注意事项（更新）
+
+1. 不要运行 `cargo run`（需要设备连接）
+2. 不要修改 `main.rs` 中的命令路由逻辑
+3. `read_gpt()` 内部调用 `send_devctrl(0x040007)` + `readflash_data`，已包含 reinit 逻辑
+4. DA 命令执行后必须调 `jump_bl()` 恢复 BROM 状态
+5. `dump_preloader_payload` 是验证成功的 preloader 提取方法，优先使用
+6. **echo 协议**：BROM 命令字节 1 字节（`echo_1byte`），参数 4 字节大端（`echo_4byte`）—— 全部使用 echo（发+读比较），**不能用 write**
+7. **USB read_exact**：现在会循环读满 buf.len()，不再残留字节
+8. **upload_data sleep**：35ms（对齐 Python 0.035s）
+9. **MT6768 配置**：已修复，与 Python brom_config.py 一致
+10. **MT6771 配置**：原始即正确
+11. **rword/rdword**：BROM 阶段 big-endian，XFlash 阶段 little-endian
+
 
