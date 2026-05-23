@@ -264,7 +264,6 @@ impl Preloader {
     }
 
     /// 从 RAM 中 dump preloader（Kamakiri2 漏洞利用后）
-    #[allow(dead_code)]
     pub fn dump_preloader_from_ram(&mut self, debug: bool) -> Result<Vec<u8>, String> {
         info!("正在从 RAM 提取 Preloader...");
 

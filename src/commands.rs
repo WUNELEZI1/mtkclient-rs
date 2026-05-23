@@ -1,5 +1,5 @@
 use colored::Colorize;
-use log::{error, info, warn};
+use log::{error, info};
 use std::time::SystemTime;
 
 use crate::DeviceMode;
@@ -49,14 +49,15 @@ pub fn print_help() {
     println!("  --force             强制安装驱动");
 }
 
+/// 单命令执行入口
 pub fn handle_command(
     da: &mut DAXFlash,
     _mode: &DeviceMode,
     app_config: &AppConfig,
     debug_mode: bool,
-    quiet_dump: bool,
+    _quiet_dump: bool,
     preloader_file: &str,
-    context: &UsbContext,
+    _context: &UsbContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let is_brom = !da.preloader.is_preloader_mode;
     let mut auto_dumped_file: Option<String> = None;
@@ -89,26 +90,30 @@ pub fn handle_command(
         }
 
         if preloader_file.is_empty() {
-            let (data, filename) = da
+            // 对齐 Python configure_da: bypass_security → dump_preloader_ram
+            da.preloader
+                .bypass_security()
+                .map_err(|e| format!("bypass_security 失败: {}", e))?;
+            let data = da
                 .preloader
-                .dump_preloader_payload(false, quiet_dump, context)
-                .map_err(|e| format!("Kamakiri2 失败: {}", e))?;
+                .dump_preloader_from_ram(false)
+                .map_err(|e| format!("dump_preloader_ram 失败: {}", e))?;
 
             if !data.is_empty() {
-                std::fs::write(&filename, &data)?;
-                info!("Preloader 已提取: {} ({} 字节)", filename, data.len());
-                auto_dumped_file = Some(filename);
-            }
-
-            // dump 后重新握手，恢复 BROM 通信状态
-            if let Err(e) = da.preloader.device.do_handshake() {
-                warn!("dump 后握手失败: {}，尝试重新初始化设备", e);
-                da.preloader.device.reopen(context).map_err(|e| {
-                    error!("重新连接设备失败: {}", e);
-                    e
-                })?;
-                da.preloader.is_preloader_mode = false;
-                da.preloader.chip = None;
+                // 从 data 中提取文件名（dump_preloader_from_ram 已保存文件）
+                let filename = if let Some(info_idx) = data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
+                    let filename_start = info_idx + 0x1B;
+                    let filename_end = std::cmp::min(filename_start + 0x30, data.len());
+                    let filename_bytes = &data[filename_start..filename_end];
+                    let filename_len = filename_bytes.iter().position(|&b| b == 0).unwrap_or(filename_bytes.len());
+                    String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string()
+                } else {
+                    "preloader_dumped.bin".to_string()
+                };
+                if !filename.is_empty() {
+                    auto_dumped_file = Some(filename);
+                    info!("Preloader 已提取: {} ({} 字节)", auto_dumped_file.as_ref().unwrap(), data.len());
+                }
             }
         }
 
@@ -187,10 +192,10 @@ pub fn handle_commands(
     _mode: &DeviceMode,
     app_config: &AppConfig,
     debug_mode: bool,
-    quiet_dump: bool,
+    _quiet_dump: bool,
     preloader_file: &str,
     commands: &[(String, Vec<String>)],
-    context: &UsbContext,
+    _context: &UsbContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if commands.is_empty() {
         return Err("没有要执行的命令".into());
@@ -214,26 +219,29 @@ pub fn handle_commands(
         }
 
         if preloader_file.is_empty() {
-            let (data, filename) = da
+            // 对齐 Python configure_da: bypass_security → dump_preloader_ram
+            da.preloader
+                .bypass_security()
+                .map_err(|e| format!("bypass_security 失败: {}", e))?;
+            let data = da
                 .preloader
-                .dump_preloader_payload(false, quiet_dump, context)
-                .map_err(|e| format!("Kamakiri2 失败: {}", e))?;
+                .dump_preloader_from_ram(false)
+                .map_err(|e| format!("dump_preloader_ram 失败: {}", e))?;
 
             if !data.is_empty() {
-                std::fs::write(&filename, &data)?;
-                info!("Preloader 已提取: {} ({} 字节)", filename, data.len());
-                auto_dumped_file = Some(filename);
-            }
-
-            // dump 后重新握手，恢复 BROM 通信状态
-            if let Err(e) = da.preloader.device.do_handshake() {
-                warn!("dump 后握手失败: {}，尝试重新初始化设备", e);
-                da.preloader.device.reopen(context).map_err(|e| {
-                    error!("重新连接设备失败: {}", e);
-                    e
-                })?;
-                da.preloader.is_preloader_mode = false;
-                da.preloader.chip = None;
+                let filename = if let Some(info_idx) = data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
+                    let filename_start = info_idx + 0x1B;
+                    let filename_end = std::cmp::min(filename_start + 0x30, data.len());
+                    let filename_bytes = &data[filename_start..filename_end];
+                    let filename_len = filename_bytes.iter().position(|&b| b == 0).unwrap_or(filename_bytes.len());
+                    String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string()
+                } else {
+                    "preloader_dumped.bin".to_string()
+                };
+                if !filename.is_empty() {
+                    auto_dumped_file = Some(filename);
+                    info!("Preloader 已提取: {} ({} 字节)", auto_dumped_file.as_ref().unwrap(), data.len());
+                }
             }
         }
     }
