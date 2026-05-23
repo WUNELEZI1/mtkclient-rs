@@ -386,6 +386,16 @@ impl Preloader {
         self.chip = None;
 
         // 对齐 Python mtk.port.run_handshake()
+        // Python run_handshake 逐字节验证 + 不匹配时 i=0 重置，自动 drain 残留数据
+        // Rust do_handshake 一次性发 4 字节读 4 字节，有残留数据会错位
+        // 因此先手动 drain 再握手
+        self.device.set_timeout(Duration::from_millis(100));
+        let mut drain_buf = [0u8; 512];
+        for _ in 0..3 {
+            let _ = self.device.read(&mut drain_buf);
+        }
+        self.device.set_timeout(Duration::from_millis(1000));
+
         if !self.device.do_handshake()? {
             return Err("绕过安全保护后重握手失败".into());
         }
