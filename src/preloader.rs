@@ -1,4 +1,4 @@
-﻿use crate::config::{ChipConfig, TargetConfig, CHIP_CONFIGS};
+use crate::config::{ChipConfig, TargetConfig, CHIP_CONFIGS};
 use crate::usb::UsbDevice;
 use log::debug;
 use std::time::Duration;
@@ -104,26 +104,32 @@ impl Preloader {
         Ok(hw)
     }
 
-    /// 获取目标设备安全配置
-    /// Python: echo(Cmd.GET_TARGET_CONFIG.value) → rbyte(6) → unpack(">IH")
-    pub fn get_target_config(&mut self) -> Result<TargetConfig, String> {
-        let hw = self.get_hw_code()?;
-        let chip = CHIP_CONFIGS
-            .iter()
-            .find(|c| c.hw_code == hw)
-            .ok_or_else(|| format!("未知 HW code: {:04X}", hw))?;
-        self.chip = Some(chip.clone());
-        if !self.sendcmd(0xD8)? {
-            return Err("获取 target config 失败: echo 0xD8 不匹配".into());
-        }
-        let mut buf = [0u8; 6];
-        self.device
-            .read_exact(&mut buf)
-            .map_err(|e| format!("read target config: {}", e))?;
-        let target_config = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        debug!("Target config: {:08X}", target_config);
-        Ok(TargetConfig::from_raw(target_config))
+ /// 获取目标设备安全配置
+/// Python: echo(Cmd.GET_TARGET_CONFIG.value) → rbyte(6) → unpack(">IH")
+pub fn get_target_config(&mut self) -> Result<TargetConfig, String> {
+    // ✅ 修复：必须先发送 0xD8 命令（原版Python顺序）
+    if !self.sendcmd(0xD8)? {
+        return Err("获取 target config 失败: echo 0xD8 不匹配".into());
     }
+
+    // 读取 6 字节返回
+    let mut buf = [0u8; 6];
+    self.device
+        .read_exact(&mut buf)
+        .map_err(|e| format!("read target config: {}", e))?;
+    let target_config = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    debug!("Target config: {:08X}", target_config);
+
+    // ✅ 修复：命令发完再读 HW code
+    let hw = self.get_hw_code()?;
+    let chip = CHIP_CONFIGS
+        .iter()
+        .find(|c| c.hw_code == hw)
+        .ok_or_else(|| format!("未知 HW code: {:04X}", hw))?;
+    self.chip = Some(chip.clone());
+
+    Ok(TargetConfig::from_raw(target_config))
+}
 
     /// SEND_DA: 发送 Download Agent 到设备
     /// 对齐 Python mtk_preloader.py:871-906
