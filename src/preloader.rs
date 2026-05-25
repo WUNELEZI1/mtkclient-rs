@@ -1,11 +1,11 @@
-use crate::config::{ChipConfig, TargetConfig, CHIP_CONFIGS};
+﻿use crate::config::{ChipConfig, TargetConfig, CHIP_CONFIGS};
 use crate::usb::UsbDevice;
 use log::debug;
 use std::time::Duration;
 
 /// Preloader / BROM protocol handler
 pub struct Preloader {
-    pub device: UsbDevice,
+    pub device: UsbDevice,  
     pub is_preloader_mode: bool,
     pub chip: Option<ChipConfig>,
 }
@@ -104,32 +104,49 @@ impl Preloader {
         Ok(hw)
     }
 
- /// 获取目标设备安全配置
-/// Python: echo(Cmd.GET_TARGET_CONFIG.value) → rbyte(6) → unpack(">IH")
-pub fn get_target_config(&mut self) -> Result<TargetConfig, String> {
-    // ✅ 修复：必须先发送 0xD8 命令（原版Python顺序）
-    if !self.sendcmd(0xD8)? {
-        return Err("获取 target config 失败: echo 0xD8 不匹配".into());
+    /// 获取目标设备安全配置
+    /// Python mtk_preloader.py:517-542: echo(0xD8) → rbyte(6) → unpack(">IH")
+    pub fn get_target_config(&mut self) -> Result<TargetConfig, String> {
+        // 对齐 Python：先发 0xD8 命令，再读 6 字节
+        if !self.sendcmd(0xD8)? {
+            return Err("获取 target config 失败: echo 0xD8 不匹配".into());
+        }
+
+        let mut buf = [0u8; 6];
+        self.device
+            .read_exact(&mut buf)
+            .map_err(|e| format!("read target config: {}", e))?;
+        let target_config = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        let status = u16::from_be_bytes([buf[4], buf[5]]);
+        debug!("Target config: {:08X}, status: {:04X}", target_config, status);
+        if status > 0xFF {
+            return Err(format!("Get Target Config Error: status=0x{:04X}", status));
+        }
+
+        // 读取硬件码并匹配芯片（Python init() 中在 get_target_config 之后调用）
+        let hw = self.get_hw_code()?;
+        let chip = CHIP_CONFIGS
+            .iter()
+            .find(|c| c.hw_code == hw)
+            .ok_or_else(|| format!("未知 HW code: {:04X}", hw))?;
+        self.chip = Some(*chip);
+
+        Ok(TargetConfig::from_raw(target_config))
     }
 
-    // 读取 6 字节返回
-    let mut buf = [0u8; 6];
-    self.device
-        .read_exact(&mut buf)
-        .map_err(|e| format!("read target config: {}", e))?;
-    let target_config = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
-    debug!("Target config: {:08X}", target_config);
+    /// 读取 HW Subcode
+    /// Python: echo(0xDB) → rbyte(2)
+    pub fn get_hw_subcode(&mut self) -> Result<u16, String> {
+        if !self.sendcmd(0xDB)? {
+            return Err("获取 HW subcode 失败: echo 0xDB 不匹配".into());
+        }
+        let mut buf = [0u8; 2];
+        self.device
+            .read_exact(&mut buf)
+            .map_err(|e| format!("read hw subcode: {}", e))?;
+        Ok(u16::from_be_bytes(buf))
+    }
 
-    // ✅ 修复：命令发完再读 HW code
-    let hw = self.get_hw_code()?;
-    let chip = CHIP_CONFIGS
-        .iter()
-        .find(|c| c.hw_code == hw)
-        .ok_or_else(|| format!("未知 HW code: {:04X}", hw))?;
-    self.chip = Some(chip.clone());
-
-    Ok(TargetConfig::from_raw(target_config))
-}
 
     /// SEND_DA: 发送 Download Agent 到设备
     /// 对齐 Python mtk_preloader.py:871-906
