@@ -372,12 +372,25 @@ impl UsbDevice {
                 }
                 total += transferred as usize;
                 if transferred == 0 {
-                    // ZLP (zero-length packet) 表示传输结束，不是重试信号
-                    // 对齐 PyUSB 行为：ZLP 直接返回，不重试
-                    if !quiet {
-                        debug!("[USB READ] transferred=0 (ZLP), breaking");
+                    // ZLP 或设备忙，对齐 PyUSB 行为：自动忽略 ZLP 继续等待数据
+                    if ret == 0 {
+                        // ZLP (zero-length packet): ret=0, transferred=0
+                        if !quiet {
+                            debug!("[USB READ] ZLP received, retrying");
+                        }
                     }
-                    break;
+                    if now < deadline {
+                        if !quiet {
+                            debug!("[USB READ] transferred=0, retrying in 10ms");
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    } else {
+                        if !quiet {
+                            debug!("[USB READ] transferred=0 at deadline, breaking");
+                        }
+                        break;
+                    }
                 }
             }
         }
