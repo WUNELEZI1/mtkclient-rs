@@ -2142,7 +2142,10 @@ impl<'a> DAXFlash<'a> {
     ///   xsend(READ_DATA) → status → send_param → status → xread 循环 → ack
     pub(crate) fn readflash_data(&mut self, addr: u64, size: u64) -> Result<Vec<u8>, String> {
         // 对齐 Python readflash: 每次读取前调用 get_packet_length (send_devctrl 0x040007)
+        // Python get_packet_length (xflash_lib.py:734-748):
+        //   resp = self.send_devctrl(...) → if resp != b"": status = self.status()
         let _ = self.send_devctrl(0x040007, None);
+        let _ = self.status();
 
         // 1. xsend(READ_DATA) = pack3 + CMD_READ_DATA
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
