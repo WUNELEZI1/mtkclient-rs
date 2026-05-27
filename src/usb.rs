@@ -372,20 +372,12 @@ impl UsbDevice {
                 }
                 total += transferred as usize;
                 if transferred == 0 {
-                    // WinUSB 可能立即返回 0 表示设备还没准备好数据，不是真的 EOF
-                    // 等 10ms 后重试（除非已超时）
-                    if now < deadline {
-                        if !quiet {
-                            debug!("[USB READ] transferred=0, retrying in 10ms");
-                        }
-                        std::thread::sleep(Duration::from_millis(10));
-                        continue;
-                    } else {
-                        if !quiet {
-                            debug!("[USB READ] transferred=0 at deadline, breaking");
-                        }
-                        break;
+                    // ZLP (zero-length packet) 表示传输结束，不是重试信号
+                    // 对齐 PyUSB 行为：ZLP 直接返回，不重试
+                    if !quiet {
+                        debug!("[USB READ] transferred=0 (ZLP), breaking");
                     }
+                    break;
                 }
             }
         }
