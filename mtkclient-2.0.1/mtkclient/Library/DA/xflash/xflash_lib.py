@@ -86,8 +86,8 @@ class DAXFlash(metaclass=LogBase):
         try:
             tmp = pack("<III", self.Cmd.MAGIC, self.DataType.DT_PROTOCOL_FLOW, 4)
             data = pack("<I", 0)
-            self.usbwrite(tmp)
-            self.usbwrite(data)
+            self.usbwrite(tmp, cmd_name="ack_hdr")
+            self.usbwrite(data, cmd_name="ack_data")
             if rstatus:
                 status = self.status()
                 return status
@@ -106,13 +106,13 @@ class DAXFlash(metaclass=LogBase):
         else:
             length = len(data)
         tmp = pack("<III", self.Cmd.MAGIC, datatype, length)
-        if self.usbwrite(tmp):
-            return self.usbwrite(data)
+        if self.usbwrite(tmp, cmd_name=f"xsend_hdr"):
+            return self.usbwrite(data, cmd_name=f"xsend_data")
         return False
 
     def xread(self):
         try:
-            hdr = self.usbread(4 + 4 + 4)
+            hdr = self.usbread(4 + 4 + 4, cmd_name="xread_hdr")
             magic, datatype, length = unpack("<III", hdr)
         except Exception as err:
             self.error(f"xread error: {str(err)}")
@@ -120,7 +120,7 @@ class DAXFlash(metaclass=LogBase):
         if magic != 0xFEEEEEEF:
             self.error("xread error: Wrong magic")
             return -1
-        resp = self.usbread(length)
+        resp = self.usbread(length, cmd_name="xread_data")
         return resp
 
     def rdword(self, count=1):
@@ -132,12 +132,12 @@ class DAXFlash(metaclass=LogBase):
         return data
 
     def status(self):
-        hdr = self.usbread(4 + 4 + 4)
+        hdr = self.usbread(4 + 4 + 4, cmd_name="status_hdr")
         magic, datatype, length = unpack("<III", hdr)
         if magic != 0xFEEEEEEF:
             self.error("Status error: Wrong magic")
             return -1
-        tmp = self.usbread(length)
+        tmp = self.usbread(length, cmd_name="status_data")
         if len(tmp) < length:
             self.error(f"Status length error: Too few data {hex(len(hdr))}")
             return -1
@@ -161,12 +161,12 @@ class DAXFlash(metaclass=LogBase):
             params = [params]
         for param in params:
             pkt = pack("<III", self.Cmd.MAGIC, self.DataType.DT_PROTOCOL_FLOW, len(param))
-            if self.usbwrite(pkt):
+            if self.usbwrite(pkt, cmd_name="send_param_hdr"):
                 length = len(param)
                 pos = 0
                 while length > 0:
                     dsize = min(length, 0x200)
-                    if not self.usbwrite(param[pos:pos + dsize]):
+                    if not self.usbwrite(param[pos:pos + dsize], cmd_name="send_param_data"):
                         break
                     pos += dsize
                     length -= dsize
@@ -838,17 +838,17 @@ class DAXFlash(metaclass=LogBase):
                 worker = Thread(target=writedata, args=(filename, rq), daemon=True)
                 worker.start()
                 while bytestoread > 0:
-                    status = self.usbread(4 + 4 + 4)
+                    status = self.usbread(4 + 4 + 4, cmd_name="readflash_status_hdr")
                     try:
                         magic, datatype, slength = unpack("<III", status)
                         if magic == 0xFEEEEEEF:
-                            resdata = self.usbread(slength, w_max_packet_size=slength)
+                            resdata = self.usbread(slength, w_max_packet_size=slength, cmd_name="readflash_data")
                             if slength > 4:
                                 rq.put(resdata)
                                 stmp = pack("<III", self.Cmd.MAGIC, self.DataType.DT_PROTOCOL_FLOW, 4)
                                 data = pack("<I", 0)
-                                self.usbwrite(stmp)
-                                self.usbwrite(data)
+                                self.usbwrite(stmp, cmd_name="readflash_ack_hdr")
+                                self.usbwrite(data, cmd_name="readflash_ack_data")
                                 bytestoread -= len(resdata)
                                 bytesread += len(resdata)
                                 if display:
@@ -861,10 +861,10 @@ class DAXFlash(metaclass=LogBase):
                     except:
                         print("Error: Timeout")
 
-                status = self.usbread(4 + 4 + 4)
+                status = self.usbread(4 + 4 + 4, cmd_name="readflash_final_hdr")
                 magic, datatype, slength = unpack("<III", status)
                 if magic == 0xFEEEEEEF:
-                    resdata = self.usbread(slength)
+                    resdata = self.usbread(slength, cmd_name="readflash_final_data")
                     if slength == 4:
                         if unpack("<I", resdata)[0] == 0:
                             if display:

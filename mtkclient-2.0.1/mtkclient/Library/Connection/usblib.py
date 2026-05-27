@@ -526,7 +526,7 @@ class UsbClass(DeviceClass):
     def get_write_packetsize(self):
         return self.EP_OUT.wMaxPacketSize
 
-    def usbread(self, resplen=None, maxtimeout=100, w_max_packet_size=None):
+    def usbread(self, resplen=None, maxtimeout=100, w_max_packet_size=None, cmd_name=None):
         if resplen is None:
             resplen = self.maxsize
         if resplen <= 0:
@@ -589,7 +589,11 @@ class UsbClass(DeviceClass):
             self.debug("USB "+inspect.currentframe().f_back.f_code.co_name + ": length(" + hex(resplen)+")")
             if self.loglevel == logging.DEBUG:
                 self.verify_data(res[:resplen], "RX:")
-        usb_debug_log("RX", res[:resplen])
+        if cmd_name:
+            tag = f"RX:{cmd_name}"
+        else:
+            tag = "RX"
+        usb_debug_log(tag, res[:resplen])
         return res[:resplen]
 
     def usbxmlread(self, maxtimeout=100):
