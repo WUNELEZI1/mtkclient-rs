@@ -89,9 +89,6 @@ impl<'a> DAXFlash<'a> {
     pub fn read_gpt(&mut self) -> Result<(), String> {
         info!("读取 GPT 分区表...");
 
-        // 初始化 DA2 读取协议
-        let _ = self.send_devctrl(0x040007, None); // GET_PACKET_LENGTH
-
         // da-extension读取数据
         let total_read_len: u64 = 16384;
         let gpt_data = self.readflash_data(0, total_read_len)?;
