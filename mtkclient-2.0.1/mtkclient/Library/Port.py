@@ -189,19 +189,19 @@ class Port(metaclass=LogBase):
     def mtk_cmd(self, value, bytestoread=0, nocmd=False):
         resp = b""
         dlen = len(value)
-        wr = self.usbwrite(value)
+        wr = self.usbwrite(value, cmd_name="mtk_cmd")
         time.sleep(0.05)
         if wr:
             if nocmd:
-                cmdrsp = self.usbread(bytestoread)
+                cmdrsp = self.usbread(bytestoread, cmd_name="mtk_cmd_resp")
                 return cmdrsp
             else:
-                cmdrsp = self.usbread(dlen)
+                cmdrsp = self.usbread(dlen, cmd_name="mtk_cmd_echo")
                 if cmdrsp[0] is not value[0]:
                     self.error(f"Cmd error :{hexlify(cmdrsp).decode('utf-8')}")
                     return -1
                 if bytestoread > 0:
-                    resp = self.usbread(bytestoread)
+                    resp = self.usbread(bytestoread, cmd_name="mtk_cmd_resp")
                 return resp
         else:
             self.warning(f"Couldn't send :{hexlify(value).decode('utf-8')}")
@@ -218,7 +218,7 @@ class Port(metaclass=LogBase):
             else:
                 tag = "TX"
             self.usbwrite(val, cmd_name=tag if not cmd_name else None)
-            tmp = self.usbread(len(val), maxtimeout=0)
+            tmp = self.usbread(len(val), maxtimeout=0, cmd_name=cmd_name)
             if DEBUG_USB:
                 if val == tmp:
                     usb_debug_log("ECHO:RX", tmp, message=f"[ECHO] RX: {tmp.hex()}")
