@@ -2138,82 +2138,107 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 读取 flash 数据，返回原始字节
-    /// 对齐 Python readflash 完整序列:
-    ///   xsend(READ_DATA) → status → send_param → status → xread 循环 → ack
+    /// 对齐 Python readflash filename 路径 (xflash_lib.py:840-877):
+    ///   get_packet_length → cmd_read_data → readflash_status/data 循环 → readflash_final 收尾
+    /// 优势：设备主动决定每块大小，终止条件明确（datatype=0x040000 + data=0x00000000）
     pub(crate) fn readflash_data(&mut self, addr: u64, size: u64) -> Result<Vec<u8>, String> {
-        // 对齐 Python readflash: 每次读取前调用 get_packet_length (send_devctrl 0x040007)
-        // Python get_packet_length (xflash_lib.py:734-748):
-        //   resp = self.send_devctrl(...) → if resp != b"": status = self.status()
+        // 1. get_packet_length (send_devctrl 0x040007 + status)
+        // Python: get_packet_length() → send_devctrl → if resp != "": status()
         let _ = self.send_devctrl(0x040007, None);
         let _ = self.status();
 
-        // 1. xsend(READ_DATA) = pack3 + CMD_READ_DATA
+        // 2. cmd_read_data: xsend(CMD_READ_DATA) → status → send_param → status
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
         self.preloader.device.write(&pkt)?;
         self.preloader.device.write(&CMD_READ_DATA.to_le_bytes())?;
 
-        // 2. status
         let st = self.status()?;
         if st != 0 {
             return Err(format!("READ_DATA status=0x{:08X}", st));
         }
 
-        // 3. send_param: storage(4) + parttype(4) + addr(8) + size(8) + NandExtension(32)
+        // send_param: storage(4) + parttype(4) + addr(8) + size(8) + NandExtension(32)
         let mut param = Vec::with_capacity(56);
         param.extend_from_slice(&1u32.to_le_bytes()); // storage = 1 (eMMC)
-        param.extend_from_slice(&8u32.to_le_bytes()); // parttype = 8
-        param.extend_from_slice(&addr.to_le_bytes()); // addr = 分区起始扇区
-        param.extend_from_slice(&size.to_le_bytes()); // size = 分区大小
+        param.extend_from_slice(&8u32.to_le_bytes()); // parttype = 8 (USER)
+        param.extend_from_slice(&addr.to_le_bytes());
+        param.extend_from_slice(&size.to_le_bytes());
         param.extend_from_slice(&[0u8; 32]); // NandExtension 全零
         let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
         self.preloader.device.write(&param_pkt)?;
         self.preloader.device.write(&param)?;
 
-        // 4. status
         let st2 = self.status()?;
         if st2 != 0 {
             return Err(format!("send_param status=0x{:08X}", st2));
         }
 
-        // 5. xread 循环 + ack
+        // 3. readflash_status/data 循环（filename 路径）
         let mut buffer = Vec::new();
-        let mut remaining = size as usize;
-
         let original_timeout = self.preloader.device.get_timeout();
         self.preloader.device.set_timeout(Duration::from_secs(5));
 
-        let result = {
-            while remaining > 0 {
-                let chunk = match self.xread_data() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        debug!("readflash_data xread error: {}", e);
-                        break;
-                    }
-                };
-                if chunk.is_empty() {
-                    break;
-                }
-                buffer.extend_from_slice(&chunk);
-                remaining = remaining.saturating_sub(chunk.len());
+        let result = (|| {
+            loop {
+                // 3a. 读 12 字节头: magic(4) + datatype(4) + slength(4)
+                let mut hdr = [0u8; 12];
+                self.preloader.device.read_exact(&mut hdr)
+                    .map_err(|e| format!("readflash read header: {}", e))?;
+                let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+                let _datatype = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
+                let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
 
-                if self.ack() != 0 {
-                    break;
+                if magic != 0xFEEEEEEF {
+                    return Err(format!("readflash bad magic: 0x{:08X}", magic));
+                }
+
+                // 3b. 读 slength 字节数据
+                let mut data = vec![0u8; slength as usize];
+                if slength > 0 {
+                    self.preloader.device.read_exact(&mut data)
+                        .map_err(|e| format!("readflash read data({}): {}", slength, e))?;
+                }
+
+                // 3c. slength > 4: 数据块 → ack; slength == 4: 状态码 → 检查是否终止
+                if slength > 4 {
+                    buffer.extend_from_slice(&data);
+                    // ack: pack3 + 0x00000000 + status
+                    let ack_pkt = pack3(CMD_MAGIC, 0x01, 4);
+                    self.preloader.device.write(&ack_pkt).map_err(|e| format!("ack write hdr: {}", e))?;
+                    self.preloader.device.write(&0u32.to_le_bytes()).map_err(|e| format!("ack write data: {}", e))?;
+                    self.status().map_err(|e| format!("ack status: {}", e))?;
+                } else if slength == 4 {
+                    let val = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+                    if val != 0 {
+                        return Err(format!("readflash error status: 0x{:08X}", val));
+                    }
+                    break; // 数据传输完成
                 }
             }
 
-            // 对齐 Python readflash（无 filename 路径）：xread+ack 循环结束后直接返回
-            // Python 不在循环后调用 status()，因为最后一次 ack() 已读取了设备的最终状态
-            if buffer.len() >= 4 && buffer[0..4].iter().all(|&b| b == 0) {
-                buffer.drain(..4);
+            // 4. readflash_final 收尾
+            let mut final_hdr = [0u8; 12];
+            self.preloader.device.read_exact(&mut final_hdr)
+                .map_err(|e| format!("readflash final header: {}", e))?;
+            let final_magic = u32::from_le_bytes([final_hdr[0], final_hdr[1], final_hdr[2], final_hdr[3]]);
+            let final_slength = u32::from_le_bytes([final_hdr[8], final_hdr[9], final_hdr[10], final_hdr[11]]);
+
+            if final_magic != 0xFEEEEEEF {
+                return Err(format!("readflash final bad magic: 0x{:08X}", final_magic));
+            }
+            if final_slength > 0 {
+                let mut final_data = vec![0u8; final_slength as usize];
+                self.preloader.device.read_exact(&mut final_data)
+                    .map_err(|e| format!("readflash final data({}): {}", final_slength, e))?;
             }
 
             debug!("[readflash_data] total read {} bytes", buffer.len());
             Ok(buffer)
-        };
+        })();
 
         self.preloader.device.set_timeout(original_timeout);
 
+        // 错误时尝试 ack 恢复状态
         if result.is_err() {
             let _ = self.ack();
             let _ = self.status();
