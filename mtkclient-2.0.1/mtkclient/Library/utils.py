@@ -468,7 +468,7 @@ class ColorFormatter(logging.Formatter):
                 caller_info = f"[{caller_file}:{record.lineno}::{record.funcName}]"
             
             log_file = "usb_debug.log"
-            with open(log_file, "a", encoding="utf-8") as f:
+            with open(log_file, "a+", encoding="utf-8") as f:
                 f.write(f"[{timestamp}] [CONSOLE] {caller_info} {new_record.msg}\n")
         except:
             pass
