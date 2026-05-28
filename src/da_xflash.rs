@@ -2199,7 +2199,10 @@ impl<'a> DAXFlash<'a> {
                         .map_err(|e| format!("readflash read data({}): {}", slength, e))?;
                 }
 
-                // 3c. slength > 4: 数据块 → ack; slength == 4: 状态码 → 检查是否终止
+                // 3c. slength > 4: 数据块 → ack + 继续循环
+                //     slength == 4: 传输结束信号 → break（不管 val 是 0 还是非 0）
+                // 注意：Python 有 bytestoread 计数器控制循环退出，Rust 无计数器，
+                // 所以 slength==4 时应直接 break，由外层处理 readflash_final
                 if slength > 4 {
                     buffer.extend_from_slice(&data);
                     // ack: pack3 + 0x00000000 + status
@@ -2208,11 +2211,8 @@ impl<'a> DAXFlash<'a> {
                     self.preloader.device.write(&0u32.to_le_bytes()).map_err(|e| format!("ack write data: {}", e))?;
                     self.status().map_err(|e| format!("ack status: {}", e))?;
                 } else if slength == 4 {
-                    let val = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                    if val != 0 {
-                        return Err(format!("readflash error status: 0x{:08X}", val));
-                    }
-                    break; // 数据传输完成
+                    // Python: slength==4 表示数据传输完成，break 进入 readflash_final
+                    break;
                 }
             }
 
