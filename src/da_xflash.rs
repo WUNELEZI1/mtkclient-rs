@@ -2182,8 +2182,16 @@ impl<'a> DAXFlash<'a> {
             loop {
                 // 3a. 读 12 字节头: magic(4) + datatype(4) + slength(4)
                 let mut hdr = [0u8; 12];
-                self.preloader.device.read_exact(&mut hdr)
-                    .map_err(|e| format!("readflash read header: {}", e))?;
+                match self.preloader.device.read_exact(&mut hdr) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        // 对齐 Python xflash_lib.py:861-862:
+                        //   except: print("Error: Timeout")
+                        // Python 吞掉超时异常后继续到 readflash_final，Rust 也 break 进入 readflash_final
+                        debug!("[readflash_data] read header timeout (expected termination): {}", e);
+                        break;
+                    }
+                }
                 let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
                 let _datatype = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
                 let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
