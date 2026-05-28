@@ -2200,9 +2200,10 @@ impl<'a> DAXFlash<'a> {
                 }
 
                 // 3c. slength > 4: 数据块 → ack + 继续循环
-                //     slength == 4: 传输结束信号 → break（不管 val 是 0 还是非 0）
+                //     slength == 4 且 val != 0: break（传输终止）
+                //     slength == 4 且 val == 0: 什么都不做，继续循环
                 // 注意：Python 有 bytestoread 计数器控制循环退出，Rust 无计数器，
-                // 所以 slength==4 时应直接 break，由外层处理 readflash_final
+                // 但等价行为：val==0 时继续循环，最终设备会发 val!=0 终止包
                 if slength > 4 {
                     buffer.extend_from_slice(&data);
                     // ack: pack3 + 0x00000000 + status
@@ -2211,12 +2212,17 @@ impl<'a> DAXFlash<'a> {
                     self.preloader.device.write(&0u32.to_le_bytes()).map_err(|e| format!("ack write data: {}", e))?;
                     self.status().map_err(|e| format!("ack status: {}", e))?;
                 } else if slength == 4 {
-                    // Python: slength==4 表示数据传输完成，break 进入 readflash_final
-                    break;
+                    let val = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+                    if val != 0 {
+                        break; // val != 0: 设备发送终止信号
+                    }
+                    // val == 0: 什么都不做，继续循环（等价 Python: 不 break，bytestoread 未变，继续）
                 }
             }
 
-            // 4. readflash_final 收尾
+            // 4. readflash_final 收尾（break 后给设备一点时间准备）
+            std::thread::sleep(Duration::from_millis(50));
+
             let mut final_hdr = [0u8; 12];
             self.preloader.device.read_exact(&mut final_hdr)
                 .map_err(|e| format!("readflash final header: {}", e))?;
