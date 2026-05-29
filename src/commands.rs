@@ -209,8 +209,8 @@ pub fn handle_commands(
     let is_brom = !da.preloader.is_preloader_mode;
     let mut auto_dumped_file: Option<String> = None;
 
-    if is_brom {
-        if preloader_file.is_empty() {
+    if is_brom
+        && preloader_file.is_empty() {
             // 对齐 Python preloader.init()：获取芯片信息和设备安全状态
             match da.preloader.get_target_config() {
                 Ok(cfg) => info!("{}", cfg.format_info()),
@@ -254,7 +254,6 @@ pub fn handle_commands(
                 }
             }
         }
-    }
 
     let effective_file = auto_dumped_file.as_deref().unwrap_or(preloader_file);
     info!("加载 EMI 数据: {}", effective_file);

@@ -263,6 +263,7 @@ impl TargetConfig {
         }
     }
 
+    #[allow(dead_code)] // 预留：bypass 流程修复时判断是否需要安全绕过
     pub fn needs_bypass(&self) -> bool {
         self.sbc || self.sla || self.daa
     }

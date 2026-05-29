@@ -504,7 +504,7 @@ impl Preloader {
 
             let length = len_val as usize;
 
-            if length >= 0x10000 && length <= 0x100000 {
+            if (0x10000..=0x100000).contains(&length) {
                 debug!("Preloader length: 0x{:X} ({} bytes)", length, length);
                 break length;
             }

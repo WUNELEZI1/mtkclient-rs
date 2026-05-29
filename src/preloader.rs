@@ -138,6 +138,7 @@ impl Preloader {
 
     /// 读取 HW Subcode
     /// Python: echo(0xDB) → rbyte(2)
+    #[allow(dead_code)] // 预留：部分芯片需要通过 hw_subcode 区分变体
     pub fn get_hw_subcode(&mut self) -> Result<u16, String> {
         if !self.sendcmd(0xDB)? {
             return Err("获取 HW subcode 失败: echo 0xDB 不匹配".into());
