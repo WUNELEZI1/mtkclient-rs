@@ -509,7 +509,6 @@ impl UsbDevice {
     }
 
     /// 复位 bulk 端点（清除 halt/stall 状态）
-    #[allow(dead_code)]
     pub fn clear_halt_in(&mut self) -> Result<(), String> {
         self.clear_halt_ep(self.ep_in)
     }

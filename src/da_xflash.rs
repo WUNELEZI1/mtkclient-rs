@@ -1018,11 +1018,8 @@ const CMD_SETUP_ENVIRONMENT: u32 = 0x010100;
 const CMD_SETUP_HW_INIT_PARAMS: u32 = 0x010101;
 #[allow(dead_code)]
 const CMD_INIT_EXT_RAM: u32 = 0x01000A;
-#[allow(dead_code)]
 const CMD_BOOT_TO: u32 = 0x010008;
-#[allow(dead_code)]
-const CMD_READ_DATA: u32 = 0x010005; // Cmd.READ_DATA — XFlash 读分区命令
-#[allow(dead_code)]
+const CMD_READ_DATA: u32 = 0x010005; // XFlash 读分区命令
 pub const CMD_WRITE_DATA: u32 = 0x010004; // 写入数据命令
 
 pub const CMD_FORMAT: u32 = 0x010003; // 格式化命令
