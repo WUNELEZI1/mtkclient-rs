@@ -2124,9 +2124,9 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 读取 flash 数据，返回原始字节
-    /// 对齐 Python readflash filename 路径 (xflash_lib.py:840-877):
-    ///   get_packet_length → cmd_read_data → readflash_status/data 循环 → readflash_final 收尾
-    /// 优势：设备主动决定每块大小，终止条件明确（datatype=0x040000 + data=0x00000000）
+    /// 对齐 Python xflash_lib.py:879-891 (filename="" 分支):
+    ///   get_packet_length → cmd_read_data → xread 循环 (header+data) → ack
+    /// 注意：filename="" 分支没有 readflash_final 包，设备不会发送 final
     pub(crate) fn readflash_data(&mut self, addr: u64, size: u64) -> Result<Vec<u8>, String> {
         // 1. get_packet_length (send_devctrl 0x040007 + status)
         // Python: get_packet_length() → send_devctrl → if resp != "": status()
@@ -2159,116 +2159,56 @@ impl<'a> DAXFlash<'a> {
             return Err(format!("send_param status=0x{:08X}", st2));
         }
 
-        // 3. readflash_status/data 循环（filename 路径）
+        // 3. 数据读取循环 — 对齐 Python xflash_lib.py:879-891 (filename="" 分支)
         let mut buffer = Vec::new();
-        let original_timeout = self.preloader.device.get_timeout();
-        self.preloader.device.set_timeout(Duration::from_secs(5));
+        let mut remaining = size as usize;
 
-        let result = (|| {
-            loop {
-                // 3a. 读 12 字节头: magic(4) + datatype(4) + slength(4)
-                let mut hdr = [0u8; 12];
-                match self.preloader.device.read_exact(&mut hdr) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        // 对齐 Python xflash_lib.py:861-862:
-                        //   except: print("Error: Timeout")
-                        // Python 吞掉超时异常后继续到 readflash_final，Rust 也 break 进入 readflash_final
-                        debug!(
-                            "[readflash_data] read header timeout (expected termination): {}",
-                            e
-                        );
-                        break;
-                    }
-                }
-                let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
-                let _datatype = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
-                let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
-
-                if magic != 0xFEEEEEEF {
-                    return Err(format!("readflash bad magic: 0x{:08X}", magic));
-                }
-
-                // 3b. 读 slength 字节数据
-                let mut data = vec![0u8; slength as usize];
-                if slength > 0 {
-                    self.preloader
-                        .device
-                        .read_exact(&mut data)
-                        .map_err(|e| format!("readflash read data({}): {}", slength, e))?;
-                }
-
-                // 3c. slength > 4: 数据块 → ack + 继续循环
-                //     slength == 4 且 val != 0: break（传输终止）
-                //     slength == 4 且 val == 0: 什么都不做，继续循环
-                // 注意：Python 有 bytestoread 计数器控制循环退出，Rust 无计数器，
-                // 但等价行为：val==0 时继续循环，最终设备会发 val!=0 终止包
-                if slength > 4 {
-                    buffer.extend_from_slice(&data);
-                    // ack: pack3 + 0x00000000 + status
-                    let ack_pkt = pack3(CMD_MAGIC, 0x01, 4);
-                    self.preloader
-                        .device
-                        .write(&ack_pkt)
-                        .map_err(|e| format!("ack write hdr: {}", e))?;
-                    self.preloader
-                        .device
-                        .write(&0u32.to_le_bytes())
-                        .map_err(|e| format!("ack write data: {}", e))?;
-                    self.status().map_err(|e| format!("ack status: {}", e))?;
-                } else if slength == 4 {
-                    let val = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                    if val != 0 {
-                        break; // val != 0: 设备发送终止信号
-                    }
-                    // val == 0: 什么都不做，继续循环（等价 Python: 不 break，bytestoread 未变，继续）
-                }
+        while remaining > 0 {
+            // 3a. 读取 12 字节头
+            let mut hdr = [0u8; 12];
+            if let Err(e) = self.preloader.device.read_exact(&mut hdr) {
+                debug!("[readflash_data] read header timeout/end: {}", e);
+                break;
             }
 
-            // 4. readflash_final 收尾
-            let mut final_hdr = [0u8; 12];
-            match self.preloader.device.read_exact(&mut final_hdr) {
-                Ok(_) => {
-                    let final_magic = u32::from_le_bytes([
-                        final_hdr[0],
-                        final_hdr[1],
-                        final_hdr[2],
-                        final_hdr[3],
-                    ]);
-                    let final_slength = u32::from_le_bytes([
-                        final_hdr[8],
-                        final_hdr[9],
-                        final_hdr[10],
-                        final_hdr[11],
-                    ]);
+            let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+            let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
 
-                    if final_magic == 0xFEEEEEEF && final_slength > 0 {
-                        let mut final_data = vec![0u8; final_slength as usize];
-                        let _ = self.preloader.device.read_exact(&mut final_data);
-                    }
-                }
-                Err(e) => {
-                    // 终止包可能已被 ack() 内部的 status() 读走，设备不会再发 final 包
-                    // 对齐 Python 的 except pass 模式，忽略超时
-                    debug!("[readflash_data] final header timeout (ignored): {}", e);
-                    // 复位 bulk IN 端点，防止残留状态污染后续命令
-                    self.preloader.device.clear_halt_in().ok();
-                }
+            if magic != CMD_MAGIC {
+                return Err(format!("readflash bad magic: 0x{:08X}", magic));
             }
 
-            debug!("[readflash_data] total read {} bytes", buffer.len());
-            Ok(buffer)
-        })();
+            // 3b. 读取数据
+            let mut data = vec![0u8; slength as usize];
+            if slength > 0 {
+                self.preloader.device.read_exact(&mut data)
+                    .map_err(|e| format!("readflash data({}): {}", slength, e))?;
+            }
 
-        self.preloader.device.set_timeout(original_timeout);
+            // 3c. 判断数据类型
+            if slength == 4 {
+                let val = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+                if val != 0 {
+                    // 非零值 = 终止信号，退出循环
+                    debug!("[readflash_data] termination signal: 0x{:08X}", val);
+                    break;
+                }
+                // val == 0: 心跳/空包，不发 ACK，继续循环
+                // 注意：Python 此分支也不发 ACK（xread 后直接 ack，但 val==0 时
+                // ack 返回非零导致 break；实际等价于跳过）
+                continue;
+            }
 
-        // 错误时尝试 ack 恢复状态
-        if result.is_err() {
-            let _ = self.ack();
-            let _ = self.status();
+            // slength > 4: 有效数据块
+            buffer.extend_from_slice(&data);
+            remaining = remaining.saturating_sub(data.len());
+
+            // 发送 ACK，但不读 status（关键！避免偷吃下一个包的 header）
+            self.ack_no_status()?;
         }
 
-        result
+        debug!("[readflash_data] total read {} bytes", buffer.len());
+        Ok(buffer)
     }
 
     /// 发送 ack (4 字节 header + 4 字节 0)，对齐 Python send_param + status
@@ -2283,6 +2223,17 @@ impl<'a> DAXFlash<'a> {
             return 2;
         }
         self.status().unwrap_or(3)
+    }
+
+    /// 只发送 ACK，不读取 status 响应
+    /// 用于 readflash_data 循环中，避免 status() 消费下一个数据包的 header
+    fn ack_no_status(&mut self) -> Result<(), String> {
+        let hdr = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&hdr)
+            .map_err(|e| format!("ack_no_status write hdr: {}", e))?;
+        self.preloader.device.write(&0u32.to_le_bytes())
+            .map_err(|e| format!("ack_no_status write data: {}", e))?;
+        Ok(())
     }
 
     pub fn patch_vbmeta(&mut self, mode: u32) -> Result<(), String> {
