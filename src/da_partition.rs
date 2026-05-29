@@ -357,7 +357,7 @@ impl<'a> DAXFlash<'a> {
             // STATUS_CONTINUE 包含等待时间（毫秒）
             let wait_ms = self.status()?;
             std::thread::sleep(std::time::Duration::from_millis(wait_ms as u64));
-            let _ = self.ack();
+            let _ = self.ack(); // AckResult 的 Debug 输出已满足日志需求
             status = self.status()?;
         }
 

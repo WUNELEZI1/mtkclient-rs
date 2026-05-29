@@ -676,5 +676,44 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
 17. **#[allow(dead_code)] 清理**：移除已使用项的标注，给预留项加用途注释
 18. **jump_da 后 100ms 延迟**：对齐 Python v2.1.4.1 修复时序问题
 19. **readflash_final clear_halt_in**：超时后复位 bulk IN 端点
+20. **readflash_data ACK 修复**（2026-05-29）：
+    - 问题：ack_no_status() 不读 status，DA 固件的 ACK 确认响应残留在 USB 缓冲区，污染下一轮 read_exact(&mut hdr)
+    - 修复：替换 ack_no_status() 为完整 ack()，发送 ACK 后读取并消费 DA 的 status 响应
+    - 心跳包（slength==4, val==0）也发送完整 ack() 后再 continue
+    - 终止包（val!=0）发送 ack() 后 break
+    - ack() 返回非零时记录 debug 日志但不 break（保持容错）
+    - ack_no_status() 标记为 #[allow(dead_code)] 预留
+    - Python 参考：xflash_lib.py:883 (self.ack() != 0) → break
+
+21. **readflash_data 删除 slength==4 特殊分支 + 统一循环逻辑**（2026-05-29）：
+    - 问题：64KB+ 读取失败，第1轮数据+心跳包处理后，第2轮 read_exact(12) 返回0字节
+    - 根因：Rust 对 slength==4 的心跳包进行特殊处理（continue），跳过了数据追加、ACK 发送和 remaining 递减。设备等待 ACK 而不发送下一个数据包，下一轮 read_exact 超时 → bad magic 0x00000000
+    - Python 行为：xread() 对心跳包（slength=4, val=0）不做特殊处理，走完全相同的路径（追加 buffer、ack、length -= len(tmp)）。终止信号通过 ack() != 0 判断，不在数据块中判断
+    - 修复：
+      - 删除整个 `if slength == 4 { ... }` 分支块
+      - 所有数据（包括心跳包的4字节零值）都追加到 buffer
+      - 每轮都发送 ACK 并读取 status
+      - 每轮都递减 remaining
+      - 循环退出依赖 `ack() != 0` 而非数据内容判断
+    - Python 参考：xflash_lib.py:113-124 (xread), xflash_lib.py:879-891 (readflash 循环)
+    - 验证：cargo build 通过（0 error），cargo clippy 无新增 warning
+
+22. **ACK 重构：枚举化返回值 + 删除 ack_no_status + ZLP 优雅退出**（2026-05-29）：
+    - 新增 `AckResult` 枚举（`da_xflash.rs` pack3 函数后）：
+      - `AckResult::Continue` — status == 0，设备就绪，继续传输
+      - `AckResult::Terminated(u32)` — status != 0，传输终止或设备报错
+    - 重写 `ack()` 方法：返回 `AckResult` 替代裸 `u32`
+      - 写失败 → `Terminated(1)` / `Terminated(2)`
+      - `self.status()` Ok(0) → `Continue`
+      - `self.status()` Ok(n) → `Terminated(n)`
+      - `self.status()` Err(_) → `Terminated(3)`
+    - 删除 `ack_no_status` 方法及其 `#[allow(dead_code)]` 标注
+    - `readflash_data` 循环适配枚举：
+      - 遇 ZLP/空响应（read_exact 返回 0）→ graceful break
+      - 遇 bad magic → debug 日志 + graceful break（不再 return Err）
+      - 读数据错误 → debug 日志 + graceful break
+      - `match self.ack()` → `AckResult::Continue` 继续 / `AckResult::Terminated` break
+    - `da_partition.rs` erase 循环：`let _ = self.ack()` 添加注释 "AckResult 的 Debug 输出已满足日志需求"
+    - 验证：cargo check 通过，cargo clippy 无新增 warning
 
 
