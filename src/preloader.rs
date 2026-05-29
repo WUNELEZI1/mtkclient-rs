@@ -1,4 +1,4 @@
-﻿use crate::config::{ChipConfig, TargetConfig, CHIP_CONFIGS};
+use crate::config::{ChipConfig, TargetConfig, CHIP_CONFIGS};
 use crate::usb::UsbDevice;
 use log::debug;
 use std::time::Duration;
@@ -231,6 +231,8 @@ impl Preloader {
             return Err(format!("jump_da addr mismatch: expected {:08X}, got {:08X}", addr, resaddr));
         }
         let status = self.rword()?;
+        // Python v2.1.4.1: time.sleep(0.1) after rword() — fix rare timing issue
+        std::thread::sleep(Duration::from_millis(100));
         debug!("jump_da status: {:04X}", status);
         Ok(status == 0)
     }
