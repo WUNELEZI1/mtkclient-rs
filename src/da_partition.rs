@@ -442,6 +442,7 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 锁定 Bootloader
+    // 预留：unlock/lock 命令使用
     #[allow(dead_code)]
     pub fn lock_bootloader(&mut self) -> Result<(), String> {
         info!("开始锁定 Bootloader...");
