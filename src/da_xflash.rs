@@ -1054,6 +1054,15 @@ pub fn pack3(magic: u32, data_type: u32, length: u32) -> [u8; 12] {
     buf
 }
 
+/// ACK 响应枚举 — 替代裸 u32 返回值
+#[derive(Debug, PartialEq)]
+pub(crate) enum AckResult {
+    /// status == 0，设备就绪，继续传输
+    Continue,
+    /// status != 0，传输终止或设备报错
+    Terminated(u32),
+}
+
 /// EMMC 信息结构
 pub struct EmmcInfo {
     pub boot1_size: u64,
@@ -2164,61 +2173,56 @@ impl<'a> DAXFlash<'a> {
         let mut remaining = size as usize;
 
         while remaining > 0 {
-            // 3a. 读取 12 字节头
+            // 读 12 字节头
             let mut hdr = [0u8; 12];
-            if let Err(e) = self.preloader.device.read_exact(&mut hdr) {
-                debug!("[readflash_data] read header timeout/end: {}", e);
-                break;
+            match self.preloader.device.read_exact(&mut hdr) {
+                Ok(0) => {
+                    // ZLP 或空响应 — 设备无更多数据，正常结束
+                    debug!("[readflash_data] ZLP on header read, ending loop");
+                    break;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    debug!("[readflash_data] read header error (end of transfer): {}", e);
+                    break;
+                }
             }
 
             let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
             let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
 
             if magic != CMD_MAGIC {
-                return Err(format!("readflash bad magic: 0x{:08X}", magic));
+                // 读到非预期数据，可能是残留状态包，容错退出
+                debug!(
+                    "[readflash_data] bad magic: 0x{:08X} at offset {}, ending loop",
+                    magic,
+                    buffer.len()
+                );
+                break;
             }
 
-            // 3b. 读取数据
+            // 读数据
             let mut data = vec![0u8; slength as usize];
             if slength > 0 {
-                self.preloader.device.read_exact(&mut data)
-                    .map_err(|e| format!("readflash data({}): {}", slength, e))?;
-            }
-
-            // 3c. 判断数据类型
-            if slength == 4 {
-                let val = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                if val != 0 {
-                    // 非零值 = 终止信号，发送完整 ACK（含 status 读取）后退出
-                    // 对齐 Python xflash_lib.py:883: self.ack() != 0 → break
-                    let _ = self.ack();
-                    debug!("[readflash_data] termination signal: 0x{:08X}", val);
+                if let Err(e) = self.preloader.device.read_exact(&mut data) {
+                    debug!("[readflash_data] read data error: {}", e);
                     break;
                 }
-                // val == 0: 心跳/空包，发送完整 ACK 后继续循环
-                // 对齐 Python：xread 返回心跳包后，ack() 仍会执行并读取 status
-                // Python 的 ack() 返回 0（成功）时不 break，等价于此处的 continue
-                let ack_status = self.ack();
-                debug!("[readflash_data] heartbeat ack status: {}", ack_status);
-                continue;
             }
 
-            // slength > 4: 有效数据块
+            // 追加数据
             buffer.extend_from_slice(&data);
             remaining = remaining.saturating_sub(data.len());
 
-            // 发送完整 ACK（含 status 读取），消费 DA 固件的 ACK 确认响应
-            // 关键：必须调用 ack() 而不是 ack_no_status()，否则 status 响应会残留
-            // 在 USB 缓冲区中，导致下一轮 read_exact(&mut hdr) 读到错误的头部。
-            // 对齐 Python xflash_lib.py:883: self.ack()
-            let ack_ret = self.ack();
-            if ack_ret != 0 {
-                // ack 返回非零表示 DA 端确认异常，Python 此时会 break
-                // 但为保持容错，此处仅记录 debug 日志并继续
-                debug!(
-                    "[readflash_data] ack returned non-zero status: {}, continuing",
-                    ack_ret
-                );
+            // 发 ACK 并读 status
+            match self.ack() {
+                AckResult::Continue => {
+                    debug!("[readflash_data] ack: Continue");
+                }
+                AckResult::Terminated(code) => {
+                    debug!("[readflash_data] ack: Terminated(0x{:X}), ending loop", code);
+                    break;
+                }
             }
         }
 
@@ -2226,31 +2230,22 @@ impl<'a> DAXFlash<'a> {
         Ok(buffer)
     }
 
-    /// 发送 ack (4 字节 header + 4 字节 0)，对齐 Python send_param + status
-    /// v2.1.4.1: MT6781(dacode=0x6781) 使用 16 字节单包发送，其他芯片保持两段写
-    /// 当前设备(MT6768/MT6771)不需要，保持两段写
-    pub(crate) fn ack(&mut self) -> u32 {
+    /// 发送 ACK 并读取设备响应
+    /// 写入 12B header(CMD_MAGIC + 0x01 + 4) + 4B 零值 → 读取 status
+    /// 返回 AckResult::Continue（可继续）或 AckResult::Terminated（终止）
+    pub(crate) fn ack(&mut self) -> AckResult {
         let hdr = pack3(CMD_MAGIC, 0x01, 4);
         if self.preloader.device.write(&hdr).is_err() {
-            return 1;
+            return AckResult::Terminated(1);
         }
         if self.preloader.device.write(&0u32.to_le_bytes()).is_err() {
-            return 2;
+            return AckResult::Terminated(2);
         }
-        self.status().unwrap_or(3)
-    }
-
-    /// 只发送 ACK，不读取 status 响应
-    // 预留：特定场景下需要跳过 status 读取时使用
-    // 注意：readflash_data 已改为完整 ack()，因为不读 status 会污染后续包头
-    #[allow(dead_code)]
-    fn ack_no_status(&mut self) -> Result<(), String> {
-        let hdr = pack3(CMD_MAGIC, 0x01, 4);
-        self.preloader.device.write(&hdr)
-            .map_err(|e| format!("ack_no_status write hdr: {}", e))?;
-        self.preloader.device.write(&0u32.to_le_bytes())
-            .map_err(|e| format!("ack_no_status write data: {}", e))?;
-        Ok(())
+        match self.status() {
+            Ok(0) => AckResult::Continue,
+            Ok(n) => AckResult::Terminated(n),
+            Err(_) => AckResult::Terminated(3),
+        }
     }
 
     pub fn patch_vbmeta(&mut self, mode: u32) -> Result<(), String> {
