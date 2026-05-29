@@ -2246,6 +2246,8 @@ impl<'a> DAXFlash<'a> {
                     // 终止包可能已被 ack() 内部的 status() 读走，设备不会再发 final 包
                     // 对齐 Python 的 except pass 模式，忽略超时
                     debug!("[readflash_data] final header timeout (ignored): {}", e);
+                    // 复位 bulk IN 端点，防止残留状态污染后续命令
+                    self.preloader.device.clear_halt_in().ok();
                 }
             }
 
