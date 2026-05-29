@@ -2189,13 +2189,17 @@ impl<'a> DAXFlash<'a> {
             if slength == 4 {
                 let val = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
                 if val != 0 {
-                    // 非零值 = 终止信号，退出循环
+                    // 非零值 = 终止信号，发送完整 ACK（含 status 读取）后退出
+                    // 对齐 Python xflash_lib.py:883: self.ack() != 0 → break
+                    let _ = self.ack();
                     debug!("[readflash_data] termination signal: 0x{:08X}", val);
                     break;
                 }
-                // val == 0: 心跳/空包，不发 ACK，继续循环
-                // 注意：Python 此分支也不发 ACK（xread 后直接 ack，但 val==0 时
-                // ack 返回非零导致 break；实际等价于跳过）
+                // val == 0: 心跳/空包，发送完整 ACK 后继续循环
+                // 对齐 Python：xread 返回心跳包后，ack() 仍会执行并读取 status
+                // Python 的 ack() 返回 0（成功）时不 break，等价于此处的 continue
+                let ack_status = self.ack();
+                debug!("[readflash_data] heartbeat ack status: {}", ack_status);
                 continue;
             }
 
@@ -2203,8 +2207,19 @@ impl<'a> DAXFlash<'a> {
             buffer.extend_from_slice(&data);
             remaining = remaining.saturating_sub(data.len());
 
-            // 发送 ACK，但不读 status（关键！避免偷吃下一个包的 header）
-            self.ack_no_status()?;
+            // 发送完整 ACK（含 status 读取），消费 DA 固件的 ACK 确认响应
+            // 关键：必须调用 ack() 而不是 ack_no_status()，否则 status 响应会残留
+            // 在 USB 缓冲区中，导致下一轮 read_exact(&mut hdr) 读到错误的头部。
+            // 对齐 Python xflash_lib.py:883: self.ack()
+            let ack_ret = self.ack();
+            if ack_ret != 0 {
+                // ack 返回非零表示 DA 端确认异常，Python 此时会 break
+                // 但为保持容错，此处仅记录 debug 日志并继续
+                debug!(
+                    "[readflash_data] ack returned non-zero status: {}, continuing",
+                    ack_ret
+                );
+            }
         }
 
         debug!("[readflash_data] total read {} bytes", buffer.len());
@@ -2226,7 +2241,9 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 只发送 ACK，不读取 status 响应
-    /// 用于 readflash_data 循环中，避免 status() 消费下一个数据包的 header
+    // 预留：特定场景下需要跳过 status 读取时使用
+    // 注意：readflash_data 已改为完整 ack()，因为不读 status 会污染后续包头
+    #[allow(dead_code)]
     fn ack_no_status(&mut self) -> Result<(), String> {
         let hdr = pack3(CMD_MAGIC, 0x01, 4);
         self.preloader.device.write(&hdr)
