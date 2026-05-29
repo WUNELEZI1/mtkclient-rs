@@ -97,6 +97,10 @@ pub fn handle_command(
             // patcher payload 执行后设备 USB 端点状态变化，同一句柄上 echo(0xDA) 超时
             da.preloader.device.reopen(_context)
                 .map_err(|e| format!("bypass 后重连 USB 失败: {}", e))?;
+            // 对齐 Python crasher：reopen 后设备 BROM 未就绪，需要握手唤醒
+            // Python: Port() → preloader.init() → handshake() → run_handshake()
+            da.preloader.device.do_handshake()
+                .map_err(|e| format!("bypass 后握手失败: {}", e))?;
 
             let data = da
                 .preloader
@@ -228,6 +232,9 @@ pub fn handle_commands(
             // 对齐 Python crasher：bypass 后重建 USB 连接
             da.preloader.device.reopen(_context)
                 .map_err(|e| format!("bypass 后重连 USB 失败: {}", e))?;
+            // 对齐 Python crasher：reopen 后设备 BROM 未就绪，需要握手唤醒
+            da.preloader.device.do_handshake()
+                .map_err(|e| format!("bypass 后握手失败: {}", e))?;
 
             let data = da
                 .preloader
