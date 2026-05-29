@@ -2232,18 +2232,21 @@ impl<'a> DAXFlash<'a> {
             std::thread::sleep(Duration::from_millis(50));
 
             let mut final_hdr = [0u8; 12];
-            self.preloader.device.read_exact(&mut final_hdr)
-                .map_err(|e| format!("readflash final header: {}", e))?;
-            let final_magic = u32::from_le_bytes([final_hdr[0], final_hdr[1], final_hdr[2], final_hdr[3]]);
-            let final_slength = u32::from_le_bytes([final_hdr[8], final_hdr[9], final_hdr[10], final_hdr[11]]);
+            match self.preloader.device.read_exact(&mut final_hdr) {
+                Ok(_) => {
+                    let final_magic = u32::from_le_bytes([final_hdr[0], final_hdr[1], final_hdr[2], final_hdr[3]]);
+                    let final_slength = u32::from_le_bytes([final_hdr[8], final_hdr[9], final_hdr[10], final_hdr[11]]);
 
-            if final_magic != 0xFEEEEEEF {
-                return Err(format!("readflash final bad magic: 0x{:08X}", final_magic));
-            }
-            if final_slength > 0 {
-                let mut final_data = vec![0u8; final_slength as usize];
-                self.preloader.device.read_exact(&mut final_data)
-                    .map_err(|e| format!("readflash final data({}): {}", final_slength, e))?;
+                    if final_magic == 0xFEEEEEEF && final_slength > 0 {
+                        let mut final_data = vec![0u8; final_slength as usize];
+                        let _ = self.preloader.device.read_exact(&mut final_data);
+                    }
+                }
+                Err(e) => {
+                    // 终止包可能已被 ack() 内部的 status() 读走，设备不会再发 final 包
+                    // 对齐 Python 的 except pass 模式，忽略超时
+                    debug!("[readflash_data] final header timeout (ignored): {}", e);
+                }
             }
 
             debug!("[readflash_data] total read {} bytes", buffer.len());
