@@ -317,6 +317,7 @@ impl UsbDevice {
     }
 
     /// 获取 EP_OUT 的最大包大小
+    // 预留：动态 chunk size 优化时使用
     #[allow(dead_code)]
     pub fn ep_out_max_packet_size(&self) -> u16 {
         self.ep_out_max_packet_size
@@ -514,6 +515,7 @@ impl UsbDevice {
     }
 
     /// 复位 bulk OUT 端点（清除 halt/stall 状态）
+    // 预留：写端点错误恢复时使用
     #[allow(dead_code)]
     pub fn clear_halt_out(&mut self) -> Result<(), String> {
         self.clear_halt_ep(self.ep_out)

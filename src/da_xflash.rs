@@ -173,6 +173,7 @@ fn sej_sec_cfg_hw_encrypt(data: &[u8]) -> Result<Vec<u8>, String> {
 // 尾部: SHA256 hash(32 字节，经 AES 加密)
 
 /// SecCfg V4 解析和修改
+// 预留：unlock/lock 功能使用
 #[allow(dead_code)]
 struct SecCfgV4 {
     magic: u32,
@@ -381,6 +382,7 @@ impl SecCfgV4 {
 //          sw_sec_lock_done(1) + page_size(2) + page_count(4) = 44 字节
 // 加密数据段 + endflag(4)
 
+// 预留：unlock/lock 功能使用
 #[allow(dead_code)]
 struct SecCfgV3 {
     info_header: [u8; 16],

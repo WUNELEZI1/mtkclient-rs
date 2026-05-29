@@ -202,6 +202,7 @@ impl Preloader {
         Ok(())
     }
 
+    // 预留：dump-preloader 独立命令使用
     #[allow(dead_code)]
     pub fn run_kamakiri2(&mut self) -> Result<(Vec<u8>, String), String> {
         info!("Running Kamakiri2...");
@@ -250,6 +251,7 @@ impl Preloader {
         Ok((Vec::new(), String::new()))
     }
 
+    // 预留：bypass_security 修复时使用
     #[allow(dead_code)]
     pub fn run_payload(&mut self, filename: &str, expected_ack: u32) -> Result<(), String> {
         let payload_path = exe_relative_path(&format!("payloads/{}", filename));
