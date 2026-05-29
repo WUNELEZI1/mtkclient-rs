@@ -38,15 +38,15 @@ impl SessionState {
             usb_vid: u16::from_str_radix(map.get("usb_vid")?.strip_prefix("0x")?, 16).ok()?,
             usb_pid: u16::from_str_radix(map.get("usb_pid")?.strip_prefix("0x")?, 16).ok()?,
             hw_code: u16::from_str_radix(map.get("hw_code")?.strip_prefix("0x")?, 16).ok()?,
-            target_config: u32::from_str_radix(map.get("target_config")?.strip_prefix("0x")?, 16).ok()?,
+            target_config: u32::from_str_radix(map.get("target_config")?.strip_prefix("0x")?, 16)
+                .ok()?,
             da_loaded: map.get("da_loaded")?.parse::<bool>().ok()?,
         })
     }
 
     /// 写入 .state 文件
     pub fn save(&self) -> Result<(), String> {
-        fs::write(STATE_FILE, self.to_string())
-            .map_err(|e| format!("写入 .state 失败: {}", e))
+        fs::write(STATE_FILE, self.to_string()).map_err(|e| format!("写入 .state 失败: {}", e))
     }
 
     /// 读取 .state 文件
@@ -57,7 +57,10 @@ impl SessionState {
         match fs::read_to_string(STATE_FILE) {
             Ok(content) => {
                 let state = Self::from_string(&content)?;
-                debug!("[session] .state 已加载: hw_code=0x{:04X}, da_loaded={}", state.hw_code, state.da_loaded);
+                debug!(
+                    "[session] .state 已加载: hw_code=0x{:04X}, da_loaded={}",
+                    state.hw_code, state.da_loaded
+                );
                 Some(state)
             }
             Err(e) => {
@@ -86,7 +89,10 @@ impl SessionState {
 pub fn try_reuse_da_session(vid: u16, pid: u16) -> bool {
     if let Some(state) = SessionState::load() {
         if state.da_loaded && state.device_online(vid, pid) {
-            info!("[session] 复用 DA 会话（hw_code=0x{:04X}，设备在线）", state.hw_code);
+            info!(
+                "[session] 复用 DA 会话（hw_code=0x{:04X}，设备在线）",
+                state.hw_code
+            );
             return true;
         } else {
             debug!("[session] .state 存在但设备不在线或 DA 未加载，重新初始化");

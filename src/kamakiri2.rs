@@ -140,7 +140,10 @@ impl Preloader {
         let ptr_da = chip.brom_register_access.0;
 
         debug!("[inject] payload_size={}", payload.len());
-        debug!("[inject] ptr_da_bra=0x{:08X} ptr_da=0x{:08X}", ptr_da_bra, ptr_da);
+        debug!(
+            "[inject] ptr_da_bra=0x{:08X} ptr_da=0x{:08X}",
+            ptr_da_bra, ptr_da
+        );
 
         let linecode = self.device.ctrl_transfer_in(0xA1, 0x21, 0, 0, 7)?;
         let mut lc = linecode.to_vec();
@@ -222,7 +225,10 @@ impl Preloader {
                     .read_exact(&mut data)
                     .map_err(|e| format!("read preloader: {}", e))?;
                 if transferred < length {
-                    debug!("preloader 数据不完整: 期望 {} 字节，实际 {} 字节", length, transferred);
+                    debug!(
+                        "preloader 数据不完整: 期望 {} 字节，实际 {} 字节",
+                        length, transferred
+                    );
                 }
                 data.truncate(transferred);
                 if let Some(info_idx) = data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
@@ -414,7 +420,12 @@ impl Preloader {
     /// 通过 Kamakiri2 payload 流式 dump preloader（对齐 Python pltools.run_dump_preloader）
     /// 使用 exploit 路径（inject_payload = ctrl_transfer），
     /// BROM 阶段的正确方式
-    pub fn dump_preloader_payload(&mut self, _debug: bool, quiet: bool, _context: &UsbContext) -> Result<(Vec<u8>, String), String> {
+    pub fn dump_preloader_payload(
+        &mut self,
+        _debug: bool,
+        quiet: bool,
+        _context: &UsbContext,
+    ) -> Result<(Vec<u8>, String), String> {
         // 静默模式：关闭 USB READ 调试日志
         if quiet {
             crate::usb::set_quiet_usb_read(true);
@@ -422,7 +433,8 @@ impl Preloader {
         info!("正在提取Preloader...");
 
         let payload_path = exe_relative_path("payloads/generic_preloader_dump_payload.bin");
-        let mut payload = std::fs::read(&payload_path).map_err(|e| format!("dump payload: {}", e))?;
+        let mut payload =
+            std::fs::read(&payload_path).map_err(|e| format!("dump payload: {}", e))?;
 
         let chip = self.chip.ok_or_else(|| "未识别的处理器型号".to_string())?;
 
@@ -445,7 +457,10 @@ impl Preloader {
                 payload[ua_offset + 3],
             ]);
             if wd == 0x10007000 {
-                debug!("[dump] fix_payload: watchdog 0x10007000 -> 0x{:08X}", chip.watchdog);
+                debug!(
+                    "[dump] fix_payload: watchdog 0x10007000 -> 0x{:08X}",
+                    chip.watchdog
+                );
                 let wd_bytes = chip.watchdog.to_le_bytes();
                 payload[wd_offset..wd_offset + 4].copy_from_slice(&wd_bytes);
             }
@@ -506,12 +521,18 @@ impl Preloader {
             .map_err(|e| format!("read preloader data: {}", e))?;
 
         if transferred < length {
-            debug!("preloader 数据不完整: 期望 {} 字节，实际 {} 字节", length, transferred);
+            debug!(
+                "preloader 数据不完整: 期望 {} 字节，实际 {} 字节",
+                length, transferred
+            );
         }
         let mut all_data = data;
         all_data.truncate(transferred);
 
-        debug!("dump_preloader_payload: read_exact completed, {} bytes", all_data.len());
+        debug!(
+            "dump_preloader_payload: read_exact completed, {} bytes",
+            all_data.len()
+        );
 
         // 从 MTK_BLOADER_INFO 提取原始文件名
         let preloader = all_data;

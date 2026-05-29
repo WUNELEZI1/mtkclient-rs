@@ -39,6 +39,13 @@ pub struct Cli {
     pub debug_mode: bool,
 
     #[arg(
+        long = "quiet",
+        default_value_t = false,
+        help = "静默模式（跳过所有 info 输出，只输出错误和最终结果）"
+    )]
+    pub quiet: bool,
+
+    #[arg(
         long = "quiet-dump",
         default_value_t = false,
         help = "静默 dump 模式（不打印进度条和 USB 读取日志）"
