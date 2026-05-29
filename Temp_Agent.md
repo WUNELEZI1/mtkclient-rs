@@ -722,7 +722,6 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
     - 修复：在 `commands.rs` 的 `handle_command` 和 `handle_commands` 中，bypass_security 返回后、dump_preloader_from_ram 前，插入 `da.preloader.device.reopen(_context)`
     - reopen 内部：close 旧句柄 → sleep 200ms → UsbDevice::new (通过 SUPPORTED_DEVICES 表查找 VID=0E8D PID=0003) → 交换字段
     - bypass 后设备仍为 BROM 模式 (VID=0E8D PID=0003)，reopen 能正确匹配
-    - reopen 后不做 handshake，dump_preloader_from_ram 第一句 brom_register_access 直接 echo(0xDA) 开始通信
      - 验证：cargo check 通过，cargo clippy 无新增 warning
 
 24. **bypass 后 reopen + do_handshake**（2026-05-29）：
@@ -731,6 +730,16 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
      - Python 对照：crasher 中 `Port()` 创建新连接后调 `preloader.init()` → `handshake()` → `run_handshake()`，完成握手后才 dump
      - 修复：reopen 后加 `da.preloader.device.do_handshake()` 唤醒 BROM 协议状态机
      - 两处修改：`handle_command` 和 `handle_commands`
+     - 验证：cargo check 通过，cargo clippy 无新增 warning
+
+25. **去掉 reopen + 加强 bypass drain 逻辑**（2026-05-29）：
+     - 问题：reopen 后 handshake 全部失败（write 返回 -7 / LIBUSB_ERROR_TIMEOUT）
+     - 根因：patcher payload 执行后设备短暂不可用，reopen 的 200ms sleep 不够。且既然 bypass_security 内部的 handshake 已经成功，reopen 本身无必要
+     - 修复：
+       - 删除 `commands.rs` 两处 `reopen(_context)` + `do_handshake()` 调用
+       - `bypass_security` 内部加强 drain：从固定 3 次 read 改为最多 10 次，读到 0 就停止（对齐 Python run_handshake 逐字节握手自然 drain 行为）
+       - timeout 从 100ms 改为 50ms，更快速清空残留
+     - Python 对照：crasher 中 `run_handshake` 逐字节验证，每读一个字节自动消费残留数据
      - 验证：cargo check 通过，cargo clippy 无新增 warning
 
 

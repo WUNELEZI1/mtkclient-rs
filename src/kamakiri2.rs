@@ -386,13 +386,15 @@ impl Preloader {
         self.inject_payload(&payload, 0xA1A2A3A4)?;
         debug!("patcher payload 注入完成");
 
-        // patcher payload 执行后在 USB IN 端点残留 4 字节数据（日志显示 handshake 第一次 read(64) 读到 transferred=4），
-        // do_handshake 误将残留数据当作握手回显导致后续 BROM 命令通信错位。
-        // 用短超时 read 清空残留（对齐 Python run_handshake 逐字节验证自动 drain 行为）
-        self.device.set_timeout(Duration::from_millis(100));
+        // 对齐 Python run_handshake 的逐字节握手自然 drain 行为：
+        // patcher payload 执行后 USB IN 端点有残留数据，需要彻底清空
+        self.device.set_timeout(Duration::from_millis(50));
         let mut drain_buf = [0u8; 512];
-        for _ in 0..3 {
-            let _ = self.device.read(&mut drain_buf);
+        for _ in 0..10 {
+            match self.device.read(&mut drain_buf) {
+                Ok(n) if n > 0 => continue,
+                _ => break, // 读到 0 就停止
+            }
         }
         self.device.set_timeout(Duration::from_millis(1000));
 
