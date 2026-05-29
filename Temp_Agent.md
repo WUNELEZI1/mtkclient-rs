@@ -723,6 +723,14 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
     - reopen 内部：close 旧句柄 → sleep 200ms → UsbDevice::new (通过 SUPPORTED_DEVICES 表查找 VID=0E8D PID=0003) → 交换字段
     - bypass 后设备仍为 BROM 模式 (VID=0E8D PID=0003)，reopen 能正确匹配
     - reopen 后不做 handshake，dump_preloader_from_ram 第一句 brom_register_access 直接 echo(0xDA) 开始通信
-    - 验证：cargo check 通过，cargo clippy 无新增 warning
+     - 验证：cargo check 通过，cargo clippy 无新增 warning
+
+24. **bypass 后 reopen + do_handshake**（2026-05-29）：
+     - 问题：reopen 后 echo(0xDA) → `ret=-7, transferred=0` → 超时
+     - 根因：reopen 只是关闭再打开 USB 设备，设备此时 BROM 未就绪，需要握手唤醒
+     - Python 对照：crasher 中 `Port()` 创建新连接后调 `preloader.init()` → `handshake()` → `run_handshake()`，完成握手后才 dump
+     - 修复：reopen 后加 `da.preloader.device.do_handshake()` 唤醒 BROM 协议状态机
+     - 两处修改：`handle_command` 和 `handle_commands`
+     - 验证：cargo check 通过，cargo clippy 无新增 warning
 
 
