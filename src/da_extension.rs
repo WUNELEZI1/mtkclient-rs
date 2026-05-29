@@ -1,8 +1,9 @@
-use log::{info, warn, debug};
-use crate::da_xflash::{DAXFlash, CMD_MAGIC, SET_META_BOOT_MODE, pack3};
+use crate::da_xflash::{CMD_MAGIC, DAXFlash, SET_META_BOOT_MODE, pack3};
+use log::{debug, info, warn};
 
 /// DA extensions 模板（预编译的 da_x.bin）
-const DA_EXTENSIONS_TEMPLATE: &[u8] = include_bytes!("../mtkclient-2.0.1/mtkclient/payloads/da_x.bin");
+const DA_EXTENSIONS_TEMPLATE: &[u8] =
+    include_bytes!("../mtkclient-2.0.1/mtkclient/payloads/da_x.bin");
 
 impl<'a> DAXFlash<'a> {
     /// 在二进制数据中搜索模式（支持 `.` 0x2E 作为单字节通配符）
@@ -30,14 +31,20 @@ impl<'a> DAXFlash<'a> {
 
         // 如果没有通配符，直接精确匹配
         if segments.len() <= 1 {
-            return search_data.windows(pattern.len()).position(|w| w == pattern).map(|p| p + start_pos);
+            return search_data
+                .windows(pattern.len())
+                .position(|w| w == pattern)
+                .map(|p| p + start_pos);
         }
 
         // 搜索第一段，对每个位置检查后续段（跳过通配符字节）
         let seg0 = segments[0];
         let mut search_start = 0;
         while search_start + seg0.len() <= search_data.len() {
-            if let Some(idx) = search_data[search_start..].windows(seg0.len()).position(|w| w == seg0) {
+            if let Some(idx) = search_data[search_start..]
+                .windows(seg0.len())
+                .position(|w| w == seg0)
+            {
                 let base = search_start + idx;
                 let mut pos = base + seg0.len();
                 let mut ok = true;
@@ -66,15 +73,42 @@ impl<'a> DAXFlash<'a> {
 
     /// DA1/DA2 公共修补 patches（8 个相同）
     const COMMON_PATCHES: &'static [(&'static [u8], &'static [u8], &'static str)] = &[
-        (b"\xA3\x68\x7B\xB1\x28\x46", b"\x01\x23\xA3\x60\x28\x46", "oppo security"),
-        (b"\xB3\xF5\x80\x7F\x01\xD1", b"\xB3\xF5\x80\x7F\x01\xD1\x4F\xF0\x00\x00\x4F\xF0\x00\x00\x70\x47", "mt6739 c30"),
-        (b"\xB3\xF5\x80\x7F\x04\xBF\x4F\xF4\x80\x73\x05\xF0\x11\xB8\x4F\xF0\xFF\x30\x70\x47",
-         b"\xB3\xF5\x80\x7F\x04\xBF\x4F\xF4\x80\x73\x4F\xF0\x00\x00\x4F\xF0\x00\x00\x70\x47", "regular"),
-        (b"\x10\xB5\x0C\x68\x02\x68", b"\x10\xB5\x01\x20\x10\xBD", "ram blacklist"),
-        (b"\x08\xB5\x10\x4B\x7B\x44\x1B\x68\x1B\x68", b"\x00\x20\x70\x47\x00\x00\x00\x00\x00\x00", "seclib_sec_usbdl_enabled"),
+        (
+            b"\xA3\x68\x7B\xB1\x28\x46",
+            b"\x01\x23\xA3\x60\x28\x46",
+            "oppo security",
+        ),
+        (
+            b"\xB3\xF5\x80\x7F\x01\xD1",
+            b"\xB3\xF5\x80\x7F\x01\xD1\x4F\xF0\x00\x00\x4F\xF0\x00\x00\x70\x47",
+            "mt6739 c30",
+        ),
+        (
+            b"\xB3\xF5\x80\x7F\x04\xBF\x4F\xF4\x80\x73\x05\xF0\x11\xB8\x4F\xF0\xFF\x30\x70\x47",
+            b"\xB3\xF5\x80\x7F\x04\xBF\x4F\xF4\x80\x73\x4F\xF0\x00\x00\x4F\xF0\x00\x00\x70\x47",
+            "regular",
+        ),
+        (
+            b"\x10\xB5\x0C\x68\x02\x68",
+            b"\x10\xB5\x01\x20\x10\xBD",
+            "ram blacklist",
+        ),
+        (
+            b"\x08\xB5\x10\x4B\x7B\x44\x1B\x68\x1B\x68",
+            b"\x00\x20\x70\x47\x00\x00\x00\x00\x00\x00",
+            "seclib_sec_usbdl_enabled",
+        ),
         (b"Preloader Start", b"Patched L Start", "Patched loader msg"),
-        (b"\xF0\xB5\x8B\xB0\x02\xAE\x20\x25\x0C\x46\x07\x46", b"\x00\x20\x70\x47\x00\x00\x00\x00\x00\x20\x53\x74\x61\x72\x74", "sec_img_auth"),
-        (b"\xFF\xC0\xF3\x40\x00\x08\xBD", b"\xFF\x4F\xF0\x00\x00\x08\xBD", "get_vfy_policy"),
+        (
+            b"\xF0\xB5\x8B\xB0\x02\xAE\x20\x25\x0C\x46\x07\x46",
+            b"\x00\x20\x70\x47\x00\x00\x00\x00\x00\x20\x53\x74\x61\x72\x74",
+            "sec_img_auth",
+        ),
+        (
+            b"\xFF\xC0\xF3\x40\x00\x08\xBD",
+            b"\xFF\x4F\xF0\x00\x00\x08\xBD",
+            "get_vfy_policy",
+        ),
     ];
 
     /// 应用修补 patches
@@ -156,18 +190,27 @@ impl<'a> DAXFlash<'a> {
         }
 
         // DA2 独有：oppo security（复杂逻辑）
-        if Self::find_binary(data, b"[oplus]", 0).is_some() || Self::find_binary(data, b"[OPPO]", 0).is_some() {
+        if Self::find_binary(data, b"[oplus]", 0).is_some()
+            || Self::find_binary(data, b"[OPPO]", 0).is_some()
+        {
             if let Some(oppo) = Self::find_binary(data, b"\x0A\x00\x00\xE0.\x00\x00\xE0", 0)
-                && oppo >= 4 {
-                    let auth_flag_ptr = u32::from_le_bytes(data[oppo - 4..oppo].try_into().unwrap());
-                    info!("已修补 DA2: oppo security (mt6765, ptr=0x{:08X})", auth_flag_ptr);
-                    patched = true;
-                }
-            
+                && oppo >= 4
+            {
+                let auth_flag_ptr = u32::from_le_bytes(data[oppo - 4..oppo].try_into().unwrap());
+                info!(
+                    "已修补 DA2: oppo security (mt6765, ptr=0x{:08X})",
+                    auth_flag_ptr
+                );
+                patched = true;
+            }
+
             let mut oppo_pos = 0;
             let mut oppo_patched = false;
             while oppo_pos < data.len() {
-                if let Some(oppo) = data[oppo_pos..].windows(6).position(|w| w == b"\x01\x3B\x01\x2B\x08\xD9") {
+                if let Some(oppo) = data[oppo_pos..]
+                    .windows(6)
+                    .position(|w| w == b"\x01\x3B\x01\x2B\x08\xD9")
+                {
                     let actual = oppo_pos + oppo;
                     data[actual..actual + 4].copy_from_slice(b"\x01\x20\x08\xBD");
                     oppo_patched = true;
@@ -198,8 +241,13 @@ impl<'a> DAXFlash<'a> {
             data[idx..idx + 8].copy_from_slice(b"\x4F\xF0\x00\x09\x4F\xF0\x00\x09");
             info!("已修补 DA2: hash check (arm pattern)");
             patched = true;
-        } else if let Some(idx) = Self::find_binary(data, b"\x4F\xF0\x04\x09\x32\x46\x01\x98\x03\x99\xCC\xF2\x07\x09", 0) {
-            data[idx..idx + 14].copy_from_slice(b"\x4F\xF0\x00\x09\x32\x46\x01\x98\x03\x99\x4F\xF0\x00\x09");
+        } else if let Some(idx) = Self::find_binary(
+            data,
+            b"\x4F\xF0\x04\x09\x32\x46\x01\x98\x03\x99\xCC\xF2\x07\x09",
+            0,
+        ) {
+            data[idx..idx + 14]
+                .copy_from_slice(b"\x4F\xF0\x00\x09\x32\x46\x01\x98\x03\x99\x4F\xF0\x00\x09");
             info!("已修补 DA2: hash check (arm pattern 2)");
             patched = true;
         } else {
@@ -237,7 +285,10 @@ impl<'a> DAXFlash<'a> {
         // DA2 独有：write not allowed pattern 1
         let mut idx = 0;
         let mut write_patched = false;
-        while let Some(pos) = data[idx..].windows(8).position(|w| w == b"\x37\xB5\x00\x23\x04\x46\x02\xA8") {
+        while let Some(pos) = data[idx..]
+            .windows(8)
+            .position(|w| w == b"\x37\xB5\x00\x23\x04\x46\x02\xA8")
+        {
             let actual_idx = idx + pos;
             data[actual_idx..actual_idx + 8].copy_from_slice(b"\x37\xB5\x00\x20\x03\xB0\x30\xBD");
             write_patched = true;
@@ -281,7 +332,8 @@ impl<'a> DAXFlash<'a> {
         if let Some(pos) = mmc_get_card {
             mmc_get_card = Some(pos.saturating_sub(1));
         } else {
-            mmc_get_card = Self::find_binary(da2, b"\xA3\xEB\x00\x13\x18\x1A\x02\xEB\x00\x10", 0).map(|p| p.saturating_sub(10));
+            mmc_get_card = Self::find_binary(da2, b"\xA3\xEB\x00\x13\x18\x1A\x02\xEB\x00\x10", 0)
+                .map(|p| p.saturating_sub(10));
         }
 
         // 3. mmc_set_part_config: 循环搜索 \xC3\x69\x0A\x46\x10\xB5，直到 +20 位置是 \xB3\x21
@@ -301,7 +353,8 @@ impl<'a> DAXFlash<'a> {
 
         // 4. mmc_rpmb_send_command: \xF8\xB5\x06\x46\x9D\xF8\x18\x50
         //    备选: \x2D\xE9\xF0\x41\x4F\xF6\xFD\x74
-        let mut mmc_rpmb_send_command = Self::find_binary(da2, b"\xF8\xB5\x06\x46\x9D\xF8\x18\x50", 0);
+        let mut mmc_rpmb_send_command =
+            Self::find_binary(da2, b"\xF8\xB5\x06\x46\x9D\xF8\x18\x50", 0);
         if mmc_rpmb_send_command.is_none() {
             mmc_rpmb_send_command = Self::find_binary(da2, b"\x2D\xE9\xF0\x41\x4F\xF6\xFD\x74", 0);
         }
@@ -312,24 +365,42 @@ impl<'a> DAXFlash<'a> {
 
         // 备选 1: \x20\x46\x0B\xB0\xBD\xE8\xF0\x83\x00\xBF，+10 位置读 4 字节
         if let Some(p) = Self::find_binary(da2, b"\x20\x46\x0B\xB0\xBD\xE8\xF0\x83\x00\xBF", 0)
-            && p + 14 <= da2.len() {
-                g_ufs_hba = Some(u32::from_le_bytes([da2[p+10], da2[p+11], da2[p+12], da2[p+13]]));
-                ptr_g_ufs_hba_found = true;
-            }
+            && p + 14 <= da2.len()
+        {
+            g_ufs_hba = Some(u32::from_le_bytes([
+                da2[p + 10],
+                da2[p + 11],
+                da2[p + 12],
+                da2[p + 13],
+            ]));
+            ptr_g_ufs_hba_found = true;
+        }
         // 备选 2: \x20\x46\x0D\xB0\xBD\xE8\xF0\x83，+8 位置读 4 字节
         if g_ufs_hba.is_none()
             && let Some(p) = Self::find_binary(da2, b"\x20\x46\x0D\xB0\xBD\xE8\xF0\x83", 0)
-                && p + 12 <= da2.len() {
-                    g_ufs_hba = Some(u32::from_le_bytes([da2[p+8], da2[p+9], da2[p+10], da2[p+11]]));
-                    ptr_g_ufs_hba_found = true;
-                }
+            && p + 12 <= da2.len()
+        {
+            g_ufs_hba = Some(u32::from_le_bytes([
+                da2[p + 8],
+                da2[p + 9],
+                da2[p + 10],
+                da2[p + 11],
+            ]));
+            ptr_g_ufs_hba_found = true;
+        }
         // 备选 3: \x21\x46\x02\xF0\x02\xFB\x1B\xE6\x00\xBF，+10+0x8 位置读 4 字节
         if g_ufs_hba.is_none()
             && let Some(p) = Self::find_binary(da2, b"\x21\x46\x02\xF0\x02\xFB\x1B\xE6\x00\xBF", 0)
-                && p + 18 <= da2.len() {
-                    g_ufs_hba = Some(u32::from_le_bytes([da2[p+18], da2[p+19], da2[p+20], da2[p+21]]));
-                    ptr_g_ufs_hba_found = true;
-                }
+            && p + 18 <= da2.len()
+        {
+            g_ufs_hba = Some(u32::from_le_bytes([
+                da2[p + 18],
+                da2[p + 19],
+                da2[p + 20],
+                da2[p + 21],
+            ]));
+            ptr_g_ufs_hba_found = true;
+        }
 
         // 6. ufshcd_get_free_tag 和 ufshcd_queuecommand（只有 UFS 设备需要）
         let ufshcd_get_free_tag = if ptr_g_ufs_hba_found {
@@ -350,12 +421,21 @@ impl<'a> DAXFlash<'a> {
         }
 
         // 计算绝对地址（Thumb 模式: addr + base | 1）
-        let register_devctrl_addr = (register_devctrl.unwrap() as u32).wrapping_add(da2address as u32) | 1;
+        let register_devctrl_addr =
+            (register_devctrl.unwrap() as u32).wrapping_add(da2address as u32) | 1;
         let mmc_get_card_addr = (mmc_get_card.unwrap() as u32).wrapping_add(da2address as u32) | 1;
-        let mmc_set_part_config_addr = mmc_set_part_config.map(|p| (p as u32).wrapping_add(da2address as u32) | 1).unwrap_or(0);
-        let mmc_rpmb_send_command_addr = mmc_rpmb_send_command.map(|p| (p as u32).wrapping_add(da2address as u32) | 1).unwrap_or(0);
-        let ufshcd_get_free_tag_addr = ufshcd_get_free_tag.map(|p| (p as u32).wrapping_add((da2address - 1) as u32) | 1).unwrap_or(0);
-        let ufshcd_queuecommand_addr = ufshcd_queuecommand.map(|p| (p as u32).wrapping_add(da2address as u32) | 1).unwrap_or(0);
+        let mmc_set_part_config_addr = mmc_set_part_config
+            .map(|p| (p as u32).wrapping_add(da2address as u32) | 1)
+            .unwrap_or(0);
+        let mmc_rpmb_send_command_addr = mmc_rpmb_send_command
+            .map(|p| (p as u32).wrapping_add(da2address as u32) | 1)
+            .unwrap_or(0);
+        let ufshcd_get_free_tag_addr = ufshcd_get_free_tag
+            .map(|p| (p as u32).wrapping_add((da2address - 1) as u32) | 1)
+            .unwrap_or(0);
+        let ufshcd_queuecommand_addr = ufshcd_queuecommand
+            .map(|p| (p as u32).wrapping_add(da2address as u32) | 1)
+            .unwrap_or(0);
         let g_ufs_hba_addr = g_ufs_hba.unwrap_or(0);
 
         // efuse 地址
@@ -372,35 +452,41 @@ impl<'a> DAXFlash<'a> {
         let efuse_addr_ptr = daextdata.windows(4).position(|w| w == b"\x88\x88\x88\x88");
 
         if let Some(p) = register_ptr {
-            daextdata[p..p+4].copy_from_slice(&register_devctrl_addr.to_le_bytes());
+            daextdata[p..p + 4].copy_from_slice(&register_devctrl_addr.to_le_bytes());
         }
         if let Some(p) = mmc_get_card_ptr {
-            daextdata[p..p+4].copy_from_slice(&mmc_get_card_addr.to_le_bytes());
+            daextdata[p..p + 4].copy_from_slice(&mmc_get_card_addr.to_le_bytes());
         }
         if let Some(p) = mmc_set_part_config_ptr {
-            daextdata[p..p+4].copy_from_slice(&mmc_set_part_config_addr.to_le_bytes());
+            daextdata[p..p + 4].copy_from_slice(&mmc_set_part_config_addr.to_le_bytes());
         }
         if let Some(p) = mmc_rpmb_send_command_ptr {
-            daextdata[p..p+4].copy_from_slice(&mmc_rpmb_send_command_addr.to_le_bytes());
+            daextdata[p..p + 4].copy_from_slice(&mmc_rpmb_send_command_addr.to_le_bytes());
         }
         if let Some(p) = ufshcd_queuecommand_ptr {
-            daextdata[p..p+4].copy_from_slice(&ufshcd_queuecommand_addr.to_le_bytes());
+            daextdata[p..p + 4].copy_from_slice(&ufshcd_queuecommand_addr.to_le_bytes());
         }
         if let Some(p) = ufshcd_get_free_tag_ptr {
-            daextdata[p..p+4].copy_from_slice(&ufshcd_get_free_tag_addr.to_le_bytes());
+            daextdata[p..p + 4].copy_from_slice(&ufshcd_get_free_tag_addr.to_le_bytes());
         }
         if let Some(p) = ptr_g_ufs_hba_ptr {
-            daextdata[p..p+4].copy_from_slice(&g_ufs_hba_addr.to_le_bytes());
+            daextdata[p..p + 4].copy_from_slice(&g_ufs_hba_addr.to_le_bytes());
         }
         if let Some(p) = efuse_addr_ptr {
-            daextdata[p..p+4].copy_from_slice(&efuse_addr.to_le_bytes());
+            daextdata[p..p + 4].copy_from_slice(&efuse_addr.to_le_bytes());
         }
 
         debug!("DA Extensions 生成成功:");
         debug!("  register_devctrl 地址: 0x{:08X}", register_devctrl_addr);
         debug!("  mmc_get_card 地址: 0x{:08X}", mmc_get_card_addr);
-        debug!("  mmc_set_part_config 地址: 0x{:08X}", mmc_set_part_config_addr);
-        debug!("  mmc_rpmb_send_command 地址: 0x{:08X}", mmc_rpmb_send_command_addr);
+        debug!(
+            "  mmc_set_part_config 地址: 0x{:08X}",
+            mmc_set_part_config_addr
+        );
+        debug!(
+            "  mmc_rpmb_send_command 地址: 0x{:08X}",
+            mmc_rpmb_send_command_addr
+        );
 
         Some(daextdata)
     }
@@ -430,7 +516,11 @@ impl<'a> DAXFlash<'a> {
 
     /// 带通配符的 find_binary（支持 . 通配符，公开版本）
     #[allow(dead_code)]
-    pub fn find_binary_with_wildcard(data: &[u8], pattern: &[u8], start_pos: usize) -> Option<usize> {
+    pub fn find_binary_with_wildcard(
+        data: &[u8],
+        pattern: &[u8],
+        start_pos: usize,
+    ) -> Option<usize> {
         Self::find_binary(data, pattern, start_pos)
     }
 
@@ -458,7 +548,10 @@ impl<'a> DAXFlash<'a> {
             self.preloader.device.write(&0x0F0001u32.to_le_bytes())?;
             let st2 = self.status()?;
             if st2 != 0 {
-                return Err(format!("custom_readmem CUSTOM_READMEM status: 0x{:08X}", st2));
+                return Err(format!(
+                    "custom_readmem CUSTOM_READMEM status: 0x{:08X}",
+                    st2
+                ));
             }
 
             // 2. xsend(addr, 8 bytes, is64bit=True)

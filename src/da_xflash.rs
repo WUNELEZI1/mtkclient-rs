@@ -1576,7 +1576,7 @@ impl<'a> DAXFlash<'a> {
     /// 上传第一阶段 DA
     /// 对照 Python xflash_lib.py:upload_da1
     pub fn upload_da1(&mut self) -> Result<bool, String> {
-        info!("上传 XFlash 阶段 1...");
+        debug!("上传 XFlash 阶段 1...");
 
         let mut file =
             File::open("MTK_DA_V5.bin").map_err(|e| format!("无法打开 DA 文件: {}", e))?;
@@ -1596,7 +1596,7 @@ impl<'a> DAXFlash<'a> {
         let da1_address = stage1.start_addr;
         let _da1_sig_len = stage1.sig_len;
 
-        info!(
+        debug!(
             "  偏移: 0x{:08X}, 大小: 0x{:08X}, 地址: 0x{:08X}",
             da1_buf_offset, da1_len, da1_address
         );
@@ -1607,10 +1607,8 @@ impl<'a> DAXFlash<'a> {
             return Err("DA 文件格式错误，Stage1 数据超出文件范围".to_string());
         }
 
-        // Python: if self.patch or not self.config.target_config["sbc"] and not self.config.stock:
-        // MT6768 无安全启动，需要 patch DA
         let mut da1_patched = da_data[da1_start..da1_end].to_vec();
-        info!("应用 DA1 patch...");
+        debug!("应用 DA1 patch...");
         Self::patch_da1(&mut da1_patched);
 
         if !self
@@ -1620,7 +1618,7 @@ impl<'a> DAXFlash<'a> {
             return Err("发送 DA 失败".to_string());
         }
 
-        info!("成功上传 stage 1，跳转中..");
+        debug!("成功上传 stage 1，跳转中...");
 
         self.preloader.jump_da(da1_address)?;
 
@@ -1639,7 +1637,7 @@ impl<'a> DAXFlash<'a> {
         if sync[0] != 0xC0 {
             return Err(format!("Error DA 同步: 0x{:02X}", sync[0]));
         }
-        info!("DA 同步 OK (0xC0)");
+        debug!("DA 同步 OK (0xC0)");
 
         // Python: self.sync() 发送 XFlash SYNC_SIGNAL
         self.xflash_sync()?;
@@ -1655,7 +1653,7 @@ impl<'a> DAXFlash<'a> {
         if resp != CMD_SYNC_SIGNAL {
             return Err(format!("Error jumping to DA: got 0x{:08X}", resp));
         }
-        info!("已成功接收 DA 同步信号");
+        debug!("已接收 DA 同步信号");
 
         Ok(true)
     }
@@ -1663,7 +1661,7 @@ impl<'a> DAXFlash<'a> {
     /// 上传第二阶段 DA
     /// 流程：检查是否需要 EMI → 发送 EMI → 调用 boot_to 上传 Stage2 → reinit
     pub fn upload_da2(&mut self) -> Result<bool, String> {
-        info!("上传 XFlash 阶段 2...");
+        debug!("上传 XFlash 阶段 2...");
 
         let mut file =
             File::open("MTK_DA_V5.bin").map_err(|e| format!("无法打开 DA 文件: {}", e))?;
@@ -1683,19 +1681,17 @@ impl<'a> DAXFlash<'a> {
         let da2_address = stage2.start_addr;
         let da2_sig_len = stage2.sig_len;
 
-        info!(
+        debug!(
             "  偏移: 0x{:08X}, 大小: 0x{:08X}, 地址: 0x{:08X}",
             da2_buf_offset, da2_len, da2_address
         );
 
-        // 从文件中读取 Stage2 数据（去除签名）
         let da2_start = da2_buf_offset as usize;
         let da2_end_raw = da2_start + da2_len as usize;
         if da2_end_raw > da_data.len() {
             return Err("DA 文件格式错误，Stage2 数据超出文件范围".to_string());
         }
 
-        // Python: else 分支（sbc=False 时）：da2 = da2[:-da2sig_len]，去掉尾部签名
         let sig_len = da2_sig_len as usize;
         let da2_size_before = da2_end_raw - da2_start;
         let mut da2_data = if sig_len > 0 && da2_size_before > sig_len {
@@ -1704,11 +1700,11 @@ impl<'a> DAXFlash<'a> {
             da_data[da2_start..da2_end_raw].to_vec()
         };
         if sig_len > 0 {
-            info!(
+            debug!(
                 "  DA2 原始大小: 0x{:X} ({}) 字节",
                 da2_size_before, da2_size_before
             );
-            info!(
+            debug!(
                 "  DA2 截断后大小: 0x{:X} ({}) 字节 (已截断 0x{:X} 字节签名)",
                 da2_data.len(),
                 da2_data.len(),
@@ -1716,27 +1712,27 @@ impl<'a> DAXFlash<'a> {
             );
         }
 
-        // Python: if self.patch or not self.config.target_config["sbc"] and not self.config.stock:
-        // MT6768 无安全启动，需要 patch DA
-        info!("应用 DA2 patch...");
+        debug!("应用 DA2 patch...");
         Self::patch_da2(&mut da2_data);
 
-        // 保存 DA2 数据和基地址（用于后续生成 extensions）
         self.da2_data = da2_data.clone();
         self.da2_base_addr = da2_address as u64;
 
-        // 调用 boot_to 上传 Stage2
         if !self.boot_to(da2_address, &da2_data, true, 0.5)? {
             return Err("上传 Stage2 失败".to_string());
         }
 
-        info!("  Stage2 上传成功");
+        debug!("Stage2 上传成功");
         Ok(true)
     }
 
     /// 发送 devctrl 命令
     /// Python: 任何阶段失败都返回 b""，不抛异常
-    pub(crate) fn send_devctrl(&mut self, cmd: u32, param: Option<&[u8]>) -> Result<Vec<u8>, String> {
+    pub(crate) fn send_devctrl(
+        &mut self,
+        cmd: u32,
+        param: Option<&[u8]>,
+    ) -> Result<Vec<u8>, String> {
         // xsend(Cmd.DEVICE_CTRL) — DEVICE_CTRL = 0x010009
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
         self.preloader.device.write(&pkt)?;
@@ -1956,31 +1952,26 @@ impl<'a> DAXFlash<'a> {
 
     /// 上传 DA（完整流程，对齐 Python upload_da）
     pub fn upload_da(&mut self) -> Result<bool, String> {
-        info!("开始 DA 加载流程...");
+        debug!("开始 DA 加载流程...");
 
-        // 1. upload_da1
         if !self.upload_da1()? {
             return Err("Stage1 上传失败".to_string());
         }
 
-        // 2. get_expire_date (optional, may return STATUS_UNSUPPORTED)
         match self.get_expire_date() {
-            Ok(d) if !d.is_empty() => info!("  过期日期: {:02X?}", d),
+            Ok(d) if !d.is_empty() => debug!("  过期日期: {:02X?}", d),
             Err(e) => warn!("get_expire_date 失败 (可能不支持): {}", e),
             _ => {}
         }
 
-        // 3. set_reset_key(0x68) (optional)
         if let Err(e) = self.set_reset_key(0x68) {
             warn!("set_reset_key 失败 (可能不支持): {}", e);
         }
 
-        // 4. set_checksum_level(0x0) (optional)
         if let Err(e) = self.set_checksum_level(0x0) {
             warn!("set_checksum_level 失败 (可能不支持): {}", e);
         }
 
-        // 5. get_connection_agent
         let conn_agent = match self.get_connection_agent() {
             Ok(agent) => agent,
             Err(e) => {
@@ -1988,37 +1979,32 @@ impl<'a> DAXFlash<'a> {
                 "brom".to_string()
             }
         };
-        info!("  连接代理: {}", conn_agent);
+        debug!("  连接代理: {}", conn_agent);
 
-        // 6. 如果是 brom 且有 emi，发送 emi
         if conn_agent == "brom" {
             if let Some(emi_data) = self.emi.clone() {
-                info!("发送 EMI 数据...");
-                // Python: send_emi 失败会中断整个流程
+                debug!("发送 EMI 数据...");
                 self.send_emi(&emi_data)?;
             } else {
                 warn!("未找到 EMI 数据，跳过发送");
             }
         }
 
-        // 7. boot_to stage 2
         if !self.upload_da2()? {
             return Err("Stage2 上传失败".to_string());
         }
 
-        // 8. get_sla_status
         match self.get_sla_status() {
             Ok(sla) => {
                 if sla != 0 {
-                    info!("  DA SLA 已启用: 0x{:08X}", sla);
+                    debug!("  DA SLA 已启用: 0x{:08X}", sla);
                 } else {
-                    info!("  DA SLA 未启用");
+                    debug!("  DA SLA 未启用");
                 }
             }
             Err(e) => warn!("get_sla_status 失败: {}", e),
         }
 
-        // 9. reinit（获取芯片/存储信息）
         if let Err(e) = self.reinit() {
             warn!("reinit 失败: {}", e);
         }
@@ -2029,9 +2015,10 @@ impl<'a> DAXFlash<'a> {
         //                  ret = self.send_devctrl(XCmd.CUSTOM_ACK)
         //                  status = self.status()
         //                  if status == 0x0 and unpack("<I", ret)[0] == 0xA1A2A3A4:
-        info!("正在加载 DA extensions...");
+        debug!("正在加载 DA extensions...");
 
-        // 清空 USB 输入缓冲区（防止 reinit() 残留数据污染 BOOT_TO 命令）
+        // 清空 USB 输入缓冲区：reinit() 后设备可能发送残留数据，
+        // 如果不干净，会污染后续 BOOT_TO 命令的响应。
         {
             let mut drain_buf = [0u8; 64];
             loop {
@@ -2188,7 +2175,10 @@ impl<'a> DAXFlash<'a> {
                         // 对齐 Python xflash_lib.py:861-862:
                         //   except: print("Error: Timeout")
                         // Python 吞掉超时异常后继续到 readflash_final，Rust 也 break 进入 readflash_final
-                        debug!("[readflash_data] read header timeout (expected termination): {}", e);
+                        debug!(
+                            "[readflash_data] read header timeout (expected termination): {}",
+                            e
+                        );
                         break;
                     }
                 }
@@ -2203,7 +2193,9 @@ impl<'a> DAXFlash<'a> {
                 // 3b. 读 slength 字节数据
                 let mut data = vec![0u8; slength as usize];
                 if slength > 0 {
-                    self.preloader.device.read_exact(&mut data)
+                    self.preloader
+                        .device
+                        .read_exact(&mut data)
                         .map_err(|e| format!("readflash read data({}): {}", slength, e))?;
                 }
 
@@ -2216,8 +2208,14 @@ impl<'a> DAXFlash<'a> {
                     buffer.extend_from_slice(&data);
                     // ack: pack3 + 0x00000000 + status
                     let ack_pkt = pack3(CMD_MAGIC, 0x01, 4);
-                    self.preloader.device.write(&ack_pkt).map_err(|e| format!("ack write hdr: {}", e))?;
-                    self.preloader.device.write(&0u32.to_le_bytes()).map_err(|e| format!("ack write data: {}", e))?;
+                    self.preloader
+                        .device
+                        .write(&ack_pkt)
+                        .map_err(|e| format!("ack write hdr: {}", e))?;
+                    self.preloader
+                        .device
+                        .write(&0u32.to_le_bytes())
+                        .map_err(|e| format!("ack write data: {}", e))?;
                     self.status().map_err(|e| format!("ack status: {}", e))?;
                 } else if slength == 4 {
                     let val = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
@@ -2228,14 +2226,22 @@ impl<'a> DAXFlash<'a> {
                 }
             }
 
-            // 4. readflash_final 收尾（break 后给设备一点时间准备）
-            std::thread::sleep(Duration::from_millis(50));
-
+            // 4. readflash_final 收尾
             let mut final_hdr = [0u8; 12];
             match self.preloader.device.read_exact(&mut final_hdr) {
                 Ok(_) => {
-                    let final_magic = u32::from_le_bytes([final_hdr[0], final_hdr[1], final_hdr[2], final_hdr[3]]);
-                    let final_slength = u32::from_le_bytes([final_hdr[8], final_hdr[9], final_hdr[10], final_hdr[11]]);
+                    let final_magic = u32::from_le_bytes([
+                        final_hdr[0],
+                        final_hdr[1],
+                        final_hdr[2],
+                        final_hdr[3],
+                    ]);
+                    let final_slength = u32::from_le_bytes([
+                        final_hdr[8],
+                        final_hdr[9],
+                        final_hdr[10],
+                        final_hdr[11],
+                    ]);
 
                     if final_magic == 0xFEEEEEEF && final_slength > 0 {
                         let mut final_data = vec![0u8; final_slength as usize];

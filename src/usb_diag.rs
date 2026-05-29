@@ -99,7 +99,10 @@ pub fn diagnose_connection() -> UsbDiagState {
 
     // 检查第一个设备即可
     let (vid, pid, is_brom, driver_info) = &devices[0];
-    debug!("[USB诊断] VID={:04X} PID={:04X} BROM={} 驱动={}", vid, pid, is_brom, driver_info);
+    debug!(
+        "[USB诊断] VID={:04X} PID={:04X} BROM={} 驱动={}",
+        vid, pid, is_brom, driver_info
+    );
 
     if driver_info.contains("被其他驱动占用") {
         return UsbDiagState::WrongDriver;
@@ -146,7 +149,11 @@ pub fn classify_libusb_error(err: i32) -> &'static str {
 
 /// 尝试恢复 USB 端点状态（清除 halt）
 #[allow(dead_code)]
-pub fn attempt_endpoint_recovery(handle: *mut libusb1_sys::libusb_device_handle, ep_in: u8, ep_out: u8) {
+pub fn attempt_endpoint_recovery(
+    handle: *mut libusb1_sys::libusb_device_handle,
+    ep_in: u8,
+    ep_out: u8,
+) {
     unsafe {
         debug!("[USB恢复] 尝试清除端点 halt...");
         let ret_in = libusb1_sys::libusb_clear_halt(handle, ep_in);
@@ -207,15 +214,22 @@ pub fn enumerate_usb_devices() {
             };
 
             if is_mtk {
-                info!("  [MediaTek] Bus {} Device {}: VID={:04X} PID={:04X} 模式={}",
+                info!(
+                    "  [MediaTek] Bus {} Device {}: VID={:04X} PID={:04X} 模式={}",
                     libusb1_sys::libusb_get_bus_number(dev),
                     libusb1_sys::libusb_get_device_address(dev),
-                    vid, pid, mode);
+                    vid,
+                    pid,
+                    mode
+                );
             } else {
-                debug!("  Bus {} Device {}: VID={:04X} PID={:04X}",
+                debug!(
+                    "  Bus {} Device {}: VID={:04X} PID={:04X}",
                     libusb1_sys::libusb_get_bus_number(dev),
                     libusb1_sys::libusb_get_device_address(dev),
-                    vid, pid);
+                    vid,
+                    pid
+                );
             }
         }
 
@@ -262,7 +276,10 @@ pub fn diagnose_and_report() {
     info!("检测到 {} 个 MediaTek 设备:", devices.len());
     for (vid, pid, is_brom, driver_info) in &devices {
         let mode = if *is_brom { "BROM" } else { "Preloader" };
-        info!("  VID={:04X} PID={:04X} 模式={} 驱动={}", vid, pid, mode, driver_info);
+        info!(
+            "  VID={:04X} PID={:04X} 模式={} 驱动={}",
+            vid, pid, mode, driver_info
+        );
     }
     info!("");
 

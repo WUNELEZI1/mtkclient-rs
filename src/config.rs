@@ -15,7 +15,7 @@ impl DeviceType {
     pub fn from_vid_pid(vid: u16, pid: u16) -> Self {
         if vid != MEDIATEK_VID {
             return DeviceType::Unknown;
-        }   
+        }
         match pid {
             0x0003 | 0xF200 | 0xD1E9 | 0xD1E2 | 0xD1EC | 0xD1DD => DeviceType::Brom,
             0x2000 => DeviceType::Preloader,

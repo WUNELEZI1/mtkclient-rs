@@ -1,11 +1,11 @@
-use crate::config::{ChipConfig, TargetConfig, CHIP_CONFIGS};
+use crate::config::{CHIP_CONFIGS, ChipConfig, TargetConfig};
 use crate::usb::UsbDevice;
 use log::debug;
 use std::time::Duration;
 
 /// Preloader / BROM protocol handler
 pub struct Preloader {
-    pub device: UsbDevice,  
+    pub device: UsbDevice,
     pub is_preloader_mode: bool,
     pub chip: Option<ChipConfig>,
 }
@@ -42,7 +42,9 @@ impl Preloader {
     ///   - echo_4byte(u32) 发送 4 字节大端参数（对应 Python pack(">I", val)）
     pub fn echo_1byte(&mut self, cmd: u8) -> Result<bool, String> {
         self.device.set_timeout(Duration::from_millis(1000));
-        self.device.write(&[cmd]).map_err(|e| format!("echo write: {}", e))?;
+        self.device
+            .write(&[cmd])
+            .map_err(|e| format!("echo write: {}", e))?;
         let mut buf = [0u8; 1];
         match self.device.read_exact(&mut buf) {
             Ok(_) => {
@@ -76,10 +78,7 @@ impl Preloader {
         if echo == be {
             Ok(true)
         } else {
-            debug!(
-                "[ECHO_4] mismatch: expected {:02X?}, got {:02X?}",
-                be, echo
-            );
+            debug!("[ECHO_4] mismatch: expected {:02X?}, got {:02X?}", be, echo);
             Ok(false)
         }
     }
@@ -118,7 +117,10 @@ impl Preloader {
             .map_err(|e| format!("read target config: {}", e))?;
         let target_config = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
         let status = u16::from_be_bytes([buf[4], buf[5]]);
-        debug!("Target config: {:08X}, status: {:04X}", target_config, status);
+        debug!(
+            "Target config: {:08X}, status: {:04X}",
+            target_config, status
+        );
         if status > 0xFF {
             return Err(format!("Get Target Config Error: status=0x{:04X}", status));
         }
@@ -147,7 +149,6 @@ impl Preloader {
         Ok(u16::from_be_bytes(buf))
     }
 
-
     /// SEND_DA: 发送 Download Agent 到设备
     /// 对齐 Python mtk_preloader.py:871-906
     /// Python:
@@ -161,7 +162,10 @@ impl Preloader {
         sig_len: u32,
         dadata: &[u8],
     ) -> Result<bool, String> {
-        debug!("SEND_DA: addr=0x{:08X}, size={}, sig_len={}", address, size, sig_len);
+        debug!(
+            "SEND_DA: addr=0x{:08X}, size={}, sig_len={}",
+            address, size, sig_len
+        );
 
         // echo(0xD7) 命令
         if !self.echo_1byte(0xD7)? {
@@ -212,7 +216,10 @@ impl Preloader {
         // 读校验和 + 状态（Python: rword(2) → 2 个 16-bit big-endian）
         let checksum = self.rword()?;
         let status2 = self.rword()?;
-        debug!("SEND_DA checksum: {:04X}, status2: {:04X}", checksum, status2);
+        debug!(
+            "SEND_DA checksum: {:04X}, status2: {:04X}",
+            checksum, status2
+        );
 
         Ok(true)
     }
@@ -228,7 +235,10 @@ impl Preloader {
             .map_err(|e| format!("jump_da write addr: {}", e))?;
         let resaddr = self.rdword()?;
         if resaddr != addr {
-            return Err(format!("jump_da addr mismatch: expected {:08X}, got {:08X}", addr, resaddr));
+            return Err(format!(
+                "jump_da addr mismatch: expected {:08X}, got {:08X}",
+                addr, resaddr
+            ));
         }
         let status = self.rword()?;
         // Python v2.1.4.1: time.sleep(0.1) after rword() — fix rare timing issue

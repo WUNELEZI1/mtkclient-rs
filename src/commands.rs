@@ -98,18 +98,27 @@ pub fn handle_command(
                 .map_err(|e| format!("dump_preloader_ram 失败: {}", e))?;
 
             if !data.is_empty() {
-                let filename = if let Some(info_idx) = data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
+                let filename = if let Some(info_idx) =
+                    data.windows(16).position(|w| w == b"MTK_BLOADER_INFO")
+                {
                     let filename_start = info_idx + 0x1B;
                     let filename_end = std::cmp::min(filename_start + 0x30, data.len());
                     let filename_bytes = &data[filename_start..filename_end];
-                    let filename_len = filename_bytes.iter().position(|&b| b == 0).unwrap_or(filename_bytes.len());
+                    let filename_len = filename_bytes
+                        .iter()
+                        .position(|&b| b == 0)
+                        .unwrap_or(filename_bytes.len());
                     String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string()
                 } else {
                     "preloader_dumped.bin".to_string()
                 };
                 if !filename.is_empty() {
                     auto_dumped_file = Some(filename);
-                    info!("Preloader 已提取: {} ({} 字节)", auto_dumped_file.as_ref().unwrap(), data.len());
+                    info!(
+                        "Preloader 已提取: {} ({} 字节)",
+                        auto_dumped_file.as_ref().unwrap(),
+                        data.len()
+                    );
                 }
             }
         }
@@ -215,18 +224,27 @@ pub fn handle_commands(
                 .map_err(|e| format!("dump_preloader_ram 失败: {}", e))?;
 
             if !data.is_empty() {
-                let filename = if let Some(info_idx) = data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
+                let filename = if let Some(info_idx) =
+                    data.windows(16).position(|w| w == b"MTK_BLOADER_INFO")
+                {
                     let filename_start = info_idx + 0x1B;
                     let filename_end = std::cmp::min(filename_start + 0x30, data.len());
                     let filename_bytes = &data[filename_start..filename_end];
-                    let filename_len = filename_bytes.iter().position(|&b| b == 0).unwrap_or(filename_bytes.len());
+                    let filename_len = filename_bytes
+                        .iter()
+                        .position(|&b| b == 0)
+                        .unwrap_or(filename_bytes.len());
                     String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string()
                 } else {
                     "preloader_dumped.bin".to_string()
                 };
                 if !filename.is_empty() {
                     auto_dumped_file = Some(filename);
-                    info!("Preloader 已提取: {} ({} 字节)", auto_dumped_file.as_ref().unwrap(), data.len());
+                    info!(
+                        "Preloader 已提取: {} ({} 字节)",
+                        auto_dumped_file.as_ref().unwrap(),
+                        data.len()
+                    );
                 }
             }
         }

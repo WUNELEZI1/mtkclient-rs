@@ -66,7 +66,11 @@ pub fn usb_trace(direction: &str, func_info: &str, data: &[u8]) {
     let seconds = (total_secs % 60) as u32;
 
     // 格式化 hex 数据
-    let hex_str: String = data.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+    let hex_str: String = data
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     // 格式化日志行
     let log_line = format!(
@@ -191,7 +195,10 @@ impl UsbDevice {
             let mut desc: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
             let ret_desc = libusb1_sys::libusb_get_device_descriptor(device, &mut desc);
             if ret_desc != 0 {
-                return Err(format!("获取设备描述失败 (error {}): libusb 驱动异常", ret_desc));
+                return Err(format!(
+                    "获取设备描述失败 (error {}): libusb 驱动异常",
+                    ret_desc
+                ));
             }
 
             debug!("[USB] scanning endpoints...");
@@ -439,7 +446,11 @@ impl UsbDevice {
                 if transferred == 0 {
                     if ret == LIBUSB_ERROR_TIMEOUT {
                         if total > 0 {
-                            debug!("[USB READ EXACT] partial read: {}/{} bytes before timeout", total, buf.len());
+                            debug!(
+                                "[USB READ EXACT] partial read: {}/{} bytes before timeout",
+                                total,
+                                buf.len()
+                            );
                             break;
                         }
                         return Err("read_exact timeout".to_string());

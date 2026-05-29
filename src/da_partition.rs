@@ -1,7 +1,7 @@
+use crate::da_xflash::{CMD_FORMAT, CMD_MAGIC, CMD_WRITE_DATA, DAXFlash, pack3};
 use log::info;
 use std::fs::File;
 use std::io::Write;
-use crate::da_xflash::{DAXFlash, CMD_MAGIC, CMD_FORMAT, CMD_WRITE_DATA, pack3};
 
 /// GPT 分区表信息
 #[allow(dead_code)]
@@ -21,14 +21,11 @@ impl GptInfo {
             .position(|w| w == b"EFI PART")
             .ok_or_else(|| "GPT 数据无效".to_string())?;
 
-        let num_part_entries =
-            u32::from_le_bytes(data[base + 80..base + 84].try_into().unwrap());
-        let part_entry_size =
-            u32::from_le_bytes(data[base + 84..base + 88].try_into().unwrap());
+        let num_part_entries = u32::from_le_bytes(data[base + 80..base + 84].try_into().unwrap());
+        let part_entry_size = u32::from_le_bytes(data[base + 84..base + 88].try_into().unwrap());
         let part_entry_start_lba =
             u64::from_le_bytes(data[base + 72..base + 80].try_into().unwrap());
-        let first_usable_lba =
-            u64::from_le_bytes(data[base + 32..base + 40].try_into().unwrap());
+        let first_usable_lba = u64::from_le_bytes(data[base + 32..base + 40].try_into().unwrap());
 
         Ok(GptInfo {
             base,
@@ -51,7 +48,9 @@ impl GptInfo {
         F: FnMut(&str, u64, u64, &[u8]),
     {
         let mut table_start = self.table_start();
-        if table_start + 4 <= data.len() && data[table_start..table_start + 4].iter().all(|&b| b == 0) {
+        if table_start + 4 <= data.len()
+            && data[table_start..table_start + 4].iter().all(|&b| b == 0)
+        {
             table_start += 4;
         }
 
@@ -765,17 +764,9 @@ impl SecCfgV4 {
             "unknown".to_string()
         };
 
-        let bypass_auth = if data.len() > 28 {
-            data[28]
-        } else {
-            0
-        };
+        let bypass_auth = if data.len() > 28 { data[28] } else { 0 };
 
-        let secure_boot = if data.len() > 29 {
-            data[29]
-        } else {
-            0
-        };
+        let secure_boot = if data.len() > 29 { data[29] } else { 0 };
 
         Ok(SecCfgV4 {
             lock_state,

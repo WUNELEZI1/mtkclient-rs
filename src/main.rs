@@ -14,9 +14,9 @@ unsafe extern "system" {
 mod cli;
 mod commands;
 mod config;
-mod da_xflash;
 mod da_extension;
 mod da_partition;
+mod da_xflash;
 mod driver;
 mod kamakiri2;
 mod paths;
@@ -43,7 +43,7 @@ fn detect_mode(vid: u16, pid: u16) -> DeviceMode {
 }
 
 fn smart_init(context: &UsbContext) -> Result<(usb::UsbDevice, DeviceMode), String> {
-    use usb_diag::{diagnose_connection, print_connection_hint, UsbDiagState};
+    use usb_diag::{UsbDiagState, diagnose_connection, print_connection_hint};
 
     info!("{}", "等待设备连接 (BROM: Vol+ + Vol- + Power)".yellow());
 
@@ -141,11 +141,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_config = config::AppConfig::from_cli(&cli);
 
-    // 初始化 USB trace 日志（在 env_logger 之前，确保日志可用）
     usb::set_usb_log_enabled(cli.usb_log);
 
+    let log_level = if cli.quiet {
+        log::LevelFilter::Warn
+    } else if cli.debug_mode {
+        log::LevelFilter::Debug
+    } else {
+        app_config.log_level
+    };
+
     env_logger::builder()
-        .filter_level(app_config.log_level)
+        .filter_level(log_level)
         .parse_default_env()
         .format(|buf, record| {
             use std::io::Write;
@@ -321,11 +328,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .dump_preloader_from_ram(false)
                     .map_err(|e| format!("dump_preloader_ram 失败: {}", e))?;
                 if !data.is_empty() {
-                    let filename = if let Some(info_idx) = data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
+                    let filename = if let Some(info_idx) =
+                        data.windows(16).position(|w| w == b"MTK_BLOADER_INFO")
+                    {
                         let filename_start = info_idx + 0x1B;
                         let filename_end = std::cmp::min(filename_start + 0x30, data.len());
                         let filename_bytes = &data[filename_start..filename_end];
-                        let filename_len = filename_bytes.iter().position(|&b| b == 0).unwrap_or(filename_bytes.len());
+                        let filename_len = filename_bytes
+                            .iter()
+                            .position(|&b| b == 0)
+                            .unwrap_or(filename_bytes.len());
                         String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string()
                     } else {
                         "preloader_dumped.bin".to_string()
@@ -355,12 +367,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 保存 DA 会话状态
         let hw_code = da.preloader.get_hw_code().unwrap_or(0x0707);
         let target_config = da.preloader.get_target_config().map(|c| c.raw).unwrap_or(0);
-        session::save_da_session(
-            saved_vid,
-            saved_pid,
-            hw_code,
-            target_config,
-        );
+        session::save_da_session(saved_vid, saved_pid, hw_code, target_config);
     }
 
     if cli.debug_mode {
