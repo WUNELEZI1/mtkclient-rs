@@ -1,5 +1,6 @@
 use log::{debug, info, warn};
 use std::collections::HashMap;
+use std::fmt;
 use std::fs;
 use std::path::Path;
 
@@ -16,15 +17,17 @@ pub struct SessionState {
     pub da_loaded: bool,
 }
 
-impl SessionState {
-    /// 序列化到 key=value 格式
-    pub fn to_string(&self) -> String {
-        format!(
+impl fmt::Display for SessionState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
             "usb_vid=0x{:04X}\nusb_pid=0x{:04X}\nhw_code=0x{:04X}\ntarget_config=0x{:08X}\nda_loaded={}",
             self.usb_vid, self.usb_pid, self.hw_code, self.target_config, self.da_loaded
         )
     }
+}
 
+impl SessionState {
     /// 从 key=value 格式反序列化
     pub fn from_string(s: &str) -> Option<Self> {
         let mut map = HashMap::new();

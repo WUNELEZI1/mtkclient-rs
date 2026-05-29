@@ -314,8 +314,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("{}", "DA 会话已复用，跳过 BROM→DA 流程".yellow());
     } else {
         // 完整 BROM→DA 流程
-        if mode == DeviceMode::Brom {
-            if final_preloader_path.is_empty() {
+        if mode == DeviceMode::Brom
+            && final_preloader_path.is_empty() {
                 match da.preloader.get_target_config() {
                     Ok(cfg) => info!("{}", cfg.format_info()),
                     Err(e) => warn!("获取 target config 失败: {}", e),
@@ -347,7 +347,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-        }
 
         info!("加载 EMI 数据: {}", final_preloader_path);
         if let Err(e) = da.load_preloader_emi(&final_preloader_path) {

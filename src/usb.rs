@@ -79,12 +79,11 @@ pub fn usb_trace(direction: &str, func_info: &str, data: &[u8]) {
     );
 
     // 写入文件
-    if let Ok(mut guard) = USB_LOG_FILE.lock() {
-        if let Some(ref mut file) = *guard {
+    if let Ok(mut guard) = USB_LOG_FILE.lock()
+        && let Some(ref mut file) = *guard {
             let _ = file.write_all(log_line.as_bytes());
             let _ = file.flush();
         }
-    }
 }
 
 /// 辅助函数：格式化行号信息
@@ -666,6 +665,7 @@ impl UsbDevice {
     }
 
     /// 重新打开 USB 设备：关闭旧句柄，等待设备稳定，重新打开并 claim interface
+    #[allow(dead_code)] // 预留：bypass 流程中 payload 执行后需要重建 USB 连接时使用
     pub fn reopen(&mut self, context: &UsbContext) -> Result<(), String> {
         self.close();
         // 等待设备稳定
