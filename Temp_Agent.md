@@ -716,4 +716,13 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
     - `da_partition.rs` erase 循环：`let _ = self.ack()` 添加注释 "AckResult 的 Debug 输出已满足日志需求"
     - 验证：cargo check 通过，cargo clippy 无新增 warning
 
+23. **bypass 后 reopen USB 连接**（2026-05-29）：
+    - 问题：bypass_security 注入 patcher payload 后设备 USB 端点状态变化，同一句柄上 echo(0xDA) 超时
+    - 根因：patcher payload 执行后 bulk IN/OUT 端点状态异常，原句柄无法正常通信
+    - 修复：在 `commands.rs` 的 `handle_command` 和 `handle_commands` 中，bypass_security 返回后、dump_preloader_from_ram 前，插入 `da.preloader.device.reopen(_context)`
+    - reopen 内部：close 旧句柄 → sleep 200ms → UsbDevice::new (通过 SUPPORTED_DEVICES 表查找 VID=0E8D PID=0003) → 交换字段
+    - bypass 后设备仍为 BROM 模式 (VID=0E8D PID=0003)，reopen 能正确匹配
+    - reopen 后不做 handshake，dump_preloader_from_ram 第一句 brom_register_access 直接 echo(0xDA) 开始通信
+    - 验证：cargo check 通过，cargo clippy 无新增 warning
+
 

@@ -92,6 +92,12 @@ pub fn handle_command(
             da.preloader
                 .bypass_security()
                 .map_err(|e| format!("bypass_security 失败: {}", e))?;
+
+            // 对齐 Python crasher：bypass 后重建 USB 连接
+            // patcher payload 执行后设备 USB 端点状态变化，同一句柄上 echo(0xDA) 超时
+            da.preloader.device.reopen(_context)
+                .map_err(|e| format!("bypass 后重连 USB 失败: {}", e))?;
+
             let data = da
                 .preloader
                 .dump_preloader_from_ram(false)
@@ -218,6 +224,11 @@ pub fn handle_commands(
             da.preloader
                 .bypass_security()
                 .map_err(|e| format!("bypass_security 失败: {}", e))?;
+
+            // 对齐 Python crasher：bypass 后重建 USB 连接
+            da.preloader.device.reopen(_context)
+                .map_err(|e| format!("bypass 后重连 USB 失败: {}", e))?;
+
             let data = da
                 .preloader
                 .dump_preloader_from_ram(false)
