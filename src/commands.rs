@@ -170,13 +170,9 @@ pub fn handle_command(
 
     execute_single_command(da, cmd, args, verify)?;
 
-    // 单命令执行完毕，复位设备恢复 BROM 状态
-    let da_commands = [
-        "printgpt", "r", "read", "w", "write", "e", "erase", "vbmeta", "unlock", "lock",
-    ];
-    if da_commands.contains(&cmd) {
-        let _ = da.preloader.jump_bl();
-    }
+    // 单命令执行完毕，不复位设备，保持 DA 会话活跃
+    // 类似 Python 的 .state 机制：DA 加载后保持连接，后续命令直接复用
+    // 只有 reset 命令会复位设备
 
     Ok(())
 }
@@ -277,8 +273,8 @@ pub fn handle_commands(
         }
     }
 
-    // 所有命令执行完毕，复位设备恢复 BROM 状态
-    let _ = da.preloader.jump_bl();
+    // 批量命令执行完毕，保持 DA 会话活跃
+    // 用户可使用 reset 命令复位设备
 
     Ok(())
 }

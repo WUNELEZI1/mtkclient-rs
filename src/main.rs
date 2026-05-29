@@ -21,6 +21,7 @@ mod driver;
 mod kamakiri2;
 mod paths;
 mod preloader;
+mod session;
 mod usb;
 mod usb_diag;
 
@@ -190,6 +191,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // reset 命令：直接复位设备，清除 .state
+    if cmd == "reset" {
+        session::reset_session();
+        let usb_context = UsbContext::new().inspect_err(|e| {
+            error!("{}", e);
+        })?;
+        let (usb_device, _mode) = smart_init(&usb_context).inspect_err(|e| {
+            error!("{}", e);
+        })?;
+        let mut preloader = preloader::Preloader::new(usb_device);
+        if !preloader.init().unwrap_or(false) {
+            return Err("设备初始化失败".into());
+        }
+        let _ = preloader.jump_bl();
+        return Ok(());
+    }
+
     if let Some(ref input_file) = cli.no_device {
         if cmd == "unlock"
             || (cmd == "da"
@@ -261,11 +279,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         error!("{}", e);
     })?;
 
+    let saved_vid = usb_device.vid;
+    let saved_pid = usb_device.pid;
+
     let mut preloader = preloader::Preloader::new(usb_device);
 
     if !preloader.init().unwrap_or(false) {
         return Err("设备初始化失败".into());
     }
+
+    // 检测是否可以复用 DA 会话
+    let can_reuse = session::try_reuse_da_session(saved_vid, saved_pid);
 
     let final_preloader_path = if let Some(ref path) = app_config.preloader_path {
         info!("使用指定的 preloader 文件: {}", path);
@@ -278,8 +302,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut da = da_xflash::DAXFlash::new(&mut preloader);
 
+    if can_reuse {
+        // 复用 DA 会话：跳过 BROM→DA 流程，直接执行命令
+        info!("{}", "DA 会话已复用，跳过 BROM→DA 流程".yellow());
+    } else {
+        // 完整 BROM→DA 流程
+        if mode == DeviceMode::Brom {
+            if final_preloader_path.is_empty() {
+                match da.preloader.get_target_config() {
+                    Ok(cfg) => info!("{}", cfg.format_info()),
+                    Err(e) => warn!("获取 target config 失败: {}", e),
+                }
+                da.preloader
+                    .bypass_security()
+                    .map_err(|e| format!("bypass_security 失败: {}", e))?;
+                let data = da
+                    .preloader
+                    .dump_preloader_from_ram(false)
+                    .map_err(|e| format!("dump_preloader_ram 失败: {}", e))?;
+                if !data.is_empty() {
+                    let filename = if let Some(info_idx) = data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
+                        let filename_start = info_idx + 0x1B;
+                        let filename_end = std::cmp::min(filename_start + 0x30, data.len());
+                        let filename_bytes = &data[filename_start..filename_end];
+                        let filename_len = filename_bytes.iter().position(|&b| b == 0).unwrap_or(filename_bytes.len());
+                        String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string()
+                    } else {
+                        "preloader_dumped.bin".to_string()
+                    };
+                    if !filename.is_empty() {
+                        info!("Preloader 已提取: {} ({} 字节)", filename, data.len());
+                    }
+                }
+            }
+        }
+
+        info!("加载 EMI 数据: {}", final_preloader_path);
+        if let Err(e) = da.load_preloader_emi(&final_preloader_path) {
+            info!("Warning: EMI 加载失败: {}", e);
+        }
+
+        da.upload_da()
+            .map_err(|e| format!("DA 加载失败: {}", e))
+            .and_then(|ok| {
+                if ok {
+                    Ok(())
+                } else {
+                    Err("DA 加载失败".to_string())
+                }
+            })?;
+
+        // 保存 DA 会话状态
+        let hw_code = da.preloader.get_hw_code().unwrap_or(0x0707);
+        let target_config = da.preloader.get_target_config().map(|c| c.raw).unwrap_or(0);
+        session::save_da_session(
+            saved_vid,
+            saved_pid,
+            hw_code,
+            target_config,
+        );
+    }
+
+    if cli.debug_mode {
+        if let Some(data) = da.get_emi_data() {
+            let _ = std::fs::write("emi_debug.bin", data);
+        }
+        if let Some(data) = da.get_extensions_data() {
+            let _ = std::fs::write("extensions_debug.bin", &data);
+        }
+    }
+
     let sub_commands = parse_sub_commands(cmd, &cli.args);
     if sub_commands.len() > 1 {
+        // 批量模式需要完整的 handle_commands，这里简化处理
         commands::handle_commands(
             &mut da,
             &mode,
