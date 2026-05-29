@@ -662,5 +662,19 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
 9. **MT6768 配置**：已修复，与 Python brom_config.py 一致
 10. **MT6771 配置**：原始即正确
 11. **rword/rdword**：BROM 阶段 big-endian，XFlash 阶段 little-endian
+12. **readflash_data 重构为 filename="" 分支协议**（2026-05-29）：
+    - 替换 readflash_status/data/final 为 xread 循环（header+data）
+    - 新增 ack_no_status() 避免 status() 消费下一个包的 header
+    - 删除 readflash_final 块（设备在 filename="" 模式下不发送 final）
+    - 使用 remaining 计数器控制循环退出（对齐 Python xflash_lib.py:879-891）
+    - slength==4 val==0 继续循环（heartbeat），val!=0 break（termination）
+    - 删除 5s timeout override 和闭包包装
+13. **DA 会话持久化**：新增 session.rs，.state 文件保存/复用 DA 会话
+14. **命令执行后不复位设备**：删除 jump_bl() 调用，保持 DA 活跃
+15. **--quiet CLI 参数**：跳过 info 输出，只显示错误
+16. **info→debug 简化**：upload_da 中间步骤改为 debug!
+17. **#[allow(dead_code)] 清理**：移除已使用项的标注，给预留项加用途注释
+18. **jump_da 后 100ms 延迟**：对齐 Python v2.1.4.1 修复时序问题
+19. **readflash_final clear_halt_in**：超时后复位 bulk IN 端点
 
 

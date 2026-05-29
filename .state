@@ -1,0 +1,5 @@
+usb_vid=0x0E8D
+usb_pid=0x0003
+hw_code=0x0707
+target_config=0x00000000
+da_loaded=true
