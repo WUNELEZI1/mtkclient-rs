@@ -88,28 +88,28 @@ impl<'a> DAXFlash<'a> {
     pub fn read_gpt(&mut self) -> Result<(), String> {
         info!("读取 GPT 分区表...");
 
-        // 第一步：读取 MBR + GPT 头（1024 字节）
-        // 对齐 Python partition.py:70: length=2 * pagesize = 1024
-        let header_len: u64 = 1024;
-        let header_data = self.readflash_data(0, header_len)?;
-        if header_data.len() < 604 {
+        // 第一步：先读 32KB，覆盖大多数 GPT 头 + 分区表
+        let initial_len: u64 = 32768;
+        let mut gpt_data = self.readflash_data(0, initial_len)?;
+        if gpt_data.len() < 604 {
             return Err("GPT 头数据不足（需要至少 604 字节）".to_string());
         }
 
         // 复用 GptInfo::parse 解析 GPT 头（自动搜索 EFI PART 签名定位基址）
-        let gpt_info = GptInfo::parse(&header_data)?;
+        let gpt_info = GptInfo::parse(&gpt_data)?;
         let num_entries = gpt_info.num_part_entries as u64;
         let entry_size = gpt_info.part_entry_size as u64;
+        let needed_len = 512 + num_entries * entry_size;
 
         info!(
-            "  GPT 分区数: {}, 分区项大小: {} 字节",
-            num_entries, entry_size
+            "  GPT 分区数: {}, 分区项大小: {} 字节, 需要: {} 字节",
+            num_entries, entry_size, needed_len
         );
 
-        // 第二步：计算完整读取大小，重新读取
-        // 分区项表从 part_entry_start_lba * 512 开始，共 num_entries * entry_size 字节
-        let total_read_len = 512 + num_entries * entry_size;
-        let gpt_data = self.readflash_data(0, total_read_len)?;
+        // 第二步：如果 32KB 不够，再扩展读取完整大小
+        if needed_len > initial_len {
+            gpt_data = self.readflash_data(0, needed_len)?;
+        }
         info!("  读取 GPT 数据: {} 字节", gpt_data.len());
 
         // 保存原始数据供调试模式使用
