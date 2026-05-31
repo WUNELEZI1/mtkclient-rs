@@ -481,9 +481,7 @@ fn find_brom_com_port() -> Option<String> {
     None
 }
 
-fn disable_watchdog_brom_via_preloader(
-    p: &mut preloader::Preloader,
-) -> Result<(), String> {
+fn disable_watchdog_brom_via_preloader(p: &mut preloader::Preloader) -> Result<(), String> {
     p.echo_1byte(0xD4)?;
     p.echo_4byte(0x10007000)?;
     p.echo_4byte(1)?;

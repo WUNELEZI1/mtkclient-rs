@@ -54,7 +54,6 @@ impl SerialPortTransport {
             timeout: Duration::from_millis(1000),
         })
     }
-
 }
 
 impl BromTransport for SerialPortTransport {
