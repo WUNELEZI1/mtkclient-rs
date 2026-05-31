@@ -30,22 +30,25 @@ pub fn install_winusb_driver(debug: bool, force: bool) -> Result<(), String> {
     }
 
     // 步骤 1: 等待设备进入 BROM，关闭 Watchdog
-    info!("请按住音量+和音量-，插入USB进入BROM模式...");
+    // 如果加了 --force 但设备已经是 WinUSB 模式（不是 COM 口），跳过 watchdog 直接装驱动
+    let com_port = find_mediatek_com_port(debug);
 
-    let com_port = loop {
-        if let Some(port) = find_mediatek_com_port(debug) {
-            break port;
+    if let Some(port) = com_port {
+        info!("找到 MediaTek USB Port: {}", port);
+        info!("正在关闭 Watchdog 稳定端口...");
+        disable_watchdog_serial(&port, debug)?;
+        info!("Watchdog 已关闭，等待端口稳定...");
+        sleep(Duration::from_secs(2));
+    } else {
+        // 没找到 COM 口，可能是设备已在 WinUSB 模式
+        info!("未检测到 MediaTek COM 端口");
+        if force {
+            info!("--force 模式：设备可能已在 WinUSB 模式，跳过 Watchdog 关闭，直接重新安装驱动...");
+        } else {
+            info!("请使用 --force 强制重新安装");
+            return Err("未检测到设备 COM 端口".to_string());
         }
-        info!("未检测到 MediaTek COM 端口，等待设备进入 BROM...");
-        info!("请按住 音量+ + 音量- 插入 USB");
-        sleep(Duration::from_millis(2000));
-    };
-
-    info!("找到 MediaTek USB Port: {}", com_port);
-    info!("正在关闭 Watchdog 稳定端口...");
-    disable_watchdog_serial(&com_port, debug)?;
-    info!("Watchdog 已关闭，等待端口稳定...");
-    sleep(Duration::from_secs(2));
+    }
 
     // 步骤 2: 安装驱动
     info!("安装 MediaTek BROM WinUSB 驱动...");
