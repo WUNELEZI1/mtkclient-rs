@@ -79,21 +79,23 @@ pub fn install_winusb_driver(debug: bool, force: bool) -> Result<(), String> {
     let (_lib, detect, install) = load_zadig_lib()?;
 
     if force {
-        if let Some(com_port) = find_mediatek_com_port() {
-            debug_log!(debug, "[DRV] force mode detected COM port: {}", com_port);
-            info!("找到 BROM COM 口: {}，正在关闭 Watchdog...", com_port);
-            if let Err(e) = disable_watchdog_brom(&com_port) {
-                warn!("关闭 Watchdog 失败: {}", e);
-            } else {
-                debug_log!(debug, "[DRV] watchdog disabled via COM port");
-                info!("Watchdog 已关闭，设备稳定");
-                std::thread::sleep(std::time::Duration::from_millis(500));
+        info!("请按住音量+和音量-，插入USB进入BROM模式...");
+        loop {
+            if let Some(com_port) = find_mediatek_com_port() {
+                debug_log!(debug, "[DRV] force mode detected COM port: {}", com_port);
+                info!("找到 BROM COM 口: {}，正在关闭 Watchdog...", com_port);
+                if let Err(e) = disable_watchdog_brom(&com_port) {
+                    warn!("关闭 Watchdog 失败: {}", e);
+                } else {
+                    debug_log!(debug, "[DRV] watchdog disabled via COM port");
+                    info!("Watchdog 已关闭，设备稳定");
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                break;
             }
-        } else {
-            debug_log!(
-                debug,
-                "[DRV] force mode: no COM port found, skip watchdog and detection"
-            );
+            debug_log!(debug, "[DRV] force mode still waiting for COM port...");
+            info!("未检测到 MediaTek COM 端口，等待设备进入 BROM...");
+            std::thread::sleep(std::time::Duration::from_millis(2000));
         }
     } else {
         if let Some(com_port) = find_mediatek_com_port() {
