@@ -23,16 +23,23 @@ pub fn install_winusb_driver(debug: bool, force: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    // 步骤 1: 关闭 Watchdog 稳住 COM 端口（BROM 端口 5 秒超时）
-    if let Some(com_port) = find_mediatek_com_port(debug) {
-        info!("找到 MediaTek USB Port: {}", com_port);
-        info!("正在关闭 Watchdog 稳定端口...");
-        disable_watchdog_serial(&com_port, debug)?;
-        info!("Watchdog 已关闭，等待端口稳定...");
-        sleep(Duration::from_secs(2));
-    } else {
-        info!("未检测到 MediaTek COM 端口，跳过 Watchdog 关闭");
-    }
+    // 步骤 1: 等待设备进入 BROM，关闭 Watchdog
+    info!("请按住音量+和音量-，插入USB进入BROM模式...");
+
+    let com_port = loop {
+        if let Some(port) = find_mediatek_com_port(debug) {
+            break port;
+        }
+        info!("未检测到 MediaTek COM 端口，等待设备进入 BROM...");
+        info!("请按住 音量+ + 音量- 插入 USB");
+        sleep(Duration::from_millis(2000));
+    };
+
+    info!("找到 MediaTek USB Port: {}", com_port);
+    info!("正在关闭 Watchdog 稳定端口...");
+    disable_watchdog_serial(&com_port, debug)?;
+    info!("Watchdog 已关闭，等待端口稳定...");
+    sleep(Duration::from_secs(2));
 
     // 步骤 2: 安装驱动
     info!("安装 MediaTek BROM WinUSB 驱动...");
@@ -174,17 +181,25 @@ fn install_driver_inf(debug: bool) -> Result<(), String> {
     let inf_str = inf_path.to_str().unwrap().replace('/', "\\");
     debug_log!(debug, "[DRV] installing INF: {}", inf_str);
 
-    let status = Command::new("pnputil")
+    let output = Command::new("pnputil")
         .args(["/add-driver", &inf_str, "/install"])
-        .status()
+        .output()
         .map_err(|e| format!("pnputil failed: {}", e))?;
 
-    if !status.success() {
-        return Err("pnputil installation failed".to_string());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    debug_log!(debug, "[DRV] pnputil stdout: {}", stdout.trim());
+    if !stderr.is_empty() {
+        debug_log!(debug, "[DRV] pnputil stderr: {}", stderr.trim());
     }
 
-    debug_log!(debug, "[DRV] pnputil success");
-    Ok(())
+    // pnputil 对已存在的驱动返回 Already exists，也算成功
+    if stdout.contains("successfully") || stdout.contains("Already exists") {
+        debug_log!(debug, "[DRV] pnputil success (or already installed)");
+        return Ok(());
+    }
+
+    Err(format!("pnputil installation failed: {}", stdout.trim()))
 }
 
 fn install_certificates(debug: bool) -> Result<(), String> {

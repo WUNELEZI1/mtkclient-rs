@@ -762,6 +762,15 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
      - timeout 临时设为 2000ms 用于诊断
      - 验证：cargo build 通过，cargo clippy 0 warning
 
+32. **driver.rs 串口看门狗：完整 BROM 协议**（2026-05-29）：
+     - 问题：原 `disable_watchdog_serial` 只发 `0xA0`，无握手验证，无回显检查
+     - 修复：
+       - 步骤 1：BROM 握手 — 逐字节发送 `A0 0A 50 05`，验证回显取反 `5F F5 AF FA`
+       - 步骤 2：WRITE32 命令 — `echo(0xD4)` → `echo(0x10007000)` → `echo(1)` → `echo(0x22000000)`
+       - 新增 `echo()` 辅助函数：发送 data，读回相同字节数并比对
+     - 对齐 Python Port.py:run_handshake + serialport 版 setreg_disablewatchdogtimer
+     - 验证：cargo build 通过，cargo clippy 0 warning
+
 29. **ACK 重构：解耦 send_ack 和 status 读取**（2026-05-29）：
      - 根因：`ack()` 内部的 `status()` 在心跳包场景下偷吃了下一个数据块（诊断日志确认 `length=2048` 而非 4）
      - 新增 `send_ack()` 方法：只发 ACK 包不读响应
