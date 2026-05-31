@@ -368,44 +368,35 @@ impl Preloader {
     }
 
     /// BROM 寄存器访问（DA 注入核心操作）
-    /// 对齐 Python mtk_preloader.py:721-753
-    /// Python:
-    ///   echo(b"\xDA") → echo(pack(">I", mode)) → echo(pack(">I", address)) → echo(pack(">I", length))
-    ///   status = usbread(2)
-    ///   if write: write(data) → if check_status: status2 = usbread(2)
-    ///   if read: rbyte(length) → status2 = usbread(2)
+    /// 对齐刷机匣日志中的原生命令 0xD1：
+    ///   D1 → address → length(dwords) → status → data/read → status
+    /// 注意：length 的单位是 dwords，读模式实际读取 length * 4 字节
     pub fn brom_register_access(
         &mut self,
         address: u32,
-        length: u32,
+        length_dwords: u32,
         data: Option<&[u8]>,
         check_status: bool,
     ) -> Result<Option<Vec<u8>>, String> {
-        let mode: u32 = if data.is_some() { 1 } else { 0 };
-
-        // echo 0xDA 命令（1 字节）
-        if !self.echo_1byte(0xDA)? {
-            return Err("brom_reg: echo 0xDA 不匹配".into());
+        // echo 0xD1 命令（1 字节）
+        if !self.echo_1byte(0xD1)? {
+            return Err("brom_reg: echo 0xD1 不匹配".into());
         }
 
-        // 发送参数（echo，对齐 Python — 全部使用 echo）
-        if !self.echo_4byte(mode)? {
-            return Err("brom_reg: echo mode 不匹配".into());
-        }
+        // 发送参数（echo）
         if !self.echo_4byte(address)? {
             return Err("brom_reg: echo addr 不匹配".into());
         }
-        if !self.echo_4byte(length)? {
+        if !self.echo_4byte(length_dwords)? {
             return Err("brom_reg: echo len 不匹配".into());
         }
 
-        // 读状态 2 字节
+        // 读状态 2 字节；不强制检查具体值，刷机匣日志中 0x0001 也属于正常响应
         let mut st = [0u8; 2];
-        self.device.read_exact(&mut st).ok();
+        self.device
+            .read_exact(&mut st)
+            .map_err(|e| format!("brom_reg status1: {}", e))?;
         debug!("brom_reg status1: {:02X?}", st);
-        if st != [0, 0] {
-            return Err("brom_reg status err".into());
-        }
 
         if let Some(wdata) = data {
             self.device
@@ -413,18 +404,19 @@ impl Preloader {
                 .map_err(|e| format!("brom_reg write data: {}", e))?;
             if check_status {
                 let mut st2 = [0u8; 2];
-                self.device.read_exact(&mut st2).ok();
+                self.device
+                    .read_exact(&mut st2)
+                    .map_err(|e| format!("brom_reg status2: {}", e))?;
                 debug!("brom_reg status3: {:02X?}", st2);
-                if st2 != [0, 0] {
-                    return Err("brom_reg status2 err".into());
-                }
             }
             Ok(None)
         } else {
-            let rdata = self.rbyte(length as usize)?;
+            let rdata = self.rbyte((length_dwords as usize) * 4)?;
             debug!("brom_reg read data: {} bytes", rdata.len());
             let mut st2 = [0u8; 2];
-            self.device.read_exact(&mut st2).ok();
+            self.device
+                .read_exact(&mut st2)
+                .map_err(|e| format!("brom_reg status2: {}", e))?;
             debug!("brom_reg status2: {:02X?}", st2);
             Ok(Some(rdata))
         }
@@ -432,7 +424,7 @@ impl Preloader {
 
     /// 读 32 位值（BROM 模式）
     pub fn read32_brom(&mut self, addr: u32, dwords: usize) -> Result<Vec<u8>, String> {
-        self.brom_register_access(addr, (dwords * 4) as u32, None, true)
+        self.brom_register_access(addr, dwords as u32, None, true)
             .map(|r| r.unwrap_or_default())
     }
 
