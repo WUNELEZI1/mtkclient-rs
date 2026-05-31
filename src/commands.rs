@@ -75,7 +75,7 @@ pub fn handle_command(
                 return Ok(());
             }
             "reset" => {
-                cmd_reset(da);
+                cmd_reset(da)?;
                 return Ok(());
             }
             _ => {}
@@ -313,7 +313,7 @@ fn execute_single_command(
         "w" | "write" => cmd_write(da, args, verify)?,
         "e" | "erase" => cmd_erase(da, args)?,
         "vbmeta" => cmd_vbmeta(da, args)?,
-        "reset" => cmd_reset(da),
+        "reset" => cmd_reset(da)?,
         "unlock" => cmd_unlock(da)?,
         "lock" => cmd_lock(da)?,
         "enable-adb-on-da" => {
@@ -427,10 +427,19 @@ fn cmd_vbmeta(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-fn cmd_reset(da: &mut DAXFlash) {
-    info!("已使用脑电波控制设备重启");
-    da.close_device(true);
-    info!("{}", "设备已重启".green());
+fn cmd_reset(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error>> {
+    match da.reset_device() {
+        Ok(()) => {
+            info!("{}", "设备已通过 DA 重启".green());
+            Ok(())
+        }
+        Err(e) => {
+            warn!("DA 重启失败，回退到 BROM jump_bl: {}", e);
+            da.close_device(true);
+            info!("{}", "设备已重启".green());
+            Ok(())
+        }
+    }
 }
 
 fn cmd_unlock(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error>> {

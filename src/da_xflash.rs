@@ -2274,6 +2274,33 @@ impl<'a> DAXFlash<'a> {
         }
     }
 
+    /// 通过 DA 重启设备（XFlash CMD_RESET）
+    /// 对齐刷机匣：0x010007 + param(storage=1, value=0x64)
+    pub fn reset_device(&mut self) -> Result<(), String> {
+        let pkt = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&pkt)?;
+        self.preloader.device.write(&0x010007u32.to_le_bytes())?;
+        let st = self.status()?;
+        if st != 0 {
+            return Err(format!("CMD_RESET status: 0x{:08X}", st));
+        }
+
+        // param: storage(4) + value(4) + zeros(20) = 28 字节
+        let mut param = vec![0u8; 28];
+        param[0..4].copy_from_slice(&1u32.to_le_bytes()); // storage=eMMC
+        param[4..8].copy_from_slice(&100u32.to_le_bytes()); // value=0x64
+        let param_pkt = pack3(CMD_MAGIC, 0x01, 28);
+        self.preloader.device.write(&param_pkt)?;
+        self.preloader.device.write(&param)?;
+
+        let st2 = self.status()?;
+        if st2 != 0 {
+            return Err(format!("CMD_RESET param status: 0x{:08X}", st2));
+        }
+        info!("设备已通过 DA 重启");
+        Ok(())
+    }
+
     /// 获取 EMI 数据（调试模式使用）
     pub fn get_emi_data(&self) -> Option<&Vec<u8>> {
         self.emi.as_ref()

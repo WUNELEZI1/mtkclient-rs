@@ -793,6 +793,21 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
      - 对齐 `smart_init` 的设备等待逻辑
      - 验证：cargo build 通过，cargo clippy 0 warning
 
+40. **reset 命令改为 DA 优先，BROM 兜底 + 驱动检测精确化**（2026-05-31）：
+     - 新增 `DAXFlash::reset_device()`：
+       - 使用 XFlash `0x010007` 命令重启设备
+       - param 按刷机匣对齐：`storage=1` + `value=0x64` + 20 字节零填充
+       - 两次 `status()` 均要求返回 0
+       - 成功后输出 `设备已通过 DA 重启`
+     - `commands.rs` 的 `cmd_reset` 改为：
+       - 优先调用 `da.reset_device()`
+       - 失败时 fallback 到 `da.close_device(true)`（BROM `jump_bl`）
+       - 保持 reset 命令在批量模式和单命令模式下可用
+     - `driver.rs` `check_driver()` 改为精确匹配：
+       - `pnputil /enum-devices`
+       - 仅当 `VID_0E8D&PID_0003` 或 `VID_0E8D&PID_2000` 对应条目包含 `winusb` 时返回 true
+     - 验证：`cargo build` 通过，`cargo clippy` 通过，0 warning
+
 35. **Preloader 传输层抽象：BromTransport trait**（2026-05-29）：
      - 目标：让 Preloader 同时支持 libusb 和 serialport 两种连接方式
      - 新增 `BromTransport` trait（preloader.rs）：
