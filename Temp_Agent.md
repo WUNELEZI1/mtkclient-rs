@@ -771,6 +771,14 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - 超时：默认 1000ms → 20ms（bootloader 只活跃约 0.3 秒）
        - 行为：读不满等到超时 → 设备发多少收多少
 
+37. **修复 aes/cbc API breaking change**（2026-05-29）：
+     - 问题：`cargo update` 升级 aes 和 cbc 依赖到新大版本（cipher 0.4→0.5），`BlockDecryptMut`/`BlockEncryptMut` 重命名为 `BlockModeDecrypt`/`BlockModeEncrypt`
+     - 修复：
+       - import: `BlockDecryptMut, BlockEncryptMut` → `BlockModeDecrypt, BlockModeEncrypt`
+       - 方法名: `decrypt_padded_mut` → `decrypt_padded`（4 处）
+       - 方法名: `encrypt_padded_mut` → `encrypt_padded`（3 处）
+     - 验证：cargo build 通过（0 error），cargo clippy 0 warning（仅 1 个已有的 dead_code warning）
+
 35. **Preloader 传输层抽象：BromTransport trait**（2026-05-29）：
      - 目标：让 Preloader 同时支持 libusb 和 serialport 两种连接方式
      - 新增 `BromTransport` trait（preloader.rs）：
