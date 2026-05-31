@@ -200,7 +200,8 @@ pub fn check_driver() -> bool {
     match output {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout).to_lowercase();
-            let has_brom_winusb = stdout.contains("vid_0e8d&pid_0003") && stdout.contains("winusb");
+            let has_brom_winusb =
+                stdout.contains("vid_0e8d&pid_0003") && stdout.contains("winusb");
             let has_preloader_winusb =
                 stdout.contains("vid_0e8d&pid_2000") && stdout.contains("winusb");
 
