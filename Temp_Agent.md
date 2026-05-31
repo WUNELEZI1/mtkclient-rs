@@ -762,6 +762,22 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
      - timeout 临时设为 2000ms 用于诊断
      - 验证：cargo build 通过，cargo clippy 0 warning
 
+35. **Preloader 传输层抽象：BromTransport trait**（2026-05-29）：
+     - 目标：让 Preloader 同时支持 libusb 和 serialport 两种连接方式
+     - 新增 `BromTransport` trait（preloader.rs）：
+       - 基础方法：write、read_exact、read、set_timeout、get_timeout、do_handshake
+       - USB 专属方法（带默认实现）：ctrl_transfer_in、ctrl_transfer_out、clear_halt_in
+     - `Preloader.device` 从 `UsbDevice` 改为 `Box<dyn BromTransport>`
+     - `SerialPortTransport` 实现 BromTransport：
+       - 通过 `serialport::available_ports()` 枚举 COM 口
+       - 匹配 VID=0E8D PID=0003 的 MediaTek BROM 设备
+       - BROM 握手：逐字节发送 A0 0A 50 05，验证回显取反
+     - `UsbDevice` 实现 BromTransport：委托到已有的 write/read 等方法
+     - `smart_init` 优先尝试 COM 口直连：
+       - 找到 BROM COM 口 → 串口握手 → 关闭看门狗 → 释放 COM 口 → libusb 接管
+       - 未找到 COM 口 → 直接走 libusb 连接逻辑
+     - 验证：cargo build 通过，cargo clippy 0 warning
+
 34. **driver.rs：管理员权限检查 + 自动提权**（2026-05-29）：
      - 问题：pnputil 和 certutil 需要管理员权限，非管理员运行会静默失败
      - 新增 `is_admin()`：执行 `net session` 检查管理员权限（CREATE_NO_WINDOW 隐藏窗口）
