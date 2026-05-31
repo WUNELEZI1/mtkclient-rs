@@ -2153,6 +2153,7 @@ impl<'a> DAXFlash<'a> {
         }
 
         // send_param: storage(4) + parttype(4) + addr(8) + size(8) + NandExtension(32)
+        // 这里的 size 保持调用方传入的“实际分区大小”，不要改成请求读取长度
         let mut param = Vec::with_capacity(56);
         param.extend_from_slice(&1u32.to_le_bytes()); // storage = 1 (eMMC)
         param.extend_from_slice(&8u32.to_le_bytes()); // parttype = 8 (USER)
