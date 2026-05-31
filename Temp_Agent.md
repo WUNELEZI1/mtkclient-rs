@@ -762,6 +762,16 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
      - timeout 临时设为 2000ms 用于诊断
      - 验证：cargo build 通过，cargo clippy 0 warning
 
+33. **driver.rs：等待 BROM 设备 + 修复 pnputil 判断**（2026-05-29）：
+     - 改动 1：`install_winusb_driver` 加设备等待循环
+       - 找不到设备时循环等待（2 秒间隔），提示用户进入 BROM 模式
+       - 提示："请按住音量+和音量-，插入USB进入BROM模式..."
+       - 找到设备后关闭 Watchdog，等待 2 秒稳定
+     - 改动 2：`install_driver_inf` 修复 pnputil 判断
+       - 原代码：`if !status.success()` 报错退出，但 pnputil 对已存在的驱动返回非零
+       - 改用 `output()` 捕获 stdout，检查 "successfully" 或 "Already exists" 都算成功
+     - 验证：cargo build 通过，cargo clippy 0 warning
+
 32. **driver.rs 串口看门狗：完整 BROM 协议**（2026-05-29）：
      - 问题：原 `disable_watchdog_serial` 只发 `0xA0`，无握手验证，无回显检查
      - 修复：
