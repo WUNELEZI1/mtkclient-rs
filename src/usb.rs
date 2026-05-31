@@ -469,6 +469,7 @@ impl UsbDevice {
         Ok(total)
     }
 
+    #[allow(dead_code)] // 通过 BromTransport trait 的 dyn 调用提供给上层，静态分析未必能看到直接引用
     pub fn ctrl_transfer_in(
         &mut self,
         rt: u8,
@@ -510,6 +511,7 @@ impl UsbDevice {
     }
 
     /// 复位 bulk 端点（清除 halt/stall 状态）
+    #[allow(dead_code)] // 通过 BromTransport trait 的 dyn 调用提供给上层，静态分析未必能看到直接引用
     pub fn clear_halt_in(&mut self) -> Result<(), String> {
         self.clear_halt_ep(self.ep_in)
     }
@@ -534,6 +536,7 @@ impl UsbDevice {
         }
     }
 
+    #[allow(dead_code)] // 通过 BromTransport trait 的 dyn 调用提供给上层，静态分析未必能看到直接引用
     pub fn ctrl_transfer_out(
         &mut self,
         rt: u8,
