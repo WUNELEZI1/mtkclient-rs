@@ -88,8 +88,38 @@ impl<'a> DAXFlash<'a> {
     pub fn read_gpt(&mut self) -> Result<(), String> {
         info!("读取 GPT 分区表...");
 
-        // 对齐 Python: 2 * pagesize = 2 * 512 = 1024，取 2048 覆盖 GPT 头+分区表
-        let total_read_len: u64 = 2048;
+        // 第一步：读取 GPT 头（512 字节），获取分区数量
+        let header_len: u64 = 512;
+        let header_data = self.readflash_data(0, header_len)?;
+        if header_data.len() < 512 {
+            return Err("GPT 头数据不足".to_string());
+        }
+
+        // 从 GPT 头解析分区数量和分区项大小
+        // GPT 头位于偏移 0x200（512 字节），结构体内部偏移：
+        //   num_part_entries: header 偏移 80 (0x50) → 绝对偏移 512+80=592
+        //   part_entry_size: header 偏移 84 (0x54) → 绝对偏移 512+84=596
+        let num_entries = u32::from_le_bytes([
+            header_data[592],
+            header_data[593],
+            header_data[594],
+            header_data[595],
+        ]) as u64;
+        let entry_size = u32::from_le_bytes([
+            header_data[596],
+            header_data[597],
+            header_data[598],
+            header_data[599],
+        ]) as u64;
+
+        info!(
+            "  GPT 分区数: {}, 分区项大小: {} 字节",
+            num_entries, entry_size
+        );
+
+        // 第二步：计算完整读取大小，重新读取
+        // GPT 头 512 字节 + 分区项表
+        let total_read_len = 512 + num_entries * entry_size;
         let gpt_data = self.readflash_data(0, total_read_len)?;
         info!("  读取 GPT 数据: {} 字节", gpt_data.len());
 
