@@ -2209,19 +2209,16 @@ impl<'a> DAXFlash<'a> {
                     break;
                 }
 
-            // 追加数据
+            // 追加数据（包括心跳包的 4 字节零值）
             buffer.extend_from_slice(&data);
             remaining = remaining.saturating_sub(data.len());
 
-            // 发 ACK 并读 status
-            match self.ack() {
-                AckResult::Continue => {
-                    debug!("[readflash_data] ack: Continue");
-                }
-                AckResult::Terminated(code) => {
-                    debug!("[readflash_data] ack: Terminated(0x{:X}), ending loop", code);
-                    break;
-                }
+            // 发送 ACK（只发不读）
+            // 关键：不在此处读 status！下一个数据包的包头就是 DA 对 ACK 的响应
+            // 如果读 status，会偷吃下一个数据包
+            if let Err(e) = self.send_ack() {
+                debug!("[readflash_data] send_ack failed: {}", e);
+                break;
             }
         }
 
@@ -2233,68 +2230,28 @@ impl<'a> DAXFlash<'a> {
     /// 写入 12B header(CMD_MAGIC + 0x01 + 4) + 4B 零值 → 读取 status
     /// 返回 AckResult::Continue（可继续）或 AckResult::Terminated（终止）
     pub(crate) fn ack(&mut self) -> AckResult {
-        let hdr = pack3(CMD_MAGIC, 0x01, 4);
-        if self.preloader.device.write(&hdr).is_err() {
+        if let Err(e) = self.send_ack() {
+            debug!("[ack] send_ack failed: {}", e);
             return AckResult::Terminated(1);
         }
-        if self.preloader.device.write(&0u32.to_le_bytes()).is_err() {
-            return AckResult::Terminated(2);
+        match self.status() {
+            Ok(0) => AckResult::Continue,
+            Ok(n) => AckResult::Terminated(n),
+            Err(_) => AckResult::Terminated(3),
         }
-        let orig_timeout = self.preloader.device.get_timeout();
+    }
+
+    fn send_ack(&mut self) -> Result<(), String> {
+        let hdr = pack3(CMD_MAGIC, 0x01, 4);
         self.preloader
             .device
-            .set_timeout(std::time::Duration::from_millis(2000));
-
-        let mut hdr_buf = [0u8; 12];
-        let result = match self.preloader.device.read(&mut hdr_buf) {
-            Ok(12) => {
-                let magic = u32::from_le_bytes([hdr_buf[0], hdr_buf[1], hdr_buf[2], hdr_buf[3]]);
-                let length =
-                    u32::from_le_bytes([hdr_buf[8], hdr_buf[9], hdr_buf[10], hdr_buf[11]]);
-                debug!("[ack::status] hdr: magic=0x{:08X} length={}", magic, length);
-
-                if magic != CMD_MAGIC {
-                    self.preloader.device.set_timeout(orig_timeout);
-                    return AckResult::Terminated(3);
-                }
-
-                if length > 0 {
-                    let mut tmp = vec![0u8; length as usize];
-                    match self.preloader.device.read(&mut tmp) {
-                        Ok(n) => {
-                            debug!(
-                                "[ack::status] data: {} bytes, first 16: {:02X?}",
-                                n,
-                                &tmp[..16.min(n)]
-                            );
-                            if length == 4 {
-                                let val = u32::from_le_bytes(tmp[..4].try_into().unwrap());
-                                if val == 0xFEEEEEEF {
-                                    self.preloader.device.set_timeout(orig_timeout);
-                                    return AckResult::Continue;
-                                }
-                                self.preloader.device.set_timeout(orig_timeout);
-                                return AckResult::Terminated(val);
-                            }
-                        }
-                        Err(e) => {
-                            debug!("[ack::status] read data error: {}", e);
-                        }
-                    }
-                }
-                AckResult::Continue
-            }
-            Ok(n) => {
-                debug!("[ack::status] short hdr read: {}/12 bytes", n);
-                AckResult::Terminated(3)
-            }
-            Err(e) => {
-                debug!("[ack::status] hdr read error: {}", e);
-                AckResult::Terminated(3)
-            }
-        };
-        self.preloader.device.set_timeout(orig_timeout);
-        result
+            .write(&hdr)
+            .map_err(|e| format!("send_ack write hdr: {}", e))?;
+        self.preloader
+            .device
+            .write(&0u32.to_le_bytes())
+            .map_err(|e| format!("send_ack write data: {}", e))?;
+        Ok(())
     }
 
     pub fn patch_vbmeta(&mut self, mode: u32) -> Result<(), String> {
