@@ -761,6 +761,14 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - `[ack::status] hdr read error: ...`
      - timeout 临时设为 2000ms 用于诊断
      - 验证：cargo build 通过，cargo clippy 0 warning
+
+29. **ACK 重构：解耦 send_ack 和 status 读取**（2026-05-29）：
+     - 根因：`ack()` 内部的 `status()` 在心跳包场景下偷吃了下一个数据块（诊断日志确认 `length=2048` 而非 4）
+     - 新增 `send_ack()` 方法：只发 ACK 包不读响应
+     - `ack()` 方法恢复简洁版本：调用 `send_ack()` + `status()`
+     - `readflash_data` 循环改用 `send_ack()`：只发不读，避免偷吃下一个数据块
+     - 关键设计：发 ACK 和读响应的顺序由调用方控制，循环自己管理数据流
+     - 验证：cargo build 通过，cargo clippy 0 warning
      - 问题：reopen 后 handshake 全部失败（write 返回 -7 / LIBUSB_ERROR_TIMEOUT）
      - 根因：patcher payload 执行后设备短暂不可用，reopen 的 200ms sleep 不够。且既然 bypass_security 内部的 handshake 已经成功，reopen 本身无必要
      - 修复：
