@@ -66,16 +66,21 @@ pub fn install_winusb_driver(debug: bool, force: bool) -> Result<(), String> {
 
     // 先通过 serialport 关闭 watchdog，防止设备在装驱动期间重启
     // 对齐刷机匣流程：COM 口连接 → 握手 → WRITE32 关 WDT → 释放 COM 口
-    if let Some(com_port) = find_mediatek_com_port() {
-        info!("找到 BROM COM 口: {}，正在关闭 Watchdog...", com_port);
-        if let Err(e) = disable_watchdog_brom(&com_port) {
-            warn!("关闭 Watchdog 失败: {}", e);
-        } else {
-            info!("Watchdog 已关闭，设备稳定");
-            std::thread::sleep(std::time::Duration::from_millis(500));
+    info!("请按住音量+和音量-，插入USB进入BROM模式...");
+    let com_port = loop {
+        if let Some(port) = find_mediatek_com_port() {
+            break port;
         }
+        info!("未检测到 MediaTek COM 端口，等待设备进入 BROM...");
+        info!("请按住 音量+ + 音量- 插入 USB");
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+    };
+    info!("找到 BROM COM 口: {}，正在关闭 Watchdog...", com_port);
+    if let Err(e) = disable_watchdog_brom(&com_port) {
+        warn!("关闭 Watchdog 失败: {}", e);
     } else {
-        info!("未找到 BROM COM 口，跳过 Watchdog 关闭");
+        info!("Watchdog 已关闭，设备稳定");
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
     // 加载 zadig_rust.dll
