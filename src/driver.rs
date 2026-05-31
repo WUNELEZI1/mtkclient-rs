@@ -1,5 +1,5 @@
 use libloading::{Library, Symbol};
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::path::Path;
 use std::process::Command;
 
@@ -62,6 +62,20 @@ pub fn install_winusb_driver(debug: bool, force: bool) -> Result<(), String> {
     if !is_admin() {
         info!("正在请求管理员权限...");
         return rerun_as_admin();
+    }
+
+    // 先通过 serialport 关闭 watchdog，防止设备在装驱动期间重启
+    // 对齐刷机匣流程：COM 口连接 → 握手 → WRITE32 关 WDT → 释放 COM 口
+    if let Some(com_port) = find_mediatek_com_port() {
+        info!("找到 BROM COM 口: {}，正在关闭 Watchdog...", com_port);
+        if let Err(e) = disable_watchdog_brom(&com_port) {
+            warn!("关闭 Watchdog 失败: {}", e);
+        } else {
+            info!("Watchdog 已关闭，设备稳定");
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    } else {
+        info!("未找到 BROM COM 口，跳过 Watchdog 关闭");
     }
 
     // 加载 zadig_rust.dll
@@ -136,4 +150,56 @@ pub fn check_driver() -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// 枚举 COM 口找 MediaTek BROM (VID_0E8D PID_0003)
+fn find_mediatek_com_port() -> Option<String> {
+    let ports = serialport::available_ports().ok()?;
+    for p in &ports {
+        if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
+            && info.vid == 0x0E8D && info.pid == 0x0003 {
+            return Some(p.port_name.clone());
+        }
+    }
+    None
+}
+
+/// 通过 serialport 关闭 BROM watchdog
+/// 对齐 SerialPortTransport::do_handshake + WRITE32 关 WDT
+fn disable_watchdog_brom(port_name: &str) -> Result<(), String> {
+    let mut port = serialport::new(port_name, 115200)
+        .timeout(std::time::Duration::from_millis(1000))
+        .open()
+        .map_err(|e| format!("无法打开 {}: {}", port_name, e))?;
+
+    // 握手
+    let cmd = [0xA0u8, 0x0A, 0x50, 0x05];
+    for (i, cmd_byte) in cmd.iter().enumerate() {
+        port.write(&[*cmd_byte]).map_err(|e| format!("握手写: {}", e))?;
+        let mut resp = [0u8; 1];
+        port.read_exact(&mut resp).map_err(|e| format!("握手读: {}", e))?;
+        if resp[0] != !*cmd_byte {
+            return Err(format!(
+                "握手失败 字节{}: 期望0x{:02X} 收到0x{:02X}",
+                i, !*cmd_byte, resp[0]
+            ));
+        }
+    }
+
+    // WRITE32 关闭 watchdog
+    let echo = |port: &mut dyn serialport::SerialPort, data: &[u8]| -> Result<(), String> {
+        port.write_all(data).map_err(|e| format!("echo写: {}", e))?;
+        let mut buf = vec![0u8; data.len()];
+        port.read_exact(&mut buf).map_err(|e| format!("echo读: {}", e))?;
+        Ok(())
+    };
+
+    echo(&mut *port, &[0xD4])?;
+    echo(&mut *port, &0x10007000u32.to_le_bytes())?;
+    echo(&mut *port, &1u32.to_le_bytes())?;
+    echo(&mut *port, &0x22000000u32.to_le_bytes())?;
+
+    // 释放 COM 口，让 WinUSB 接管
+    drop(port);
+    Ok(())
 }
