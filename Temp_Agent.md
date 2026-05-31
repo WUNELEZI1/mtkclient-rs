@@ -779,6 +779,14 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - 方法名: `encrypt_padded_mut` → `encrypt_padded`（3 处）
      - 验证：cargo build 通过（0 error），cargo clippy 0 warning（仅 1 个已有的 dead_code warning）
 
+38. **driver.rs：zadig 安装前增加 serialport watchdog 关闭**（2026-05-29）：
+     - 问题：zadig_rust.dll 安装驱动期间设备可能因 watchdog 重启，导致安装失败
+     - 修复：在调用 `zadig_detect_bootrom()` 之前，先通过 serialport 关闭 watchdog：
+       - `find_mediatek_com_port()`：枚举 COM 口匹配 VID=0E8D PID=0003
+       - `disable_watchdog_brom()`：打开串口 → BROM 握手 → WRITE32 关 WDT → 释放 COM 口
+     - 对齐刷机匣流程：COM 口连接 → 握手 → WRITE32 关 WDT → 释放 COM 口 → zadig 安装
+     - 验证：cargo build 通过，cargo clippy 0 warning（仅 1 个已有的 dead_code warning）
+
 35. **Preloader 传输层抽象：BromTransport trait**（2026-05-29）：
      - 目标：让 Preloader 同时支持 libusb 和 serialport 两种连接方式
      - 新增 `BromTransport` trait（preloader.rs）：
