@@ -2183,7 +2183,10 @@ impl<'a> DAXFlash<'a> {
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    debug!("[readflash_data] read header error (end of transfer): {}", e);
+                    debug!(
+                        "[readflash_data] read header error (end of transfer): {}",
+                        e
+                    );
                     break;
                 }
             }
@@ -2204,10 +2207,11 @@ impl<'a> DAXFlash<'a> {
             // 读数据
             let mut data = vec![0u8; slength as usize];
             if slength > 0
-                && let Err(e) = self.preloader.device.read_exact(&mut data) {
-                    debug!("[readflash_data] read data error: {}", e);
-                    break;
-                }
+                && let Err(e) = self.preloader.device.read_exact(&mut data)
+            {
+                debug!("[readflash_data] read data error: {}", e);
+                break;
+            }
 
             // 追加数据（包括心跳包的 4 字节零值）
             buffer.extend_from_slice(&data);
