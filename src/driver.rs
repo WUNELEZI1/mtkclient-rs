@@ -195,12 +195,24 @@ fn rerun_as_admin() -> Result<(), String> {
 }
 
 pub fn check_driver() -> bool {
-    let output = Command::new("pnputil").args(["/enum-drivers"]).output();
+    let output = Command::new("pnputil").args(["/enum-devices"]).output();
 
     match output {
         Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout.contains("MediaTek") && (stdout.contains("WinUSB") || stdout.contains("oem"))
+            let stdout = String::from_utf8_lossy(&out.stdout).to_lowercase();
+            let has_brom_winusb = stdout.contains("vid_0e8d&pid_0003") && stdout.contains("winusb");
+            let has_preloader_winusb =
+                stdout.contains("vid_0e8d&pid_2000") && stdout.contains("winusb");
+
+            if has_brom_winusb {
+                info!("检测到 BROM 设备已安装 WinUSB 驱动");
+                return true;
+            }
+            if has_preloader_winusb {
+                info!("检测到 Preloader 设备已安装 WinUSB 驱动");
+                return true;
+            }
+            false
         }
         Err(_) => false,
     }
