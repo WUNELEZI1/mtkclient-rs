@@ -17,6 +17,12 @@ macro_rules! debug_log {
 pub fn install_winusb_driver(debug: bool, force: bool) -> Result<(), String> {
     debug_log!(debug, "[DRV] install_winusb_driver start");
 
+    // 检查管理员权限（pnputil 和 certutil 需要）
+    if !is_admin() {
+        info!("正在请求管理员权限...");
+        return rerun_as_admin();
+    }
+
     if !force && check_driver() {
         info!("WinUSB 驱动已就绪");
         info!("使用 --force 可重新安装");
@@ -220,6 +226,43 @@ fn install_certificates(debug: bool) -> Result<(), String> {
         .status();
 
     Ok(())
+}
+
+/// 检查是否以管理员权限运行
+fn is_admin() -> bool {
+    use std::os::windows::process::CommandExt;
+    let output = Command::new("net")
+        .args(["session"])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .output();
+    match output {
+        Ok(out) => out.status.success(),
+        Err(_) => false,
+    }
+}
+
+/// 以管理员权限重新启动当前程序
+fn rerun_as_admin() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("无法获取 exe 路径: {}", e))?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    let status = Command::new("powershell")
+        .args([
+            "-Command",
+            &format!(
+                "Start-Process '{}' -ArgumentList '{}' -Verb RunAs -Wait",
+                exe.display(),
+                args.join(" ")
+            ),
+        ])
+        .status()
+        .map_err(|e| format!("提权失败: {}", e))?;
+
+    if status.success() {
+        std::process::exit(0);
+    } else {
+        Err("提权失败，请以管理员身份运行".to_string())
+    }
 }
 
 pub fn check_driver() -> bool {
