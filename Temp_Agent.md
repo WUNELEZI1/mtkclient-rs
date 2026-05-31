@@ -762,6 +762,15 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
      - timeout 临时设为 2000ms 用于诊断
      - 验证：cargo build 通过，cargo clippy 0 warning
 
+36. **USB 握手修复：单次 bulk 传输 + 20ms 超时**（2026-05-29）：
+     - 问题：`do_handshake` 用 `self.read(&mut r)` 循环读满 512 字节，设备只回 1 字节，`read` 等到超时（返回 -7/-1）
+     - Python 对照：`ep_in(maxinsize)[-1]` — 单次 bulk 读取，取最后一个字节
+     - 修复：改用单次 `libusb_bulk_transfer` 读取，timeout=20ms（对齐 Python）
+     - 关键变化：
+       - 回显读取：循环读满 512B → 单次 bulk 传输
+       - 超时：默认 1000ms → 20ms（bootloader 只活跃约 0.3 秒）
+       - 行为：读不满等到超时 → 设备发多少收多少
+
 35. **Preloader 传输层抽象：BromTransport trait**（2026-05-29）：
      - 目标：让 Preloader 同时支持 libusb 和 serialport 两种连接方式
      - 新增 `BromTransport` trait（preloader.rs）：

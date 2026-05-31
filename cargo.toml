@@ -11,6 +11,7 @@ env_logger = "0.11"
 colored = "2"
 clap = { version = "4", features = ["derive"] }
 serialport = "4.7"
+libloading = "0.8"
 sha2 = "0.10"
 aes = "0.8"
 cbc = "0.1"
