@@ -808,6 +808,20 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - 仅当 `VID_0E8D&PID_0003` 或 `VID_0E8D&PID_2000` 对应条目包含 `winusb` 时返回 true
      - 验证：`cargo build` 通过，`cargo clippy` 通过，0 warning
 
+41. **BROM 原生命令切换为 0xD1，长度改用 dwords 语义**（2026-05-31）：
+     - `preloader.rs` `brom_register_access()` 改为：
+       - `echo(0xD1)` 替代 `echo(0xDA)`
+       - 移除 `mode` 参数 echo
+       - `address` + `length(dwords)` 直接发送
+       - `status` 只读不校验具体值，`0x0001` 也视为正常响应
+       - 读模式实际读取 `length * 4` 字节
+     - `kamakiri2.rs` 调用链同步改为 dword 语义：
+       - `da_read` 传 `len / 4`
+       - `da_write` 传 `data.len() / 4`
+       - `read32_brom()` 直接传 dword 数
+     - 现有 `readflash_data`、`send_ack` / `ack`、`reset_device`、`check_driver`、`--force` 等既有修复保持不变
+     - 验证：`cargo build` 通过，`cargo clippy` 通过，0 warning
+
 35. **Preloader 传输层抽象：BromTransport trait**（2026-05-29）：
      - 目标：让 Preloader 同时支持 libusb 和 serialport 两种连接方式
      - 新增 `BromTransport` trait（preloader.rs）：

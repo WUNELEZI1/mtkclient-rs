@@ -67,7 +67,7 @@ impl Preloader {
             for i in 0..4 {
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra - 6 + (4 - i))?;
             }
-            let r = self.brom_register_access(addr, len, None, true)?;
+            let r = self.brom_register_access(addr, len / 4, None, true)?;
             Ok(r.unwrap_or_default())
         } else {
             for i in 0..3 {
@@ -75,7 +75,7 @@ impl Preloader {
             }
             let bra_addr = addr.wrapping_sub(0x40);
             debug!("[da_read] bra_addr=0x{:08X} (addr-0x40)", bra_addr);
-            let r = self.brom_register_access(bra_addr, len, None, true)?;
+            let r = self.brom_register_access(bra_addr, len / 4, None, true)?;
             Ok(r.unwrap_or_default())
         }
     }
@@ -104,7 +104,7 @@ impl Preloader {
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra - 6 + (4 - i))?;
             }
             debug!("[da_write] bra_addr=0x{:08X} (no offset)", addr);
-            self.brom_register_access(addr, data.len() as u32, Some(data), check_status)?;
+            self.brom_register_access(addr, (data.len() / 4) as u32, Some(data), check_status)?;
             Ok(())
         } else {
             for i in 0..3 {
@@ -114,7 +114,7 @@ impl Preloader {
             debug!("[da_write] bra_addr=0x{:08X} (addr-0x40)", bra_addr);
             self.brom_register_access(
                 addr.wrapping_sub(0x40),
-                data.len() as u32,
+                (data.len() / 4) as u32,
                 Some(data),
                 check_status,
             )?;
