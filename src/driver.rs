@@ -78,45 +78,64 @@ pub fn install_winusb_driver(debug: bool, force: bool) -> Result<(), String> {
     // 加载 zadig_rust.dll
     let (_lib, detect, install) = load_zadig_lib()?;
 
-    if let Some(com_port) = find_mediatek_com_port() {
-        debug_log!(debug, "[DRV] detected COM port: {}", com_port);
-        info!("找到 BROM COM 口: {}，正在关闭 Watchdog...", com_port);
-        if let Err(e) = disable_watchdog_brom(&com_port) {
-            warn!("关闭 Watchdog 失败: {}", e);
-        } else {
-            debug_log!(debug, "[DRV] watchdog disabled via COM port");
-            info!("Watchdog 已关闭，设备稳定");
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-    } else {
-        debug_log!(debug, "[DRV] no COM port found, probing WinUSB mode");
-        let detected = unsafe { detect() };
-        debug_log!(debug, "[DRV] zadig_detect_bootrom returned {}", detected);
-        if detected == 0 {
-            debug_log!(
-                debug,
-                "[DRV] device not in WinUSB mode, waiting for COM port"
-            );
-            info!("未检测到 MediaTek COM 端口，等待设备进入 BROM...");
-            info!("请按住 音量+ + 音量- 插入 USB");
-            loop {
-                if let Some(port) = find_mediatek_com_port() {
-                    debug_log!(debug, "[DRV] COM port appeared: {}", port);
-                    info!("检测到 BROM COM 口: {}，正在关闭 Watchdog...", port);
-                    if let Err(e) = disable_watchdog_brom(&port) {
-                        warn!("关闭 Watchdog 失败: {}", e);
-                    } else {
-                        debug_log!(debug, "[DRV] watchdog disabled after wait");
-                        info!("Watchdog 已关闭，设备稳定");
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                    }
-                    break;
-                }
-                debug_log!(debug, "[DRV] still waiting for COM port...");
-                std::thread::sleep(std::time::Duration::from_millis(2000));
+    if force {
+        if let Some(com_port) = find_mediatek_com_port() {
+            debug_log!(debug, "[DRV] force mode detected COM port: {}", com_port);
+            info!("找到 BROM COM 口: {}，正在关闭 Watchdog...", com_port);
+            if let Err(e) = disable_watchdog_brom(&com_port) {
+                warn!("关闭 Watchdog 失败: {}", e);
+            } else {
+                debug_log!(debug, "[DRV] watchdog disabled via COM port");
+                info!("Watchdog 已关闭，设备稳定");
+                std::thread::sleep(std::time::Duration::from_millis(500));
             }
         } else {
-            debug_log!(debug, "[DRV] device already in WinUSB mode, skip COM wait");
+            debug_log!(
+                debug,
+                "[DRV] force mode: no COM port found, skip watchdog and detection"
+            );
+        }
+    } else {
+        if let Some(com_port) = find_mediatek_com_port() {
+            debug_log!(debug, "[DRV] detected COM port: {}", com_port);
+            info!("找到 BROM COM 口: {}，正在关闭 Watchdog...", com_port);
+            if let Err(e) = disable_watchdog_brom(&com_port) {
+                warn!("关闭 Watchdog 失败: {}", e);
+            } else {
+                debug_log!(debug, "[DRV] watchdog disabled via COM port");
+                info!("Watchdog 已关闭，设备稳定");
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        } else {
+            debug_log!(debug, "[DRV] no COM port found, probing WinUSB mode");
+            let detected = unsafe { detect() };
+            debug_log!(debug, "[DRV] zadig_detect_bootrom returned {}", detected);
+            if detected == 0 {
+                debug_log!(
+                    debug,
+                    "[DRV] device not in WinUSB mode, waiting for COM port"
+                );
+                info!("未检测到 MediaTek COM 端口，等待设备进入 BROM...");
+                info!("请按住 音量+ + 音量- 插入 USB");
+                loop {
+                    if let Some(port) = find_mediatek_com_port() {
+                        debug_log!(debug, "[DRV] COM port appeared: {}", port);
+                        info!("检测到 BROM COM 口: {}，正在关闭 Watchdog...", port);
+                        if let Err(e) = disable_watchdog_brom(&port) {
+                            warn!("关闭 Watchdog 失败: {}", e);
+                        } else {
+                            debug_log!(debug, "[DRV] watchdog disabled after wait");
+                            info!("Watchdog 已关闭，设备稳定");
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                        }
+                        break;
+                    }
+                    debug_log!(debug, "[DRV] still waiting for COM port...");
+                    std::thread::sleep(std::time::Duration::from_millis(2000));
+                }
+            } else {
+                debug_log!(debug, "[DRV] device already in WinUSB mode, skip COM wait");
+            }
         }
     }
 
@@ -202,42 +221,33 @@ fn find_mediatek_com_port() -> Option<String> {
 /// 通过 serialport 关闭 BROM watchdog
 /// 对齐 SerialPortTransport::do_handshake + WRITE32 关 WDT
 fn disable_watchdog_brom(port_name: &str) -> Result<(), String> {
-    let mut port = serialport::new(port_name, 115200)
-        .timeout(std::time::Duration::from_millis(1000))
-        .open()
-        .map_err(|e| format!("无法打开 {}: {}", port_name, e))?;
+    use crate::preloader::BromTransport;
 
-    // 握手
-    let cmd = [0xA0u8, 0x0A, 0x50, 0x05];
-    for (i, cmd_byte) in cmd.iter().enumerate() {
-        port.write(&[*cmd_byte])
-            .map_err(|e| format!("握手写: {}", e))?;
-        let mut resp = [0u8; 1];
-        port.read_exact(&mut resp)
-            .map_err(|e| format!("握手读: {}", e))?;
-        if resp[0] != !*cmd_byte {
+    let mut transport = crate::preloader::SerialPortTransport::new(port_name, 115200)?;
+    transport.do_handshake()?;
+
+    // WRITE32 关闭 watchdog，使用与 BROM 协议一致的 echo 语义
+    let echo = |transport: &mut crate::preloader::SerialPortTransport,
+                data: &[u8]|
+     -> Result<(), String> {
+        transport.write(data)?;
+        let mut buf = vec![0u8; data.len()];
+        transport.read_exact(&mut buf)?;
+        if buf != data {
             return Err(format!(
-                "握手失败 字节{}: 期望0x{:02X} 收到0x{:02X}",
-                i, !*cmd_byte, resp[0]
+                "echo mismatch: sent {:02X?}, got {:02X?}",
+                data, buf
             ));
         }
-    }
-
-    // WRITE32 关闭 watchdog
-    let echo = |port: &mut dyn serialport::SerialPort, data: &[u8]| -> Result<(), String> {
-        port.write_all(data).map_err(|e| format!("echo写: {}", e))?;
-        let mut buf = vec![0u8; data.len()];
-        port.read_exact(&mut buf)
-            .map_err(|e| format!("echo读: {}", e))?;
         Ok(())
     };
 
-    echo(&mut *port, &[0xD4])?;
-    echo(&mut *port, &0x10007000u32.to_le_bytes())?;
-    echo(&mut *port, &1u32.to_le_bytes())?;
-    echo(&mut *port, &0x22000000u32.to_le_bytes())?;
+    echo(&mut transport, &[0xD4])?;
+    echo(&mut transport, &0x10007000u32.to_be_bytes())?;
+    echo(&mut transport, &1u32.to_be_bytes())?;
+    echo(&mut transport, &0x22000000u32.to_be_bytes())?;
 
     // 释放 COM 口，让 WinUSB 接管
-    drop(port);
+    drop(transport);
     Ok(())
 }
