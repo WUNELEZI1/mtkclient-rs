@@ -1,6 +1,6 @@
 use crate::preloader::Preloader;
 use aes::Aes256;
-use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use cbc::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit};
 use log::{debug, info, warn};
 use sha2::{Digest, Sha256};
 use std::fs::File;
@@ -58,7 +58,7 @@ fn sej_sec_cfg_sw_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
         ));
     }
     cipher
-        .decrypt_padded_mut::<aes::cipher::block_padding::NoPadding>(&mut buf)
+        .decrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf)
         .map_err(|e| format!("AES-256-CBC 解密失败: {:?}", e))?;
     Ok(buf)
 }
@@ -77,7 +77,7 @@ fn sej_sec_cfg_sw_encrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     }
     let buf_len = buf.len();
     cipher
-        .encrypt_padded_mut::<aes::cipher::block_padding::NoPadding>(&mut buf, buf_len)
+        .encrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf, buf_len)
         .map_err(|e| format!("AES-256-CBC 加密失败: {:?}", e))?;
     Ok(buf)
 }
@@ -136,7 +136,7 @@ fn sej_sec_cfg_hw_v3_encrypt(data: &[u8], legacy: bool) -> Result<Vec<u8>, Strin
     }
     let buf_len = buf.len();
     cipher
-        .encrypt_padded_mut::<aes::cipher::block_padding::NoPadding>(&mut buf, buf_len)
+        .encrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf, buf_len)
         .map_err(|e| format!("AES-128-CBC 加密失败: {:?}", e))?;
     Ok(buf)
 }
@@ -161,7 +161,7 @@ fn sej_sec_cfg_hw_encrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     }
     let buf_len = buf.len();
     cipher
-        .encrypt_padded_mut::<aes::cipher::block_padding::NoPadding>(&mut buf, buf_len)
+        .encrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf, buf_len)
         .map_err(|e| format!("AES-128-CBC 加密 (V2) 失败: {:?}", e))?;
     Ok(buf)
 }
@@ -667,7 +667,7 @@ fn sej_sec_cfg_hw_v3_decrypt(data: &[u8], legacy: bool) -> Result<Vec<u8>, Strin
     }
 
     cipher
-        .decrypt_padded_mut::<aes::cipher::block_padding::NoPadding>(&mut buf)
+        .decrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf)
         .map_err(|e| format!("AES-128-CBC 解密失败: {:?}", e))?;
     Ok(buf)
 }
@@ -690,7 +690,7 @@ fn sej_sec_cfg_hw_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     }
 
     cipher
-        .decrypt_padded_mut::<aes::cipher::block_padding::NoPadding>(&mut buf)
+        .decrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf)
         .map_err(|e| format!("AES-128-CBC 解密 (V2) 失败: {:?}", e))?;
     Ok(buf)
 }
