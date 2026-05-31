@@ -774,10 +774,15 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
      - 问题：硬编码 2048 字节只能读前 16 个分区项，128 分区时需 `512 + 128×128 = 16896` 字节
      - Python 参考：`gpt.py:parseheader` 从 `gptdata[sector_size:sector_size+0x5C]` 解析 header
      - 修复：
-       - 第一步：读 512 字节获取 GPT 头（位于偏移 0x200）
-       - 从 GPT 头绝对偏移 592 处解析 `num_part_entries`（4 字节小端）
-       - 从 GPT 头绝对偏移 596 处解析 `part_entry_size`（4 字节小端）
+       - 第一步：读 1024 字节（对齐 Python `2 * pagesize = 1024`）
+       - 复用 `GptInfo::parse` 自动搜索 `EFI PART` 签名定位基址后解析
        - 第二步：计算 `total_read_len = 512 + num_entries × entry_size` 重新读取完整数据
+     - 验证：cargo build 通过，cargo clippy 0 warning
+
+31. **GPT 头解析：复用 GptInfo::parse，移除硬编码偏移**（2026-05-29）：
+     - 问题：硬编码偏移 592/596 解析 GPT 头，未搜索 `EFI PART` 签名定位基址
+     - 修复：删除硬编码偏移解析，改用 `GptInfo::parse(&header_data)?` 复用已有解析逻辑
+     - 优势：自动搜索 `EFI PART` 签名定位基址，更健壮且代码复用
      - 验证：cargo build 通过，cargo clippy 0 warning
      - 问题：reopen 后 handshake 全部失败（write 返回 -7 / LIBUSB_ERROR_TIMEOUT）
      - 根因：patcher payload 执行后设备短暂不可用，reopen 的 200ms sleep 不够。且既然 bypass_security 内部的 handshake 已经成功，reopen 本身无必要

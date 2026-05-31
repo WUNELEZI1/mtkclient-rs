@@ -91,12 +91,12 @@ fn find_mediatek_com_port(debug: bool) -> Option<String> {
     None
 }
 
-/// 通过串口发送 0xA0 关闭 Watchdog
-/// 对齐 C# 版 install-filter.exe 行为
+/// 通过串口关闭看门狗（完整 BROM 协议）
+/// 对齐 serialport 版本 ZybFlashTool 的 setreg_disablewatchdogtimer
 fn disable_watchdog_serial(port_name: &str, debug: bool) -> Result<(), String> {
     debug_log!(
         debug,
-        "[DRV] opening serial port {} to disable watchdog",
+        "[DRV] opening serial port {} for BROM handshake",
         port_name
     );
 
@@ -105,17 +105,63 @@ fn disable_watchdog_serial(port_name: &str, debug: bool) -> Result<(), String> {
         .open()
         .map_err(|e| format!("无法打开串口 {}: {}", port_name, e))?;
 
-    // 发送 0xA0 关闭 Watchdog
-    let watchdog_disable_cmd: &[u8] = &[0xA0];
-    port.write(watchdog_disable_cmd)
-        .map_err(|e| format!("发送 Watchdog 关闭命令失败: {}", e))?;
+    // 步骤 1: BROM 握手 — 对齐 Python Port.py:run_handshake
+    // 逐字节发送 A0 0A 50 05，每字节回显取反
+    let startcmd = [0xA0u8, 0x0A, 0x50, 0x05];
+    info!("正在执行 BROM 握手...");
+    for (i, cmd_byte) in startcmd.iter().enumerate() {
+        port.write(&[*cmd_byte])
+            .map_err(|e| format!("握手写字节 {}: {}", i, e))?;
+        let mut response = [0u8; 1];
+        port.read_exact(&mut response)
+            .map_err(|e| format!("握手读字节 {}: {}", i, e))?;
+        let expected = !*cmd_byte;
+        if response[0] != expected {
+            return Err(format!(
+                "握手失败 字节 {}: 期望 0x{:02X}, 收到 0x{:02X}",
+                i, expected, response[0]
+            ));
+        }
+    }
+    info!("  BROM 握手成功");
 
-    // 等待响应
-    let mut buf = [0u8; 64];
-    let _ = port.read(&mut buf);
+    // 步骤 2: 关闭看门狗 — WRITE32 命令
+    // 对齐 serialport 版本的 setreg_disablewatchdogtimer
+    info!("正在关闭看门狗...");
 
-    debug_log!(debug, "[DRV] watchdog disable command sent successfully");
+    // WRITE32 命令 = 0xD4
+    echo(&mut port, &[0xD4])?;
+
+    // 看门狗寄存器地址 0x10007000（小端序）
+    echo(&mut port, &0x10007000u32.to_le_bytes())?;
+
+    // count = 1（小端序）
+    echo(&mut port, &1u32.to_le_bytes())?;
+
+    // 看门狗禁用值 0x22000000（小端序）
+    echo(&mut port, &0x22000000u32.to_le_bytes())?;
+
+    info!("  看门狗已关闭");
     Ok(())
+}
+
+/// BROM echo 协议：发送 data，读回相同字节数并比对
+fn echo(port: &mut Box<dyn serialport::SerialPort>, data: &[u8]) -> Result<bool, String> {
+    use log::warn;
+
+    port.write_all(data)
+        .map_err(|e| format!("echo 写: {}", e))?;
+
+    let mut buf = vec![0u8; data.len()];
+    port.read_exact(&mut buf)
+        .map_err(|e| format!("echo 读 {} 字节: {}", data.len(), e))?;
+
+    if buf == data {
+        Ok(true)
+    } else {
+        warn!("回显不匹配: 期望 {:02X?}, 收到 {:02X?}", data, buf);
+        Ok(false)
+    }
 }
 
 fn install_driver_inf(debug: bool) -> Result<(), String> {
