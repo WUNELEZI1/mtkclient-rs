@@ -1,59 +1,123 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
-> 最近更新：2026-05-31
-> 完整历史：Temp_Agent_Archive.md
+> 写入时间：2025-05-18
+> 本文件供下一会话恢复时使用，包含所有修改记录、项目状态和关键协议细节。
 
-## 当前状态
-- 功能状态表：
-  - `printgpt` ✅
-  - `dump-preloader` ✅
-  - `r分区` ⚠️
-  - `w/e` ❌
-  - `auto-dump` ⚠️
-- 最近工作区状态：已对齐 watchdog 双 `status`、GPT 自适应读取、清理根目录文件
-- 最近提交基线：`34a988a`（0xD1 方向切换）
+---
 
-## 关键协议
-- BROM：
-  - `0xD1` 读写
-  - 大端 echo
-  - watchdog 双 status
-- XFlash：
-  - `CMD_READ_DATA` + `send_param`
-  - `send_ack` / `ack`
-  - `reset_device` 使用 `0x010007`
-- GPT：
-  - 先读 32KB
-  - `GptInfo::parse` 后按需要扩展
+## 项目基本信息
 
-## 核心文件结构
-```text
-src/main.rs        - 入口、命令路由、smart_init
-src/commands.rs    - 命令分发、printgpt/read/write/erase 流程
-src/preloader.rs   - BROM 协议、echo、hw_code、send_da、jump_*、register access
-src/kamakiri2.rs   - exploit / da_read / da_write / inject_payload
-src/da_xflash.rs   - DA/XFlash 上传、扩展、读写、erase、reset
-src/da_partition.rs - GPT 读取、分区解析、地址查找
-src/driver.rs      - WinUSB 驱动检测与安装
-src/usb.rs         - USB 底层通信
-src/config.rs      - 芯片配置与寄存器常量
-src/cli.rs         - 命令行参数
-src/paths.rs       - 路径辅助
+- **名称**：ZybFlashTool / mtkclient-rs
+- **路径**：`D:\test\ZybClient`
+- **语言**：Rust 2024 edition
+- **Cargo name**：`mtkclient-rs`
+- **关键依赖**：rusb, libusb1-sys, log, env_logger, colored, clap, serialport, sha2, aes, cbc
+- **构建**：`cargo build`（编译通过，0 error 0 warning）
+- **禁止**：`cargo run`（需要连接设备）
+
+---
+
+## 文件结构（核心）
+
+```
+src/
+  main.rs          — 入口，命令行解析，命令路由
+  commands.rs      — 命令分发和主流程控制（printgpt, read, write, erase, vbmeta, unlock, lock, enable-adb）
+  kamakiri2.rs     — Kamakiri2 exploit：da_read/da_write/inject_payload/dump_preloader/bypass_security
+  da_xflash.rs     — DA/XFlash 协议层：DA 上传/patch/EMI/extensions/read/write/erase/seccfg
+  preloader.rs     — BROM 协议层：echo/hw_code/看门狗/handshake/send_da/jump_da/upload_data/brom_register_access
+  config.rs        — 芯片常量配置（所有芯片的寄存器地址、payload路径、blacklist等）
+  cli.rs           — clap 命令行参数解析
+  usb.rs           — USB 通信层（libusb FFI），设备打开/读写/控制传输
+  driver.rs        — WinUSB 驱动安装
+  paths.rs         — 路径辅助函数
 ```
 
-## 构建和测试
-- `cargo build`
-- `cargo clippy -- -D warnings`
-- `cargo run -- --preloader preloader_k69v1_64_k419.bin printgpt`
+### 拆分说明
+- `preloader.rs`（约 315 行）：只保留 BROM 协议命令
+- `kamakiri2.rs`（约 425 行）：通过 `#[path = "kamakiri2.rs"] mod kamakiri2;` 在 `preloader.rs` 底部引入，扩展 `impl Preloader`
+- `da_xflash.rs`（约 2900 行）：DA/XFlash 协议，最大的文件
 
-## 注意事项
-- 不要把 `cargo run` 当作默认验证手段，设备未连接时会卡住。
-- `Temp_Agent_Archive.md` 保存完整历史，当前文件只保留可恢复的摘要。
-- BROM 串口和 USB 两条路径都还在，`smart_init` 会根据状态选择。
-- `driver.rs` 现在走 `zadig_rust.dll` + `pnputil`，不再依赖 `devcon.exe`。
-- `readflash_data` 允许大块读取，但 ACK 语义要保持每块一确认。
-- `reset_device` 已优先走 DA 重启，BROM `jump_bl` 只作为 fallback。
-- `usb.rs` 的 dead_code 允许保留，不要为了消 warning 误删接口。
+---
+
+## 本次会话完整修改记录
+
+### 会话 1：初始 6 个任务修复
+1. **清理 warn 未使用导入**：`src/commands.rs` 移除 `warn`
+2. **修复 GPT 自动加载**：三个函数改用 `self.read_gpt()` 替代手动解析
+3. **修复 run_kamakiri2 读取逻辑**：ACK 后读 4 字节小端长度 → 读完整数据
+4. **Phase 2 改用 dump_preloader_payload**：`run_kamakiri2()` → `dump_preloader_payload(false)`
+5. **DA 命令自动复位**：`jump_bl()` 在 DA 命令后自动调用
+6. **移除重复复位**：`cmd_printgpt` 无 `jump_bl()`，无需修改
+
+### 会话 2：mtkclient v2.0.1 → v2.1.4.1 差异对比
+- 对比两个 Python 版本，发现 30 个新增文件、14 个删除文件
+- 写入 `Mtkclient_Commit.md`
+
+### 会话 3：应用 v2.1.4.1 中有价值的 3 项更新
+1. **USB 包大小动态化**：`UsbDevice` 新增 `ep_out_max_packet_size` 字段，从 USB 描述符解析
+2. **ACK 芯片差异化**：`da_xflash.rs` `ack()` 添加 MT6781 单包发送注释
+3. **readflash 超时异常清理**：`readflash_data` 重写为完整 15 步协议序列，try/finally 模式
+
+### 会话 4：DA 会话保持（批量模式）
+- `handle_commands` 批量执行函数，`execute_single_command` 提取
+- `main.rs` `parse_sub_commands` 通过已知 DA 命令关键词列表智能解析批量命令
+- `print_help` 更新
+
+### 会话 5：SEND_DA failed 修复（多次迭代）
+- 最初认为是设备重枚举问题，添加了 `reopen_device`
+- `reopen_device` 的 handshake 失败（device read error at byte 0 / write err -7）
+- 根因：Python `connect()` 只是重新连接 USB，不重新握手；Rust `reopen_device` 执行完整 handshake
+- 修复：移除 `reopen_device` 调用，继续使用同一 USB 句柄
+
+### 会话 6：新增 enable-adb-on-da 命令
+- 通过 `SET_META_BOOT_MODE(0x020006)` 设置 meta+usb 模式
+- `boot_to` 重启到 meta 模式实现 ADB 启用
+
+### 会话 7：重写 echo 函数对齐 Python
+- 旧版 echo：先 drain 64 字节缓冲区 → 发数据+ZLP → 读响应+retry
+- Python echo：发送 → 读等长响应 → 比较一致就返回 true
+- 修复：完全重写 echo，移除 drain、ZLP、retry
+
+### 会话 8：查看新版 mtkclient DAA/SLA 校验改动
+- v2.1.4.1 的 `handle_sla` 新增 Lake/Tides/Moon（小米 Redmi 14C）硬编码签名绕过
+- 新增 Motorola/Lamu 系列硬编码签名 + Motorola 专用 RSA key
+- DA2 patch 新增 `moto_disable_sla` 补丁
+
+### 会话 9：代码审查 — Rust vs Python 协议对比
+**发现 5 个问题：**
+1. `setup_storage` 多余 DEVICE_CTRL 调用 → 简化为 2 步
+2. `readflash_data` 命令号错误（`CMD_BASIC_READ_DATA = 0x010005` 正确，之前改成了 `0x000F0005` 错误）→ 改回 `0x010005`
+3. `boot_to` 空 data 时多余 ZLP → 移除
+4. `upload_data` sleep 120ms → 改为 35ms（对齐 Python `time.sleep(0.035)`）
+5. `cmd_write_data` NandExtension 字段语义不一致 → 低风险未改
+
+**MT6768 配置修复**（7 个字段与 Python 不一致）：
+- `gcpu_base`: 0x10210000 → 0x10050000
+- `send_ptr`: (0x1028B4, 0xF5AC) → (0x10286C, 0xC190)
+- `ctrl_buffer`: 0x001032F0 → 0x00102A28
+- `cmd_handler`: 0x000102C3 → 0x0000CF15
+- `brom_register_access`: (0xF9C0, 0xFA78) → (0xC598, 0xC650)
+- `meid_addr`: 0x102B08 → 0x102AF8
+- `blacklist`: [(0x102870,0x0), (0x107070,0x0)] → [(0x10282C,0x0), (0x00105994,0)]
+
+### 会话 10：echo 协议反复折腾
+- 最初误判 echo 单字节命令应该发 4 字节大端 → 错误修改 → 恢复
+- Python `echo(bytes)` 对 bytes 类型直接发送（1 字节就是 1 字节）
+- Python `echo(int)` 才做 `pack(">I", int)` → 4 字节
+- **结论**：Rust `echo(&[0xD7])` 发 1 字节是正确的，所有单字节命令保持原样
+- 添加 `echo_debug()` 公开方法用于诊断
+
+### 会话 11：dump_preloader_payload 后 echo 失效根因分析
+- **根因**：`UsbDevice::read()` 在 `transferred=0` 时 sleep 10ms 重试，dump 最后阶段导致 bulk IN 端点状态异常
+- **修复**：`dump_preloader_payload` 完成后调用 `clear_halt_in()` 复位 bulk IN 端点
+- **诊断**：添加 `echo_debug` 验证代码和 echo 内部 debug 日志
+- 在 `commands.rs` Phase 2 dump 成功后添加 echo(0xFD) 验证
+
+### 会话 12：文件结构优化
+- `preloader.rs` 拆分：BROM 协议命令保留，kamakiri2 相关移入 `kamakiri2.rs`
+- `kamakiri2.rs` 通过 `#[path = "kamakiri2.rs"] mod kamakiri2;` 在 `preloader.rs` 底部引入
+- 两个文件都扩展 `impl Preloader`
 - 编译通过，0 warnings
 
 ---

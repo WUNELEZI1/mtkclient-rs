@@ -222,35 +222,37 @@ fn find_mediatek_com_port() -> Option<String> {
 }
 
 /// 通过 serialport 关闭 BROM watchdog
-/// 对齐 SerialPortTransport::do_handshake + WRITE32 关 WDT
+/// 对齐 SerialPortTransport::do_handshake + WRITE32 关 WDT + 双 status 回包
 fn disable_watchdog_brom(port_name: &str) -> Result<(), String> {
-    use crate::preloader::BromTransport;
+    use crate::preloader::Preloader;
 
-    let mut transport = crate::preloader::SerialPortTransport::new(port_name, 115200)?;
-    transport.do_handshake()?;
+    let transport = crate::preloader::SerialPortTransport::new(port_name, 115200)?;
+    let mut preloader = Preloader::new(Box::new(transport));
+    preloader.init()?;
 
-    // WRITE32 关闭 watchdog，使用与 BROM 协议一致的 echo 语义
-    let echo = |transport: &mut crate::preloader::SerialPortTransport,
-                data: &[u8]|
-     -> Result<(), String> {
-        transport.write(data)?;
-        let mut buf = vec![0u8; data.len()];
-        transport.read_exact(&mut buf)?;
-        if buf != data {
-            return Err(format!(
-                "echo mismatch: sent {:02X?}, got {:02X?}",
-                data, buf
-            ));
-        }
-        Ok(())
-    };
-
-    echo(&mut transport, &[0xD4])?;
-    echo(&mut transport, &0x10007000u32.to_be_bytes())?;
-    echo(&mut transport, &1u32.to_be_bytes())?;
-    echo(&mut transport, &0x22000000u32.to_be_bytes())?;
+    // WRITE32 关闭 watchdog，按日志顺序读取两次 2 字节 status
+    if !preloader.echo_1byte(0xD4)? {
+        return Err("watchdog disable: D4 echo mismatch".into());
+    }
+    if !preloader.echo_4byte(0x10007000)? {
+        return Err("watchdog disable: addr echo mismatch".into());
+    }
+    let status1 = preloader.echo_4byte_then_status(1)?;
+    if status1 != 0x0001 {
+        return Err(format!(
+            "watchdog disable: expected status1=0x0001, got 0x{:04X}",
+            status1
+        ));
+    }
+    let status2 = preloader.echo_4byte_then_status(0x22000000)?;
+    if status2 != 0x0001 {
+        return Err(format!(
+            "watchdog disable: expected status2=0x0001, got 0x{:04X}",
+            status2
+        ));
+    }
 
     // 释放 COM 口，让 WinUSB 接管
-    drop(transport);
+    drop(preloader);
     Ok(())
 }
