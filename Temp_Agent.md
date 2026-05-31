@@ -769,6 +769,16 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
      - `readflash_data` 循环改用 `send_ack()`：只发不读，避免偷吃下一个数据块
      - 关键设计：发 ACK 和读响应的顺序由调用方控制，循环自己管理数据流
      - 验证：cargo build 通过，cargo clippy 0 warning
+
+30. **两步 GPT 读取：动态计算完整大小**（2026-05-29）：
+     - 问题：硬编码 2048 字节只能读前 16 个分区项，128 分区时需 `512 + 128×128 = 16896` 字节
+     - Python 参考：`gpt.py:parseheader` 从 `gptdata[sector_size:sector_size+0x5C]` 解析 header
+     - 修复：
+       - 第一步：读 512 字节获取 GPT 头（位于偏移 0x200）
+       - 从 GPT 头绝对偏移 592 处解析 `num_part_entries`（4 字节小端）
+       - 从 GPT 头绝对偏移 596 处解析 `part_entry_size`（4 字节小端）
+       - 第二步：计算 `total_read_len = 512 + num_entries × entry_size` 重新读取完整数据
+     - 验证：cargo build 通过，cargo clippy 0 warning
      - 问题：reopen 后 handshake 全部失败（write 返回 -7 / LIBUSB_ERROR_TIMEOUT）
      - 根因：patcher payload 执行后设备短暂不可用，reopen 的 200ms sleep 不够。且既然 bypass_security 内部的 handshake 已经成功，reopen 本身无必要
      - 修复：
