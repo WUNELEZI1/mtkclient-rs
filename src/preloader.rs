@@ -55,19 +55,6 @@ impl SerialPortTransport {
         })
     }
 
-    /// 枚举所有 COM 口，找到 MediaTek BROM 设备 (VID=0E8D PID=0003)
-    pub fn find_brom_port() -> Option<String> {
-        let ports = serialport::available_ports().ok()?;
-        for p in &ports {
-            if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
-                && info.vid == 0x0E8D
-                && info.pid == 0x0003
-            {
-                return Some(p.port_name.clone());
-            }
-        }
-        None
-    }
 }
 
 impl BromTransport for SerialPortTransport {

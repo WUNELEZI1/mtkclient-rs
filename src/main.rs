@@ -43,33 +43,9 @@ fn detect_mode(vid: u16, pid: u16) -> DeviceMode {
 }
 
 fn smart_init(context: &UsbContext) -> Result<(usb::UsbDevice, DeviceMode), String> {
-    use preloader::BromTransport;
     use usb_diag::{UsbDiagState, diagnose_connection, print_connection_hint};
 
     info!("{}", "等待设备连接 (BROM: Vol+ + Vol- + Power)".yellow());
-
-    // 优先尝试 COM 口直连（对齐刷机匣行为）
-    // 找到 BROM COM 口后执行握手 + 关闭看门狗，然后释放 COM 口让 libusb 接管
-    if let Some(com_port) = preloader::SerialPortTransport::find_brom_port() {
-        info!("检测到 BROM COM 口: {}", com_port);
-        match preloader::SerialPortTransport::new(&com_port, 115200) {
-            Ok(mut transport) => {
-                info!("正在执行串口 BROM 握手...");
-                match transport.do_handshake() {
-                    Ok(_) => {
-                        info!("串口 BROM 握手成功，关闭看门狗稳定设备...");
-                        // 关闭 watchdog 稳定设备（使用与 driver.rs 相同的协议）
-                        disable_watchdog_brom(&mut transport)?;
-                        // 释放 COM 口，让 libusb 接管
-                        drop(transport);
-                        std::thread::sleep(Duration::from_millis(500));
-                    }
-                    Err(e) => warn!("串口握手失败: {}，将继续尝试 libusb 连接", e),
-                }
-            }
-            Err(e) => warn!("COM 口连接失败: {}，将继续尝试 libusb 连接", e),
-        }
-    }
 
     let mut no_device_count = 0;
     let mut handshake_fail_count = 0;
@@ -97,6 +73,24 @@ fn smart_init(context: &UsbContext) -> Result<(usb::UsbDevice, DeviceMode), Stri
                         }
                     }
                     UsbDiagState::WrongDriver => {
+                        if let Some(com_port) = find_brom_com_port() {
+                            info!("尝试通过 COM 口连接: {}", com_port);
+                            match preloader::SerialPortTransport::new(&com_port, 115200) {
+                                Ok(transport) => {
+                                    let mut p = preloader::Preloader::new(Box::new(transport));
+                                    if p.init().unwrap_or(false) {
+                                        info!("COM 口连接成功");
+                                        p.device.set_timeout(Duration::from_millis(1000));
+                                        let _ = disable_watchdog_brom_via_preloader(&mut p);
+                                        drop(p);
+                                        std::thread::sleep(Duration::from_millis(500));
+                                        continue;
+                                    }
+                                    warn!("COM 口握手失败，将继续尝试 libusb 连接");
+                                }
+                                Err(e) => warn!("COM 口连接失败: {}", e),
+                            }
+                        }
                         warn!("{}", "检测到设备但驱动异常 (可能需要安装 WinUSB)".red());
                         warn!("运行以下命令安装驱动: mtkclient install-drivers");
                         print_connection_hint();
@@ -474,24 +468,25 @@ fn parse_sub_commands(first_cmd: &str, args: &[String]) -> Vec<(String, Vec<Stri
     result
 }
 
-/// 通过 BROM 传输层关闭看门狗（用于 serialport 握手后）
-fn disable_watchdog_brom(transport: &mut dyn preloader::BromTransport) -> Result<(), String> {
-    // WRITE32 命令 = 0xD4
-    transport.write(&[0xD4])?;
-    transport.read_exact(&mut [0u8; 1])?;
+fn find_brom_com_port() -> Option<String> {
+    let ports = serialport::available_ports().ok()?;
+    for p in &ports {
+        if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
+            && info.vid == 0x0E8D
+            && info.pid == 0x0003
+        {
+            return Some(p.port_name.clone());
+        }
+    }
+    None
+}
 
-    // 看门狗寄存器地址 0x10007000（小端序）
-    transport.write(&0x10007000u32.to_le_bytes())?;
-    transport.read_exact(&mut [0u8; 4])?;
-
-    // count = 1（小端序）
-    transport.write(&1u32.to_le_bytes())?;
-    transport.read_exact(&mut [0u8; 4])?;
-
-    // 看门狗禁用值 0x22000000（小端序）
-    transport.write(&0x22000000u32.to_le_bytes())?;
-    transport.read_exact(&mut [0u8; 4])?;
-
-    info!("  看门狗已通过串口关闭");
+fn disable_watchdog_brom_via_preloader(
+    p: &mut preloader::Preloader,
+) -> Result<(), String> {
+    p.echo_1byte(0xD4)?;
+    p.echo_4byte(0x10007000)?;
+    p.echo_4byte(1)?;
+    p.echo_4byte(0x22000000)?;
     Ok(())
 }
