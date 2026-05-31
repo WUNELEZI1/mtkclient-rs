@@ -1,4 +1,4 @@
-﻿use crate::config::{CHIP_CONFIGS, ChipConfig, TargetConfig};
+use crate::config::{CHIP_CONFIGS, ChipConfig, TargetConfig};
 use log::{debug, info};
 use std::time::Duration;
 
@@ -60,9 +60,11 @@ impl SerialPortTransport {
         let ports = serialport::available_ports().ok()?;
         for p in &ports {
             if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
-                && info.vid == 0x0E8D && info.pid == 0x0003 {
-                    return Some(p.port_name.clone());
-                }
+                && info.vid == 0x0E8D
+                && info.pid == 0x0003
+            {
+                return Some(p.port_name.clone());
+            }
         }
         None
     }

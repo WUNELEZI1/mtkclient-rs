@@ -209,30 +209,28 @@ pub fn handle_commands(
     let is_brom = !da.preloader.is_preloader_mode;
     let mut auto_dumped_file: Option<String> = None;
 
-    if is_brom
-        && preloader_file.is_empty() {
-            // 对齐 Python preloader.init()：获取芯片信息和设备安全状态
-            match da.preloader.get_target_config() {
-                Ok(cfg) => info!("{}", cfg.format_info()),
-                Err(e) => warn!("获取 target config 失败: {}", e),
-            }
+    if is_brom && preloader_file.is_empty() {
+        // 对齐 Python preloader.init()：获取芯片信息和设备安全状态
+        match da.preloader.get_target_config() {
+            Ok(cfg) => info!("{}", cfg.format_info()),
+            Err(e) => warn!("获取 target config 失败: {}", e),
+        }
 
-            // bypass_security → dump_preloader_ram（对齐 Python configure_da）
-            da.preloader
-                .bypass_security()
-                .map_err(|e| format!("bypass_security 失败: {}", e))?;
+        // bypass_security → dump_preloader_ram（对齐 Python configure_da）
+        da.preloader
+            .bypass_security()
+            .map_err(|e| format!("bypass_security 失败: {}", e))?;
 
-            // bypass_security 内部已完成 drain + 重握手，直接在同一句柄上 dump
+        // bypass_security 内部已完成 drain + 重握手，直接在同一句柄上 dump
 
-            let data = da
-                .preloader
-                .dump_preloader_from_ram(false)
-                .map_err(|e| format!("dump_preloader_ram 失败: {}", e))?;
+        let data = da
+            .preloader
+            .dump_preloader_from_ram(false)
+            .map_err(|e| format!("dump_preloader_ram 失败: {}", e))?;
 
-            if !data.is_empty() {
-                let filename = if let Some(info_idx) =
-                    data.windows(16).position(|w| w == b"MTK_BLOADER_INFO")
-                {
+        if !data.is_empty() {
+            let filename =
+                if let Some(info_idx) = data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
                     let filename_start = info_idx + 0x1B;
                     let filename_end = std::cmp::min(filename_start + 0x30, data.len());
                     let filename_bytes = &data[filename_start..filename_end];
@@ -244,16 +242,16 @@ pub fn handle_commands(
                 } else {
                     "preloader_dumped.bin".to_string()
                 };
-                if !filename.is_empty() {
-                    auto_dumped_file = Some(filename);
-                    info!(
-                        "Preloader 已提取: {} ({} 字节)",
-                        auto_dumped_file.as_ref().unwrap(),
-                        data.len()
-                    );
-                }
+            if !filename.is_empty() {
+                auto_dumped_file = Some(filename);
+                info!(
+                    "Preloader 已提取: {} ({} 字节)",
+                    auto_dumped_file.as_ref().unwrap(),
+                    data.len()
+                );
             }
         }
+    }
 
     let effective_file = auto_dumped_file.as_deref().unwrap_or(preloader_file);
     info!("加载 EMI 数据: {}", effective_file);

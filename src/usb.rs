@@ -80,10 +80,11 @@ pub fn usb_trace(direction: &str, func_info: &str, data: &[u8]) {
 
     // 写入文件
     if let Ok(mut guard) = USB_LOG_FILE.lock()
-        && let Some(ref mut file) = *guard {
-            let _ = file.write_all(log_line.as_bytes());
-            let _ = file.flush();
-        }
+        && let Some(ref mut file) = *guard
+    {
+        let _ = file.write_all(log_line.as_bytes());
+        let _ = file.flush();
+    }
 }
 
 /// 辅助函数：格式化行号信息
