@@ -88,8 +88,8 @@ impl<'a> DAXFlash<'a> {
     pub fn read_gpt(&mut self) -> Result<(), String> {
         info!("读取 GPT 分区表...");
 
-        // da-extension读取数据
-        let total_read_len: u64 = 16384;
+        // 对齐 Python: 2 * pagesize = 2 * 512 = 1024，取 2048 覆盖 GPT 头+分区表
+        let total_read_len: u64 = 2048;
         let gpt_data = self.readflash_data(0, total_read_len)?;
         info!("  读取 GPT 数据: {} 字节", gpt_data.len());
 

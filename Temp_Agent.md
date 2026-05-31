@@ -724,6 +724,26 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
     - bypass 后设备仍为 BROM 模式 (VID=0E8D PID=0003)，reopen 能正确匹配
      - 验证：cargo check 通过，cargo clippy 无新增 warning
 
+27. **修复 GPT 读取大小硬编码**（2026-05-29）：
+     - 问题：`read_gpt()` 中 GPT 读取大小硬编码为 16384 字节，请求 16384 时设备返回心跳包（4字节）就停止发送，导致只读到 4 字节
+     - Python 参考：`partition.py:70` `length=2 * self.config.pagesize = 2 * 512 = 1024`
+     - Python 逻辑：首次读 1024 获取 GPT header，解析确定 sectors 后再读 `sectors * pagesize` 完整数据（partition.py:114）
+     - Rust 直接请求 16384 可能触发了设备的不同响应行为（提前终止）
+     - 修复：改为 2048 字节（覆盖 GPT 头 1024 字节 + 额外 1024 字节安全冗余）
+     - 验证：cargo build 通过（0 error），cargo clippy 0 warning
+
+26. **修复所有 clippy warnings（0 warning）**（2026-05-29）：
+     - `cargo clippy --fix --bin "mtkclient-rs" -p mtkclient-rs` 自动修复 5 个：
+       - `collapsible_if` × 3（commands.rs, main.rs, usb.rs）
+       - `manual_range_contains` × 1（kamakiri2.rs → `(0x10000..=0x100000).contains(&length)`）
+       - `inherent_to_string` × 1（da_xflash.rs）
+     - 手动修复 3 个 `dead_code` warning：
+       - `src/config.rs:266` `needs_bypass` → `#[allow(dead_code)]`（预留：bypass 流程判断）
+       - `src/preloader.rs:141` `get_hw_subcode` → `#[allow(dead_code)]`（预留：芯片变体区分）
+       - `src/usb.rs:669` `reopen` → `#[allow(dead_code)]`（预留：bypass 后重建 USB 连接）
+     - 手动修复 `inherent_to_string`（session.rs）→ 实现 `fmt::Display for SessionState` 替代 `fn to_string`
+     - 验证：`cargo clippy` 输出 0 warning
+
 24. **bypass 后 reopen + do_handshake**（2026-05-29）：
      - 问题：reopen 后 echo(0xDA) → `ret=-7, transferred=0` → 超时
      - 根因：reopen 只是关闭再打开 USB 设备，设备此时 BROM 未就绪，需要握手唤醒

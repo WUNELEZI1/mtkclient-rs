@@ -2240,11 +2240,61 @@ impl<'a> DAXFlash<'a> {
         if self.preloader.device.write(&0u32.to_le_bytes()).is_err() {
             return AckResult::Terminated(2);
         }
-        match self.status() {
-            Ok(0) => AckResult::Continue,
-            Ok(n) => AckResult::Terminated(n),
-            Err(_) => AckResult::Terminated(3),
-        }
+        let orig_timeout = self.preloader.device.get_timeout();
+        self.preloader
+            .device
+            .set_timeout(std::time::Duration::from_millis(2000));
+
+        let mut hdr_buf = [0u8; 12];
+        let result = match self.preloader.device.read(&mut hdr_buf) {
+            Ok(12) => {
+                let magic = u32::from_le_bytes([hdr_buf[0], hdr_buf[1], hdr_buf[2], hdr_buf[3]]);
+                let length =
+                    u32::from_le_bytes([hdr_buf[8], hdr_buf[9], hdr_buf[10], hdr_buf[11]]);
+                debug!("[ack::status] hdr: magic=0x{:08X} length={}", magic, length);
+
+                if magic != CMD_MAGIC {
+                    self.preloader.device.set_timeout(orig_timeout);
+                    return AckResult::Terminated(3);
+                }
+
+                if length > 0 {
+                    let mut tmp = vec![0u8; length as usize];
+                    match self.preloader.device.read(&mut tmp) {
+                        Ok(n) => {
+                            debug!(
+                                "[ack::status] data: {} bytes, first 16: {:02X?}",
+                                n,
+                                &tmp[..16.min(n)]
+                            );
+                            if length == 4 {
+                                let val = u32::from_le_bytes(tmp[..4].try_into().unwrap());
+                                if val == 0xFEEEEEEF {
+                                    self.preloader.device.set_timeout(orig_timeout);
+                                    return AckResult::Continue;
+                                }
+                                self.preloader.device.set_timeout(orig_timeout);
+                                return AckResult::Terminated(val);
+                            }
+                        }
+                        Err(e) => {
+                            debug!("[ack::status] read data error: {}", e);
+                        }
+                    }
+                }
+                AckResult::Continue
+            }
+            Ok(n) => {
+                debug!("[ack::status] short hdr read: {}/12 bytes", n);
+                AckResult::Terminated(3)
+            }
+            Err(e) => {
+                debug!("[ack::status] hdr read error: {}", e);
+                AckResult::Terminated(3)
+            }
+        };
+        self.preloader.device.set_timeout(orig_timeout);
+        result
     }
 
     pub fn patch_vbmeta(&mut self, mode: u32) -> Result<(), String> {
