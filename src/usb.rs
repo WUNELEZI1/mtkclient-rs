@@ -619,30 +619,37 @@ impl UsbDevice {
                     ok = false;
                     break;
                 }
-                // echo write trace
                 usb_trace("TX", "UsbDevice::do_handshake echo_write", &[cmd[i]]);
+                // 对齐 Python: ep_in(maxinsize)[-1] — 单次 bulk 读取，取最后一个字节
                 let mut r = vec![0u8; maxinsize as usize];
-                match self.read(&mut r) {
-                    Ok(n) if n > 0 => {
-                        // echo read trace
-                        usb_trace("RX", "UsbDevice::do_handshake echo_read", &r[..n]);
-                        // Python: 检查最后一个字节
-                        let last_byte = r[n - 1];
-                        if last_byte == !cmd[i] {
-                            i += 1;
-                        } else {
-                            info!(
-                                "[USB] handshake mismatch at byte {}: got 0x{:02X}, expected 0x{:02X}",
-                                i, last_byte, !cmd[i]
-                            );
-                            i = 0; // Python 重置计数器
-                        }
-                    }
-                    _ => {
+                let mut transferred: i32 = 0;
+                unsafe {
+                    let ret = libusb1_sys::libusb_bulk_transfer(
+                        self.handle,
+                        self.ep_in,
+                        r.as_mut_ptr(),
+                        maxinsize as i32,
+                        &mut transferred,
+                        20, // Python: timeout=20ms，因为 bootloader 只活跃约 0.3 秒
+                    );
+                    if ret != 0 || transferred <= 0 {
                         info!("[USB] handshake read error at byte {}", i);
                         ok = false;
                         break;
                     }
+                }
+                let n = transferred as usize;
+                usb_trace("RX", "UsbDevice::do_handshake echo_read", &r[..n]);
+                // Python: 检查最后一个字节
+                let last_byte = r[n - 1];
+                if last_byte == !cmd[i] {
+                    i += 1;
+                } else {
+                    info!(
+                        "[USB] handshake mismatch at byte {}: got 0x{:02X}, expected 0x{:02X}",
+                        i, last_byte, !cmd[i]
+                    );
+                    i = 0; // Python 重置计数器
                 }
             }
             if ok {
