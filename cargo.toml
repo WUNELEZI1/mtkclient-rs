@@ -4,26 +4,36 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-#rusb = "0.9"
+# USB 通信
 libusb1-sys = "0.7"
+# 日志
 log = "0.4"
 env_logger = "0.11"
-colored = "2"
+# 终端彩色输出
+colored = "3.1"           # 从 2 升级到 3
+# 命令行参数解析
 clap = { version = "4", features = ["derive"] }
+# 串口通信
 serialport = "4.7"
-libloading = "0.8"
-sha2 = "0.10"
-aes = "0.8"
-cbc = "0.1"
+# 动态库加载
+libloading = "0.9"        # 从 0.8 升级到 0.9
+# 加密算法
+sha2 = "0.11"             # 从 0.10 升级到 0.11
+aes = "0.9"               # 从 0.8 升级到 0.9
+cbc = "0.2"               # 从 0.1 升级到 0.2
 
 [profile.dev]
-opt-level = 0          # 不优化，编译最快
-debug = true           # 保留调试信息
-incremental = true     # 增量编译
-codegen-units = 256    # 最大并行
-lto = false            # 关闭链接时优化
+# 开发模式：编译最快，不优化，保留完整调试信息
+opt-level = 0
+debug = true
+incremental = true
+codegen-units = 256
+lto = false
+
 [profile.release]
+# 发布模式：性能最强
 opt-level = 3
-lto = true
+lto = "fat"               # 启用更激进的链接时优化
 codegen-units = 1
 strip = true
+panic = "abort"           # 使用 abort 策略，减小二进制大小并略微提升性能
