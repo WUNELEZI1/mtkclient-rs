@@ -43,9 +43,33 @@ fn detect_mode(vid: u16, pid: u16) -> DeviceMode {
 }
 
 fn smart_init(context: &UsbContext) -> Result<(usb::UsbDevice, DeviceMode), String> {
+    use preloader::BromTransport;
     use usb_diag::{UsbDiagState, diagnose_connection, print_connection_hint};
 
     info!("{}", "等待设备连接 (BROM: Vol+ + Vol- + Power)".yellow());
+
+    // 优先尝试 COM 口直连（对齐刷机匣行为）
+    // 找到 BROM COM 口后执行握手 + 关闭看门狗，然后释放 COM 口让 libusb 接管
+    if let Some(com_port) = preloader::SerialPortTransport::find_brom_port() {
+        info!("检测到 BROM COM 口: {}", com_port);
+        match preloader::SerialPortTransport::new(&com_port, 115200) {
+            Ok(mut transport) => {
+                info!("正在执行串口 BROM 握手...");
+                match transport.do_handshake() {
+                    Ok(_) => {
+                        info!("串口 BROM 握手成功，关闭看门狗稳定设备...");
+                        // 关闭 watchdog 稳定设备（使用与 driver.rs 相同的协议）
+                        disable_watchdog_brom(&mut transport)?;
+                        // 释放 COM 口，让 libusb 接管
+                        drop(transport);
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                    Err(e) => warn!("串口握手失败: {}，将继续尝试 libusb 连接", e),
+                }
+            }
+            Err(e) => warn!("COM 口连接失败: {}，将继续尝试 libusb 连接", e),
+        }
+    }
 
     let mut no_device_count = 0;
     let mut handshake_fail_count = 0;
@@ -207,7 +231,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (usb_device, _mode) = smart_init(&usb_context).inspect_err(|e| {
             error!("{}", e);
         })?;
-        let mut preloader = preloader::Preloader::new(usb_device);
+        let mut preloader = preloader::Preloader::new(Box::new(usb_device));
         if !preloader.init().unwrap_or(false) {
             return Err("设备初始化失败".into());
         }
@@ -254,7 +278,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             error!("{}", e);
         })?;
 
-        let mut preloader = preloader::Preloader::new(usb_device);
+        let mut preloader = preloader::Preloader::new(Box::new(usb_device));
 
         if !preloader.init().unwrap_or(false) {
             return Err("设备初始化失败".into());
@@ -289,7 +313,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let saved_vid = usb_device.vid;
     let saved_pid = usb_device.pid;
 
-    let mut preloader = preloader::Preloader::new(usb_device);
+    let mut preloader = preloader::Preloader::new(Box::new(usb_device));
 
     if !preloader.init().unwrap_or(false) {
         return Err("设备初始化失败".into());
@@ -449,4 +473,28 @@ fn parse_sub_commands(first_cmd: &str, args: &[String]) -> Vec<(String, Vec<Stri
     }
 
     result
+}
+
+/// 通过 BROM 传输层关闭看门狗（用于 serialport 握手后）
+fn disable_watchdog_brom(
+    transport: &mut dyn preloader::BromTransport,
+) -> Result<(), String> {
+    // WRITE32 命令 = 0xD4
+    transport.write(&[0xD4])?;
+    transport.read_exact(&mut [0u8; 1])?;
+
+    // 看门狗寄存器地址 0x10007000（小端序）
+    transport.write(&0x10007000u32.to_le_bytes())?;
+    transport.read_exact(&mut [0u8; 4])?;
+
+    // count = 1（小端序）
+    transport.write(&1u32.to_le_bytes())?;
+    transport.read_exact(&mut [0u8; 4])?;
+
+    // 看门狗禁用值 0x22000000（小端序）
+    transport.write(&0x22000000u32.to_le_bytes())?;
+    transport.read_exact(&mut [0u8; 4])?;
+
+    info!("  看门狗已通过串口关闭");
+    Ok(())
 }

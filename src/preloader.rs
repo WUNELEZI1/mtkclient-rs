@@ -1,17 +1,131 @@
-use crate::config::{CHIP_CONFIGS, ChipConfig, TargetConfig};
-use crate::usb::UsbDevice;
-use log::debug;
+﻿use crate::config::{CHIP_CONFIGS, ChipConfig, TargetConfig};
+use log::{debug, info};
 use std::time::Duration;
+
+/// BROM 传输抽象层 — 统一 USB 和串口的读写接口
+pub trait BromTransport {
+    fn write(&mut self, data: &[u8]) -> Result<usize, String>;
+    fn read_exact(&mut self, buf: &mut [u8]) -> Result<usize, String>;
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, String>;
+    fn set_timeout(&mut self, duration: Duration);
+    fn get_timeout(&self) -> Duration;
+    fn do_handshake(&mut self) -> Result<bool, String>;
+
+    // USB 专属方法 — 默认返回错误，仅 UsbDevice 实现
+    fn ctrl_transfer_out(
+        &mut self,
+        _req_type: u8,
+        _req: u8,
+        _value: u16,
+        _index: u16,
+        _data: &[u8],
+    ) -> Result<usize, String> {
+        Err("ctrl_transfer_out not supported on this transport".to_string())
+    }
+    fn ctrl_transfer_in(
+        &mut self,
+        _req_type: u8,
+        _req: u8,
+        _value: u16,
+        _index: u16,
+        _length: u16,
+    ) -> Result<Vec<u8>, String> {
+        Err("ctrl_transfer_in not supported on this transport".to_string())
+    }
+    fn clear_halt_in(&mut self) -> Result<(), String> {
+        Err("clear_halt_in not supported on this transport".to_string())
+    }
+}
+
+/// serialport 实现 BROM 传输
+pub struct SerialPortTransport {
+    port: Box<dyn serialport::SerialPort>,
+    timeout: Duration,
+}
+
+impl SerialPortTransport {
+    pub fn new(port_name: &str, baud_rate: u32) -> Result<Self, String> {
+        let port = serialport::new(port_name, baud_rate)
+            .timeout(Duration::from_millis(1000))
+            .open()
+            .map_err(|e| format!("无法打开串口 {}: {}", port_name, e))?;
+        Ok(SerialPortTransport {
+            port,
+            timeout: Duration::from_millis(1000),
+        })
+    }
+
+    /// 枚举所有 COM 口，找到 MediaTek BROM 设备 (VID=0E8D PID=0003)
+    pub fn find_brom_port() -> Option<String> {
+        let ports = serialport::available_ports().ok()?;
+        for p in &ports {
+            if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
+                && info.vid == 0x0E8D && info.pid == 0x0003 {
+                    return Some(p.port_name.clone());
+                }
+        }
+        None
+    }
+}
+
+impl BromTransport for SerialPortTransport {
+    fn write(&mut self, data: &[u8]) -> Result<usize, String> {
+        self.port
+            .write_all(data)
+            .map_err(|e| format!("serial write: {}", e))?;
+        Ok(data.len())
+    }
+
+    fn read_exact(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+        self.port
+            .read_exact(buf)
+            .map_err(|e| format!("serial read_exact: {}", e))?;
+        Ok(buf.len())
+    }
+
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+        self.port
+            .read(buf)
+            .map_err(|e| format!("serial read: {}", e))
+    }
+
+    fn set_timeout(&mut self, duration: Duration) {
+        self.timeout = duration;
+        let _ = self.port.set_timeout(duration);
+    }
+
+    fn get_timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    fn do_handshake(&mut self) -> Result<bool, String> {
+        let startcmd = [0xA0u8, 0x0A, 0x50, 0x05];
+        for (i, cmd_byte) in startcmd.iter().enumerate() {
+            self.write(&[*cmd_byte])?;
+            let mut response = [0u8; 1];
+            self.read_exact(&mut response)?;
+            let expected = !*cmd_byte;
+            if response[0] != expected {
+                return Err(format!(
+                    "串口握手失败 字节 {}: 期望 0x{:02X}, 收到 0x{:02X}",
+                    i, expected, response[0]
+                ));
+            }
+        }
+        info!("SerialPort BROM 握手成功");
+        Ok(true)
+    }
+}
 
 /// Preloader / BROM protocol handler
 pub struct Preloader {
-    pub device: UsbDevice,
+    pub device: Box<dyn BromTransport>,
     pub is_preloader_mode: bool,
     pub chip: Option<ChipConfig>,
 }
 
 impl Preloader {
-    pub fn new(device: UsbDevice) -> Self {
+    pub fn new(device: Box<dyn BromTransport>) -> Self {
         Preloader {
             device,
             is_preloader_mode: false,

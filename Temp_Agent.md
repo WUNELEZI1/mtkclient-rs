@@ -762,6 +762,13 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
      - timeout 临时设为 2000ms 用于诊断
      - 验证：cargo build 通过，cargo clippy 0 warning
 
+34. **driver.rs：管理员权限检查 + 自动提权**（2026-05-29）：
+     - 问题：pnputil 和 certutil 需要管理员权限，非管理员运行会静默失败
+     - 新增 `is_admin()`：执行 `net session` 检查管理员权限（CREATE_NO_WINDOW 隐藏窗口）
+     - 新增 `rerun_as_admin()`：通过 `powershell Start-Process -Verb RunAs` 提权重启
+     - `install_winusb_driver` 开头检查：非管理员 → 弹出 UAC 提权 → 等待完成后 exit(0)
+     - 验证：cargo build 通过，cargo clippy 0 warning
+
 33. **driver.rs：等待 BROM 设备 + 修复 pnputil 判断**（2026-05-29）：
      - 改动 1：`install_winusb_driver` 加设备等待循环
        - 找不到设备时循环等待（2 秒间隔），提示用户进入 BROM 模式

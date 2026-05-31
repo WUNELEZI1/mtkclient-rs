@@ -688,6 +688,27 @@ impl UsbDevice {
     }
 }
 
+impl crate::preloader::BromTransport for UsbDevice {
+    fn write(&mut self, data: &[u8]) -> Result<usize, String> {
+        self.write(data)
+    }
+    fn read_exact(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+        self.read_exact(buf)
+    }
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+        self.read(buf)
+    }
+    fn set_timeout(&mut self, duration: Duration) {
+        self.set_timeout(duration);
+    }
+    fn get_timeout(&self) -> Duration {
+        self.get_timeout()
+    }
+    fn do_handshake(&mut self) -> Result<bool, String> {
+        self.do_handshake()
+    }
+}
+
 impl Drop for UsbDevice {
     fn drop(&mut self) {
         self.close();
