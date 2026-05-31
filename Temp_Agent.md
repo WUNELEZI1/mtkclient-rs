@@ -752,7 +752,15 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
      - 两处修改：`handle_command` 和 `handle_commands`
      - 验证：cargo check 通过，cargo clippy 无新增 warning
 
-25. **去掉 reopen + 加强 bypass drain 逻辑**（2026-05-29）：
+28. **ack() 诊断日志**（2026-05-29）：
+     - 目的：确认 `ack()` 内部的 `status()` 到底读到了什么——如果 `length` 是 2048 而不是 4，说明 ack 偷吃了数据块
+     - 修改：用内联代码替代 `self.status()` 调用，增加 debug 日志打印：
+       - `[ack::status] hdr: magic=0xXXXXXXXX length=XXXX`
+       - `[ack::status] data: N bytes, first 16: XX XX XX ...`
+       - `[ack::status] short hdr read: N/12 bytes`
+       - `[ack::status] hdr read error: ...`
+     - timeout 临时设为 2000ms 用于诊断
+     - 验证：cargo build 通过，cargo clippy 0 warning
      - 问题：reopen 后 handshake 全部失败（write 返回 -7 / LIBUSB_ERROR_TIMEOUT）
      - 根因：patcher payload 执行后设备短暂不可用，reopen 的 200ms sleep 不够。且既然 bypass_security 内部的 handshake 已经成功，reopen 本身无必要
      - 修复：
