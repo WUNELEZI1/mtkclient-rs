@@ -1,6 +1,6 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
-> 最近更新：2026-05-31
+> 最近更新：2026-06-01
 > 完整历史：Temp_Agent_Archive.md
 
 ## 当前状态
@@ -10,7 +10,7 @@
   - `r分区` ⚠️
   - `w/e` ❌
   - `auto-dump` ⚠️
-- 最近工作区状态：已对齐 watchdog 双 `status`、GPT 自适应读取、清理根目录文件
+- 最近工作区状态：已抽取 `src/seccfg.rs` 并统一 SecCfgV3/V4；新增 `src/sej.rs` HACC 后端与 `sej_hacc_sign`；新增 `src/frp.rs` FRP OEM 开关；驱动安装已切到 `libusb-win32 filter`
 - 最近提交基线：`34a988a`（0xD1 方向切换）
 
 ## 关键协议
@@ -33,8 +33,12 @@ src/commands.rs    - 命令分发、printgpt/read/write/erase 流程
 src/preloader.rs   - BROM 协议、echo、hw_code、send_da、jump_*、register access
 src/kamakiri2.rs   - exploit / da_read / da_write / inject_payload
 src/da_xflash.rs   - DA/XFlash 上传、扩展、读写、erase、reset
+src/sej.rs         - HACC/SEJ 寄存器后端与签名接口
+src/seccfg.rs      - SecCfgV3/V4 解析、锁解、离线处理
 src/da_partition.rs - GPT 读取、分区解析、地址查找
-src/driver.rs      - WinUSB 驱动检测与安装
+src/driver.rs      - libusb-win32 filter 驱动检测与安装、watchdog 关闭
+src/filter.rs      - install-filter.exe 包装与设备 filter 检测
+src/frp.rs         - FRP OEM unlocking 预留入口
 src/usb.rs         - USB 底层通信
 src/config.rs      - 芯片配置与寄存器常量
 src/cli.rs         - 命令行参数
@@ -50,9 +54,13 @@ src/paths.rs       - 路径辅助
 - 不要把 `cargo run` 当作默认验证手段，设备未连接时会卡住。
 - `Temp_Agent_Archive.md` 保存完整历史，当前文件只保留可恢复的摘要。
 - BROM 串口和 USB 两条路径都还在，`smart_init` 会根据状态选择。
-- `driver.rs` 现在走 `zadig_rust.dll` + `pnputil`，不再依赖 `devcon.exe`。
+- `driver.rs` 现在走 `install-filter.exe` + `serialport` watchdog，不再依赖 `zadig_rust.dll` / `devcon.exe`。
 - `readflash_data` 允许大块读取，但 ACK 语义要保持每块一确认。
 - `reset_device` 已优先走 DA 重启，BROM `jump_bl` 只作为 fallback。
+- `seccfg` 逻辑已拆到 `src/seccfg.rs`，离线锁解命令改从新模块取实现。
+- `sej.rs` 作为 HACC/SEJ 后端入口，后续在线 seccfg 解锁会从这里走。
+- `sej_hacc_sign` 已提供 HACC 后端绑定接口，`seccfg` 在线 V4 路径已接入。
+- `frp.rs` 目前是独立预留模块，后续可直接挂到命令路由。
 - `usb.rs` 的 dead_code 允许保留，不要为了消 warning 误删接口。
 - 编译通过，0 warnings
 

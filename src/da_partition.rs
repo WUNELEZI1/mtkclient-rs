@@ -4,13 +4,10 @@ use std::fs::File;
 use std::io::Write;
 
 /// GPT 分区表信息
-#[allow(dead_code)]
 pub struct GptInfo {
-    pub base: usize,
     pub num_part_entries: u32,
     pub part_entry_size: u32,
     pub part_entry_start_lba: u64,
-    pub first_usable_lba: u64,
 }
 
 impl GptInfo {
@@ -25,61 +22,16 @@ impl GptInfo {
         let part_entry_size = u32::from_le_bytes(data[base + 84..base + 88].try_into().unwrap());
         let part_entry_start_lba =
             u64::from_le_bytes(data[base + 72..base + 80].try_into().unwrap());
-        let first_usable_lba = u64::from_le_bytes(data[base + 32..base + 40].try_into().unwrap());
-
         Ok(GptInfo {
-            base,
             num_part_entries,
             part_entry_size,
             part_entry_start_lba,
-            first_usable_lba,
         })
     }
 
     /// 计算分区表起始偏移
     pub fn table_start(&self) -> usize {
         (self.part_entry_start_lba as usize) * 512
-    }
-
-    /// 遍历所有分区，调用回调函数
-    #[allow(dead_code)]
-    pub fn for_each_partition<F>(&self, data: &[u8], mut callback: F)
-    where
-        F: FnMut(&str, u64, u64, &[u8]),
-    {
-        let mut table_start = self.table_start();
-        if table_start + 4 <= data.len()
-            && data[table_start..table_start + 4].iter().all(|&b| b == 0)
-        {
-            table_start += 4;
-        }
-
-        for i in 0..self.num_part_entries {
-            let entry_offset = table_start + (i as usize) * (self.part_entry_size as usize);
-            if entry_offset + self.part_entry_size as usize > data.len() {
-                break;
-            }
-
-            let entry = &data[entry_offset..entry_offset + self.part_entry_size as usize];
-            let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
-            if unique_guid_zero {
-                break;
-            }
-
-            let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
-            let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
-            let start = first_lba.saturating_mul(512);
-            let size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
-
-            let name_utf16: Vec<u16> = (0..28)
-                .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
-                .collect();
-            let name = String::from_utf16_lossy(&name_utf16)
-                .trim_end_matches('\0')
-                .to_string();
-
-            callback(&name, start, size, entry);
-        }
     }
 }
 
@@ -124,7 +76,7 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 查找分区的物理地址和大小（需要 GPT 数据）
-    fn find_partition_addr(&mut self, partition: &str) -> Result<(u64, u64), String> {
+    pub(crate) fn find_partition_addr(&mut self, partition: &str) -> Result<(u64, u64), String> {
         let gpt_data = self
             .last_gpt_data
             .as_ref()
@@ -257,6 +209,45 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
+    /// 按原始地址写入一段数据，供分区写入、seccfg/frp 等场景复用。
+    pub(crate) fn write_flash_data(
+        &mut self,
+        addr: u64,
+        data: &[u8],
+        storage: u32,
+        parttype: u32,
+    ) -> Result<(), String> {
+        self.cmd_write_data(addr, data.len() as u64, storage, parttype)?;
+
+        let write_packet_size = self.get_packet_length()?;
+        let mut pos = 0;
+        let total = data.len();
+        while pos < total {
+            let dsize = std::cmp::min(write_packet_size, total - pos);
+            let chunk = &data[pos..pos + dsize];
+            let checksum: u16 = chunk.iter().map(|&b| b as u16).sum::<u16>();
+
+            let mut param = Vec::with_capacity(8 + dsize);
+            param.extend_from_slice(&0u32.to_le_bytes());
+            param.extend_from_slice(&(checksum as u32).to_le_bytes());
+            param.extend_from_slice(chunk);
+
+            let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
+            self.preloader.device.write(&param_pkt)?;
+            self.preloader.device.write(&param)?;
+
+            pos += dsize;
+        }
+
+        let st = self.status()?;
+        if st != 0 {
+            return Err(format!("writeflash status error: 0x{:08X}", st));
+        }
+
+        self.send_devctrl(0x800005, None)?;
+        Ok(())
+    }
+
     /// 写入文件到分区
     /// 对齐 Python writeflash (xflash_lib.py:writeflash)
     /// 协议: cmd_write_data → 循环分包写入 [0x0(4B)][checksum(4B)][data] → CC_OPTIONAL_DOWNLOAD_ACT → status
@@ -285,46 +276,7 @@ impl<'a> DAXFlash<'a> {
         if fill > 0 {
             data.resize(data.len() + fill, 0);
         }
-
-        // 获取包长度
-        let write_packet_size = self.get_packet_length()?;
-
-        // 发送写命令: cmd_write_data
-        self.cmd_write_data(addr, data.len() as u64, 1, 8)?;
-
-        // 循环分包写入
-        let mut pos = 0;
-        let total = data.len();
-        while pos < total {
-            let dsize = std::cmp::min(write_packet_size, total - pos);
-            let chunk = &data[pos..pos + dsize];
-
-            // 计算 checksum
-            let checksum: u16 = chunk.iter().map(|&b| b as u16).sum::<u16>();
-
-            // 发送参数包: [0x0(4B)][checksum(4B)][data]
-            let mut param = Vec::with_capacity(8 + dsize);
-            param.extend_from_slice(&0u32.to_le_bytes());
-            param.extend_from_slice(&(checksum as u32).to_le_bytes());
-            param.extend_from_slice(chunk);
-
-            let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
-            self.preloader.device.write(&param_pkt)?;
-            self.preloader.device.write(&param)?;
-
-            pos += dsize;
-            let pct = (pos * 100) / total;
-            println!("  写入进度: {}%", pct);
-        }
-
-        // 写完后读 status
-        let st = self.status()?;
-        if st != 0 {
-            return Err(format!("writeflash status error: 0x{:08X}", st));
-        }
-
-        // 发送 CC_OPTIONAL_DOWNLOAD_ACT (0x800005)
-        self.send_devctrl(0x800005, None)?;
+        self.write_flash_data(addr, &data, 1, 8)?;
 
         info!("  写入完成: {} 字节写入分区 {}", file_size, partition);
         Ok(())
@@ -395,124 +347,13 @@ impl<'a> DAXFlash<'a> {
     /// 对齐 Python mtkclient: unlock 命令
     /// 流程: 读取 seccfg 分区 → 解析 V4/V3 结构 → 修改 lock_state → 重新签名 → 写回
     pub fn unlock_bootloader(&mut self) -> Result<(), String> {
-        info!("开始解锁 Bootloader...");
-
-        // 1. 读取 seccfg 分区
-        let (seccfg_addr, _) = self.find_partition_addr("seccfg")?;
-        info!("  seccfg 分区地址: 0x{:X}", seccfg_addr);
-
-        // 读取 seccfg 数据（至少读取 0x200 字节）
-        let seccfg_data = self.readflash_data(seccfg_addr, 0x200)?;
-        info!("  已读取 seccfg 数据: {} 字节", seccfg_data.len());
-
-        // 2. 尝试解析 V4（magic=0x4D4D4D4D）
-        let new_seccfg = if seccfg_data.len() >= 28 {
-            let magic = u32::from_le_bytes(seccfg_data[0..4].try_into().unwrap());
-            if magic == 0x4D4D4D4D {
-                // V4 结构
-                info!("  检测到 seccfg V4 结构");
-                let v4 = SecCfgV4::parse(&seccfg_data)?;
-                v4.create("unlock", 0)?
-            } else {
-                // 尝试 V3
-                info!("  尝试 seccfg V3 结构");
-                let v3 = SecCfgV3::parse(&seccfg_data)?;
-                v3.create("unlock", 0)?
-            }
-        } else {
-            return Err("seccfg 数据太小".to_string());
-        };
-
-        // 3. 写回 seccfg 分区
-        info!("  正在写入修改后的 seccfg...");
-
-        self.cmd_write_data(seccfg_addr, new_seccfg.len() as u64, 1, 8)?;
-
-        let write_packet_size = self.get_packet_length()?;
-        let mut pos = 0;
-        let total = new_seccfg.len();
-        while pos < total {
-            let dsize = std::cmp::min(write_packet_size, total - pos);
-            let chunk = &new_seccfg[pos..pos + dsize];
-            let checksum: u16 = chunk.iter().map(|&b| b as u16).sum::<u16>();
-
-            let mut param = Vec::with_capacity(8 + dsize);
-            param.extend_from_slice(&0u32.to_le_bytes());
-            param.extend_from_slice(&(checksum as u32).to_le_bytes());
-            param.extend_from_slice(chunk);
-
-            let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
-            self.preloader.device.write(&param_pkt)?;
-            self.preloader.device.write(&param)?;
-
-            pos += dsize;
-        }
-
-        let st = self.status()?;
-        if st != 0 {
-            return Err(format!("seccfg 写入 status error: 0x{:08X}", st));
-        }
-
-        self.send_devctrl(0x800005, None)?;
-
-        info!("Bootloader 解锁成功");
-        info!("  重启设备使更改生效");
-        Ok(())
+        crate::seccfg::unlock_bootloader(self)
     }
 
     /// 锁定 Bootloader
     // 预留：unlock/lock 命令使用
-    #[allow(dead_code)]
     pub fn lock_bootloader(&mut self) -> Result<(), String> {
-        info!("开始锁定 Bootloader...");
-
-        let (seccfg_addr, _) = self.find_partition_addr("seccfg")?;
-        let seccfg_data = self.readflash_data(seccfg_addr, 0x200)?;
-
-        let new_seccfg = if seccfg_data.len() >= 28 {
-            let magic = u32::from_le_bytes(seccfg_data[0..4].try_into().unwrap());
-            if magic == 0x4D4D4D4D {
-                let v4 = SecCfgV4::parse(&seccfg_data)?;
-                v4.create("lock", 0)?
-            } else {
-                let v3 = SecCfgV3::parse(&seccfg_data)?;
-                v3.create("lock", 0)?
-            }
-        } else {
-            return Err("seccfg 数据太小".to_string());
-        };
-
-        self.cmd_write_data(seccfg_addr, new_seccfg.len() as u64, 1, 8)?;
-
-        let write_packet_size = self.get_packet_length()?;
-        let mut pos = 0;
-        let total = new_seccfg.len();
-        while pos < total {
-            let dsize = std::cmp::min(write_packet_size, total - pos);
-            let chunk = &new_seccfg[pos..pos + dsize];
-            let checksum: u16 = chunk.iter().map(|&b| b as u16).sum::<u16>();
-
-            let mut param = Vec::with_capacity(8 + dsize);
-            param.extend_from_slice(&0u32.to_le_bytes());
-            param.extend_from_slice(&(checksum as u32).to_le_bytes());
-            param.extend_from_slice(chunk);
-
-            let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
-            self.preloader.device.write(&param_pkt)?;
-            self.preloader.device.write(&param)?;
-
-            pos += dsize;
-        }
-
-        let st = self.status()?;
-        if st != 0 {
-            return Err(format!("seccfg 写入 status error: 0x{:08X}", st));
-        }
-
-        self.send_devctrl(0x800005, None)?;
-
-        info!("Bootloader 锁定成功");
-        Ok(())
+        crate::seccfg::lock_bootloader(self)
     }
 
     /// 获取写包长度（对齐 Python get_packet_length）
@@ -649,7 +490,6 @@ pub fn parse_gpt_from_data(data: &[u8]) -> Result<(), String> {
 
 /// 从 GPT 数据生成 SP Flash Tool 格式的 scatter 文件
 /// 对齐 C# 版：包含 PRELOADER 块、EMMC_BOOT_1/2 区域、无 {} 空行
-#[allow(dead_code)]
 pub fn generate_scatter_from_gpt(
     gpt_data: &[u8],
     output_file: &str,
@@ -755,105 +595,4 @@ pub fn generate_scatter_from_gpt(
     info!("scatter 文件已生成: {}", output_file);
 
     Ok(partition_info_list)
-}
-
-/// seccfg V4 结构体
-pub struct SecCfgV4 {
-    #[allow(dead_code)]
-    pub lock_state: String,
-    pub bypass_auth: u8,
-    pub secure_boot: u8,
-    pub lock_state_offset: usize,
-}
-
-impl SecCfgV4 {
-    /// 解析 seccfg V4 结构
-    pub fn parse(data: &[u8]) -> Result<Self, String> {
-        let magic = u32::from_le_bytes(data[0..4].try_into().unwrap());
-        if magic != 0x4D4D4D4D {
-            return Err("无效的 seccfg V4 magic".to_string());
-        }
-
-        let lock_state_offset = 20;
-        let lock_state = if data.len() > lock_state_offset + 8 {
-            let lock_bytes = &data[lock_state_offset..lock_state_offset + 8];
-            String::from_utf8_lossy(lock_bytes)
-                .trim_end_matches('\0')
-                .to_string()
-        } else {
-            "unknown".to_string()
-        };
-
-        let bypass_auth = if data.len() > 28 { data[28] } else { 0 };
-
-        let secure_boot = if data.len() > 29 { data[29] } else { 0 };
-
-        Ok(SecCfgV4 {
-            lock_state,
-            bypass_auth,
-            secure_boot,
-            lock_state_offset,
-        })
-    }
-
-    /// 创建新的 seccfg 数据
-    pub fn create(&self, new_state: &str, _padding: usize) -> Result<Vec<u8>, String> {
-        // 创建新的 seccfg 数据（V4 结构）
-        let mut new_data = vec![0u8; 0x200];
-
-        // 写入 magic
-        new_data[0..4].copy_from_slice(&0x4D4D4D4Du32.to_le_bytes());
-
-        // 写入 lock_state
-        let state_bytes = new_state.as_bytes();
-        let state_len = std::cmp::min(state_bytes.len(), 8);
-        new_data[self.lock_state_offset..self.lock_state_offset + state_len]
-            .copy_from_slice(&state_bytes[..state_len]);
-
-        // 写入其他标志
-        new_data[28] = self.bypass_auth;
-        new_data[29] = self.secure_boot;
-
-        Ok(new_data)
-    }
-}
-
-/// seccfg V3 结构体
-pub struct SecCfgV3 {
-    #[allow(dead_code)]
-    pub lock_state: String,
-    pub lock_state_offset: usize,
-}
-
-impl SecCfgV3 {
-    /// 解析 seccfg V3 结构
-    pub fn parse(data: &[u8]) -> Result<Self, String> {
-        let lock_state_offset = 16;
-        let lock_state = if data.len() > lock_state_offset + 8 {
-            let lock_bytes = &data[lock_state_offset..lock_state_offset + 8];
-            String::from_utf8_lossy(lock_bytes)
-                .trim_end_matches('\0')
-                .to_string()
-        } else {
-            "unknown".to_string()
-        };
-
-        Ok(SecCfgV3 {
-            lock_state,
-            lock_state_offset,
-        })
-    }
-
-    /// 创建新的 seccfg 数据
-    pub fn create(&self, new_state: &str, _padding: usize) -> Result<Vec<u8>, String> {
-        let mut new_data = vec![0u8; 0x200];
-
-        // 写入 lock_state
-        let state_bytes = new_state.as_bytes();
-        let state_len = std::cmp::min(state_bytes.len(), 8);
-        new_data[self.lock_state_offset..self.lock_state_offset + state_len]
-            .copy_from_slice(&state_bytes[..state_len]);
-
-        Ok(new_data)
-    }
 }

@@ -18,8 +18,12 @@ mod da_extension;
 mod da_partition;
 mod da_xflash;
 mod driver;
+mod filter;
+mod frp;
 mod kamakiri2;
 mod paths;
+mod sej;
+mod seccfg;
 mod preloader;
 mod session;
 mod usb;
@@ -189,9 +193,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if cli.check_driver {
         if driver::check_driver() {
-            info!("WinUSB 驱动已就绪");
+            info!("libusb-win32 filter 驱动已就绪");
         } else {
-            info!("未检测到 WinUSB 驱动，运行 install-drivers 安装");
+            info!("未检测到 libusb-win32 filter 驱动，运行 install-drivers 安装");
         }
         return Ok(());
     }
@@ -239,7 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 && cli.args.first().map(|s| s.as_str()) == Some("seccfg")
                 && cli.args.get(1).map(|s| s.as_str()) == Some("unlock"))
         {
-            match da_xflash::seccfg_unlock_offline(input_file) {
+            match seccfg::seccfg_unlock_offline(input_file) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     error!("离线解锁失败: {}", e);
@@ -252,7 +256,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 && cli.args.first().map(|s| s.as_str()) == Some("seccfg")
                 && cli.args.get(1).map(|s| s.as_str()) == Some("lock"))
         {
-            match da_xflash::seccfg_lock_offline(input_file) {
+            match seccfg::seccfg_lock_offline(input_file) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     error!("离线锁定失败: {}", e);

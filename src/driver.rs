@@ -1,6 +1,5 @@
-use libloading::{Library, Symbol};
+use crate::filter;
 use log::{debug, info, warn};
-use std::path::Path;
 use std::process::Command;
 
 macro_rules! debug_log {
@@ -11,150 +10,96 @@ macro_rules! debug_log {
     };
 }
 
-type ZadigDetectBootrom = unsafe extern "C" fn() -> i32;
-type ZadigInstallEmbeddedDriver = unsafe extern "C" fn() -> i32;
-
-/// 加载 zadig_rust.dll 并返回 Library 句柄和函数指针
-fn load_zadig_lib() -> Result<
-    (
-        Library,
-        Symbol<'static, ZadigDetectBootrom>,
-        Symbol<'static, ZadigInstallEmbeddedDriver>,
-    ),
-    String,
-> {
-    let dll_path = Path::new("zadig_rust.dll");
-    if !dll_path.exists() {
-        return Err("zadig_rust.dll 未找到，请确保 DLL 与可执行文件在同一目录".to_string());
-    }
-
-    let lib = unsafe { Library::new(dll_path) }
-        .map_err(|e| format!("加载 zadig_rust.dll 失败: {}", e))?;
-
-    let detect: Symbol<'_, ZadigDetectBootrom> = unsafe {
-        lib.get(b"zadig_detect_bootrom")
-            .map_err(|e| format!("找不到 zadig_detect_bootrom: {}", e))?
-    };
-    let install: Symbol<'_, ZadigInstallEmbeddedDriver> = unsafe {
-        lib.get(b"zadig_install_embedded_driver")
-            .map_err(|e| format!("找不到 zadig_install_embedded_driver: {}", e))?
-    };
-
-    // 将 Symbol 的生命周期延长为 'static（安全：Library 句柄同时持有）
-    let detect = unsafe {
-        std::mem::transmute::<Symbol<'_, ZadigDetectBootrom>, Symbol<'static, ZadigDetectBootrom>>(
-            detect,
-        )
-    };
-    let install = unsafe {
-        std::mem::transmute::<
-            Symbol<'_, ZadigInstallEmbeddedDriver>,
-            Symbol<'static, ZadigInstallEmbeddedDriver>,
-        >(install)
-    };
-
-    Ok((lib, detect, install))
-}
-
-/// 安装 MediaTek BROM WinUSB 驱动
-/// 通过 zadig_rust.dll 实现检测和安装
+/// 安装 MediaTek 设备的 libusb-win32 filter 驱动
 pub fn install_winusb_driver(debug: bool, force: bool) -> Result<(), String> {
-    debug_log!(debug, "[DRV] install_winusb_driver start force={}", force);
+    debug_log!(debug, "[DRV] install_filter_driver start force={}", force);
 
     if !force && check_driver() {
-        debug_log!(debug, "[DRV] WinUSB driver already installed, skip");
-        info!("WinUSB 驱动已就绪");
+        debug_log!(debug, "[DRV] filter driver already installed, skip");
+        info!("libusb-win32 filter 驱动已就绪");
         info!("使用 --force 可重新安装");
         return Ok(());
     }
 
-    // 检查管理员权限
     if !is_admin() {
         debug_log!(debug, "[DRV] not admin, requesting elevation");
         info!("正在请求管理员权限...");
         return rerun_as_admin();
     }
 
-    // 加载 zadig_rust.dll
-    let (_lib, detect, install) = load_zadig_lib()?;
+    // 步骤 1: 通过 serialport 关闭 watchdog（仅在设备为 COM 口模式时需要）
+    // 如果设备已是 WinUSB 模式，COM 口不存在，跳过此步骤
+    let com_port = find_mediatek_com_port();
+    debug_log!(debug, "[DRV] COM port detection: {:?}", com_port);
 
-    if force {
-        info!("请按住音量+和音量-，插入USB进入BROM模式...");
-        loop {
-            if let Some(com_port) = find_mediatek_com_port() {
-                debug_log!(debug, "[DRV] force mode detected COM port: {}", com_port);
-                info!("找到 BROM COM 口: {}，正在关闭 Watchdog...", com_port);
-                if let Err(e) = disable_watchdog_brom(&com_port) {
-                    warn!("关闭 Watchdog 失败: {}", e);
-                } else {
-                    debug_log!(debug, "[DRV] watchdog disabled via COM port");
-                    info!("Watchdog 已关闭，设备稳定");
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                }
-                break;
-            }
-            debug_log!(debug, "[DRV] force mode still waiting for COM port...");
-            info!("未检测到 MediaTek COM 端口，等待设备进入 BROM...");
-            std::thread::sleep(std::time::Duration::from_millis(2000));
+    if let Some(port_name) = com_port {
+        info!("找到 BROM COM 口: {}，正在关闭 Watchdog...", port_name);
+        if let Err(e) = disable_watchdog_brom(&port_name) {
+            warn!("关闭 Watchdog 失败: {}", e);
+        } else {
+            info!("Watchdog 已关闭，设备稳定");
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
     } else {
-        if let Some(com_port) = find_mediatek_com_port() {
-            debug_log!(debug, "[DRV] detected COM port: {}", com_port);
-            info!("找到 BROM COM 口: {}，正在关闭 Watchdog...", com_port);
-            if let Err(e) = disable_watchdog_brom(&com_port) {
-                warn!("关闭 Watchdog 失败: {}", e);
-            } else {
-                debug_log!(debug, "[DRV] watchdog disabled via COM port");
-                info!("Watchdog 已关闭，设备稳定");
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
+        // 未找到 COM 口，检查设备是否已在 WinUSB/libusb 模式
+        info!("未找到 BROM COM 口");
+
+        // 使用 libusb 检测设备是否存在
+        if is_brom_device_present() {
+            debug_log!(debug, "[DRV] BROM device detected via libusb, skipping watchdog");
+            info!("设备已在 libusb/WinUSB 模式，跳过 Watchdog 关闭");
         } else {
-            debug_log!(debug, "[DRV] no COM port found, probing WinUSB mode");
-            let detected = unsafe { detect() };
-            debug_log!(debug, "[DRV] zadig_detect_bootrom returned {}", detected);
-            if detected == 0 {
-                debug_log!(
-                    debug,
-                    "[DRV] device not in WinUSB mode, waiting for COM port"
-                );
+            // 设备既不是 COM 口也不是 libusb 模式，循环等待 COM 口
+            info!("请按住音量+和音量-，插入USB进入BROM模式...");
+            let port_name = loop {
+                if let Some(port) = find_mediatek_com_port() {
+                    break port;
+                }
                 info!("未检测到 MediaTek COM 端口，等待设备进入 BROM...");
                 info!("请按住 音量+ + 音量- 插入 USB");
-                loop {
-                    if let Some(port) = find_mediatek_com_port() {
-                        debug_log!(debug, "[DRV] COM port appeared: {}", port);
-                        info!("检测到 BROM COM 口: {}，正在关闭 Watchdog...", port);
-                        if let Err(e) = disable_watchdog_brom(&port) {
-                            warn!("关闭 Watchdog 失败: {}", e);
-                        } else {
-                            debug_log!(debug, "[DRV] watchdog disabled after wait");
-                            info!("Watchdog 已关闭，设备稳定");
-                            std::thread::sleep(std::time::Duration::from_millis(500));
-                        }
-                        break;
-                    }
-                    debug_log!(debug, "[DRV] still waiting for COM port...");
-                    std::thread::sleep(std::time::Duration::from_millis(2000));
-                }
-            } else {
-                debug_log!(debug, "[DRV] device already in WinUSB mode, skip COM wait");
-            }
+                std::thread::sleep(std::time::Duration::from_millis(2000));
+            };
+            info!("找到 BROM COM 口: {}，正在关闭 Watchdog...", port_name);
+            disable_watchdog_brom(&port_name)
+                .map_err(|e| format!("关闭 Watchdog 失败: {}", e))?;
+            info!("Watchdog 已关闭，设备稳定");
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
     }
 
-    info!("安装 MediaTek BROM WinUSB 驱动...");
-    let result = unsafe { install() };
-    if result == 1 {
-        debug_log!(debug, "[DRV] zadig install returned success");
-        info!("驱动安装成功");
-        info!("重新连接设备：");
-        info!("  1. 关机");
-        info!("  2. 按住音量加 + 音量减，插入 USB");
-        info!("  3. 等待 BROM 设备识别");
-        Ok(())
-    } else {
-        debug_log!(debug, "[DRV] zadig install returned {}", result);
-        Err("驱动安装失败".to_string())
+    // 步骤 2: 安装 libusb-win32 filter 驱动
+    info!("安装 libusb-win32 filter 驱动...");
+    filter::install_filter_driver(debug)?;
+    debug_log!(debug, "[DRV] filter driver installed");
+    info!("驱动安装成功");
+    info!("重新连接设备：");
+    info!("  1. 关机");
+    info!("  2. 按住音量加 + 音量减，插入 USB");
+    info!("  3. 等待 BROM 设备识别");
+    Ok(())
+}
+
+/// 检测 BROM 设备是否已通过 libusb 连接（VID=0E8D PID=0003）
+fn is_brom_device_present() -> bool {
+    let mut ctx: *mut libusb1_sys::libusb_context = std::ptr::null_mut();
+    let init_ret = unsafe { libusb1_sys::libusb_init(&mut ctx) };
+    if init_ret != 0 {
+        debug_log!(true, "[DRV] libusb_init failed: {}", init_ret);
+        return false;
     }
+    unsafe {
+        let handle = libusb1_sys::libusb_open_device_with_vid_pid(ctx, 0x0E8D, 0x0003);
+        if !handle.is_null() {
+            libusb1_sys::libusb_close(handle);
+            debug_log!(true, "[DRV] BROM device found on USB bus");
+            libusb1_sys::libusb_exit(ctx);
+            return true;
+        }
+    }
+    unsafe {
+        libusb1_sys::libusb_exit(ctx);
+    }
+    false
 }
 
 /// 检查是否以管理员权限运行
@@ -195,16 +140,7 @@ fn rerun_as_admin() -> Result<(), String> {
 }
 
 pub fn check_driver() -> bool {
-    let output = Command::new("pnputil").args(["/enum-devices"]).output();
-
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            (stdout.contains("VID_0E8D&PID_0003") && stdout.contains("winusb"))
-                || (stdout.contains("VID_0E8D&PID_2000") && stdout.contains("winusb"))
-        }
-        Err(_) => false,
-    }
+    filter::is_filter_installed()
 }
 
 /// 枚举 COM 口找 MediaTek BROM (VID_0E8D PID_0003)
@@ -230,7 +166,6 @@ fn disable_watchdog_brom(port_name: &str) -> Result<(), String> {
     let mut preloader = Preloader::new(Box::new(transport));
     preloader.init()?;
 
-    // WRITE32 关闭 watchdog，按日志顺序读取两次 2 字节 status
     if !preloader.echo_1byte(0xD4)? {
         return Err("watchdog disable: D4 echo mismatch".into());
     }
@@ -252,7 +187,6 @@ fn disable_watchdog_brom(port_name: &str) -> Result<(), String> {
         ));
     }
 
-    // 释放 COM 口，让 WinUSB 接管
     drop(preloader);
     Ok(())
 }

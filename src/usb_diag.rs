@@ -13,10 +13,10 @@ pub enum UsbDiagState {
     /// 检测到 BROM 模式
     Brom,
     /// 端点通信异常（libusb 报错）
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：底层 USB 故障分支，当前诊断流程未必总会构造
     EndpointError,
     /// 设备连接但握手失败
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：握手失败的诊断分支，供主流程错误映射使用
     HandshakeFailed,
 }
 
@@ -125,45 +125,6 @@ pub fn print_connection_hint() {
     info!("  4. 如果已连接但无响应，按住电源键 10 秒重置");
     info!("  5. 运行 'check-driver' 确认 WinUSB 驱动已安装");
     info!("");
-}
-
-/// 检测 libusb 错误类型并给出诊断信息
-#[allow(dead_code)]
-pub fn classify_libusb_error(err: i32) -> &'static str {
-    match err {
-        -1 => "LIBUSB_ERROR_IO (I/O 错误)",
-        -2 => "LIBUSB_ERROR_INVALID_PARAM (参数错误)",
-        -3 => "LIBUSB_ERROR_ACCESS (访问被拒绝 — 检查驱动)",
-        -4 => "LIBUSB_ERROR_NO_DEVICE (设备已断开)",
-        -5 => "LIBUSB_ERROR_NOT_FOUND (资源未找到)",
-        -6 => "LIBUSB_ERROR_BUSY (设备繁忙 — 可能被其他程序占用)",
-        -7 => "LIBUSB_ERROR_TIMEOUT (超时 — 设备未响应)",
-        -9 => "LIBUSB_ERROR_PIPE (端点 halt/stall — 需要清除)",
-        -10 => "LIBUSB_ERROR_INTERRUPTED (操作中断)",
-        -11 => "LIBUSB_ERROR_NO_MEM (内存不足)",
-        -12 => "LIBUSB_ERROR_NOT_SUPPORTED (不支持的操作)",
-        -99 => "LIBUSB_ERROR_OTHER (其他错误)",
-        _ => "未知 libusb 错误",
-    }
-}
-
-/// 尝试恢复 USB 端点状态（清除 halt）
-#[allow(dead_code)]
-pub fn attempt_endpoint_recovery(
-    handle: *mut libusb1_sys::libusb_device_handle,
-    ep_in: u8,
-    ep_out: u8,
-) {
-    unsafe {
-        debug!("[USB恢复] 尝试清除端点 halt...");
-        let ret_in = libusb1_sys::libusb_clear_halt(handle, ep_in);
-        let ret_out = libusb1_sys::libusb_clear_halt(handle, ep_out);
-        if ret_in == 0 && ret_out == 0 {
-            debug!("[USB恢复] 端点恢复成功");
-        } else {
-            warn!("[USB恢复] 恢复失败: IN={}, OUT={}", ret_in, ret_out);
-        }
-    }
 }
 
 /// 枚举 USB 设备，输出详细信息（用于 list-usb 命令）

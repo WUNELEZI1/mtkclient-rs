@@ -2,7 +2,6 @@ use crate::preloader::Preloader;
 use aes::Aes256;
 use cbc::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit};
 use log::{debug, info, warn};
-use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::Read;
 use std::thread::sleep;
@@ -18,13 +17,6 @@ const SEJ_IV: &[u8; 16] = &[
     0x57, 0x32, 0x5A, 0x5A, 0x12, 0x54, 0x97, 0x66, 0x12, 0x54, 0x97, 0x66, 0x57, 0x32, 0x5A, 0x5A,
 ];
 
-// SEJ 硬件模式 g_CFG_RANDOM_PATTERN（对齐 Python hwcrypto_sej.py）
-#[allow(dead_code)]
-const G_CFG_RANDOM_PATTERN: [u32; 12] = [
-    0x2D44BB70, 0xA744D227, 0xD0A9864B, 0x83FFC244, 0x7EC8266B, 0x43E80FB2, 0x01A6348A, 0x2067F9A0,
-    0x54536405, 0xD546A6B1, 0x1CC3EC3A, 0xDE377A83,
-];
-
 // SEJ 硬件模式 g_HACC_CFG_1（AES-128-CBC 加密用 IV）
 const G_HACC_CFG_1: [u32; 8] = [
     0x9ED40400, 0x00E884A1, 0xE3F083BD, 0x2F4E6D8A, 0xFF838E5C, 0xE940A0E3, 0x8D4DECC6, 0x45FC0989,
@@ -37,17 +29,12 @@ const CUSTOM_SEED_PREFIX: [u8; 4] = [0x00, 0xBE, 0x13, 0xBB];
 /// 对齐 Python HACC AES 硬件密钥流程：key 全零，通过 HUID/HUK 派生
 const SEJ_HW_KEY: [u8; 16] = [0u8; 16];
 
-/// DA extensions 模板（预编译的 da_x.bin）— 在 da_extension.rs 中使用
-#[allow(dead_code)]
-const DA_EXTENSIONS_TEMPLATE: &[u8] =
-    include_bytes!("../mtkclient-2.0.1/mtkclient/payloads/da_x.bin");
-
 // ==================== SEJ 加密函数 ====================
 // 对齐 Python hwcrypto_sej.py:Sej
 
 /// 软件模式 AES-256-CBC 解密（sej_sec_cfg_sw 解密）
 /// 对齐 Python: sej_sec_cfg_sw(data, encrypt=False)
-fn sej_sec_cfg_sw_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn sej_sec_cfg_sw_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     let cipher = Aes256CbcDec::new(SEJ_SW_KEY.into(), SEJ_IV.into());
     let mut buf = data.to_vec();
     // 数据长度必须是 16 的倍数
@@ -65,7 +52,7 @@ fn sej_sec_cfg_sw_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
 
 /// 软件模式 AES-256-CBC 加密（sej_sec_cfg_sw 加密）
 /// 对齐 Python: sej_sec_cfg_sw(data, encrypt=True)
-fn sej_sec_cfg_sw_encrypt(data: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn sej_sec_cfg_sw_encrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     let cipher = Aes256CbcEnc::new(SEJ_SW_KEY.into(), SEJ_IV.into());
     let mut buf = data.to_vec();
     // 数据长度必须是 16 的倍数
@@ -109,7 +96,7 @@ fn generate_custom_seed_iv() -> [u8; 16] {
 /// 对齐 Python: sej_sec_cfg_hw_V3 → hw_aes128_cbc_encrypt
 /// 由于无法访问硬件 SEJ 寄存器，此处用软件模拟
 /// 使用 g_HACC_CFG_1 作为 IV，AES-128-CBC
-fn sej_sec_cfg_hw_v3_encrypt(data: &[u8], legacy: bool) -> Result<Vec<u8>, String> {
+pub(crate) fn sej_sec_cfg_hw_v3_encrypt(data: &[u8], legacy: bool) -> Result<Vec<u8>, String> {
     // 构建 IV：legacy=True 使用 g_HACC_CFG_1，否则使用 CustomSeed IV
     let iv_bytes: [u8; 16] = if legacy {
         // V4 hwtype: 使用 g_HACC_CFG_1 前 4 个 dword 作为 IV
@@ -143,7 +130,7 @@ fn sej_sec_cfg_hw_v3_encrypt(data: &[u8], legacy: bool) -> Result<Vec<u8>, Strin
 
 /// 硬件模式 V2 加密（sej_sec_cfg_hw）
 /// 对齐 Python: sej_sec_cfg_hw
-fn sej_sec_cfg_hw_encrypt(data: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn sej_sec_cfg_hw_encrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     use aes::Aes128;
     type Aes128CbcEnc = cbc::Encryptor<Aes128>;
 
@@ -166,486 +153,8 @@ fn sej_sec_cfg_hw_encrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-// ==================== SecCfg V4 结构 ====================
-// 对齐 Python seccfg.py:SecCfgV4
-// V4 头部: magic(4) + seccfg_ver(4) + seccfg_size(4) + lock_state(4) +
-//          critical_lock_state(4) + sboot_runtime(4) + endflag(4) = 28 字节
-// 尾部: SHA256 hash(32 字节，经 AES 加密)
-
-/// SecCfg V4 解析和修改
-// 预留：unlock/lock 功能使用
-#[allow(dead_code)]
-struct SecCfgV4 {
-    magic: u32,
-    seccfg_ver: u32,
-    seccfg_size: u32,
-    lock_state: u32,
-    critical_lock_state: u32,
-    sboot_runtime: u32,
-    endflag: u32,
-    hwtype: String,     // "SW", "V2", "V3", "V4"
-    full_data: Vec<u8>, // 完整 seccfg 数据（含 padding）
-}
-
-impl SecCfgV4 {
-    const MAGIC: u32 = 0x4D4D4D4D;
-    const ENDFLAG: u32 = 0x45454545;
-
-    /// 解析 seccfg V4 数据
-    fn parse(data: &[u8]) -> Result<SecCfgV4, String> {
-        if data.len() < 28 {
-            return Err("seccfg 数据太小，无法解析 V4 头部".to_string());
-        }
-
-        let magic = u32::from_le_bytes(data[0..4].try_into().unwrap());
-        let ver = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        let size = u32::from_le_bytes(data[8..12].try_into().unwrap());
-        let lock = u32::from_le_bytes(data[12..16].try_into().unwrap());
-        let crit_lock = u32::from_le_bytes(data[16..20].try_into().unwrap());
-        let sboot = u32::from_le_bytes(data[20..24].try_into().unwrap());
-        let endflag = u32::from_le_bytes(data[24..28].try_into().unwrap());
-
-        if magic != Self::MAGIC || endflag != Self::ENDFLAG {
-            return Err(format!(
-                "非 V4 seccfg 结构 (magic=0x{:08X}, endflag=0x{:08X})",
-                magic, endflag
-            ));
-        }
-
-        // 读取加密哈希（最后 32 字节）
-        if data.len() < 0x20 {
-            return Err("seccfg 数据太小，无法读取哈希".to_string());
-        }
-        let enc_hash = data[data.len() - 0x20..data.len()].to_vec();
-
-        // 计算 SHA256（对头部 28 字节）
-        let seccfg_header: [u8; 28] = [
-            magic.to_le_bytes()[0],
-            magic.to_le_bytes()[1],
-            magic.to_le_bytes()[2],
-            magic.to_le_bytes()[3],
-            ver.to_le_bytes()[0],
-            ver.to_le_bytes()[1],
-            ver.to_le_bytes()[2],
-            ver.to_le_bytes()[3],
-            size.to_le_bytes()[0],
-            size.to_le_bytes()[1],
-            size.to_le_bytes()[2],
-            size.to_le_bytes()[3],
-            lock.to_le_bytes()[0],
-            lock.to_le_bytes()[1],
-            lock.to_le_bytes()[2],
-            lock.to_le_bytes()[3],
-            crit_lock.to_le_bytes()[0],
-            crit_lock.to_le_bytes()[1],
-            crit_lock.to_le_bytes()[2],
-            crit_lock.to_le_bytes()[3],
-            sboot.to_le_bytes()[0],
-            sboot.to_le_bytes()[1],
-            sboot.to_le_bytes()[2],
-            sboot.to_le_bytes()[3],
-            endflag.to_le_bytes()[0],
-            endflag.to_le_bytes()[1],
-            endflag.to_le_bytes()[2],
-            endflag.to_le_bytes()[3],
-        ];
-
-        let expected_hash = Sha256::digest(seccfg_header);
-
-        // 尝试不同的 hwtype 验证哈希
-        let mut hwtype = String::new();
-
-        // 1. SW 模式：解密 enc_hash 看是否匹配 expected_hash
-        if let Ok(dec) = sej_sec_cfg_sw_decrypt(&enc_hash)
-            && dec[..32] == expected_hash[..]
-        {
-            hwtype = "SW".to_string();
-        }
-
-        // 2-4. V2/V3/V4 模式：由于需要 HUID/HUK 派生密钥，无法离线验证
-        // 采用启发式方法：默认使用 V4 hwtype（常见于 MT6768/MT6771 等芯片）
-        if hwtype.is_empty() {
-            hwtype = "V4".to_string();
-        }
-
-        if hwtype.is_empty() {
-            return Err("无法识别 seccfg hwtype".to_string());
-        }
-
-        info!(
-            "seccfg V4 解析成功: hwtype={}, lock_state=0x{:08X}",
-            hwtype, lock
-        );
-
-        Ok(SecCfgV4 {
-            magic,
-            seccfg_ver: ver,
-            seccfg_size: size,
-            lock_state: lock,
-            critical_lock_state: crit_lock,
-            sboot_runtime: sboot,
-            endflag,
-            hwtype,
-            full_data: data.to_vec(),
-        })
-    }
-
-    /// 修改 seccfg V4（lock/unlock）
-    /// 对齐 C# 版正确行为：只修改 lock_state(0x0C)，不动 critical_lock_state/dm_verity(0x10)
-    /// Python mtkclient 的 Bug：错误地将 offset 0x10 写为 01，导致 dm-verity corruption
-    fn create(&self, lockflag: &str, partition_size: usize) -> Result<Vec<u8>, String> {
-        let new_lock = if lockflag == "unlock" {
-            if self.lock_state == 3 {
-                return Err("设备已解锁".to_string());
-            }
-            3u32 // LKS_UNLOCK
-        } else if lockflag == "lock" {
-            if self.lock_state == 1 {
-                return Err("设备已上锁".to_string());
-            }
-            1u32 // LKS_DEFAULT
-        } else {
-            return Err("无效 lockflag".to_string());
-        };
-
-        // 只修改 lock_state，critical_lock_state(0x10) 和 sboot_runtime(0x14) 保持原值
-        // 注意：C# 版不修改 offset 0x10，保持为 0x00
-        let seccfg_header: [u8; 28] = [
-            self.magic.to_le_bytes()[0],
-            self.magic.to_le_bytes()[1],
-            self.magic.to_le_bytes()[2],
-            self.magic.to_le_bytes()[3],
-            self.seccfg_ver.to_le_bytes()[0],
-            self.seccfg_ver.to_le_bytes()[1],
-            self.seccfg_ver.to_le_bytes()[2],
-            self.seccfg_ver.to_le_bytes()[3],
-            self.seccfg_size.to_le_bytes()[0],
-            self.seccfg_size.to_le_bytes()[1],
-            self.seccfg_size.to_le_bytes()[2],
-            self.seccfg_size.to_le_bytes()[3],
-            new_lock.to_le_bytes()[0],
-            new_lock.to_le_bytes()[1],
-            new_lock.to_le_bytes()[2],
-            new_lock.to_le_bytes()[3],
-            // offset 0x10: critical_lock_state / dm_verity_state — 保持原值不变
-            self.critical_lock_state.to_le_bytes()[0],
-            self.critical_lock_state.to_le_bytes()[1],
-            self.critical_lock_state.to_le_bytes()[2],
-            self.critical_lock_state.to_le_bytes()[3],
-            // offset 0x14: sboot_runtime — 保持原值不变
-            self.sboot_runtime.to_le_bytes()[0],
-            self.sboot_runtime.to_le_bytes()[1],
-            self.sboot_runtime.to_le_bytes()[2],
-            self.sboot_runtime.to_le_bytes()[3],
-            self.endflag.to_le_bytes()[0],
-            self.endflag.to_le_bytes()[1],
-            self.endflag.to_le_bytes()[2],
-            self.endflag.to_le_bytes()[3],
-        ];
-
-        // 计算新 SHA256（对 28 字节头部）
-        let new_hash = Sha256::digest(seccfg_header);
-
-        // 根据 hwtype 加密哈希
-        let enc_hash = match self.hwtype.as_str() {
-            "SW" => sej_sec_cfg_sw_encrypt(&new_hash)?,
-            "V2" => sej_sec_cfg_hw_encrypt(&new_hash)?,
-            "V3" => sej_sec_cfg_hw_v3_encrypt(&new_hash, false)?,
-            "V4" => sej_sec_cfg_hw_v3_encrypt(&new_hash, true)?,
-            _ => return Err(format!("不支持的 hwtype: {}", self.hwtype)),
-        };
-
-        // 组装: 头部 + 加密哈希
-        let mut result = seccfg_header.to_vec();
-        result.extend_from_slice(&enc_hash);
-
-        // 补齐到分区大小（离线模式 8MB）或 0x200 对齐（在线模式）
-        while !result.len().is_multiple_of(0x200) {
-            result.push(0);
-        }
-        while result.len() < partition_size {
-            result.push(0);
-        }
-
-        info!(
-            "seccfg V4 修改成功: lock_state=0x{:08X} -> 0x{:08X}",
-            self.lock_state, new_lock
-        );
-        Ok(result)
-    }
-}
-
-// ==================== SecCfg V3 结构 ====================
-// 对齐 Python seccfg.py:SecCfgV3
-// V3 头部: info_header(16) + magic(4) + seccfg_ver(4) + seccfg_size(4) +
-//          seccfg_enc_offset(4) + seccfg_enc_len(4) + sw_sec_lock_try(1) +
-//          sw_sec_lock_done(1) + page_size(2) + page_count(4) = 44 字节
-// 加密数据段 + endflag(4)
-
-// 预留：unlock/lock 功能使用
-#[allow(dead_code)]
-struct SecCfgV3 {
-    info_header: [u8; 16],
-    magic: u32,
-    seccfg_ver: u32,
-    seccfg_size: u32,
-    seccfg_enc_offset: u32,
-    seccfg_enc_len: u32,
-    sw_sec_lock_try: u8,
-    sw_sec_lock_done: u8,
-    page_size: u16,
-    page_count: u32,
-    seccfg_attr: u32,
-    seccfg_status: u32,
-    endflag: u32,
-    hwtype: String,
-    imginfo: Vec<[u8; 0x68]>, // 20 个 imginfo 条目
-    seccfg_ext: Vec<u8>,      // 扩展数据 (0x1004 字节)
-    full_data: Vec<u8>,
-}
-
-impl SecCfgV3 {
-    const MAGIC: u32 = 0x4D4D4D4D;
-    const ENDFLAG: u32 = 0x45454545;
-    const ATTR_UNLOCK: u32 = 0x44444444;
-    const ATTR_DEFAULT: u32 = 0x33333333;
-    #[allow(dead_code)]
-    const STATUS_COMPLETE: u32 = 0x43434343;
-    #[allow(dead_code)]
-    const STATUS_INCOMPLETE: u32 = 0x49494949;
-
-    fn parse(data: &[u8]) -> Result<SecCfgV3, String> {
-        if data.len() < 44 {
-            return Err("seccfg V3 数据太小".to_string());
-        }
-
-        let info_header: [u8; 16] = data[0..16].try_into().unwrap();
-        if &info_header != b"AND_SECCFG_v\x00\x00\x00\x00" {
-            return Err("非 V3 seccfg 结构".to_string());
-        }
-
-        let magic = u32::from_le_bytes(data[16..20].try_into().unwrap());
-        let ver = u32::from_le_bytes(data[20..24].try_into().unwrap());
-        let size = u32::from_le_bytes(data[24..28].try_into().unwrap());
-        let enc_off = u32::from_le_bytes(data[28..32].try_into().unwrap());
-        let enc_len = u32::from_le_bytes(data[32..36].try_into().unwrap());
-        let sw_try = data[36];
-        let sw_done = data[37];
-        let pg_size = u16::from_le_bytes(data[38..40].try_into().unwrap());
-        let pg_count = u32::from_le_bytes(data[40..44].try_into().unwrap());
-
-        if magic != Self::MAGIC {
-            return Err("seccfg V3 magic 不匹配".to_string());
-        }
-
-        // 加密数据段 = full_data[size - 0x2C - 4 .. size - 4]
-        let enc_data_start = size as usize - 0x2C - 4;
-        let enc_data_end = size as usize - 4;
-        if enc_data_start >= data.len() || enc_data_end > data.len() {
-            return Err("seccfg V3 加密数据段超出范围".to_string());
-        }
-        let enc_data = &data[enc_data_start..enc_data_end];
-
-        let endflag = u32::from_le_bytes(data[data.len() - 4..].try_into().unwrap());
-        if endflag != Self::ENDFLAG {
-            return Err("seccfg V3 endflag 不匹配".to_string());
-        }
-
-        // 尝试解密（SW/V2/V3/V4）
-        let mut hwtype = String::new();
-        let mut decrypted = Vec::new();
-
-        // 1. SW
-        if let Ok(d) = sej_sec_cfg_sw_decrypt(enc_data) {
-            let first4 = &d[..std::cmp::min(4, d.len())];
-            if first4 == b"IIII" || first4 == b"CCCC" || first4 == [0, 0, 0, 0] {
-                hwtype = "SW".to_string();
-                decrypted = d;
-            }
-        }
-
-        // 2. V2
-        if hwtype.is_empty()
-            && let Ok(d) = sej_sec_cfg_hw_decrypt(enc_data)
-        {
-            let first4 = &d[..std::cmp::min(4, d.len())];
-            if first4 == b"IIII" || first4 == b"CCCC" || first4 == [0, 0, 0, 0] {
-                hwtype = "V2".to_string();
-                decrypted = d;
-            }
-        }
-
-        // 3. V3
-        if hwtype.is_empty()
-            && let Ok(d) = sej_sec_cfg_hw_v3_decrypt(enc_data, false)
-        {
-            let first4 = &d[..std::cmp::min(4, d.len())];
-            if first4 == b"IIII" || first4 == b"CCCC" || first4 == [0, 0, 0, 0] {
-                hwtype = "V3".to_string();
-                decrypted = d;
-            }
-        }
-
-        // 4. V4 (legacy=True)
-        if hwtype.is_empty()
-            && let Ok(d) = sej_sec_cfg_hw_v3_decrypt(enc_data, true)
-        {
-            let first4 = &d[..std::cmp::min(4, d.len())];
-            if first4 == b"IIII" || first4 == b"CCCC" || first4 == [0, 0, 0, 0] {
-                hwtype = "V4".to_string();
-                decrypted = d;
-            }
-        }
-
-        if hwtype.is_empty() {
-            return Err("无法识别 seccfg V3 加密类型".to_string());
-        }
-
-        // 解析解密后的数据
-        if decrypted.len() < 0x2C {
-            return Err("seccfg V3 解密数据太小".to_string());
-        }
-
-        let mut imginfo = Vec::new();
-        for i in 0..20 {
-            let offset = i * 0x68;
-            if offset + 0x68 <= decrypted.len() {
-                let mut entry = [0u8; 0x68];
-                entry.copy_from_slice(&decrypted[offset..offset + 0x68]);
-                imginfo.push(entry);
-            }
-        }
-
-        let siu_offset = 20 * 0x68;
-        let _siu_status = if siu_offset + 4 <= decrypted.len() {
-            u32::from_le_bytes(decrypted[siu_offset..siu_offset + 4].try_into().unwrap())
-        } else {
-            0
-        };
-
-        let status_offset = siu_offset + 4;
-        let seccfg_status = if status_offset + 4 <= decrypted.len() {
-            u32::from_le_bytes(
-                decrypted[status_offset..status_offset + 4]
-                    .try_into()
-                    .unwrap(),
-            )
-        } else {
-            0
-        };
-
-        let attr_offset = status_offset + 4;
-        let seccfg_attr = if attr_offset + 4 <= decrypted.len() {
-            u32::from_le_bytes(decrypted[attr_offset..attr_offset + 4].try_into().unwrap())
-        } else {
-            0
-        };
-
-        info!(
-            "seccfg V3 解析成功: hwtype={}, attr=0x{:08X}, status=0x{:08X}",
-            hwtype, seccfg_attr, seccfg_status
-        );
-
-        Ok(SecCfgV3 {
-            info_header,
-            magic,
-            seccfg_ver: ver,
-            seccfg_size: size,
-            seccfg_enc_offset: enc_off,
-            seccfg_enc_len: enc_len,
-            sw_sec_lock_try: sw_try,
-            sw_sec_lock_done: sw_done,
-            page_size: pg_size,
-            page_count: pg_count,
-            seccfg_attr,
-            seccfg_status,
-            endflag,
-            hwtype,
-            imginfo,
-            seccfg_ext: Vec::new(),
-            full_data: data.to_vec(),
-        })
-    }
-
-    fn create(&self, lockflag: &str, partition_size: usize) -> Result<Vec<u8>, String> {
-        let new_attr = if lockflag == "unlock" {
-            if self.seccfg_attr != Self::ATTR_DEFAULT
-                && self.seccfg_attr != 0x6003 // ATTR_MP_DEFAULT
-                && self.seccfg_attr != 0x6002 // ATTR_CUSTOM
-                && self.seccfg_attr != 0x6001 // ATTR_VERIFIED
-                && self.seccfg_attr != 0x6000
-            // ATTR_LOCK
-            {
-                return Err("无法找到解锁状态".to_string());
-            }
-            Self::ATTR_UNLOCK
-        } else if lockflag == "lock" {
-            if self.seccfg_attr != Self::ATTR_UNLOCK {
-                return Err("无法找到上锁状态".to_string());
-            }
-            Self::ATTR_DEFAULT
-        } else {
-            return Err("无效 lockflag".to_string());
-        };
-
-        let new_enc_len: u32 = if lockflag == "unlock" {
-            0x07F20000
-        } else {
-            0x01000000
-        };
-
-        // 构建内部数据
-        let mut inner = Vec::new();
-        for img in &self.imginfo {
-            inner.extend_from_slice(img);
-        }
-        inner.extend_from_slice(&0u32.to_le_bytes()); // siu_status (placeholder)
-        inner.extend_from_slice(&self.seccfg_status.to_le_bytes());
-        inner.extend_from_slice(&new_attr.to_le_bytes());
-        inner.extend_from_slice(&self.seccfg_ext);
-
-        // 根据 hwtype 加密
-        let enc_data = match self.hwtype.as_str() {
-            "SW" => sej_sec_cfg_sw_encrypt(&inner)?,
-            "V2" => sej_sec_cfg_hw_encrypt(&inner)?,
-            "V3" => sej_sec_cfg_hw_v3_encrypt(&inner, false)?,
-            "V4" => sej_sec_cfg_hw_v3_encrypt(&inner, true)?,
-            _ => return Err(format!("不支持的 hwtype: {}", self.hwtype)),
-        };
-
-        // 组装完整数据
-        let mut result = Vec::new();
-        result.extend_from_slice(&self.info_header);
-        result.extend_from_slice(&self.magic.to_le_bytes());
-        result.extend_from_slice(&self.seccfg_ver.to_le_bytes());
-        result.extend_from_slice(&self.seccfg_size.to_le_bytes());
-        result.extend_from_slice(&self.seccfg_enc_offset.to_le_bytes());
-        result.extend_from_slice(&new_enc_len.to_le_bytes());
-        result.push(self.sw_sec_lock_try);
-        result.push(self.sw_sec_lock_done);
-        result.extend_from_slice(&self.page_size.to_le_bytes());
-        result.extend_from_slice(&self.page_count.to_le_bytes());
-        result.extend_from_slice(&enc_data);
-        result.extend_from_slice(&self.endflag.to_le_bytes());
-
-        // 补齐到 0x200 对齐，再补齐到分区大小
-        while result.len() % 0x200 != 0 {
-            result.push(0);
-        }
-        while result.len() < partition_size {
-            result.push(0);
-        }
-
-        info!(
-            "seccfg V3 修改成功: attr=0x{:08X} -> 0x{:08X}",
-            self.seccfg_attr, new_attr
-        );
-        Ok(result)
-    }
-}
-
 /// 硬件模式 AES-128-CBC 解密（V3/V4 用）
-fn sej_sec_cfg_hw_v3_decrypt(data: &[u8], legacy: bool) -> Result<Vec<u8>, String> {
+pub(crate) fn sej_sec_cfg_hw_v3_decrypt(data: &[u8], legacy: bool) -> Result<Vec<u8>, String> {
     use aes::Aes128;
     type Aes128CbcDec = cbc::Decryptor<Aes128>;
 
@@ -673,7 +182,7 @@ fn sej_sec_cfg_hw_v3_decrypt(data: &[u8], legacy: bool) -> Result<Vec<u8>, Strin
 }
 
 /// 硬件模式 V2 解密
-fn sej_sec_cfg_hw_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn sej_sec_cfg_hw_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     use aes::Aes128;
     type Aes128CbcDec = cbc::Decryptor<Aes128>;
 
@@ -695,111 +204,8 @@ fn sej_sec_cfg_hw_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-// ==================== 离线模式 seccfg 处理 ====================
-// 对齐 C# 版行为：不连接设备，直接读取/修改 seccfg 文件
-
-/// 自动检测 seccfg 版本
-pub fn detect_seccfg_version(data: &[u8]) -> Result<&str, String> {
-    if data.len() >= 4 && data[0..4] == [0x4D, 0x4D, 0x4D, 0x4D] {
-        Ok("V4")
-    } else if data.len() >= 16 && &data[0..16] == b"AND_SECCFG_v\x00\x00\x00\x00" {
-        Ok("V3")
-    } else {
-        Err("未知 seccfg 版本".into())
-    }
-}
-
-/// 离线模式解锁 seccfg
-pub fn seccfg_unlock_offline(input_file: &str) -> Result<(), String> {
-    let data = std::fs::read(input_file).map_err(|e| format!("无法读取文件: {}", e))?;
-
-    let version = detect_seccfg_version(&data)?;
-    println!("检测到 {} 锁", version);
-
-    let new_data = match version {
-        "V4" => {
-            println!("  HACC init");
-            println!("  HACC run");
-            let v4 = SecCfgV4::parse(&data)?;
-            println!("  HACC terminate");
-            println!("  HwType: {}", v4.hwtype);
-            println!("  关闭DM验证 ...");
-            v4.create("unlock", 0x800000)?
-        }
-        "V3" => {
-            println!("  HACC init");
-            println!("  HACC run");
-            let v3 = SecCfgV3::parse(&data)?;
-            println!("  HACC terminate");
-            println!("  HwType: {}", v3.hwtype);
-            v3.create("unlock", 0x800000)?
-        }
-        _ => return Err(format!("不支持的版本: {}", version)),
-    };
-
-    // 生成输出文件名
-    let output_path = if let Some(idx) = input_file.rfind('.') {
-        format!("{}_unlock{}", &input_file[..idx], &input_file[idx..])
-    } else {
-        format!("{}_unlock", input_file)
-    };
-
-    std::fs::write(&output_path, &new_data).map_err(|e| format!("写入文件失败: {}", e))?;
-
-    println!("  镜像格式为RAW ...");
-    // 模拟 C# 进度条输出
-    println!(
-        "  进度: |████████████████████████████████████████| 100.0% 写入 ({} B => {} B)",
-        new_data.len(),
-        new_data.len()
-    );
-    println!("  成功写入SecCfg");
-    println!("成功生成 unlock 文件: {}", output_path);
-    Ok(())
-}
-
-/// 离线模式锁定 seccfg
-pub fn seccfg_lock_offline(input_file: &str) -> Result<(), String> {
-    let data = std::fs::read(input_file).map_err(|e| format!("无法读取文件: {}", e))?;
-
-    let version = detect_seccfg_version(&data)?;
-    println!("检测到 {} 锁", version);
-
-    let new_data = match version {
-        "V4" => {
-            let v4 = SecCfgV4::parse(&data)?;
-            println!("  HwType: {}", v4.hwtype);
-            v4.create("lock", 0x800000)?
-        }
-        "V3" => {
-            let v3 = SecCfgV3::parse(&data)?;
-            println!("  HwType: {}", v3.hwtype);
-            v3.create("lock", 0x800000)?
-        }
-        _ => return Err(format!("不支持的版本: {}", version)),
-    };
-
-    let output_path = if let Some(idx) = input_file.rfind('.') {
-        format!("{}_lock{}", &input_file[..idx], &input_file[idx..])
-    } else {
-        format!("{}_lock", input_file)
-    };
-
-    std::fs::write(&output_path, &new_data).map_err(|e| format!("写入文件失败: {}", e))?;
-
-    println!(
-        "  进度: |████████████████████████████████████████| 100.0% 写入 ({} B => {} B)",
-        new_data.len(),
-        new_data.len()
-    );
-    println!("  成功写入SecCfg");
-    println!("成功生成 lock 文件: {}", output_path);
-    Ok(())
-}
-
 // DA 文件 region 结构
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct DaRegion {
     buf_offset: u32, // 在文件中的偏移
     len: u32,        // 大小
@@ -1018,32 +424,13 @@ pub const CMD_MAGIC: u32 = 0xFEEEEEEF;
 const CMD_SYNC_SIGNAL: u32 = 0x434E5953;
 const CMD_SETUP_ENVIRONMENT: u32 = 0x010100;
 const CMD_SETUP_HW_INIT_PARAMS: u32 = 0x010101;
-#[allow(dead_code)]
 const CMD_INIT_EXT_RAM: u32 = 0x01000A;
 const CMD_BOOT_TO: u32 = 0x010008;
 const CMD_READ_DATA: u32 = 0x010005; // XFlash 读分区命令
 pub const CMD_WRITE_DATA: u32 = 0x010004; // 写入数据命令
 
 pub const CMD_FORMAT: u32 = 0x010003; // 格式化命令
-#[allow(dead_code)]
-const CMD_SEND_DA: u8 = 0xD7;
-#[allow(dead_code)]
-const CMD_JUMP_DA: u8 = 0xD5;
 pub const SET_META_BOOT_MODE: u32 = 0x020006;
-
-// 存储类型（保留供未来使用）
-#[allow(dead_code)]
-const STORAGE_EMMC: u32 = 1; // EMMC 存储
-#[allow(dead_code)]
-const STORAGE_UFS: u32 = 2; // UFS 存储
-
-// 分区类型 (EMMC)（保留供未来使用）
-#[allow(dead_code)]
-const PARTTYPE_USER: u32 = 8; // USER 分区
-#[allow(dead_code)]
-const PARTTYPE_BOOT1: u32 = 1; // BOOT1 分区
-#[allow(dead_code)]
-const PARTTYPE_BOOT2: u32 = 2; // BOOT2 分区
 
 /// pack3: 生成 XFlash 参数包头 (magic(4) + data_type(4) + length(4))
 pub fn pack3(magic: u32, data_type: u32, length: u32) -> [u8; 12] {
@@ -1078,7 +465,6 @@ pub struct DAXFlash<'a> {
     pub(crate) da2_base_addr: u64,
     pub daext: bool,
     pub(crate) last_gpt_data: Option<Vec<u8>>,
-    storage_setup_done: bool,
 }
 
 impl<'a> DAXFlash<'a> {
@@ -1091,23 +477,7 @@ impl<'a> DAXFlash<'a> {
             da2_base_addr: 0x40000000,
             daext: false,
             last_gpt_data: None,
-            storage_setup_done: false,
         }
-    }
-
-    /// 读取 2 字节数据
-    fn rword(&mut self) -> Result<u16, String> {
-        let mut buf = [0; 2];
-        self.preloader.device.read(&mut buf)?;
-        Ok(u16::from_le_bytes(buf))
-    }
-
-    /// 读取 4 字节数据
-    #[allow(dead_code)]
-    fn rdword(&mut self) -> Result<u32, String> {
-        let mut buf = [0; 4];
-        self.preloader.device.read(&mut buf)?;
-        Ok(u32::from_le_bytes(buf))
     }
 
     /// 从 preloader 文件中提取 EMI 数据
@@ -1232,19 +602,9 @@ impl<'a> DAXFlash<'a> {
         Err("未找到 EMI 数据".to_string())
     }
 
-    /// 从 dump 的 preloader 数据中提取 EMI 并设置到结构体中
-    #[allow(dead_code)]
-    pub fn extract_emi_from_data(&mut self, data: &[u8]) -> Result<Vec<u8>, String> {
-        let (version, emi) = self.extract_emi(data)?;
-        self.emi_version = version;
-        self.emi = Some(emi.clone());
-        Ok(emi)
-    }
-
     /// 读取 XFlash 协议数据
     /// 流程：读取 12 字节头（magic + type + length）→ 验证 magic → 读取数据
     /// 返回：读取到的数据长度（如果是 4 字节则返回 u32 值）
-    #[allow(dead_code)]
     fn xread(&mut self) -> Result<u32, String> {
         // 读取 12 字节的 XFlash 头
         let mut header = [0; 12];
@@ -1289,7 +649,6 @@ impl<'a> DAXFlash<'a> {
 
     /// 设置环境
     /// Python: xsend(CMD_SETUP_ENVIRONMENT) → send_param(20字节) → status()
-    #[allow(dead_code)]
     pub fn setup_env(&mut self) -> Result<bool, String> {
         debug!("设置环境...");
 
@@ -1324,7 +683,6 @@ impl<'a> DAXFlash<'a> {
 
     /// 初始化硬件
     /// Python: xsend(CMD_SETUP_HW_INIT_PARAMS) → send_param(pack("<I", 0x0)) → status()
-    #[allow(dead_code)]
     pub fn setup_hw_init(&mut self) -> Result<bool, String> {
         info!("初始化硬件...");
 
@@ -1351,61 +709,8 @@ impl<'a> DAXFlash<'a> {
         Ok(true)
     }
 
-    /// 上传数据到设备
-    /// 流程：分块发送数据 → 每 0x2000 字节发空包 → 发送结束空包 → 读取校验和状态
-    #[allow(dead_code)]
-    pub fn upload_data(&mut self, data: &[u8], gen_chksum: u16) -> Result<bool, String> {
-        debug!("开始上传 DA 数据，总大小: {} 字节", data.len());
-
-        let maxinsize = 64; // 与 Python 版一致
-        let mut bytestowrite = data.len();
-        let mut pos = 0;
-
-        while bytestowrite > 0 {
-            let sz = std::cmp::min(bytestowrite, maxinsize);
-            let chunk = &data[pos..pos + sz];
-
-            debug!("发送数据块，偏移: 0x{:X}, 大小: {} 字节", pos, sz);
-            self.preloader.device.write(chunk)?;
-
-            bytestowrite -= sz;
-            pos += sz;
-
-            // 每 0x2000 字节发送一个空包
-            if pos % 0x2000 == 0 {
-                debug!("发送空包...");
-                self.preloader.device.write(&[])?;
-                // 增加短暂延迟，避免发送过快
-                sleep(Duration::from_millis(10));
-            }
-        }
-
-        // 发送结束空包
-        debug!("发送结束空包...");
-        self.preloader.device.write(&[])?;
-        sleep(Duration::from_millis(120));
-
-        // 读取校验和和状态
-        debug!("读取 DA 上传结果...");
-        let checksum = self.rword()?;
-        let status = self.rword()?;
-
-        debug!("校验和: 0x{:04X}, 状态: 0x{:04X}", checksum, status);
-
-        if gen_chksum != checksum && checksum != 0 {
-            warn!("上传校验和不匹配！");
-        }
-
-        if status > 0xFF {
-            return Err(format!("DA 发送状态错误: 0x{:04X}", status));
-        }
-
-        Ok(true)
-    }
-
     /// 发送 EMI 数据初始化 DRAM
     /// 流程：发送 INIT_EXT_RAM → 发送 EMI 数据 → 验证状态
-    #[allow(dead_code)]
     pub fn send_emi(&mut self, emi: &[u8]) -> Result<bool, String> {
         debug!("发送 EMI 数据初始化 DRAM...");
         debug!(
@@ -1833,36 +1138,6 @@ impl<'a> DAXFlash<'a> {
         }
     }
 
-    /// xsend(cmd) + status
-    #[allow(dead_code)]
-    fn xsend_cmd(&mut self, cmd: u32) -> Result<(), String> {
-        let magic = CMD_MAGIC.to_le_bytes();
-        self.preloader.device.write(&magic)?;
-        let data_type = 0x01u32.to_le_bytes();
-        self.preloader.device.write(&data_type)?;
-        let length = 4u32.to_le_bytes();
-        self.preloader.device.write(&length)?;
-        self.preloader.device.write(&cmd.to_le_bytes())?;
-        let st = self.status()?;
-        if st != 0 {
-            return Err(format!("xsend_cmd status error: 0x{:08X}", st));
-        }
-        Ok(())
-    }
-
-    /// send_param: 发送参数包
-    #[allow(dead_code)]
-    fn send_param(&mut self, data: &[u8]) -> Result<(), String> {
-        let pkt = pack3(CMD_MAGIC, 0x01, data.len() as u32);
-        self.preloader.device.write(&pkt)?;
-        self.preloader.device.write(data)?;
-        let st = self.status()?;
-        if st != 0 {
-            return Err(format!("send_param status error: 0x{:08X}", st));
-        }
-        Ok(())
-    }
-
     /// 获取连接代理（brom 或 preloader）
     /// Python: 返回 b"" 或 None 时视为失败
     fn get_connection_agent(&mut self) -> Result<String, String> {
@@ -2112,26 +1387,6 @@ impl<'a> DAXFlash<'a> {
         })
     }
 
-    #[allow(dead_code)]
-    /// 初始化存储协议（只执行一次）
-    /// 对齐 Python custom_set_storage(): cmd(CUSTOM_SET_STORAGE) → xsend(storage_type) → status()
-    fn setup_storage(&mut self) -> Result<(), String> {
-        if self.storage_setup_done {
-            return Ok(());
-        }
-        debug!("[setup_storage] 初始化存储协议...");
-
-        // 1. DEVICE_CTRL
-        self.send_devctrl(0x010009, None)?;
-
-        // 2. CUSTOM_SET_STORAGE (0x0F0005) + param (0 = EMMC)
-        self.send_devctrl(0x0F0005, Some(&0u32.to_le_bytes()))?;
-
-        self.storage_setup_done = true;
-        debug!("[setup_storage] 完成");
-        Ok(())
-    }
-
     /// 读取 flash 数据，返回原始字节
     /// 对齐 Python xflash_lib.py:879-891 (filename="" 分支):
     ///   get_packet_length → cmd_read_data → xread 循环 (header+data) → ack
@@ -2321,232 +1576,4 @@ impl<'a> DAXFlash<'a> {
             .as_ref()
             .ok_or_else(|| "无 GPT 数据".to_string())
     }
-}
-
-/// 解析 GPT 分区表（独立函数，不依赖 USB）
-/// 自动检测偏移：如果 0x200 处没有 EFI PART，则尝试偏移 4 字节（跳过可能的状态包）
-pub fn parse_gpt_from_data(data: &[u8]) -> Result<(), String> {
-    println!("  数据大小: {} 字节", data.len());
-
-    // 搜索 EFI PART 签名
-    let base = match data.windows(8).position(|w| w == b"EFI PART") {
-        Some(off) => off,
-        None => return Err("未找到 GPT 签名 (EFI PART)".to_string()),
-    };
-
-    println!("GPT 头部 (偏移=0x{:X}):", base);
-
-    // 验证 revision
-    let revision = u32::from_le_bytes(data[base + 8..base + 12].try_into().unwrap());
-    if revision != 0x10000 {
-        return Err(format!("GPT revision 不匹配: 0x{:08X}", revision));
-    }
-
-    // 读取 header 字段
-    let num_part_entries = u32::from_le_bytes(data[base + 80..base + 84].try_into().unwrap());
-    let part_entry_size = u32::from_le_bytes(data[base + 84..base + 88].try_into().unwrap());
-    let part_entry_start_lba = u64::from_le_bytes(data[base + 72..base + 80].try_into().unwrap());
-    let first_usable_lba = u64::from_le_bytes(data[base + 32..base + 40].try_into().unwrap());
-
-    println!("  修订版本: 0x{:08X}", revision);
-    println!(
-        "  头部大小: {} 字节",
-        u32::from_le_bytes(data[base + 12..base + 16].try_into().unwrap())
-    );
-    println!(
-        "  当前 LBA: {}",
-        u64::from_le_bytes(data[base + 24..base + 32].try_into().unwrap())
-    );
-    println!("  首个可用 LBA: {}", first_usable_lba);
-    println!("  分区项 LBA: {}", part_entry_start_lba);
-    println!("  分区数量: {}", num_part_entries);
-    println!("  分区项大小: {} 字节", part_entry_size);
-
-    // 分区表从绝对偏移 part_entry_start_lba * 512 开始
-    let mut table_start = (part_entry_start_lba as usize) * 512;
-
-    // 如果分区表位置前 4 字节全零（状态包残渣），跳过
-    if table_start + 4 <= data.len() && data[table_start..table_start + 4].iter().all(|&b| b == 0) {
-        table_start += 4;
-    }
-
-    println!("\n分区信息:");
-    println!("{:<30} {:<16} {:<16}", "分区名称", "起始地址", "大小");
-
-    let mut count = 0;
-    for i in 0..num_part_entries {
-        let entry_offset = table_start + (i as usize) * (part_entry_size as usize);
-
-        // 边界检查
-        if entry_offset + part_entry_size as usize > data.len() {
-            println!("  ... 缓冲区不足，仅显示 {} 个分区", count);
-            break;
-        }
-
-        let entry = &data[entry_offset..entry_offset + part_entry_size as usize];
-
-        // 检查条目是否全零（结束标记）
-        let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
-        if unique_guid_zero {
-            break;
-        }
-
-        let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
-        let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
-        let start = first_lba.saturating_mul(512);
-        let size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
-
-        // UTF-16LE 名称在偏移 56..112
-        let name_utf16: Vec<u16> = (0..28)
-            .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
-            .collect();
-        let name = String::from_utf16_lossy(&name_utf16)
-            .trim_end_matches('\0')
-            .to_string();
-
-        count += 1;
-        println!("{:<30} 0x{:014X} 0x{:014X}", name, start, size);
-    }
-
-    println!("\n共 {} 个分区", count);
-    Ok(())
-}
-
-/// 从 GPT 数据生成 SP Flash Tool 格式的 scatter 文件
-/// 对齐 C# 版：包含 PRELOADER 块、EMMC_BOOT_1/2 区域、无 {} 空行
-pub fn generate_scatter_from_gpt(
-    gpt_data: &[u8],
-    output_file: &str,
-) -> Result<Vec<(String, u64, u64, u32)>, String> {
-    let base = match gpt_data.windows(8).position(|w| w == b"EFI PART") {
-        Some(off) => off,
-        None => return Err("未找到 GPT 签名 (EFI PART)".to_string()),
-    };
-
-    let num_part_entries = u32::from_le_bytes(gpt_data[base + 80..base + 84].try_into().unwrap());
-    let part_entry_size = u32::from_le_bytes(gpt_data[base + 84..base + 88].try_into().unwrap());
-    let part_entry_start_lba =
-        u64::from_le_bytes(gpt_data[base + 72..base + 80].try_into().unwrap());
-
-    let mut table_start = (part_entry_start_lba as usize) * 512;
-    if table_start + 4 <= gpt_data.len()
-        && gpt_data[table_start..table_start + 4]
-            .iter()
-            .all(|&b| b == 0)
-    {
-        table_start += 4;
-    }
-
-    let mut partitions = Vec::new();
-
-    for i in 0..num_part_entries {
-        let entry_offset = table_start + (i as usize) * (part_entry_size as usize);
-        if entry_offset + part_entry_size as usize > gpt_data.len() {
-            break;
-        }
-
-        let entry = &gpt_data[entry_offset..entry_offset + part_entry_size as usize];
-        let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
-        if unique_guid_zero {
-            break;
-        }
-
-        let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
-        let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
-        let start = first_lba.saturating_mul(512);
-        let size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
-
-        let name_utf16: Vec<u16> = (0..28)
-            .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
-            .collect();
-        let name = String::from_utf16_lossy(&name_utf16)
-            .trim_end_matches('\0')
-            .to_string();
-
-        let region =
-            if name.eq_ignore_ascii_case("preloader") || name.eq_ignore_ascii_case("BOOTLOADERS") {
-                2 // EMMC_BOOT_1
-            } else {
-                1 // EMMC_USER
-            };
-
-        partitions.push((name.clone(), start, size, region));
-    }
-
-    if !partitions.is_empty() {
-        let mut lines = vec![
-            "PRELOADER 0x0".to_string(),
-            "  partition_index: SYS0".to_string(),
-            "  partition_name: PRELOADER".to_string(),
-            "  file_name: preloader_k69v1_64_k419.bin".to_string(),
-            "  is_download: true".to_string(),
-            "  type: SV5_BL_BIN".to_string(),
-            "  linear_start_addr: 0x0".to_string(),
-            "  physical_start_addr: 0x0".to_string(),
-            "  partition_size: 0x80000".to_string(),
-            "  region: EMMC_BOOT_1".to_string(),
-            "  storage: HW_STORAGE_EMMC".to_string(),
-            "  boundary_check: true".to_string(),
-            "  is_reserved: false".to_string(),
-            "  operation_type: BOOTLOADERS".to_string(),
-            "  is_upgradable: true".to_string(),
-            "  empty_boot_needed: false".to_string(),
-            "  reserve: 0x00".to_string(),
-            "".to_string(),
-        ];
-
-        // GPT 分区块
-        for (i, (name, start, size, region)) in partitions.iter().enumerate() {
-            let idx = i + 1;
-            let region_name = if *region == 2 {
-                "EMMC_BOOT_1"
-            } else {
-                "EMMC_USER"
-            };
-            let ptype = if *name == "preloader" {
-                "SV5_BL_BIN"
-            } else {
-                "NORMAL_ROM"
-            };
-            let op = if *name == "preloader" {
-                "BOOTLOADERS"
-            } else {
-                "UPDATE"
-            };
-
-            lines.push(format!("{} 0x{:X}", name, start));
-            lines.push(format!("  partition_index: SYS{}", idx));
-            lines.push(format!("  partition_name: {}", name));
-            lines.push(format!("  file_name: {}.bin", name.to_lowercase()));
-            lines.push("  is_download: true".to_string());
-            lines.push(format!("  type: {}", ptype));
-            lines.push(format!("  linear_start_addr: 0x{:X}", start));
-            lines.push(format!("  physical_start_addr: 0x{:X}", start));
-            lines.push(format!("  partition_size: 0x{:X}", size));
-            lines.push(format!("  region: {}", region_name));
-            lines.push("  storage: HW_STORAGE_EMMC".to_string());
-            lines.push("  boundary_check: true".to_string());
-            lines.push("  is_reserved: false".to_string());
-            lines.push(format!("  operation_type: {}", op));
-            lines.push("  is_upgradable: true".to_string());
-            lines.push("  empty_boot_needed: false".to_string());
-            lines.push("  reserve: 0x00".to_string());
-            lines.push("".to_string());
-        }
-
-        let content = lines.join("\n");
-        std::fs::write(output_file, content)
-            .map_err(|e| format!("写入 scatter 文件失败: {}", e))?;
-    }
-
-    Ok(partitions)
-}
-
-/// 从文件分析 GPT 分区表（不需要 USB 设备）
-#[allow(dead_code)]
-pub fn read_gpt_from_file(filename: &str) -> Result<(), String> {
-    println!("分析 GPT 分区表: {}", filename);
-
-    let gpt_data = std::fs::read(filename).map_err(|e| format!("读取 {} 失败: {}", filename, e))?;
-    parse_gpt_from_data(&gpt_data)
 }
