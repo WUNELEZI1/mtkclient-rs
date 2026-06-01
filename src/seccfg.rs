@@ -210,6 +210,7 @@ impl SecCfgV4 {
 // 加密数据段 + endflag(4)
 
 // 预留：unlock/lock 功能使用
+#[allow(dead_code)]
 pub(crate) struct SecCfgV3 {
     info_header: [u8; 16],
     magic: u32,
@@ -400,18 +401,10 @@ impl SecCfgV3 {
             return Err("无效 lockflag".to_string());
         };
 
-        let new_enc_len = if lockflag == "unlock" {
-            if self.seccfg_enc_len != 0 {
-                self.seccfg_enc_len
-            } else {
-                0x07F20000
-            }
+        let new_enc_len: u32 = if lockflag == "unlock" {
+            0x07F20000
         } else {
-            if self.seccfg_enc_len != 0 {
-                self.seccfg_enc_len
-            } else {
-                0x01000000
-            }
+            0x01000000
         };
 
         let mut inner = Vec::new();
