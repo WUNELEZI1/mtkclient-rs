@@ -24,6 +24,7 @@ mod kamakiri2;
 mod paths;
 mod sej;
 mod seccfg;
+mod vbmeta;
 mod preloader;
 mod session;
 mod usb;
@@ -435,16 +436,20 @@ fn parse_sub_commands(first_cmd: &str, args: &[String]) -> Vec<(String, Vec<Stri
         "dumpbrom",
         "r",
         "read",
+        "rl",
+        "readall",
         "w",
         "write",
         "e",
         "erase",
         "vbmeta",
+        "frp",
         "reset",
         "unlock",
         "lock",
         "da",
         "enable-adb-on-da",
+        "print-scatter",
     ];
 
     let mut result = Vec::new();

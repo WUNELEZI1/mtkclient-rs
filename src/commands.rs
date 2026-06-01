@@ -6,6 +6,7 @@ use crate::DeviceMode;
 use crate::config::AppConfig;
 use crate::da_partition::{generate_scatter_from_gpt, generate_scatter_shoujixia};
 use crate::da_xflash::DAXFlash;
+use crate::frp;
 use crate::usb::UsbContext;
 
 pub fn print_help() {
@@ -27,6 +28,7 @@ pub fn print_help() {
     println!("  unlock           解锁 Bootloader");
     println!("  lock             锁定 Bootloader");
     println!("  enable-adb-on-da 在 DA 模式下开启 ADB");
+    println!("  frp            FRP OEM 解锁");
     println!("  print-scatter    打印 scatter 到屏幕并保存文件");
     println!();
     println!("诊断:");
@@ -329,6 +331,7 @@ fn execute_single_command(
         "w" | "write" => cmd_write(da, args, verify)?,
         "e" | "erase" => cmd_erase(da, args)?,
         "vbmeta" => cmd_vbmeta(da, args)?,
+        "frp" => frp::frp_unlock(da)?,
         "reset" => cmd_reset(da)?,
         "unlock" => cmd_unlock(da)?,
         "lock" => cmd_lock(da)?,
