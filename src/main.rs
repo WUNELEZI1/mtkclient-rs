@@ -299,10 +299,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut da = da_xflash::DAXFlash::new(&mut preloader);
+    da.patch_da = cli.patch_da;
 
     if can_reuse {
         // 复用 DA 会话：跳过 BROM→DA 流程，直接执行命令
         info!("{}", "DA 会话已复用，跳过 BROM→DA 流程".yellow());
+        da.reinit().map_err(|e| format!("DA reinit 失败: {}", e))?;
     } else {
         // 完整 BROM→DA 流程
         if mode == DeviceMode::Brom && final_preloader_path.is_empty() {

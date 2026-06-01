@@ -465,6 +465,7 @@ pub struct DAXFlash<'a> {
     pub(crate) da2_base_addr: u64,
     pub daext: bool,
     pub(crate) last_gpt_data: Option<Vec<u8>>,
+    pub patch_da: bool,
 }
 
 impl<'a> DAXFlash<'a> {
@@ -477,6 +478,7 @@ impl<'a> DAXFlash<'a> {
             da2_base_addr: 0x40000000,
             daext: false,
             last_gpt_data: None,
+            patch_da: true,
         }
     }
 
@@ -1180,7 +1182,7 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 重新初始化（获取 EMMC/芯片信息等）
-    fn reinit(&mut self) -> Result<(), String> {
+    pub(crate) fn reinit(&mut self) -> Result<(), String> {
         // GET_RAM_INFO
         match self.send_devctrl(0x010107, None) {
             Ok(data) if data.len() >= 24 => {
@@ -1320,7 +1322,9 @@ impl<'a> DAXFlash<'a> {
             }
         }
 
-        if let Some(ext_data) = self.generate_da_extensions() {
+        if self.patch_da
+            && let Some(ext_data) = self.generate_da_extensions()
+        {
             match self.boot_to(0x4FFF0000, &ext_data, true, 0.5) {
                 Ok(_) => {
                     // Python 第 1251 行：boot_to 成功后立刻发送 CUSTOM_ACK

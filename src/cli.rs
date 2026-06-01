@@ -70,6 +70,13 @@ pub struct Cli {
     pub force: bool,
 
     #[arg(
+        long = "patch-da",
+        default_value_t = true,
+        help = "是否 patch DA（默认开启）"
+    )]
+    pub patch_da: bool,
+
+    #[arg(
         help = "要执行的命令",
         long_help = "可用命令:\n\
           install-drivers - 自动安装 WinUSB 驱动（需要管理员权限）\n\
