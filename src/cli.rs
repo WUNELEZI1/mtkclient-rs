@@ -59,16 +59,6 @@ pub struct Cli {
     )]
     pub usb_log: bool,
 
-    #[arg(long = "check-driver", action = clap::ArgAction::SetTrue, help = "检查驱动状态")]
-    pub check_driver: bool,
-
-    #[arg(
-        long = "force",
-        default_value_t = false,
-        help = "强制安装驱动（跳过驱动检查）"
-    )]
-    pub force: bool,
-
     #[arg(
         long = "patch-da",
         default_value_t = true,
@@ -83,19 +73,20 @@ pub struct Cli {
           dump-preloader  - 从 RAM 提取 Preloader\n\
           dumpbrom        - 提取 BROM 到文件\n\
           r <分区> <文件> - 读取分区到文件\n\
+          r gpt <目录>    - 保存 GPT 原始数据到目录\n\
+          rl <目录>       - 读取全部分区到目录\n\
           w <分区> <文件> - 写入文件到分区\n\
           e <分区>       - 擦除分区\n\
           vbmeta <模式>  - 修补 vbmeta 分区\n\
+          frp             - FRP OEM 解锁\n\
           unlock          - 解锁 Bootloader\n\
           lock            - 锁定 Bootloader\n\
           reset           - 重置设备\n\
-          enable-adb-on-da - 在 DA 模式下开启 ADB\n\
-\n\
-          批量模式（一次连接执行多个命令）:\n\
-          mtkclient-rs printgpt r boot boot.img e userdata"
+          print-scatter   - 打印 scatter 到屏幕并保存文件\n\
+          enable-adb-on-da - 在 DA 模式下开启 ADB"
     )]
     pub command: Option<String>,
 
-    #[arg(help = "命令参数（批量模式下每个子命令的额外参数）")]
+    #[arg(help = "命令参数")]
     pub args: Vec<String>,
 }

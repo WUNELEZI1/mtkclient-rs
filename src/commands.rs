@@ -12,40 +12,28 @@ use crate::usb::UsbContext;
 pub fn print_help() {
     println!("用法:");
     println!("  mtkclient-rs.exe <命令> [参数]");
-    println!("  mtkclient-rs.exe --batch \"<命令1>\" \"<命令2>\" ...");
     println!();
     println!("命令:");
-    println!("  printgpt         打印 GPT 分区表");
-    println!("  dump-preloader   提取 Preloader");
-    println!("  dumpbrom         提取 BROM");
-    println!("  r <分区> <文件>  读取分区");
-    println!("  r gpt <目录>     保存 GPT 原始数据到目录");
-    println!("  rl <目录>        读取全部分区到目录");
-    println!("  w <分区> <文件>  写入分区");
-    println!("  e <分区>        擦除分区");
-    println!("  vbmeta <模式>   修补 vbmeta (0/1/2/3)");
-    println!("  reset            重启设备");
-    println!("  unlock           解锁 Bootloader");
-    println!("  lock             锁定 Bootloader");
-    println!("  enable-adb-on-da 在 DA 模式下开启 ADB");
-    println!("  frp            FRP OEM 解锁");
-    println!("  print-scatter    打印 scatter 到屏幕并保存文件");
-    println!();
-    println!("诊断:");
-    println!("  diagnose         USB 连接诊断（设备状态、驱动、模式）");
-    println!("  list-usb         列出所有 USB 设备");
-    println!("  check-driver     检查驱动状态");
-    println!();
-    println!("批量模式:");
-    println!("  --batch \"printgpt\" \"r boot boot.img\" \"e userdata\"");
+    println!("  printgpt          打印 GPT 分区表");
+    println!("  dump-preloader    提取 Preloader");
+    println!("  dumpbrom          提取 BROM");
+    println!("  r <分区> <文件>   读取分区");
+    println!("  r gpt <目录>      保存 GPT 原始数据到目录");
+    println!("  rl <目录>         读取全部分区到目录");
+    println!("  w <分区> <文件>   写入分区");
+    println!("  e <分区>          擦除分区");
+    println!("  vbmeta <模式>     修补 vbmeta (0/1/2/3)");
+    println!("  reset             重启设备");
+    println!("  unlock            解锁 Bootloader");
+    println!("  lock              锁定 Bootloader");
+    println!("  frp               FRP OEM 解锁");
+    println!("  print-scatter     打印 scatter 到屏幕并保存文件");
+    println!("  enable-adb-on-da  在 DA 模式下开启 ADB");
     println!();
     println!("选项:");
     println!("  --preloader <文件>  指定 preloader 文件");
     println!("  --verify            写入后校验");
-    println!("  --check-driver      检查驱动状态");
     println!("  --log <级别>        日志级别：1=INFO，2=DEBUG，3=TRACE");
-    println!("  --batch             批量执行多个命令");
-    println!("  --force             强制安装驱动");
     println!("  --patch-da          是否 patch DA（默认开启）");
 }
 
@@ -63,11 +51,6 @@ pub fn handle_command(
     let mut auto_dumped_file: Option<String> = None;
 
     if is_brom {
-        // 对齐 Python configure_da 流程:
-        // 1. bypass_security（无条件执行，注入 patcher payload 关安全保护）
-        // 2. dump_preloader_from_ram（brom_register_access 逐块读，不污染 USB）
-        // 3. 后续 upload_da
-
         let cmd = app_config.command.as_deref().unwrap_or("");
         match cmd {
             "dumpbrom" => {
@@ -82,18 +65,14 @@ pub fn handle_command(
         }
 
         if preloader_file.is_empty() {
-            // 对齐 Python preloader.init()：获取芯片信息和设备安全状态
             match da.preloader.get_target_config() {
                 Ok(cfg) => info!("{}", cfg.format_info()),
                 Err(e) => warn!("获取 target config 失败: {}", e),
             }
 
-            // bypass_security → dump_preloader_ram（对齐 Python configure_da）
             da.preloader
                 .bypass_security()
                 .map_err(|e| format!("bypass_security 失败: {}", e))?;
-
-            // bypass_security 内部已完成 drain + 重握手，直接在同一句柄上 dump
 
             let data = da
                 .preloader
@@ -151,7 +130,6 @@ pub fn handle_command(
         info!("Warning: EMI 加载失败: {}", e);
     }
 
-    // Python 全程使用同一个 USB 句柄，不做 reopen
     da.upload_da()
         .map_err(|e| format!("DA 加载失败: {}", e))
         .and_then(|ok| {
@@ -181,121 +159,6 @@ pub fn handle_command(
     }
 
     execute_single_command(da, cmd, args, verify, log_level)?;
-
-    // 单命令执行完毕，不复位设备，保持 DA 会话活跃
-    // 类似 Python 的 .state 机制：DA 加载后保持连接，后续命令直接复用
-    // 只有 reset 命令会复位设备
-
-    Ok(())
-}
-
-/// 批量执行多个命令，保持 DA 会话
-/// commands 是 Vec<(命令名, 参数列表)>
-#[allow(clippy::too_many_arguments)]
-pub fn handle_commands(
-    da: &mut DAXFlash,
-    _mode: &DeviceMode,
-    app_config: &AppConfig,
-    log_level: u8,
-    _quiet_dump: bool,
-    preloader_file: &str,
-    commands: &[(String, Vec<String>)],
-    _context: &UsbContext,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if commands.is_empty() {
-        return Err("没有要执行的命令".into());
-    }
-
-    let is_brom = !da.preloader.is_preloader_mode;
-    let mut auto_dumped_file: Option<String> = None;
-
-    if is_brom && preloader_file.is_empty() {
-        // 对齐 Python preloader.init()：获取芯片信息和设备安全状态
-        match da.preloader.get_target_config() {
-            Ok(cfg) => info!("{}", cfg.format_info()),
-            Err(e) => warn!("获取 target config 失败: {}", e),
-        }
-
-        // bypass_security → dump_preloader_ram（对齐 Python configure_da）
-        da.preloader
-            .bypass_security()
-            .map_err(|e| format!("bypass_security 失败: {}", e))?;
-
-        // bypass_security 内部已完成 drain + 重握手，直接在同一句柄上 dump
-
-        let data = da
-            .preloader
-            .dump_preloader_from_ram(false)
-            .map_err(|e| format!("dump_preloader_ram 失败: {}", e))?;
-
-        if !data.is_empty() {
-            let filename =
-                if let Some(info_idx) = data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
-                    let filename_start = info_idx + 0x1B;
-                    let filename_end = std::cmp::min(filename_start + 0x30, data.len());
-                    let filename_bytes = &data[filename_start..filename_end];
-                    let filename_len = filename_bytes
-                        .iter()
-                        .position(|&b| b == 0)
-                        .unwrap_or(filename_bytes.len());
-                    String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string()
-                } else {
-                    "preloader_dumped.bin".to_string()
-                };
-            if !filename.is_empty() {
-                auto_dumped_file = Some(filename);
-                info!(
-                    "Preloader 已提取: {} ({} 字节)",
-                    auto_dumped_file.as_ref().unwrap(),
-                    data.len()
-                );
-            }
-        }
-    }
-
-    let effective_file = auto_dumped_file.as_deref().unwrap_or(preloader_file);
-    info!("加载 EMI 数据: {}", effective_file);
-    if let Err(e) = da.load_preloader_emi(effective_file) {
-        info!("Warning: EMI 加载失败: {}", e);
-    }
-
-    // Python 全程使用同一个 USB 句柄，不做 reopen
-    da.upload_da()
-        .map_err(|e| format!("DA 加载失败: {}", e))
-        .and_then(|ok| {
-            if ok {
-                Ok(())
-            } else {
-                Err("DA 加载失败".to_string())
-            }
-        })?;
-
-    if log_level >= 2 {
-        if let Some(data) = da.get_emi_data() {
-            let _ = std::fs::write("emi_debug.bin", data);
-        }
-        if let Some(data) = da.get_extensions_data() {
-            let _ = std::fs::write("extensions_debug.bin", &data);
-        }
-    }
-
-    let verify = app_config.verify;
-
-    for (i, (cmd, args)) in commands.iter().enumerate() {
-        info!(
-            ">>> 执行命令 {}/{}: {} {}",
-            i + 1,
-            commands.len(),
-            cmd,
-            args.join(" ")
-        );
-        if let Err(e) = execute_single_command(da, cmd, args, verify, log_level) {
-            error!("命令执行失败: {}", e);
-        }
-    }
-
-    // 批量命令执行完毕，保持 DA 会话活跃
-    // 用户可使用 reset 命令复位设备
 
     Ok(())
 }
