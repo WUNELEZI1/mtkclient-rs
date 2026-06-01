@@ -283,7 +283,7 @@ impl SecCfgV3 {
         }
 
         if hwtype.is_empty()
-            && let Ok(d) = sej_sec_cfg_hw_decrypt(enc_data)
+            && let Ok(d) = sej_sec_cfg_hw_v3_decrypt(enc_data, false)
         {
             let first4 = &d[..std::cmp::min(4, d.len())];
             if first4 == b"IIII" || first4 == b"CCCC" || first4 == [0, 0, 0, 0] {
@@ -293,7 +293,7 @@ impl SecCfgV3 {
         }
 
         if hwtype.is_empty()
-            && let Ok(d) = sej_sec_cfg_hw_v3_decrypt(enc_data, false)
+            && let Ok(d) = sej_sec_cfg_hw_decrypt(enc_data)
         {
             let first4 = &d[..std::cmp::min(4, d.len())];
             if first4 == b"IIII" || first4 == b"CCCC" || first4 == [0, 0, 0, 0] {
