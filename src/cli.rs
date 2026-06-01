@@ -32,11 +32,11 @@ pub struct Cli {
     pub verify: bool,
 
     #[arg(
-        long = "debugmode",
-        default_value_t = false,
-        help = "启用调试模式（详细日志 + dump 文件）"
+        long = "log",
+        default_value_t = 1,
+        help = "日志级别：1=INFO（默认），2=DEBUG（调试信息），3=TRACE（完整原始 hex dump）"
     )]
-    pub debug_mode: bool,
+    pub log_level: u8,
 
     #[arg(
         long = "quiet",

@@ -167,8 +167,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let log_level = if cli.quiet {
         log::LevelFilter::Warn
-    } else if cli.debug_mode {
-        log::LevelFilter::Debug
     } else {
         app_config.log_level
     };
@@ -206,7 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if cmd == "install-drivers" {
-        handle_install_drivers(cli.debug_mode, cli.force);
+        handle_install_drivers(cli.log_level > 1, cli.force);
         return Ok(());
     }
 
@@ -390,7 +388,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         session::save_da_session(saved_vid, saved_pid, hw_code, target_config);
     }
 
-    if cli.debug_mode {
+    if cli.log_level >= 3 {
         if let Some(data) = da.get_emi_data() {
             let _ = std::fs::write("emi_debug.bin", data);
         }
@@ -406,7 +404,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut da,
             &mode,
             &app_config,
-            cli.debug_mode,
+            cli.log_level,
             cli.quiet_dump,
             &final_preloader_path,
             &sub_commands,
@@ -417,7 +415,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut da,
             &mode,
             &app_config,
-            cli.debug_mode,
+            cli.log_level,
             cli.quiet_dump,
             &final_preloader_path,
             &usb_context,
