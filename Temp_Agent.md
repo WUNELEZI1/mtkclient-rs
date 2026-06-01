@@ -789,7 +789,16 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
      - `install_winusb_driver` 开头检查：非管理员 → 弹出 UAC 提权 → 等待完成后 exit(0)
      - 验证：cargo build 通过，cargo clippy 0 warning
 
-33. **driver.rs：等待 BROM 设备 + 修复 pnputil 判断**（2026-05-29）：
+40. **driver.rs：三模式检测安装流程（COM+WinUSB+libusb）**（2026-05-29）：
+     - 问题：设备已有 WinUSB/libusb 驱动时，`find_mediatek_com_port` 找不到 COM 口，`--force` 会无限等待
+     - 修复逻辑：
+       1. 先检测 COM 口：找到则关闭 watchdog
+       2. 未找到 COM 口时，调用 `is_brom_device_present()` 通过 libusb 检测设备是否已在 BROM 模式（VID=0E8D PID=0003）
+       3. 如果 libusb 找到设备 → 跳过 watchdog 关闭，直接安装驱动
+       4. 如果两者都没找到 → 循环等待 COM 口出现
+     - `is_brom_device_present()`：用 `libusb1_sys::libusb_open_device_with_vid_pid(ctx, 0x0E8D, 0x0003)` 检测
+     - 详细日志：`[DRV] COM port detection:` / `zadig_detect_bootrom = N` 等
+     - 验证：cargo build 通过，cargo clippy 0 warning（仅 1 个已有的 dead_code warning）
      - 改动 1：`install_winusb_driver` 加设备等待循环
        - 找不到设备时循环等待（2 秒间隔），提示用户进入 BROM 模式
        - 提示："请按住音量+和音量-，插入USB进入BROM模式..."
