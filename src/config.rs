@@ -30,6 +30,7 @@ impl DeviceType {
     }
 
     /// 判断是否为 Preloader 设备
+    #[allow(dead_code)]
     pub fn is_preloader(&self) -> bool {
         matches!(self, DeviceType::Preloader | DeviceType::PreloaderVariant)
     }
