@@ -34,14 +34,7 @@ pub fn print_help() {
     println!("诊断:");
     println!("  diagnose         USB 连接诊断（设备状态、驱动、模式）");
     println!("  list-usb         列出所有 USB 设备");
-    println!("  check-driver     检查 WinUSB 驱动状态");
-    println!();
-    println!("驱动:");
-    println!("  install-drivers  安装 WinUSB 驱动 (管理员)");
-    println!();
-    println!("离线模式:");
-    println!("  unlock --no-device <seccfg文件>  离线解锁 seccfg");
-    println!("  lock --no-device <seccfg文件>    离线锁定 seccfg");
+    println!("  check-driver     检查驱动状态");
     println!();
     println!("批量模式:");
     println!("  --batch \"printgpt\" \"r boot boot.img\" \"e userdata\"");
@@ -53,6 +46,7 @@ pub fn print_help() {
     println!("  --log <级别>        日志级别：1=INFO，2=DEBUG，3=TRACE");
     println!("  --batch             批量执行多个命令");
     println!("  --force             强制安装驱动");
+    println!("  --patch-da          是否 patch DA（默认开启）");
 }
 
 /// 单命令执行入口

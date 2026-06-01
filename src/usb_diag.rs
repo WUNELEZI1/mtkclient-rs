@@ -6,7 +6,7 @@ use log::{debug, info, warn};
 pub enum UsbDiagState {
     /// 未检测到任何 MediaTek 设备
     NoDevice,
-    /// 检测到设备但驱动异常（如 CDC 而非 WinUSB）
+    /// 检测到设备但驱动异常（如 CDC 而非 libusb）
     WrongDriver,
     /// 检测到 Preloader 模式（PID 0x0003/0x0001）
     Preloader,
@@ -65,7 +65,7 @@ pub fn scan_mediatek_devices() -> Vec<(u16, u16, bool, String)> {
                 let claim_ret = libusb1_sys::libusb_claim_interface(handle, 1);
                 let info = if claim_ret == 0 {
                     libusb1_sys::libusb_release_interface(handle, 1);
-                    "WinUSB/libusb 正常".to_string()
+                    "libusb 正常".to_string()
                 } else if claim_ret == -12 {
                     // LIBUSB_ERROR_NOT_FOUND — 接口不存在
                     "接口未找到".to_string()
@@ -123,7 +123,7 @@ pub fn print_connection_hint() {
     info!("  2. BROM 模式: 按住 音量+ + 音量- + (或所有按键) 并插入 USB");
     info!("  3. Preloader 模式: 不要按任何键，直接插入 USB");
     info!("  4. 如果已连接但无响应，按住电源键 10 秒重置");
-    info!("  5. 运行 'check-driver' 确认 WinUSB 驱动已安装");
+    info!("  5. 运行 'check-driver' 确认驱动已安装");
     info!("");
 }
 
@@ -248,7 +248,7 @@ pub fn diagnose_and_report() {
     let mut has_wrong_driver = false;
     let mut has_correct_driver = false;
     for (_vid, _pid, _is_brom, driver_info) in &devices {
-        if driver_info.contains("WinUSB/libusb 正常") {
+        if driver_info.contains("libusb 正常") {
             has_correct_driver = true;
         } else {
             has_wrong_driver = true;
@@ -256,11 +256,10 @@ pub fn diagnose_and_report() {
     }
 
     if has_correct_driver && !has_wrong_driver {
-        info!("驱动状态: WinUSB/libusb 正常");
+        info!("驱动状态: libusb 正常");
     } else if has_wrong_driver {
-        warn!("驱动状态异常: 设备未安装 WinUSB 驱动");
-        info!("请运行以下命令安装驱动: mtkclient install-drivers");
-        info!("或者使用 Zadig 工具手动安装 WinUSB 驱动");
+        warn!("驱动状态异常: 设备驱动未正确安装");
+        info!("请检查设备是否安装了 libusb-win32 filter 驱动");
     }
     info!("");
 

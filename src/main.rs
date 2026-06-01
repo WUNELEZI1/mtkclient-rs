@@ -96,8 +96,7 @@ fn smart_init(context: &UsbContext) -> Result<(usb::UsbDevice, DeviceMode), Stri
                                 Err(e) => warn!("COM 口连接失败: {}", e),
                             }
                         }
-                        warn!("{}", "检测到设备但驱动异常 (可能需要安装 WinUSB)".red());
-                        warn!("运行以下命令安装驱动: mtkclient install-drivers");
+                        warn!("{}", "检测到设备但驱动异常".red());
                         print_connection_hint();
                         std::thread::sleep(Duration::from_secs(2));
                     }
@@ -135,15 +134,6 @@ fn smart_init(context: &UsbContext) -> Result<(usb::UsbDevice, DeviceMode), Stri
 
     info!("{}", "连接成功".green().bold());
     Ok((usb_device, mode))
-}
-
-fn handle_install_drivers(debug: bool, force: bool) {
-    match driver::install_winusb_driver(debug, force) {
-        Ok(_) => {}
-        Err(e) => {
-            error!("安装失败: {}", e);
-        }
-    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -194,18 +184,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if driver::check_driver() {
             info!("libusb-win32 filter 驱动已就绪");
         } else {
-            info!("未检测到 libusb-win32 filter 驱动，运行 install-drivers 安装");
+            info!("未检测到 libusb-win32 filter 驱动");
         }
         return Ok(());
     }
 
     if cmd.is_empty() {
         commands::print_help();
-        return Ok(());
-    }
-
-    if cmd == "install-drivers" {
-        handle_install_drivers(cli.log_level > 1, cli.force);
         return Ok(());
     }
 
