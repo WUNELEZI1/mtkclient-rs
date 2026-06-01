@@ -1,6 +1,6 @@
 use crate::da_xflash::DAXFlash;
 use crate::sej::{sej_hacc_sign, with_backend};
-use crate::da_xflash::{
+use crate::sej::{
     sej_sec_cfg_hw_decrypt,
     sej_sec_cfg_hw_encrypt,
     sej_sec_cfg_hw_v3_decrypt,
