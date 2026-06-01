@@ -129,6 +129,7 @@ const G_HACC_CFG_1: [u32; 8] = [
     0x9ED40400, 0x00E884A1, 0xE3F083BD, 0x2F4E6D8A, 0xFF838E5C, 0xE940A0E3, 0x8D4DECC6, 0x45FC0989,
 ];
 
+#[allow(dead_code)]
 fn generate_custom_seed_iv() -> [u8; 16] {
     let seed = u32::from_le_bytes(CUSTOM_SEED_PREFIX);
     let rot = seed.rotate_left(16);
@@ -143,6 +144,13 @@ fn generate_custom_seed_iv() -> [u8; 16] {
         iv[i * 4..(i + 1) * 4].copy_from_slice(&part.to_le_bytes());
     }
     iv
+}
+
+fn xor_g_hacc_cfg_1(data: &mut [u8]) {
+    for i in 0..data.len().min(16) {
+        let cfg_word = G_HACC_CFG_1[i / 4];
+        data[i] ^= (cfg_word >> ((i % 4) * 8)) as u8;
+    }
 }
 
 type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
@@ -214,17 +222,13 @@ pub(crate) fn sej_sec_cfg_hw_v3_encrypt(data: &[u8], legacy: bool) -> Result<Vec
     use aes::Aes128;
     type Aes128CbcEnc = cbc::Encryptor<Aes128>;
 
-    let iv_bytes: [u8; 16] = if legacy {
-        let mut iv = [0u8; 16];
-        for i in 0..4 {
-            iv[i * 4..(i + 1) * 4].copy_from_slice(&G_HACC_CFG_1[i].to_le_bytes());
-        }
-        iv
-    } else {
-        generate_custom_seed_iv()
-    };
+    let mut iv = [0u8; 16];
+    for i in 0..4 {
+        iv[i * 4..(i + 1) * 4].copy_from_slice(&G_HACC_CFG_1[i].to_le_bytes());
+    }
 
-    let cipher = Aes128CbcEnc::new(&SEJ_HW_KEY.into(), &iv_bytes.into());
+    let _ = legacy;
+    let cipher = Aes128CbcEnc::new(&SEJ_HW_KEY.into(), &iv.into());
     let mut buf = data.to_vec();
     while !buf.len().is_multiple_of(16) {
         buf.push(0);
@@ -248,6 +252,7 @@ pub(crate) fn sej_sec_cfg_hw_encrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     }
     let cipher = Aes128CbcEnc::new(&SEJ_HW_KEY.into(), &iv.into());
     let mut buf = data.to_vec();
+    xor_g_hacc_cfg_1(&mut buf);
     while !buf.len().is_multiple_of(16) {
         buf.push(0);
     }
@@ -263,17 +268,13 @@ pub(crate) fn sej_sec_cfg_hw_v3_decrypt(data: &[u8], legacy: bool) -> Result<Vec
     use aes::Aes128;
     type Aes128CbcDec = cbc::Decryptor<Aes128>;
 
-    let iv_bytes: [u8; 16] = if legacy {
-        let mut iv = [0u8; 16];
-        for i in 0..4 {
-            iv[i * 4..(i + 1) * 4].copy_from_slice(&G_HACC_CFG_1[i].to_le_bytes());
-        }
-        iv
-    } else {
-        generate_custom_seed_iv()
-    };
+    let mut iv = [0u8; 16];
+    for i in 0..4 {
+        iv[i * 4..(i + 1) * 4].copy_from_slice(&G_HACC_CFG_1[i].to_le_bytes());
+    }
 
-    let cipher = Aes128CbcDec::new(&SEJ_HW_KEY.into(), &iv_bytes.into());
+    let _ = legacy;
+    let cipher = Aes128CbcDec::new(&SEJ_HW_KEY.into(), &iv.into());
     let mut buf = data.to_vec();
     if !buf.len().is_multiple_of(16) {
         return Err("V3 解密数据长度不是 16 的倍数".to_string());
@@ -301,6 +302,7 @@ pub(crate) fn sej_sec_cfg_hw_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     cipher
         .decrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf)
         .map_err(|e| format!("AES-128-CBC 解密 (V2) 失败: {:?}", e))?;
+    xor_g_hacc_cfg_1(&mut buf);
     Ok(buf)
 }
 
