@@ -216,6 +216,7 @@ pub(crate) struct SecCfgV3 {
     seccfg_ver: u32,
     seccfg_size: u32,
     seccfg_enc_offset: u32,
+    seccfg_enc_len: u32,
     sw_sec_lock_try: u8,
     sw_sec_lock_done: u8,
     page_size: u16,
@@ -248,6 +249,7 @@ impl SecCfgV3 {
         let ver = u32::from_le_bytes(data[20..24].try_into().unwrap());
         let size = u32::from_le_bytes(data[24..28].try_into().unwrap());
         let enc_off = u32::from_le_bytes(data[28..32].try_into().unwrap());
+        let enc_len = u32::from_le_bytes(data[32..36].try_into().unwrap());
         let sw_try = data[36];
         let sw_done = data[37];
         let pg_size = u16::from_le_bytes(data[38..40].try_into().unwrap());
@@ -364,6 +366,7 @@ impl SecCfgV3 {
             seccfg_ver: ver,
             seccfg_size: size,
             seccfg_enc_offset: enc_off,
+            seccfg_enc_len: enc_len,
             sw_sec_lock_try: sw_try,
             sw_sec_lock_done: sw_done,
             page_size: pg_size,
@@ -397,10 +400,18 @@ impl SecCfgV3 {
             return Err("无效 lockflag".to_string());
         };
 
-        let new_enc_len: u32 = if lockflag == "unlock" {
-            0x07F20000
+        let new_enc_len = if lockflag == "unlock" {
+            if self.seccfg_enc_len != 0 {
+                self.seccfg_enc_len
+            } else {
+                0x07F20000
+            }
         } else {
-            0x01000000
+            if self.seccfg_enc_len != 0 {
+                self.seccfg_enc_len
+            } else {
+                0x01000000
+            }
         };
 
         let mut inner = Vec::new();
@@ -555,13 +566,13 @@ fn build_v4_header(
             if v4.lock_state == 3 {
                 return Err("设备已解锁".to_string());
             }
-            (3u32, 1u32)
+            (3u32, v4.critical_lock_state)
         }
         "lock" => {
             if v4.lock_state == 1 {
                 return Err("设备已上锁".to_string());
             }
-            (1u32, 0u32)
+            (1u32, v4.critical_lock_state)
         }
         _ => return Err("无效 lockflag".to_string()),
     };
