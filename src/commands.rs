@@ -4,7 +4,8 @@ use std::time::SystemTime;
 
 use crate::DeviceMode;
 use crate::config::AppConfig;
-use crate::da_xflash::{DAXFlash, generate_scatter_from_gpt};
+use crate::da_partition::generate_scatter_from_gpt;
+use crate::da_xflash::DAXFlash;
 use crate::usb::UsbContext;
 
 pub fn print_help() {

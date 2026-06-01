@@ -71,7 +71,7 @@ pub const SUPPORTED_DEVICES: &[DeviceConfig] = &[
 ];
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[allow(dead_code)] // 预留：CLI/设备配置映射字段，部分在当前命令集下不会全部读取
 pub struct AppConfig {
     pub log_level: log::LevelFilter,
     pub da2_path: Option<String>,
@@ -114,7 +114,7 @@ impl AppConfig {
 
 /// 芯片完整配置（对齐 Python ChipConfig + Mt6768Config）
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
+#[allow(dead_code)] // 预留：芯片能力表，当前机型只会用到其中一部分字段
 pub struct ChipConfig {
     pub hw_code: u16,
     pub name: &'static str,
@@ -219,15 +219,9 @@ pub static CHIP_CONFIGS: &[ChipConfig] = &[
     },
 ];
 
-/// 按 hw_code 查找芯片配置
-#[allow(dead_code)]
-pub fn get_chip_config(hw_code: u16) -> Option<&'static ChipConfig> {
-    CHIP_CONFIGS.iter().find(|c| c.hw_code == hw_code)
-}
-
 /// 设备安全配置（对齐 Python get_target_config）
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
+#[allow(dead_code)] // 预留：安全标志位扩展，部分位当前仅用于显示/后续功能
 pub struct TargetConfig {
     pub raw: u32,
     pub sbc: bool,      // Bit 0x01 - Secure Boot Control
@@ -242,7 +236,7 @@ pub struct TargetConfig {
 }
 
 impl TargetConfig {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 兼容旧入口：u32 形式的 raw 配置转换
     pub fn from_raw(raw: u32) -> Self {
         TargetConfig::from_raw_u64(raw as u64)
     }

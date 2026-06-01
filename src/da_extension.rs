@@ -1,4 +1,4 @@
-use crate::da_xflash::{CMD_MAGIC, DAXFlash, SET_META_BOOT_MODE, pack3};
+use crate::da_xflash::{DAXFlash, SET_META_BOOT_MODE};
 use log::{debug, info, warn};
 
 /// DA extensions 模板（预编译的 da_x.bin）
@@ -512,77 +512,6 @@ impl<'a> DAXFlash<'a> {
             }
         }
         None
-    }
-
-    /// 带通配符的 find_binary（支持 . 通配符，公开版本）
-    #[allow(dead_code)]
-    pub fn find_binary_with_wildcard(
-        data: &[u8],
-        pattern: &[u8],
-        start_pos: usize,
-    ) -> Option<usize> {
-        Self::find_binary(data, pattern, start_pos)
-    }
-
-    /// CUSTOM_READMEM（0x0F0001）通过 DA2 读物理内存
-    /// 对齐 Python xflash.py: custom_read(addr, length)
-    /// 协议: cmd(CUSTOM_READMEM) → xsend(addr64) → xsend(sz32) → xread() → status()
-    #[allow(dead_code)]
-    pub fn custom_readmem(&mut self, addr: u64, length: usize) -> Result<Vec<u8>, String> {
-        const MAX_CHUNK: usize = 0x10000;
-        let mut data = Vec::with_capacity(length);
-        let mut pos: usize = 0;
-
-        while pos < length {
-            // 1. cmd(CUSTOM_READMEM) = DEVICE_CTRL → status → 0x0F0001 → status
-            let devctrl_pkt = pack3(CMD_MAGIC, 0x01, 4);
-            self.preloader.device.write(&devctrl_pkt)?;
-            self.preloader.device.write(&0x010009u32.to_le_bytes())?;
-            let st1 = self.status()?;
-            if st1 != 0 {
-                return Err(format!("custom_readmem DEVICE_CTRL status: 0x{:08X}", st1));
-            }
-
-            let cmd_pkt = pack3(CMD_MAGIC, 0x01, 4);
-            self.preloader.device.write(&cmd_pkt)?;
-            self.preloader.device.write(&0x0F0001u32.to_le_bytes())?;
-            let st2 = self.status()?;
-            if st2 != 0 {
-                return Err(format!(
-                    "custom_readmem CUSTOM_READMEM status: 0x{:08X}",
-                    st2
-                ));
-            }
-
-            // 2. xsend(addr, 8 bytes, is64bit=True)
-            let chunk_addr = addr + pos as u64;
-            let addr_pkt = pack3(CMD_MAGIC, 0x01, 8);
-            self.preloader.device.write(&addr_pkt)?;
-            self.preloader.device.write(&chunk_addr.to_le_bytes())?;
-
-            // 3. xsend(sz, 4 bytes)
-            let sz = std::cmp::min(length - pos, MAX_CHUNK);
-            let sz_pkt = pack3(CMD_MAGIC, 0x01, 4);
-            self.preloader.device.write(&sz_pkt)?;
-            self.preloader.device.write(&(sz as u32).to_le_bytes())?;
-
-            // 4. xread() → 读回数据
-            let chunk = self.xread_data()?;
-            data.extend_from_slice(&chunk);
-            pos += chunk.len();
-
-            // 5. status()
-            let st3 = self.status()?;
-            if st3 != 0 {
-                debug!("custom_readmem chunk status: 0x{:08X}", st3);
-                break;
-            }
-        }
-
-        if data.len() > length {
-            data.truncate(length);
-        }
-        Ok(data)
     }
 
     /// 设置 meta boot 模式

@@ -15,8 +15,6 @@ colored = "3.1"           # 从 2 升级到 3
 clap = { version = "4", features = ["derive"] }
 # 串口通信
 serialport = "4.7"
-# 动态库加载
-libloading = "0.9"        # 从 0.8 升级到 0.9
 # 加密算法
 sha2 = "0.11"             # 从 0.10 升级到 0.11
 aes = "0.9"               # 从 0.8 升级到 0.9

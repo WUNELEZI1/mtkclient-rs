@@ -148,8 +148,6 @@ pub struct UsbDevice {
     device_type: DeviceType,
     ep_out: u8,
     ep_in: u8,
-    #[allow(dead_code)]
-    ep_out_max_packet_size: u16,
     timeout: Duration,
 }
 
@@ -262,7 +260,6 @@ impl UsbDevice {
                 device_type: found_device_type,
                 ep_out: ep_out_addr,
                 ep_in: ep_in_addr,
-                ep_out_max_packet_size: ep_out_max_pkt,
                 timeout: Duration::from_millis(1000),
             })
         }
@@ -314,13 +311,6 @@ impl UsbDevice {
             }
             Ok(transferred as usize)
         }
-    }
-
-    /// 获取 EP_OUT 的最大包大小
-    // 预留：动态 chunk size 优化时使用
-    #[allow(dead_code)]
-    pub fn ep_out_max_packet_size(&self) -> u16 {
-        self.ep_out_max_packet_size
     }
 
     pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
@@ -517,8 +507,7 @@ impl UsbDevice {
     }
 
     /// 复位 bulk OUT 端点（清除 halt/stall 状态）
-    // 预留：写端点错误恢复时使用
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：写端点错误恢复时使用
     pub fn clear_halt_out(&mut self) -> Result<(), String> {
         self.clear_halt_ep(self.ep_out)
     }
