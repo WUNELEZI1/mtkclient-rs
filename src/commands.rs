@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use crate::DeviceMode;
 use crate::config::AppConfig;
-use crate::da_partition::generate_scatter_from_gpt;
+use crate::da_partition::{generate_scatter_from_gpt, generate_scatter_shoujixia};
 use crate::da_xflash::DAXFlash;
 use crate::usb::UsbContext;
 
@@ -18,6 +18,8 @@ pub fn print_help() {
     println!("  dump-preloader   提取 Preloader");
     println!("  dumpbrom         提取 BROM");
     println!("  r <分区> <文件>  读取分区");
+    println!("  r gpt <目录>     保存 GPT 原始数据到目录");
+    println!("  rl <目录>        读取全部分区到目录");
     println!("  w <分区> <文件>  写入分区");
     println!("  e <分区>        擦除分区");
     println!("  vbmeta <模式>   修补 vbmeta (0/1/2/3)");
@@ -25,6 +27,7 @@ pub fn print_help() {
     println!("  unlock           解锁 Bootloader");
     println!("  lock             锁定 Bootloader");
     println!("  enable-adb-on-da 在 DA 模式下开启 ADB");
+    println!("  print-scatter    打印 scatter 到屏幕并保存文件");
     println!();
     println!("诊断:");
     println!("  diagnose         USB 连接诊断（设备状态、驱动、模式）");
@@ -45,7 +48,7 @@ pub fn print_help() {
     println!("  --preloader <文件>  指定 preloader 文件");
     println!("  --verify            写入后校验");
     println!("  --check-driver      检查驱动状态");
-    println!("  --debug-mode        输出调试日志");
+    println!("  --log <级别>        日志级别：1=INFO，2=DEBUG，3=TRACE");
     println!("  --batch             批量执行多个命令");
     println!("  --force             强制安装驱动");
 }
@@ -55,7 +58,7 @@ pub fn handle_command(
     da: &mut DAXFlash,
     _mode: &DeviceMode,
     app_config: &AppConfig,
-    debug_mode: bool,
+    log_level: u8,
     _quiet_dump: bool,
     preloader_file: &str,
     _context: &UsbContext,
@@ -72,7 +75,7 @@ pub fn handle_command(
         let cmd = app_config.command.as_deref().unwrap_or("");
         match cmd {
             "dumpbrom" => {
-                cmd_dumpbrom(da, debug_mode)?;
+                cmd_dumpbrom(da, log_level)?;
                 return Ok(());
             }
             "reset" => {
@@ -163,7 +166,7 @@ pub fn handle_command(
             }
         })?;
 
-    if debug_mode {
+    if log_level >= 2 {
         if let Some(data) = da.get_emi_data() {
             let _ = std::fs::write("emi_debug.bin", data);
         }
@@ -181,7 +184,7 @@ pub fn handle_command(
         return Ok(());
     }
 
-    execute_single_command(da, cmd, args, verify)?;
+    execute_single_command(da, cmd, args, verify, log_level)?;
 
     // 单命令执行完毕，不复位设备，保持 DA 会话活跃
     // 类似 Python 的 .state 机制：DA 加载后保持连接，后续命令直接复用
@@ -197,7 +200,7 @@ pub fn handle_commands(
     da: &mut DAXFlash,
     _mode: &DeviceMode,
     app_config: &AppConfig,
-    debug_mode: bool,
+    log_level: u8,
     _quiet_dump: bool,
     preloader_file: &str,
     commands: &[(String, Vec<String>)],
@@ -271,7 +274,7 @@ pub fn handle_commands(
             }
         })?;
 
-    if debug_mode {
+    if log_level >= 2 {
         if let Some(data) = da.get_emi_data() {
             let _ = std::fs::write("emi_debug.bin", data);
         }
@@ -290,7 +293,7 @@ pub fn handle_commands(
             cmd,
             args.join(" ")
         );
-        if let Err(e) = execute_single_command(da, cmd, args, verify) {
+        if let Err(e) = execute_single_command(da, cmd, args, verify, log_level) {
             error!("命令执行失败: {}", e);
         }
     }
@@ -307,16 +310,29 @@ fn execute_single_command(
     cmd: &str,
     args: &[String],
     verify: bool,
+    log_level: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        "printgpt" => cmd_printgpt(da, false),
-        "r" | "read" => cmd_read(da, args)?,
+        "printgpt" => cmd_printgpt(da, log_level),
+        "r" | "read" => {
+            if args.first().map(|s| s.as_str()) == Some("gpt") {
+                let dir = args.get(1).ok_or("用法: mtkclient r gpt <目录>")?;
+                cmd_read_gpt(da, dir, log_level)?;
+            } else {
+                cmd_read(da, args)?;
+            }
+        }
+        "rl" | "readall" => {
+            let dir = args.first().ok_or("用法: mtkclient rl <目录>")?;
+            cmd_read_all(da, dir)?;
+        }
         "w" | "write" => cmd_write(da, args, verify)?,
         "e" | "erase" => cmd_erase(da, args)?,
         "vbmeta" => cmd_vbmeta(da, args)?,
         "reset" => cmd_reset(da)?,
         "unlock" => cmd_unlock(da)?,
         "lock" => cmd_lock(da)?,
+        "print-scatter" => cmd_print_scatter(da, log_level)?,
         "enable-adb-on-da" => {
             da.enable_adb_and_reboot()?;
             info!("{}", "ADB 已启用，设备正在重启进入系统".green());
@@ -331,26 +347,30 @@ fn execute_single_command(
     Ok(())
 }
 
-fn cmd_printgpt(da: &mut DAXFlash, debug_mode: bool) {
+fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
     match da.read_gpt() {
         Ok(_) => {
-            // 获取 EMMC Boot1/Boot2 信息
             if let Ok(emmc_info) = da.get_emmc_info() {
-                println!("\nEMMC 信息:");
+                println!();
+                println!("{}", " EMMC 信息 ".on_green().black());
                 println!(
-                    "  EMMC Boot1 Size: 0x{:06X} ({} MB)",
-                    emmc_info.boot1_size,
-                    emmc_info.boot1_size / 1024 / 1024
+                    "  EMMC Boot1 Size: {}  {} MB",
+                    format!("0x{:06X}", emmc_info.boot1_size).green(),
+                    format!("({} MB)", emmc_info.boot1_size / 1024 / 1024).dimmed()
                 );
                 println!(
-                    "  EMMC Boot2 Size: 0x{:06X} ({} MB)",
-                    emmc_info.boot2_size,
-                    emmc_info.boot2_size / 1024 / 1024
+                    "  EMMC Boot2 Size: {}  {} MB",
+                    format!("0x{:06X}", emmc_info.boot2_size).green(),
+                    format!("({} MB)", emmc_info.boot2_size / 1024 / 1024).dimmed()
                 );
             }
 
+            if let Ok(data) = da.get_last_gpt_data() {
+                print_gpt_table(data);
+            }
+
             info!("{}", "GPT 读取成功".green());
-            if debug_mode {
+            if log_level >= 3 {
                 let ts = SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -371,9 +391,310 @@ fn cmd_printgpt(da: &mut DAXFlash, debug_mode: bool) {
     }
 }
 
-fn cmd_dumpbrom(da: &mut DAXFlash, debug_mode: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn print_gpt_table(data: &[u8]) {
+    let base = match data.windows(8).position(|w| w == b"EFI PART") {
+        Some(off) => off,
+        None => return,
+    };
+
+    let revision = u32::from_le_bytes(data[base + 8..base + 12].try_into().unwrap());
+    let num_part_entries = u32::from_le_bytes(data[base + 80..base + 84].try_into().unwrap());
+    let part_entry_size = u32::from_le_bytes(data[base + 84..base + 88].try_into().unwrap());
+    let part_entry_start_lba =
+        u64::from_le_bytes(data[base + 72..base + 80].try_into().unwrap());
+
+    println!();
+    println!("{}", " GPT 分区表 ".on_green().black());
+    println!("  修订版本:     {}", format!("0x{:08X}", revision).green());
+    println!(
+        "  头部大小:     {} 字节",
+        u32::from_le_bytes(data[base + 12..base + 16].try_into().unwrap())
+    );
+    println!("  分区数量:     {}", format!("{}", num_part_entries).green());
+    println!("  分区项大小:   {} 字节", part_entry_size);
+
+    let mut table_start = (part_entry_start_lba as usize) * 512;
+    if table_start + 4 <= data.len()
+        && data[table_start..table_start + 4]
+            .iter()
+            .all(|&b| b == 0)
+    {
+        table_start += 4;
+    }
+
+    println!();
+    println!(
+        "{:<4} {:<20} {:<20} {:<20}",
+        "序号".cyan(),
+        "分区名称".cyan(),
+        "起始地址".cyan(),
+        "大小".cyan()
+    );
+    println!("{}", "─".repeat(66).dimmed());
+
+    let mut count = 0;
+    for i in 0..num_part_entries {
+        let entry_offset = table_start + (i as usize) * (part_entry_size as usize);
+        if entry_offset + part_entry_size as usize > data.len() {
+            break;
+        }
+
+        let entry = &data[entry_offset..entry_offset + part_entry_size as usize];
+        let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
+        if unique_guid_zero {
+            break;
+        }
+
+        let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
+        let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
+        let start = first_lba.saturating_mul(512);
+        let size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
+
+        let name_utf16: Vec<u16> = (0..28)
+            .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
+            .collect();
+        let name = String::from_utf16_lossy(&name_utf16)
+            .trim_end_matches('\0')
+            .to_string();
+
+        count += 1;
+        println!(
+            "{:<4} {:<20} {:<20} {:<20}",
+            format!("#{}", count).dimmed(),
+            name.green(),
+            format!("0x{:014X}", start).yellow(),
+            format!("0x{:014X}", size).yellow(),
+        );
+    }
+
+    println!("{}", "─".repeat(66).dimmed());
+    println!("  共 {} 个分区", format!("{}", count).green());
+    println!();
+}
+
+fn cmd_read_gpt(
+    da: &mut DAXFlash,
+    dir: &str,
+    log_level: u8,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {}", e))?;
+    let output = format!("{}/gpt.bin", dir);
+
+    if da.get_last_gpt_data().is_err() {
+        da.read_gpt().map_err(|e| format!("GPT 读取失败: {}", e))?;
+    }
+
+    let gpt_data = da.get_last_gpt_data()?;
+    std::fs::write(&output, gpt_data).map_err(|e| format!("写入失败: {}", e))?;
+    info!("{}", format!("GPT 已保存: {} ({} 字节)", output, gpt_data.len()).green());
+
+    if log_level >= 2 {
+        print_gpt_table(gpt_data);
+    }
+
+    Ok(())
+}
+
+fn cmd_read_all(da: &mut DAXFlash, dir: &str) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {}", e))?;
+
+    if da.get_last_gpt_data().is_err() {
+        da.read_gpt().map_err(|e| format!("GPT 读取失败: {}", e))?;
+    }
+
+    let gpt_data = da.get_last_gpt_data()?.clone();
+
+    let base = gpt_data
+        .windows(8)
+        .position(|w| w == b"EFI PART")
+        .ok_or("GPT 数据无效")?;
+
+    let num_part_entries = u32::from_le_bytes(gpt_data[base + 80..base + 84].try_into().unwrap());
+    let part_entry_size = u32::from_le_bytes(gpt_data[base + 84..base + 88].try_into().unwrap());
+    let part_entry_start_lba =
+        u64::from_le_bytes(gpt_data[base + 72..base + 80].try_into().unwrap());
+
+    let mut table_start = (part_entry_start_lba as usize) * 512;
+    if table_start + 4 <= gpt_data.len()
+        && gpt_data[table_start..table_start + 4]
+            .iter()
+            .all(|&b| b == 0)
+    {
+        table_start += 4;
+    }
+
+    let mut partitions: Vec<(String, u64, u64)> = Vec::new();
+
+    for i in 0..num_part_entries {
+        let entry_offset = table_start + (i as usize) * (part_entry_size as usize);
+        if entry_offset + part_entry_size as usize > gpt_data.len() {
+            break;
+        }
+
+        let entry = &gpt_data[entry_offset..entry_offset + part_entry_size as usize];
+        let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
+        if unique_guid_zero {
+            break;
+        }
+
+        let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
+        let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
+        let start = first_lba.saturating_mul(512);
+        let size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
+
+        let name_utf16: Vec<u16> = (0..28)
+            .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
+            .collect();
+        let name = String::from_utf16_lossy(&name_utf16)
+            .trim_end_matches('\0')
+            .to_string();
+
+        partitions.push((name, start, size));
+    }
+
+    for (name, start, size) in &partitions {
+        let output = format!("{}/{}.img", dir, name);
+        info!(
+            "  读取分区 {} (0x{:X} @ 0x{:X})",
+            name, size, start
+        );
+        let data = da.readflash_data(*start, *size)
+            .map_err(|e| format!("读取 {} 失败: {}", name, e))?;
+        std::fs::write(&output, &data).map_err(|e| format!("写入失败: {}", e))?;
+        info!("{}", format!("  {} -> {}", name, output).green());
+    }
+
+    info!("{}", format!("全部分区已读取到: {}", dir).green());
+    Ok(())
+}
+
+fn cmd_print_scatter(
+    da: &mut DAXFlash,
+    log_level: u8,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if da.get_last_gpt_data().is_err() {
+        da.read_gpt().map_err(|e| format!("GPT 读取失败: {}", e))?;
+    }
+
+    let gpt_data = da.get_last_gpt_data()?;
+
+    let base = gpt_data
+        .windows(8)
+        .position(|w| w == b"EFI PART")
+        .ok_or("GPT 数据无效")?;
+
+    let num_part_entries = u32::from_le_bytes(gpt_data[base + 80..base + 84].try_into().unwrap());
+    let part_entry_size = u32::from_le_bytes(gpt_data[base + 84..base + 88].try_into().unwrap());
+    let part_entry_start_lba =
+        u64::from_le_bytes(gpt_data[base + 72..base + 80].try_into().unwrap());
+
+    let mut table_start = (part_entry_start_lba as usize) * 512;
+    if table_start + 4 <= gpt_data.len()
+        && gpt_data[table_start..table_start + 4]
+            .iter()
+            .all(|&b| b == 0)
+    {
+        table_start += 4;
+    }
+
+    println!();
+    println!("{}", " Scatter 文件 (SP Flash Tool 格式) ".on_green().black());
+    println!();
+
+    println!("PRELOADER 0x0");
+    println!("{{");
+    println!("  <Physical_Storage_Type_1>");
+    println!("  is_upgradeable: 1");
+    println!("  is_download: 1");
+    println!("  is_reserved: 0");
+    println!("  linear_addr: 0x0");
+    println!("}}");
+    println!();
+
+    println!("EMMC_BOOT_1 0x0");
+    println!("{{");
+    println!("  type: EMPC_BOOT_1");
+    println!("  is_upgradeable: 1");
+    println!("  is_download: 1");
+    println!("  is_reserved: 0");
+    println!("}}");
+    println!();
+
+    println!("EMMC_BOOT_2 0x0");
+    println!("{{");
+    println!("  type: EMPC_BOOT_2");
+    println!("  is_upgradeable: 1");
+    println!("  is_download: 1");
+    println!("  is_reserved: 0");
+    println!("}}");
+    println!();
+
+    for i in 0..num_part_entries {
+        let entry_offset = table_start + (i as usize) * (part_entry_size as usize);
+        if entry_offset + part_entry_size as usize > gpt_data.len() {
+            break;
+        }
+
+        let entry = &gpt_data[entry_offset..entry_offset + part_entry_size as usize];
+        let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
+        if unique_guid_zero {
+            break;
+        }
+
+        let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
+        let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
+        let start = first_lba.saturating_mul(512);
+        let size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
+
+        let name_utf16: Vec<u16> = (0..28)
+            .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
+            .collect();
+        let name = String::from_utf16_lossy(&name_utf16)
+            .trim_end_matches('\0')
+            .to_string();
+
+        println!("{} 0x{:X}", name.to_uppercase().green(), start);
+        println!("{{");
+        println!("  is_upgradeable: 1");
+        println!("  is_download: 1");
+        println!("  is_reserved: 0");
+        println!("  reserve: 0");
+        println!("  operation: UPDATE");
+        println!("  partition_size: 0x{:X}", size);
+        println!("}}");
+        println!();
+    }
+
+    let scatter_file = "MT6768_Android_scatter.txt";
+    generate_scatter_from_gpt(gpt_data, scatter_file)
+        .map_err(|e| format!("scatter 生成失败: {}", e))?;
+    info!("{}", format!("Scatter 已保存: {}", scatter_file).green());
+
+    let shoujixia_file = "scatter_shoujixia.txt";
+    if let Err(e) = generate_scatter_shoujixia(gpt_data, shoujixia_file, "MT6768") {
+        info!("Warning: 刷机匣格式 scatter 生成失败: {}", e);
+    } else {
+        info!("{}", format!("刷机匣格式 scatter 已保存: {}", shoujixia_file).green());
+    }
+
+    if log_level >= 3 {
+        let debug_file = format!(
+            "scatter_debug_{}.txt",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        );
+        generate_scatter_from_gpt(gpt_data, &debug_file)
+            .map_err(|e| format!("调试 scatter 生成失败: {}", e))?;
+    }
+
+    Ok(())
+}
+
+fn cmd_dumpbrom(da: &mut DAXFlash, log_level: u8) -> Result<(), Box<dyn std::error::Error>> {
     da.preloader
-        .run_dump_brom_payload("brom_dump.bin", debug_mode)
+        .run_dump_brom_payload("brom_dump.bin", log_level >= 2)
         .map_err(|e| format!("BROM 提取失败: {}", e))?;
     info!("{}", "BROM 已提取: brom_dump.bin".green());
     Ok(())

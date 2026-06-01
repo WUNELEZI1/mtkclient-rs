@@ -89,10 +89,10 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn from_cli(cli: &crate::cli::Cli) -> Self {
-        let log_level = if cli.debug_mode {
-            log::LevelFilter::Trace
-        } else {
-            log::LevelFilter::Info
+        let log_level = match cli.log_level {
+            2 => log::LevelFilter::Debug,
+            3 => log::LevelFilter::Trace,
+            _ => log::LevelFilter::Info,
         };
 
         AppConfig {

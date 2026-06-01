@@ -731,6 +731,20 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
      - 对齐刷机匣流程：COM 口连接 → 握手 → WRITE32 关 WDT → 释放 COM 口 → zadig 安装
      - 验证：cargo build 通过，cargo clippy 0 warning（仅 1 个已有的 dead_code warning）
 
+41. **GPT 备份 + 刷机匣格式 scatter 生成**（2026-05-29）：
+     - GPT 备份：`read_gpt` 执行后自动保存 `gpt.bin`（对齐 mtkclient 行为）
+     - 新增 `generate_scatter_shoujixia(gpt_data, output_file, platform)`：
+       - YAML-like 格式，头部注释 `Jackson's MtkClient`
+       - general 块：`config_version: V1.1.2`、`platform`（动态）、`storage: EMMC`
+       - SYS0: preloader 块（`SV5_BL_BIN`、`EMMC_BOOT1_BOOT2`、`BOOTLOADERS`）
+       - SYS1+: GPT 分区（跳过 `flashinfo` 和 `Unalloc_*`）
+       - `file_name`: `{分区名}.img`
+       - type 判断：`preloader/pgpt/sgpt` → `SV5_BL_BIN`，其他 → `NORMAL_ROM`
+       - region 判断：boot 分区 → `EMMC_BOOT1_BOOT2`，其他 → `EMMC_USER`
+       - operation_type：boot → `BOOTLOADERS`，其他 → `UPDATE`
+       - 保留旧版 `generate_scatter_from_gpt` 兼容
+     - 验证：cargo build 通过，cargo clippy 0 warning
+
 39. **driver.rs：install-drivers 循环等待 BROM 设备**（2026-05-29）：
      - 问题：`install-drivers --force` 只检测一次 COM 口，没找到就跳过
      - 修复：改为 `loop` 循环等待（2 秒间隔），提示用户进入 BROM 模式
