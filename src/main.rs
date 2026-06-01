@@ -236,36 +236,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    if let Some(ref input_file) = cli.no_device {
-        if cmd == "unlock"
-            || (cmd == "da"
-                && cli.args.first().map(|s| s.as_str()) == Some("seccfg")
-                && cli.args.get(1).map(|s| s.as_str()) == Some("unlock"))
-        {
-            match seccfg::seccfg_unlock_offline(input_file) {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    error!("离线解锁失败: {}", e);
-                    process::exit(1);
-                }
-            }
-        }
-        if cmd == "lock"
-            || (cmd == "da"
-                && cli.args.first().map(|s| s.as_str()) == Some("seccfg")
-                && cli.args.get(1).map(|s| s.as_str()) == Some("lock"))
-        {
-            match seccfg::seccfg_lock_offline(input_file) {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    error!("离线锁定失败: {}", e);
-                    process::exit(1);
-                }
-            }
-        }
-        return Err(format!("不支持的离线命令: {}", cmd).into());
-    }
-
     if cmd == "dump-preloader" {
         let usb_context = UsbContext::new().inspect_err(|e| {
             error!("{}", e);

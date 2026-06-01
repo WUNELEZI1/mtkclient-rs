@@ -70,12 +70,6 @@ pub struct Cli {
     pub force: bool,
 
     #[arg(
-        long = "no-device",
-        help = "离线模式：不连接设备，直接处理 seccfg 文件"
-    )]
-    pub no_device: Option<String>,
-
-    #[arg(
         help = "要执行的命令",
         long_help = "可用命令:\n\
           install-drivers - 自动安装 WinUSB 驱动（需要管理员权限）\n\
@@ -90,10 +84,6 @@ pub struct Cli {
           lock            - 锁定 Bootloader\n\
           reset           - 重置设备\n\
           enable-adb-on-da - 在 DA 模式下开启 ADB\n\
-\n\
-          离线模式:\n\
-          unlock --no-device <seccfg文件> - 离线解锁 seccfg\n\
-          lock --no-device <seccfg文件>   - 离线锁定 seccfg\n\
 \n\
           批量模式（一次连接执行多个命令）:\n\
           mtkclient-rs printgpt r boot boot.img e userdata"

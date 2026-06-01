@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 
 /// SecCfg V4 解析和修改
 // 预留：unlock/lock 功能使用
+#[allow(dead_code)]
 pub(crate) struct SecCfgV4 {
     magic: u32,
     seccfg_ver: u32,
@@ -128,6 +129,7 @@ impl SecCfgV4 {
     /// 修改 seccfg V4（lock/unlock）
     /// 对齐 C# 版正确行为：只修改 lock_state(0x0C)，不动 critical_lock_state/dm_verity(0x10)
     /// Python mtkclient 的 Bug：错误地将 offset 0x10 写为 01，导致 dm-verity corruption
+    #[allow(dead_code)]
     pub(crate) fn create(&self, lockflag: &str, partition_size: usize) -> Result<Vec<u8>, String> {
         let new_lock = if lockflag == "unlock" {
             if self.lock_state == 3 {
@@ -451,103 +453,6 @@ impl SecCfgV3 {
         );
         Ok(result)
     }
-}
-
-/// 自动检测 seccfg 版本
-pub fn detect_seccfg_version(data: &[u8]) -> Result<&str, String> {
-    if data.len() >= 4 && data[0..4] == [0x4D, 0x4D, 0x4D, 0x4D] {
-        Ok("V4")
-    } else if data.len() >= 16 && &data[0..16] == b"AND_SECCFG_v\x00\x00\x00\x00" {
-        Ok("V3")
-    } else {
-        Err("未知 seccfg 版本".into())
-    }
-}
-
-/// 离线模式解锁 seccfg
-pub fn seccfg_unlock_offline(input_file: &str) -> Result<(), String> {
-    let data = std::fs::read(input_file).map_err(|e| format!("无法读取文件: {}", e))?;
-
-    let version = detect_seccfg_version(&data)?;
-    println!("检测到 {} 锁", version);
-
-    let new_data = match version {
-        "V4" => {
-            println!("  HACC init");
-            println!("  HACC run");
-            let v4 = SecCfgV4::parse(&data)?;
-            println!("  HACC terminate");
-            println!("  HwType: {}", v4.hwtype);
-            println!("  关闭DM验证 ...");
-            v4.create("unlock", 0x800000)?
-        }
-        "V3" => {
-            println!("  HACC init");
-            println!("  HACC run");
-            let v3 = SecCfgV3::parse(&data)?;
-            println!("  HACC terminate");
-            println!("  HwType: {}", v3.hwtype);
-            v3.create("unlock", 0x800000)?
-        }
-        _ => return Err(format!("不支持的版本: {}", version)),
-    };
-
-    let output_path = if let Some(idx) = input_file.rfind('.') {
-        format!("{}_unlock{}", &input_file[..idx], &input_file[idx..])
-    } else {
-        format!("{}_unlock", input_file)
-    };
-
-    std::fs::write(&output_path, &new_data).map_err(|e| format!("写入文件失败: {}", e))?;
-
-    println!("  镜像格式为RAW ...");
-    println!(
-        "  进度: |████████████████████████████████████████| 100.0% 写入 ({} B => {} B)",
-        new_data.len(),
-        new_data.len()
-    );
-    println!("  成功写入SecCfg");
-    println!("成功生成 unlock 文件: {}", output_path);
-    Ok(())
-}
-
-/// 离线模式锁定 seccfg
-pub fn seccfg_lock_offline(input_file: &str) -> Result<(), String> {
-    let data = std::fs::read(input_file).map_err(|e| format!("无法读取文件: {}", e))?;
-
-    let version = detect_seccfg_version(&data)?;
-    println!("检测到 {} 锁", version);
-
-    let new_data = match version {
-        "V4" => {
-            let v4 = SecCfgV4::parse(&data)?;
-            println!("  HwType: {}", v4.hwtype);
-            v4.create("lock", 0x800000)?
-        }
-        "V3" => {
-            let v3 = SecCfgV3::parse(&data)?;
-            println!("  HwType: {}", v3.hwtype);
-            v3.create("lock", 0x800000)?
-        }
-        _ => return Err(format!("不支持的版本: {}", version)),
-    };
-
-    let output_path = if let Some(idx) = input_file.rfind('.') {
-        format!("{}_lock{}", &input_file[..idx], &input_file[idx..])
-    } else {
-        format!("{}_lock", input_file)
-    };
-
-    std::fs::write(&output_path, &new_data).map_err(|e| format!("写入文件失败: {}", e))?;
-
-    println!(
-        "  进度: |████████████████████████████████████████| 100.0% 写入 ({} B => {} B)",
-        new_data.len(),
-        new_data.len()
-    );
-    println!("  成功写入SecCfg");
-    println!("成功生成 lock 文件: {}", output_path);
-    Ok(())
 }
 
 fn build_v4_header(
