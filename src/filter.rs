@@ -57,6 +57,7 @@ pub fn list_filter_for_device(hwid: &str) -> Result<String, String> {
     run_install_filter(&["list", &arg])
 }
 
+#[allow(dead_code)]
 pub fn install_filter_driver(debug_mode: bool) -> Result<(), String> {
     let devices = [BROM_HWID, PRELOADER_HWID];
     for hwid in devices {

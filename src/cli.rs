@@ -59,7 +59,7 @@ pub struct Cli {
     )]
     pub usb_log: bool,
 
-    #[arg(long = "check-driver", action = clap::ArgAction::SetTrue, help = "检查 WinUSB 驱动状态")]
+    #[arg(long = "check-driver", action = clap::ArgAction::SetTrue, help = "检查驱动状态")]
     pub check_driver: bool,
 
     #[arg(
@@ -79,7 +79,6 @@ pub struct Cli {
     #[arg(
         help = "要执行的命令",
         long_help = "可用命令:\n\
-          install-drivers - 自动安装 WinUSB 驱动（需要管理员权限）\n\
           printgpt        - 打印 GPT 分区表\n\
           dump-preloader  - 从 RAM 提取 Preloader\n\
           dumpbrom        - 提取 BROM 到文件\n\
