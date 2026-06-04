@@ -1,4 +1,5 @@
 use crate::config::{CHIP_CONFIGS, ChipConfig, TargetConfig};
+use colored::Colorize;
 use log::{debug, info};
 use std::time::Duration;
 
@@ -37,7 +38,33 @@ pub trait BromTransport {
     }
 }
 
-/// serialport 实现 BROM 传输
+/// 扫描 COM 端口寻找 MediaTek 设备
+pub fn detect_serial_preloader() -> Option<String> {
+    info!("开始扫描 COM 端口 (1-20)...");
+    
+    // 直接尝试打开 COM1-COM20，不使用 available_ports()
+    for i in 1..=20 {
+        let port_name = format!("COM{}", i);
+        info!("尝试打开 {}...", port_name);
+        match serialport::new(&port_name, 115200)
+            .timeout(std::time::Duration::from_millis(200))
+            .open() {
+            Ok(_port) => {
+                info!("成功打开 {} - 可能是 MediaTek 设备", port_name);
+                return Some(port_name);
+            }
+            Err(e) => {
+                // 记录错误，但只记录前几个端口
+                if i <= 5 {
+                    info!("{} 打开失败: {}", port_name, e);
+                }
+            }
+        }
+    }
+    
+    info!("未找到可用的 COM 端口");
+    None
+}
 #[allow(dead_code)]
 pub struct SerialPortTransport {
     port: Box<dyn serialport::SerialPort>,
@@ -74,9 +101,20 @@ impl BromTransport for SerialPortTransport {
     }
 
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
-        self.port
-            .read(buf)
-            .map_err(|e| format!("serial read: {}", e))
+        // 循环读满，因为 serialport::SerialPort::read 不保证读满 buf
+        let mut total = 0;
+        while total < buf.len() {
+            match self.port.read(&mut buf[total..]) {
+                Ok(n) => {
+                    if n == 0 {
+                        return Err("serial read: unexpected EOF".into());
+                    }
+                    total += n;
+                }
+                Err(e) => return Err(format!("serial read: {}", e)),
+            }
+        }
+        Ok(total)
     }
 
     fn set_timeout(&mut self, duration: Duration) {
@@ -89,16 +127,24 @@ impl BromTransport for SerialPortTransport {
     }
 
     fn do_handshake(&mut self) -> Result<bool, String> {
+        // 对齐 Python mtkclient：一次性发送 4 字节握手命令，然后读取 4 字节回显
+        // 串口模式下，设备可能批量响应，不是字节对字节的 echo
         let startcmd = [0xA0u8, 0x0A, 0x50, 0x05];
-        for (i, cmd_byte) in startcmd.iter().enumerate() {
-            self.write(&[*cmd_byte])?;
-            let mut response = [0u8; 1];
-            self.read_exact(&mut response)?;
+        
+        // 一次性发送 4 字节
+        self.write(&startcmd)?;
+        
+        // 一次性读取 4 字节回显
+        let mut response = [0u8; 4];
+        self.read_exact(&mut response)?;
+        
+        // 验证每个字节都是取反的回显
+        for (i, (recv, cmd_byte)) in response.iter().zip(startcmd.iter()).enumerate() {
             let expected = !*cmd_byte;
-            if response[0] != expected {
+            if *recv != expected {
                 return Err(format!(
                     "串口握手失败 字节 {}: 期望 0x{:02X}, 收到 0x{:02X}",
-                    i, expected, response[0]
+                    i, expected, recv
                 ));
             }
         }
@@ -123,9 +169,45 @@ impl Preloader {
         }
     }
 
-    /// 基础初始化（BROM 握手确认设备可用）
+    /// 完整初始化：握手 + 关闭看门狗 + 读取设备信息
     pub fn init(&mut self) -> Result<bool, String> {
-        self.device.do_handshake()
+        // 1. 握手
+        if !self.device.do_handshake()? {
+            return Ok(false);
+        }
+
+        // 2. 先获取 HW code 来匹配芯片配置
+        let hw = self.get_hw_code()?;
+        let chip = CHIP_CONFIGS
+            .iter()
+            .find(|c| c.hw_code == hw)
+            .ok_or_else(|| format!("未知芯片: HW code 0x{:04X}", hw))?;
+
+        // 3. 关闭看门狗（对齐 Python mtkclient 和刷机匣行为）
+        // 协议：echo(0xD4) → echo_4byte(wdt_addr) → echo_4byte(wdt_value) → rword()
+        if !self.echo_1byte(0xD4)? {
+            return Err("关闭看门狗: echo 0xD4 不匹配".into());
+        }
+
+        let wdt_addr = chip.watchdog;
+        let wdt_value: u32 = 0x22000000;
+
+        debug!("关闭看门狗: 地址=0x{:08X}, 值=0x{:08X}", wdt_addr, wdt_value);
+
+        if !self.echo_4byte(wdt_addr)? {
+            return Err("关闭看门狗: echo addr 不匹配".into());
+        }
+        if !self.echo_4byte(wdt_value)? {
+            return Err("关闭看门狗: echo value 不匹配".into());
+        }
+
+        let status = self.rword()?;
+        if status != 0x0001 {
+            return Err(format!("关闭看门狗失败: status=0x{:04X}", status));
+        }
+
+        debug!("{}", "看门狗已关闭".green().bold());
+        Ok(true)
     }
 
     /// BROM echo 协议：完全对齐 Python Port.echo() (Port.py:210-229)
