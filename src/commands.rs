@@ -130,15 +130,14 @@ pub fn handle_command(
         info!("Warning: EMI 加载失败: {}", e);
     }
 
-    da.upload_da()
-        .map_err(|e| format!("DA 加载失败: {}", e))
-        .and_then(|ok| {
-            if ok {
-                Ok(())
-            } else {
-                Err("DA 加载失败".to_string())
-            }
-        })?;
+    // DA 已加载则跳过完整 upload_da，只做 reinit 复用会话
+    if da.daext {
+        info!("DA 已加载，复用会话");
+        da.reinit().map_err(|e| format!("DA reinit 失败: {}", e))?;
+    } else {
+        da.upload_da()
+            .map_err(|e| format!("DA 加载失败: {}", e))?;
+    }
 
     if log_level >= 2 {
         if let Some(data) = da.get_emi_data() {
