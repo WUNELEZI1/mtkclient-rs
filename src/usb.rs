@@ -152,6 +152,92 @@ pub struct UsbDevice {
 }
 
 impl UsbDevice {
+    /// 通过指定 VID/PID 打开设备
+    pub fn open_by_vid_pid(context: &UsbContext, vid: u16, pid: u16) -> Result<Self, String> {
+        let ctx = context.as_ptr();
+        unsafe {
+            let handle = libusb1_sys::libusb_open_device_with_vid_pid(ctx, vid, pid);
+            if handle.is_null() {
+                return Err(format!("未找到设备 VID=0x{:04X} PID=0x{:04X}", vid, pid));
+            }
+
+            // 对齐 Python usblib.py connect()：先 claim 0 再 claim 1
+            libusb1_sys::libusb_detach_kernel_driver(handle, 0);
+            let _ = libusb1_sys::libusb_claim_interface(handle, 0);
+            libusb1_sys::libusb_detach_kernel_driver(handle, 1);
+            if libusb1_sys::libusb_claim_interface(handle, 1) != 0 {
+                return Err("claim interface 1 failed".into());
+            }
+
+            let device = libusb1_sys::libusb_get_device(handle);
+            if device.is_null() {
+                return Err("获取设备描述失败：设备可能已断开".into());
+            }
+
+            let mut desc: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
+            let ret_desc = libusb1_sys::libusb_get_device_descriptor(device, &mut desc);
+            if ret_desc != 0 {
+                return Err(format!("获取设备描述失败 (error {})", ret_desc));
+            }
+
+            debug!("[USB] scanning endpoints...");
+            let mut config_ptr: *const libusb1_sys::libusb_config_descriptor = std::ptr::null();
+            let mut ep_out_addr: u8 = 0x01;
+            let mut ep_in_addr: u8 = 0x81;
+            let mut ep_out_max_pkt: u16 = 512;
+            let ret = libusb1_sys::libusb_get_active_config_descriptor(device, &mut config_ptr);
+            if ret != 0 || config_ptr.is_null() {
+                info!(
+                    "[USB] WARNING: get_active_config_descriptor failed (ret={}), trying known combos...",
+                    ret
+                );
+            } else {
+                let config = &*config_ptr;
+                for i in 0..config.bNumInterfaces as isize {
+                    let iface = &*config.interface.wrapping_add(i as usize);
+                    for j in 0..iface.num_altsetting {
+                        let alt = &*iface.altsetting.wrapping_add(j as usize);
+                        for k in 0..alt.bNumEndpoints as isize {
+                            let ep = &*alt.endpoint.wrapping_add(k as usize);
+                            let addr = ep.bEndpointAddress;
+                            let dir = if addr & 0x80 != 0 { "IN" } else { "OUT" };
+                            let ep_type = match ep.bmAttributes & 0x03 {
+                                0 => "Control",
+                                1 => "Isochronous",
+                                2 => "Bulk",
+                                3 => "Interrupt",
+                                _ => "Unknown",
+                            };
+                            if dir == "OUT" && ep_type == "Bulk" {
+                                ep_out_addr = addr;
+                                ep_out_max_pkt = ep.wMaxPacketSize;
+                            }
+                            if dir == "IN" && ep_type == "Bulk" {
+                                ep_in_addr = addr;
+                            }
+                        }
+                    }
+                }
+                libusb1_sys::libusb_free_config_descriptor(config_ptr);
+            }
+
+            info!(
+                "[USB] 已打开设备 VID=0x{:04X} PID=0x{:04X} EP_OUT=0x{:02X} EP_IN=0x{:02X}",
+                vid, pid, ep_out_addr, ep_in_addr
+            );
+
+            Ok(UsbDevice {
+                handle,
+                vid,
+                pid,
+                device_type: DeviceType::Unknown,
+                ep_out: ep_out_addr,
+                ep_in: ep_in_addr,
+                timeout: Duration::from_millis(1000),
+            })
+        }
+    }
+
     pub fn new(context: &UsbContext) -> Result<Self, String> {
         let ctx = context.as_ptr();
         unsafe {

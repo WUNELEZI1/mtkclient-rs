@@ -33,6 +33,11 @@ enum DeviceMode {
     Unknown,
 }
 
+enum DeviceTransport {
+    Usb,
+    Serial(String),
+}
+
 fn detect_mode(vid: u16, pid: u16) -> DeviceMode {
     match config::DeviceType::from_vid_pid(vid, pid) {
         config::DeviceType::Brom => DeviceMode::Brom,
@@ -43,8 +48,38 @@ fn detect_mode(vid: u16, pid: u16) -> DeviceMode {
     }
 }
 
-fn smart_init(context: &UsbContext) -> Result<(usb::UsbDevice, DeviceMode), String> {
-    info!("{}", "等待设备连接 (BROM: Vol+ + Vol- + Power)".yellow());
+/// 统一设备初始化入口 — 优先尝试串口 (Preloader)，失败后回退到 USB (BROM)
+fn smart_init(context: &UsbContext) -> Result<(preloader::Preloader, DeviceMode), String> {
+    // 先尝试串口检测 (Preloader 模式) — 轮询等待 COM 端口出现
+    info!("{}", "等待设备连接 (Preloader: 直接连接 / BROM: Vol+ + Vol- + Power)".yellow());
+
+    let mut serial_attempt = 0;
+    const MAX_SERIAL_ATTEMPTS: usize = 30;
+
+    while serial_attempt < MAX_SERIAL_ATTEMPTS {
+        serial_attempt += 1;
+
+        // 快速扫描 COM 端口
+        if let Some(port_name) = preloader::detect_serial_preloader() {
+            info!("{}", format!("发现 Preloader 串口设备: {}", port_name).yellow());
+            info!("{}", "正在通过串口连接设备...".yellow());
+            let serial_transport = preloader::SerialPortTransport::new(&port_name, 115200)
+                .map_err(|e| format!("打开串口失败: {}", e))?;
+            let serial_device: Box<dyn preloader::BromTransport> = Box::new(serial_transport);
+            let mut preloader_instance = preloader::Preloader::new(serial_device);
+            if preloader_instance.init().unwrap_or(false) {
+                info!("{}", "串口设备握手成功".green().bold());
+                info!("{}", "Preloader 模式连接成功".green().bold());
+                return Ok((preloader_instance, DeviceMode::Preloader));
+            }
+            info!("串口握手失败，继续轮询...");
+        }
+
+        // 等待 1 秒后重试
+        std::thread::sleep(Duration::from_secs(1));
+    }
+
+    info!("串口检测超时，尝试 USB 模式...");
 
     let mut no_device_count = 0;
     const MAX_NO_DEVICE_LOOPS: usize = 30;
@@ -58,7 +93,8 @@ fn smart_init(context: &UsbContext) -> Result<(usb::UsbDevice, DeviceMode), Stri
                 no_device_count += 1;
                 if no_device_count == MAX_NO_DEVICE_LOOPS {
                     error!("{}", "设备未连接超时".red());
-                    info!("请按住 音量+ + 音量- 插入 USB");
+                    info!("请按住 音量+ + 音量- 插入 USB (BROM模式)");
+                    info!("或直接插入 USB (Preloader模式)");
                     return Err("设备未连接，请重试".to_string());
                 }
                 std::thread::sleep(Duration::from_secs(1));
@@ -74,7 +110,8 @@ fn smart_init(context: &UsbContext) -> Result<(usb::UsbDevice, DeviceMode), Stri
     info!("{}", "正在打开设备...".yellow());
 
     info!("{}", "连接成功".green().bold());
-    Ok((usb_device, mode))
+    let preloader = preloader::Preloader::new(Box::new(usb_device));
+    Ok((preloader, mode))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -130,13 +167,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let usb_context = UsbContext::new().inspect_err(|e| {
             error!("{}", e);
         })?;
-        let (usb_device, _mode) = smart_init(&usb_context).inspect_err(|e| {
+        let (mut preloader, _mode) = smart_init(&usb_context).inspect_err(|e| {
             error!("{}", e);
         })?;
-        let mut preloader = preloader::Preloader::new(Box::new(usb_device));
-        if !preloader.init().unwrap_or(false) {
-            return Err("设备初始化失败".into());
-        }
         let _ = preloader.jump_bl();
         return Ok(());
     }
@@ -146,15 +179,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             error!("{}", e);
         })?;
 
-        let (usb_device, _mode) = smart_init(&usb_context).inspect_err(|e| {
+        let (mut preloader, _mode) = smart_init(&usb_context).inspect_err(|e| {
             error!("{}", e);
         })?;
-
-        let mut preloader = preloader::Preloader::new(Box::new(usb_device));
-
-        if !preloader.init().unwrap_or(false) {
-            return Err("设备初始化失败".into());
-        }
 
         match preloader.dump_preloader_payload(false, false, &usb_context) {
             Ok((data, filename)) => {
@@ -178,15 +205,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         error!("{}", e);
     })?;
 
-    let (usb_device, mode) = smart_init(&usb_context).inspect_err(|e| {
+    let (mut preloader, mode) = smart_init(&usb_context).inspect_err(|e| {
         error!("{}", e);
     })?;
-
-    let mut preloader = preloader::Preloader::new(Box::new(usb_device));
-
-    if !preloader.init().unwrap_or(false) {
-        return Err("设备初始化失败".into());
-    }
 
     let final_preloader_path = if let Some(ref path) = app_config.preloader_path {
         info!("使用指定的 preloader 文件: {}", path);
