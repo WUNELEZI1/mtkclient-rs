@@ -183,30 +183,96 @@ impl Preloader {
             .find(|c| c.hw_code == hw)
             .ok_or_else(|| format!("未知芯片: HW code 0x{:04X}", hw))?;
 
-        // 3. 关闭看门狗（对齐 Python mtkclient 和刷机匣行为）
-        // 协议：echo(0xD4) → echo_4byte(wdt_addr) → echo_4byte(wdt_value) → rword()
+        // 3. 关闭看门狗（完全对齐刷机匣真实设备日志）
+        // 刷机匣序列 (mainLogs_2026-06-01T17_58_38.log 第 67-96 行):
+        //   写 D4 → 读 D4                  (echo 1字节)
+        //   写 10007000 → 读 10007000      (echo 4字节)
+        //   写 00000001 → 读 00000001      (echo 4字节)
+        //   读 0001                         (status1 = 0x0001)
+        //   写 22000000 → 读 22000000      (echo 4字节)
+        //   读 0001                         (status2 = 0x0001)
         if !self.echo_1byte(0xD4)? {
             return Err("关闭看门狗: echo 0xD4 不匹配".into());
         }
 
         let wdt_addr = chip.watchdog;
+        let wdt_data: u32 = 0x00000001;
         let wdt_value: u32 = 0x22000000;
 
-        debug!("关闭看门狗: 地址=0x{:08X}, 值=0x{:08X}", wdt_addr, wdt_value);
+        debug!("关闭看门狗: 地址=0x{:08X}, data=0x{:08X}, value=0x{:08X}", wdt_addr, wdt_data, wdt_value);
 
+        // 步骤 1: echo 地址
         if !self.echo_4byte(wdt_addr)? {
             return Err("关闭看门狗: echo addr 不匹配".into());
         }
+        // 步骤 2: echo data=1
+        if !self.echo_4byte(wdt_data)? {
+            return Err("关闭看门狗: echo data 不匹配".into());
+        }
+        // 步骤 3: 读 status1 (刷机匣日志显示 0x0001)
+        let status1 = self.rword()?;
+        debug!("关闭看门狗 status1: 0x{:04X}", status1);
+        if status1 != 0x0001 {
+            return Err(format!("关闭看门狗失败: status1=0x{:04X}", status1));
+        }
+        // 步骤 4: echo wdt_value=0x22000000
         if !self.echo_4byte(wdt_value)? {
             return Err("关闭看门狗: echo value 不匹配".into());
         }
-
-        let status = self.rword()?;
-        if status != 0x0001 {
-            return Err(format!("关闭看门狗失败: status=0x{:04X}", status));
+        // 步骤 5: 读 status2 (刷机匣日志显示 0x0001)
+        let status2 = self.rword()?;
+        debug!("关闭看门狗 status2: 0x{:04X}", status2);
+        if status2 != 0x0001 {
+            return Err(format!("关闭看门狗失败: status2=0x{:04X}", status2));
         }
 
         debug!("{}", "看门狗已关闭".green().bold());
+
+        // 4. get_target_config — 对齐刷机匣第 101-108 行
+        if !self.echo_1byte(0xD8)? {
+            return Err("BROM init: echo 0xD8 不匹配".into());
+        }
+        let mut tc_buf = [0u8; 6];
+        self.device
+            .read_exact(&mut tc_buf)
+            .map_err(|e| format!("BROM init: read target_config: {}", e))?;
+        let target_cfg = u32::from_be_bytes([tc_buf[0], tc_buf[1], tc_buf[2], tc_buf[3]]);
+        let tc_status = u16::from_be_bytes([tc_buf[4], tc_buf[5]]);
+        debug!("BROM target_config: 0x{:08X}, status: 0x{:04X}", target_cfg, tc_status);
+
+        // 5. BROM sync: echo(0xFE) → 读 FE — 对齐刷机匣第 141-145 行
+        if !self.echo_1byte(0xFE)? {
+            return Err("BROM sync FE 失败".into());
+        }
+        debug!("BROM 模式同步成功");
+
+        // 6. 进入 ID 读取阶段: echo(0xFF) → 读响应 — 对齐刷机匣第 149-153 行
+        self.device
+            .write(&[0xFF])
+            .map_err(|e| format!("BROM FF write: {}", e))?;
+        let mut ff_resp = [0u8; 1];
+        self.device
+            .read_exact(&mut ff_resp)
+            .map_err(|e| format!("BROM FF read: {}", e))?;
+        debug!("BROM FF 响应: 0x{:02X}", ff_resp[0]);
+
+        // 7. 读 HW SubCode / HW Ver / SW Ver — 对齐刷机匣第 155-162 行
+        if !self.echo_1byte(0xFC)? {
+            return Err("BROM FC echo 不匹配".into());
+        }
+        let mut hw_info = [0u8; 8];
+        self.device
+            .read_exact(&mut hw_info)
+            .map_err(|e| format!("BROM read hw_info: {}", e))?;
+        let hw_subcode = u16::from_be_bytes([hw_info[0], hw_info[1]]);
+        let hw_ver = u16::from_be_bytes([hw_info[2], hw_info[3]]);
+        let sw_ver = u16::from_be_bytes([hw_info[4], hw_info[5]]);
+        debug!(
+            "BROM HW info: subcode=0x{:04X}, hw_ver=0x{:04X}, sw_ver=0x{:04X}",
+            hw_subcode, hw_ver, sw_ver
+        );
+
+        debug!("{}", "BROM 初始化完成".green().bold());
         Ok(true)
     }
 
