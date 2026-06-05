@@ -763,3 +763,30 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - `get_connection_agent` → `ConnectionManager` (统一状态机)
      - 验证：cargo build 通过，2 个 warning（1 个旧 `from_vid_pid`，1 个预留 `reconnect_callback`）
 
+28. **工程级稳定连接架构完善：UsbStage + 多PID扫描 + DA重连**（2026-06-04）：
+     - 问题：reconnect_loop 只能扫描固定 PID，不支持阶段识别；DA 加载后无专用重连方法
+     - 修复：
+       - **`usb.rs` 新增 `UsbStage` 枚举**：
+         - `UsbStage::Brom`（PID=0x0003）/ `Preloader`（PID=0x2000）/ `Unknown`
+         - `UsbStage::from_pid(pid)` 自动识别设备阶段
+         - `UsbDevice::stage` 字段公开，可查询当前设备阶段
+         - `open_device()` 中自动设置 `stage` 字段（两处构造函数均已更新）
+       - **`connection.rs` reconnect_loop 升级**：
+         - 签名改为 `reconnect_loop(context, target_stage: UsbStage)`
+         - 根据目标阶段动态确定扫描的 PID 列表：
+           - `Brom` → `[0x0003]`
+           - `Preloader` → `[0x2000]`
+           - `Unknown` → `[0x0003, 0x2000]`
+         - 每次重试遍历所有候选 PID（静默失败，不打印噪音）
+         - 成功日志：`[RECONNECT] success on attempt N/50 (stage=Brom, PID=0x0003)`
+       - **新增 `reconnect_after_da()`**：
+         - 等待 500ms → 快速连接 BROM PID（5次重试）→ 失败则扫描所有已知 PID
+         - 对齐 MTKClient Python：DA 加载后设备 USB reset，需重连
+       - **新增 `reconnect_after_kamakiri()`**：
+         - 等待 500ms → reconnect_loop(Brom)
+         - 对齐 mtkclient stage2.py：payload 后设备 USB reset
+       - **新增 `try_quick_connect()`**（私有方法）：
+         - 快速连接尝试，用于 DA 后快速重连场景
+     - 完整链路：`Preloader(串口) → BROM → DA → reconnect` 全流程已打通
+     - 验证：cargo build 通过，2 个 warning（旧 `from_vid_pid` + 预留方法 dead_code）
+
