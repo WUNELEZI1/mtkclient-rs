@@ -17,6 +17,7 @@ mod connection;
 mod da_extension;
 mod da_partition;
 mod da_xflash;
+mod driver;
 mod frp;
 mod kamakiri2;
 mod paths;
