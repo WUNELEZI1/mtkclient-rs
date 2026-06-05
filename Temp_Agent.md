@@ -713,3 +713,24 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
          - 默认端点 OUT=0x01, IN=0x81
      - 验证：cargo build 通过，无新增 warning
 
+26. **架构重构：ConnectionManager 统一连接状态机 + 移除 libusb_filter**（2026-06-04）：
+     - 问题：libusb-win32 filter 注入方案存在 race condition，设备重枚举不稳定；smart_init 逻辑分散在 main.rs 中难以维护
+     - 根因：驱动层依赖 install-filter.exe 注入 filter driver，Windows 驱动模型复杂，filter 安装后设备状态变化不可控
+     - 方案：完全重构为 ConnectionManager 驱动的三层连接系统，对齐 MTKClient Python 行为
+     - 修复：
+       - **新模块 `connection.rs`**：ConnectionManager 统一连接状态机
+         - `smart_init()` → 串口检测 → 握手 → init → 释放串口 → reconnect_loop → libusb 接管
+         - `serial_connect()` → 独立串口握手流程
+         - `reconnect_loop()` → 10秒超时，200ms重试，循环检测 libusb 设备
+         - `DeviceMode` 从 main.rs 移到 connection.rs 统一管理
+       - **`main.rs` 精简**：删除 smart_init/detect_mode/DeviceMode/DeviceTransport，改用 ConnectionManager
+       - **移除 `libusb_filter.rs`**：不再使用 libusb-win32 filter 注入方案
+       - **`commands.rs` 更新**：import 从 `crate::DeviceMode` 改为 `crate::connection::DeviceMode`
+       - **`build.rs` 回退**：移除 install-filter.exe 拷贝逻辑（不再需要）
+       - **`usb.rs` 保持**：open_by_vid_pid 已完善的 detach/claim/endpoint 扫描逻辑
+     - 对齐 MTKClient Python：
+       - `usblib.py::connect()` → `UsbDevice::open_by_vid_pid()` (detach + claim + endpoint 扫描)
+       - `mtk_preloader.py::init()` → `ConnectionManager::reconnect_loop()` (循环重试)
+       - `Port.py::run_handshake()` → `SerialPortTransport` 握手
+     - 验证：cargo build 通过，1 个旧 warning（`config.rs::from_vid_pid` 不再使用）
+
