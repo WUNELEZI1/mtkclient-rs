@@ -251,35 +251,21 @@ fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
 }
 
 fn print_gpt_table(data: &[u8]) {
-    let base = match data.windows(8).position(|w| w == b"EFI PART") {
-        Some(off) => off,
-        None => return,
+    let gpt_info = match crate::da_partition::GptInfo::parse(data) {
+        Ok(info) => info,
+        Err(_) => return,
     };
 
-    let revision = u32::from_le_bytes(data[base + 8..base + 12].try_into().unwrap());
-    let num_part_entries = u32::from_le_bytes(data[base + 80..base + 84].try_into().unwrap());
-    let part_entry_size = u32::from_le_bytes(data[base + 84..base + 88].try_into().unwrap());
-    let part_entry_start_lba =
-        u64::from_le_bytes(data[base + 72..base + 80].try_into().unwrap());
+    let revision = gpt_info.revision;
+    let num_part_entries = gpt_info.num_part_entries;
+    let part_entry_size = gpt_info.part_entry_size;
 
     println!();
     println!("{}", " GPT 分区表 ".on_green().black());
     println!("  修订版本:     {}", format!("0x{:08X}", revision).green());
-    println!(
-        "  头部大小:     {} 字节",
-        u32::from_le_bytes(data[base + 12..base + 16].try_into().unwrap())
-    );
+    println!("  头部大小:     {} 字节", gpt_info.header_size);
     println!("  分区数量:     {}", format!("{}", num_part_entries).green());
     println!("  分区项大小:   {} 字节", part_entry_size);
-
-    let mut table_start = (part_entry_start_lba as usize) * 512;
-    if table_start + 4 <= data.len()
-        && data[table_start..table_start + 4]
-            .iter()
-            .all(|&b| b == 0)
-    {
-        table_start += 4;
-    }
 
     println!();
     println!(
@@ -291,43 +277,19 @@ fn print_gpt_table(data: &[u8]) {
     );
     println!("{}", "─".repeat(66).dimmed());
 
-    let mut count = 0;
-    for i in 0..num_part_entries {
-        let entry_offset = table_start + (i as usize) * (part_entry_size as usize);
-        if entry_offset + part_entry_size as usize > data.len() {
-            break;
-        }
-
-        let entry = &data[entry_offset..entry_offset + part_entry_size as usize];
-        let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
-        if unique_guid_zero {
-            break;
-        }
-
-        let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
-        let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
-        let start = first_lba.saturating_mul(512);
-        let size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
-
-        let name_utf16: Vec<u16> = (0..28)
-            .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
-            .collect();
-        let name = String::from_utf16_lossy(&name_utf16)
-            .trim_end_matches('\0')
-            .to_string();
-
-        count += 1;
+    let partitions = gpt_info.partitions();
+    for (count, entry) in partitions.iter().enumerate() {
         println!(
             "{:<4} {:<20} {:<20} {:<20}",
-            format!("#{}", count).dimmed(),
-            name.green(),
-            format!("0x{:014X}", start).yellow(),
-            format!("0x{:014X}", size).yellow(),
+            format!("#{}", count + 1).dimmed(),
+            entry.name.green(),
+            format!("0x{:014X}", entry.start_addr).yellow(),
+            format!("0x{:014X}", entry.size).yellow(),
         );
     }
 
     println!("{}", "─".repeat(66).dimmed());
-    println!("  共 {} 个分区", format!("{}", count).green());
+    println!("  共 {} 个分区", format!("{}", partitions.len()).green());
     println!();
 }
 
@@ -362,65 +324,18 @@ fn cmd_read_all(da: &mut DAXFlash, dir: &str) -> Result<(), Box<dyn std::error::
     }
 
     let gpt_data = da.get_last_gpt_data()?.clone();
+    let gpt_info = crate::da_partition::GptInfo::parse(&gpt_data)?;
 
-    let base = gpt_data
-        .windows(8)
-        .position(|w| w == b"EFI PART")
-        .ok_or("GPT 数据无效")?;
-
-    let num_part_entries = u32::from_le_bytes(gpt_data[base + 80..base + 84].try_into().unwrap());
-    let part_entry_size = u32::from_le_bytes(gpt_data[base + 84..base + 88].try_into().unwrap());
-    let part_entry_start_lba =
-        u64::from_le_bytes(gpt_data[base + 72..base + 80].try_into().unwrap());
-
-    let mut table_start = (part_entry_start_lba as usize) * 512;
-    if table_start + 4 <= gpt_data.len()
-        && gpt_data[table_start..table_start + 4]
-            .iter()
-            .all(|&b| b == 0)
-    {
-        table_start += 4;
-    }
-
-    let mut partitions: Vec<(String, u64, u64)> = Vec::new();
-
-    for i in 0..num_part_entries {
-        let entry_offset = table_start + (i as usize) * (part_entry_size as usize);
-        if entry_offset + part_entry_size as usize > gpt_data.len() {
-            break;
-        }
-
-        let entry = &gpt_data[entry_offset..entry_offset + part_entry_size as usize];
-        let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
-        if unique_guid_zero {
-            break;
-        }
-
-        let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
-        let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
-        let start = first_lba.saturating_mul(512);
-        let size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
-
-        let name_utf16: Vec<u16> = (0..28)
-            .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
-            .collect();
-        let name = String::from_utf16_lossy(&name_utf16)
-            .trim_end_matches('\0')
-            .to_string();
-
-        partitions.push((name, start, size));
-    }
-
-    for (name, start, size) in &partitions {
-        let output = format!("{}/{}.img", dir, name);
+    for entry in gpt_info.iter_partitions() {
+        let output = format!("{}/{}.img", dir, entry.name);
         info!(
             "  读取分区 {} (0x{:X} @ 0x{:X})",
-            name, size, start
+            entry.name, entry.size, entry.start_addr
         );
-        let data = da.readflash_data(*start, *size)
-            .map_err(|e| format!("读取 {} 失败: {}", name, e))?;
+        let data = da.readflash_data(entry.start_addr, entry.size)
+            .map_err(|e| format!("读取 {} 失败: {}", entry.name, e))?;
         std::fs::write(&output, &data).map_err(|e| format!("写入失败: {}", e))?;
-        info!("{}", format!("  {} -> {}", name, output).green());
+        info!("{}", format!("  {} -> {}", entry.name, output).green());
     }
 
     info!("{}", format!("全部分区已读取到: {}", dir).green());
@@ -436,25 +351,7 @@ fn cmd_print_scatter(
     }
 
     let gpt_data = da.get_last_gpt_data()?;
-
-    let base = gpt_data
-        .windows(8)
-        .position(|w| w == b"EFI PART")
-        .ok_or("GPT 数据无效")?;
-
-    let num_part_entries = u32::from_le_bytes(gpt_data[base + 80..base + 84].try_into().unwrap());
-    let part_entry_size = u32::from_le_bytes(gpt_data[base + 84..base + 88].try_into().unwrap());
-    let part_entry_start_lba =
-        u64::from_le_bytes(gpt_data[base + 72..base + 80].try_into().unwrap());
-
-    let mut table_start = (part_entry_start_lba as usize) * 512;
-    if table_start + 4 <= gpt_data.len()
-        && gpt_data[table_start..table_start + 4]
-            .iter()
-            .all(|&b| b == 0)
-    {
-        table_start += 4;
-    }
+    let gpt_info = crate::da_partition::GptInfo::parse(gpt_data)?;
 
     println!();
     println!("{}", " Scatter 文件 (SP Flash Tool 格式) ".on_green().black());
@@ -488,38 +385,15 @@ fn cmd_print_scatter(
     println!("}}");
     println!();
 
-    for i in 0..num_part_entries {
-        let entry_offset = table_start + (i as usize) * (part_entry_size as usize);
-        if entry_offset + part_entry_size as usize > gpt_data.len() {
-            break;
-        }
-
-        let entry = &gpt_data[entry_offset..entry_offset + part_entry_size as usize];
-        let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
-        if unique_guid_zero {
-            break;
-        }
-
-        let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
-        let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
-        let start = first_lba.saturating_mul(512);
-        let size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
-
-        let name_utf16: Vec<u16> = (0..28)
-            .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
-            .collect();
-        let name = String::from_utf16_lossy(&name_utf16)
-            .trim_end_matches('\0')
-            .to_string();
-
-        println!("{} 0x{:X}", name.to_uppercase().green(), start);
+    for entry in gpt_info.iter_partitions() {
+        println!("{} 0x{:X}", entry.name.to_uppercase().green(), entry.start_addr);
         println!("{{");
         println!("  is_upgradeable: 1");
         println!("  is_download: 1");
         println!("  is_reserved: 0");
         println!("  reserve: 0");
         println!("  operation: UPDATE");
-        println!("  partition_size: 0x{:X}", size);
+        println!("  partition_size: 0x{:X}", entry.size);
         println!("}}");
         println!();
     }
