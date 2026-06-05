@@ -1,8 +1,9 @@
+use crate::driver::{self, DeviceBackend};
 use crate::preloader::{self, BromTransport, Preloader};
 use crate::usb;
 use crate::usb::{UsbContext, UsbStage};
 use colored::Colorize;
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::time::Duration;
 
 /// 设备模式
@@ -20,33 +21,37 @@ pub enum DeviceMode {
 /// 1. 统一设备入口（smart_init）
 /// 2. 管理连接状态（BROM ↔ Preloader ↔ DA 切换）
 /// 3. 自动重连（reconnect_loop）
-/// 4. 对齐 MTKClient Python 行为
+/// 4. 自动驱动后端选择（UsbDk → libusb → COM）
+/// 5. 对齐 MTKClient Python 行为
 /// 
-/// 连接优先级（工程级稳定）：
-/// 1. USB 直接检测（BROM VID=0x0E8D PID=0x0003）→ 最快路径
-/// 2. 串口检测（Preloader 模式）→ 握手 → 释放 → USB 重枚举
-/// 3. reconnect_loop（10 秒超时，200ms 重试）
+/// 三层驱动架构：
+/// Layer 1: UsbDk backend（优先，Windows 原生，可绕过 COM 占用）
+/// Layer 2: libusb backend（fallback，需设备未被 Windows 驱动占用）
+/// Layer 3: Serial COM（仅 Preloader 阶段，握手后释放 → USB 重枚举）
 /// 
 /// 对齐 MTKClient Python:
 /// - usblib.py::connect() → UsbDevice::open_by_vid_pid()
 /// - mtk_preloader.py::init() → ConnectionManager::smart_init()
 /// - Port.py::run_handshake() → SerialPortTransport::do_handshake()
-/// 
-/// 驱动策略：
-/// - 不使用 libusb-win32 filter（install-filter.exe）
-/// - 依赖 UsbDk 或系统 WinUSB
-/// - 串口释放后设备自动重枚举为 BROM VID/PID
+/// - get_connection_agent() → driver::detect_backend()
+/// - dynamic backend selection → UsbDk detection + fallback
 pub struct ConnectionManager {
     mode: DeviceMode,
     stage: UsbStage,
+    backend: DeviceBackend,
     port_name: Option<String>,
 }
 
 impl ConnectionManager {
     pub fn new() -> Self {
+        // 启动时检测最佳可用后端
+        let backend = driver::detect_backend();
+        info!("[DRIVER] {}", driver::backend_status());
+
         ConnectionManager {
             mode: DeviceMode::Preloader,
             stage: UsbStage::Unknown,
+            backend,
             port_name: None,
         }
     }
@@ -55,15 +60,21 @@ impl ConnectionManager {
     /// 
     /// 完整流程（对齐刷机匣 + MTKClient Python）：
     /// ```
-    /// 优先级 1: USB 直接连接（BROM 模式）
-    ///   └─ 扫描 VID=0x0E8D → 识别 PID → 设置 stage → open + claim → 返回
+    /// STEP 1: USB fast scan（UsbDk 优先）
+    ///   └─ 尝试打开 BROM PID（0x0003）
+    ///   └─ 成功 → backend = UsbDk/Libusb → 返回
+    ///   └─ 失败 → 进入 STEP 2
     /// 
-    /// 优先级 2: 串口检测 + 握手 + 切换
-    ///   └─ 扫描 COM 端口 → 打开串口 → BROM 握手 → init（watchdog + BROM sync）
+    /// STEP 2: COM scan + handshake
+    ///   └─ 扫描 COM 端口 → 打开串口 → BROM 握手 → init
+    ///   └─ 成功 → stage = Preloader → 进入 STEP 3
+    ///   └─ 失败 → 进入 STEP 4
+    /// 
+    /// STEP 3: COM → USB 切换
     ///   └─ 释放串口（drop）→ 等待重枚举（500ms）
     ///   └─ reconnect_loop(Brom) → libusb 接管
     /// 
-    /// 优先级 3: reconnect_loop 循环检测
+    /// STEP 4: reconnect_loop 循环检测
     ///   └─ 扫描 BROM PID（0x0003）→ 10 秒超时，200ms 重试
     /// ```
     pub fn smart_init(
@@ -73,26 +84,42 @@ impl ConnectionManager {
         info!(
             "等待设备连接 (Preloader: 直接连接 / BROM: Vol+ + Vol- + Power)"
         );
+        info!("[DRIVER] backend={:?}", self.backend);
 
-        // === 优先级 1：USB 直接连接（最快路径） ===
-        // 扫描 BROM PID（0x0003）
+        // === STEP 1: USB fast scan ===
+        // 尝试直接打开 BROM 设备（UsbDk 优先）
         if let Ok(device) = usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
             info!(
-                "  VID: {:04x}, PID: {:04x}, stage=BROM",
-                device.vid, device.pid
+                "  VID: {:04x}, PID: {:04x}, stage={:?}",
+                device.vid, device.pid, device.stage
             );
             info!("{}", "USB 直接连接成功 (BROM 模式)".green().bold());
+            self.backend = if driver::has_usbdk() {
+                DeviceBackend::UsbDk
+            } else {
+                DeviceBackend::Libusb
+            };
             self.mode = DeviceMode::Brom;
             self.stage = UsbStage::Brom;
             return Ok((Preloader::new(Box::new(device)), DeviceMode::Brom));
         }
+
+        // 检测是否被 COM 占用
+        if driver::is_device_com_occupied(0x0E8D, 0x0003) {
+            info!("[USB] 设备被 Windows COM 驱动占用，libusb 无法直接打开");
+            if !driver::has_usbdk() {
+                warn!("[USB] UsbDk 不可用，建议安装 UsbDk 以自动接管设备");
+                warn!("[USB] 或等待串口握手完成后自动切换");
+            }
+        }
         debug!("USB BROM 直接连接失败，尝试串口检测...");
 
-        // === 优先级 2：串口检测 + 握手 + 切换 ===
+        // === STEP 2: COM scan + handshake ===
         if let Some((port_name, preloader)) = self.serial_connect()? {
             info!("串口握手成功，准备切换到 USB 模式...");
 
-            // 释放串口（关键：必须释放 COM 句柄，否则 USB 无法打开）
+            // === STEP 3: COM → USB 切换 ===
+            // 关键：必须释放 COM 句柄，否则 USB 无法打开
             drop(preloader);
             debug!("串口已释放");
 
@@ -109,6 +136,11 @@ impl ConnectionManager {
                 usb_device.vid, usb_device.pid, usb_device.stage
             );
 
+            self.backend = if driver::has_usbdk() {
+                DeviceBackend::UsbDk
+            } else {
+                DeviceBackend::Libusb
+            };
             self.mode = DeviceMode::Brom;
             self.stage = UsbStage::Brom;
             self.port_name = Some(port_name);
@@ -118,7 +150,7 @@ impl ConnectionManager {
             ));
         }
 
-        // === 优先级 3：reconnect_loop 循环检测 ===
+        // === STEP 4: reconnect_loop 循环检测 ===
         info!("串口检测超时，尝试 USB 循环连接...");
 
         let usb_device = self.reconnect_loop(context, UsbStage::Brom)?;
@@ -128,6 +160,11 @@ impl ConnectionManager {
             usb_device.vid, usb_device.pid, usb_device.stage
         );
 
+        self.backend = if driver::has_usbdk() {
+            DeviceBackend::UsbDk
+        } else {
+            DeviceBackend::Libusb
+        };
         self.mode = DeviceMode::Brom;
         self.stage = UsbStage::Brom;
         Ok((Preloader::new(Box::new(usb_device)), DeviceMode::Brom))
@@ -173,7 +210,7 @@ impl ConnectionManager {
         Ok(None)
     }
 
-    /// libusb 重连循环（支持阶段过滤）
+    /// libusb 重连循环（支持阶段过滤 + 设备状态模型）
     /// 
     /// 对齐 MTKClient Python 行为：
     /// - usblib.py::connect() 循环扫描设备
@@ -186,6 +223,7 @@ impl ConnectionManager {
     /// - 支持 Kamakiri exploit 后重连
     /// - 支持 DA 加载后重连
     /// - 所有错误自动重试，不信任单次连接
+    /// - 设备状态模型：避免误连（检查 interface count / endpoints）
     /// 
     /// 阶段过滤：
     /// - UsbStage::Brom → 扫描 PID 0x0003
@@ -225,14 +263,24 @@ impl ConnectionManager {
             for &pid in &pids {
                 match usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, pid) {
                     Ok(device) => {
-                        info!(
-                            "[RECONNECT] success on attempt {}/{} (stage={:?}, PID=0x{:04X})",
-                            retry, max_retries, device.stage, device.pid
-                        );
-                        return Ok(device);
+                        // 设备状态模型验证：确认设备可用
+                        if self.validate_device(&device) {
+                            info!(
+                                "[RECONNECT] success on attempt {}/{} (stage={:?}, PID=0x{:04X})",
+                                retry, max_retries, device.stage, device.pid
+                            );
+                            return Ok(device);
+                        } else {
+                            debug!(
+                                "[RECONNECT] device found but validation failed (PID=0x{:04X})",
+                                pid
+                            );
+                        }
                     }
-                    Err(_) => {
+                    Err(e) => {
                         // 静默失败，继续尝试下一个 PID
+                        // 只在 debug 模式下记录
+                        debug!("[RECONNECT] open_by_vid_pid failed for PID=0x{:04X}: {}", pid, e);
                     }
                 }
             }
@@ -248,6 +296,28 @@ impl ConnectionManager {
             "libusb 连接超时 ({}ms)，未找到设备 PID=[{}]",
             TIMEOUT_MS, pid_list
         ))
+    }
+
+    /// 设备状态验证（避免误连）
+    /// 
+    /// 验证项：
+    /// 1. VID 必须是 0x0E8D
+    /// 2. endpoint 必须存在（OUT + IN）
+    /// 3. 设备可访问
+    fn validate_device(&self, device: &usb::UsbDevice) -> bool {
+        // VID 验证
+        if device.vid != 0x0E8D {
+            warn!("[RECONNECT] invalid VID: {:04X} (expected 0E8D)", device.vid);
+            return false;
+        }
+
+        // endpoint 验证
+        if device.ep_out == 0 || device.ep_in == 0 {
+            warn!("[RECONNECT] missing endpoints: OUT=0x{:02X} IN=0x{:02X}", device.ep_out, device.ep_in);
+            return false;
+        }
+
+        true
     }
 
     /// DA 加载后重连
@@ -313,7 +383,7 @@ impl ConnectionManager {
         pid: u16,
         retries: usize,
     ) -> Result<usb::UsbDevice, String> {
-        for _i in 1..=retries {
+        for _ in 1..=retries {
             match usb::UsbDevice::open_by_vid_pid(context, vid, pid) {
                 Ok(device) => return Ok(device),
                 Err(_) => std::thread::sleep(Duration::from_millis(200)),
@@ -330,6 +400,11 @@ impl ConnectionManager {
     /// 获取当前 USB 阶段
     pub fn stage(&self) -> &UsbStage {
         &self.stage
+    }
+
+    /// 获取当前驱动后端
+    pub fn backend(&self) -> &DeviceBackend {
+        &self.backend
     }
 
     /// 获取串口名称
