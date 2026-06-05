@@ -2,7 +2,7 @@ use colored::Colorize;
 use log::{error, info, warn};
 use std::time::SystemTime;
 
-use crate::DeviceMode;
+use crate::connection::DeviceMode;
 use crate::config::AppConfig;
 use crate::da_partition::{generate_scatter_from_gpt, generate_scatter_shoujixia};
 use crate::da_xflash::DAXFlash;
