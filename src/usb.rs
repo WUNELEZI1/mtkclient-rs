@@ -102,6 +102,33 @@ macro_rules! usb_trace_rx {
     };
 }
 
+/// USB 设备阶段（基于 PID 识别）
+/// 
+/// 对齐 MTKClient Python 行为：
+/// - PID 0x0003 → BROM 阶段（底层 boot ROM）
+/// - PID 0x2000 → Preloader 阶段（二级 bootloader）
+/// - DA 阶段可能复用 BROM PID 或枚举新 PID
+#[derive(Debug, PartialEq, Clone)]
+pub enum UsbStage {
+    /// BROM 模式（PID=0x0003）
+    Brom,
+    /// Preloader 模式（PID=0x2000）
+    Preloader,
+    /// 未知阶段
+    Unknown,
+}
+
+impl UsbStage {
+    /// 根据 PID 识别设备阶段
+    pub fn from_pid(pid: u16) -> Self {
+        match pid {
+            0x0003 => UsbStage::Brom,
+            0x2000 => UsbStage::Preloader,
+            _ => UsbStage::Unknown,
+        }
+    }
+}
+
 pub struct UsbContext {
     ctx: *mut libusb1_sys::libusb_context,
 }
@@ -145,6 +172,7 @@ pub struct UsbDevice {
     handle: *mut libusb1_sys::libusb_device_handle,
     pub vid: u16,
     pub pid: u16,
+    pub stage: UsbStage,
     device_type: DeviceType,
     pub ep_out: u8,
     pub ep_in: u8,
@@ -288,6 +316,7 @@ impl UsbDevice {
                 handle,
                 vid,
                 pid,
+                stage: UsbStage::from_pid(pid),
                 device_type: DeviceType::Unknown,
                 ep_out: ep_out_addr,
                 ep_in: ep_in_addr,
@@ -401,6 +430,7 @@ impl UsbDevice {
                 handle,
                 vid: desc.idVendor,
                 pid: desc.idProduct,
+                stage: UsbStage::from_pid(desc.idProduct),
                 device_type: found_device_type,
                 ep_out: ep_out_addr,
                 ep_in: ep_in_addr,
