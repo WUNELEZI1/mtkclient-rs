@@ -790,3 +790,34 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
      - 完整链路：`Preloader(串口) → BROM → DA → reconnect` 全流程已打通
      - 验证：cargo build 通过，2 个 warning（旧 `from_vid_pid` + 预留方法 dead_code）
 
+29. **驱动层检测与 UsbDk 集成 + 设备状态模型 + 后端选择**（2026-06-04）：
+     - 问题：设备在 pnputil 中可见（VID=0x0E8D PID=0x0003），但 libusb 永远 open 失败
+     - 根因：Windows USB Serial (COM) 驱动占用设备，libusb 无法直接打开；无 UsbDk 检测；无后端选择逻辑
+     - 修复：
+       - **新模块 `driver.rs`** — 驱动层检测与后端选择：
+         - `DeviceBackend` 枚举：`UsbDk` / `Libusb` / `SerialCom`
+         - `has_usbdk()` — 检测 UsbDk 是否可用（检查 UsbDk.sys、UsbDkHelper.exe、安装目录）
+         - `detect_backend()` — 自动选择最佳后端（UsbDk 优先 → libusb fallback）
+         - `is_device_com_occupied(vid, pid)` — 通过 pnputil 检测设备是否被 COM 驱动占用
+         - `backend_status()` — 获取后端状态摘要（用于日志）
+       - **`connection.rs` 全面升级**：
+         - 新增 `backend: DeviceBackend` 字段到 ConnectionManager
+         - `smart_init()` 改为 4 步流程：
+           - STEP 1: USB fast scan（UsbDk 优先）
+           - STEP 2: COM scan + handshake
+           - STEP 3: COM → USB 切换（release + reconnect）
+           - STEP 4: reconnect_loop 循环检测
+         - 新增 `validate_device()` — 设备状态模型验证（VID + endpoint 检查，避免误连）
+         - reconnect_loop 增加设备状态验证：找到设备后先 validate 再返回
+         - 启动时自动检测并打印后端状态
+       - **日志规范统一**：
+         - `[DRIVER] backend=UsbDk` / `Libusb`
+         - `[DRIVER] UsbDk=yes, Libusb=available, COM=available`
+         - `[USB] 设备被 Windows COM 驱动占用，libusb 无法直接打开`
+         - `[RECONNECT] device found but validation failed`
+     - 对齐 MTKClient Python:
+       - `get_connection_agent()` → `driver::detect_backend()`
+       - dynamic backend selection → UsbDk detection + fallback
+       - device state model → `validate_device()`
+     - 验证：cargo build 通过，3 个 warning（旧 `from_vid_pid` + 预留方法 + SerialCom variant）
+
