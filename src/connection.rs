@@ -1,4 +1,4 @@
-use crate::driver::{self, DeviceBackend};
+use crate::driver::{self};
 use crate::preloader::{self, BromTransport, Preloader};
 use crate::usb;
 use crate::usb::{UsbContext, UsbStage};
@@ -13,6 +13,15 @@ pub enum DeviceMode {
     Brom,
     /// Preloader 模式（串口已释放，切换到 USB BROM）
     Preloader,
+}
+
+/// reconnect_loop 状态机状态
+#[derive(Debug, PartialEq)]
+enum ReconnectState {
+    /// 等待设备重枚举（COM 释放后）
+    WaitReenumeration,
+    /// 检测到设备窗口，尝试打开
+    WindowDetected,
 }
 
 /// 统一连接管理器
@@ -35,23 +44,20 @@ pub enum DeviceMode {
 /// - Port.py::run_handshake() → SerialPortTransport::do_handshake()
 /// - get_connection_agent() → driver::detect_backend()
 /// - dynamic backend selection → UsbDk detection + fallback
+/// - reconnect state machine → reconnect_loop with window detection
 pub struct ConnectionManager {
     mode: DeviceMode,
     stage: UsbStage,
-    backend: DeviceBackend,
     port_name: Option<String>,
 }
 
 impl ConnectionManager {
     pub fn new() -> Self {
-        // 启动时检测最佳可用后端
-        let backend = driver::detect_backend();
         info!("[DRIVER] {}", driver::backend_status());
 
         ConnectionManager {
             mode: DeviceMode::Preloader,
             stage: UsbStage::Unknown,
-            backend,
             port_name: None,
         }
     }
@@ -61,6 +67,7 @@ impl ConnectionManager {
     /// 完整流程（对齐刷机匣 + MTKClient Python）：
     /// ```
     /// STEP 1: USB fast scan（UsbDk 优先）
+    ///   └─ 实时 detect_backend() 选择最佳后端
     ///   └─ 尝试打开 BROM PID（0x0003）
     ///   └─ 成功 → backend = UsbDk/Libusb → 返回
     ///   └─ 失败 → 进入 STEP 2
@@ -70,11 +77,13 @@ impl ConnectionManager {
     ///   └─ 成功 → stage = Preloader → 进入 STEP 3
     ///   └─ 失败 → 进入 STEP 4
     /// 
-    /// STEP 3: COM → USB 切换
-    ///   └─ 释放串口（drop）→ 等待重枚举（500ms）
+    /// STEP 3: COM → USB 切换（状态机 + delay window）
+    ///   └─ 释放串口（drop）→ 日志记录
+    ///   └─ 等待重枚举窗口（100ms 间隔扫描，最多 3 秒）
     ///   └─ reconnect_loop(Brom) → libusb 接管
     /// 
     /// STEP 4: reconnect_loop 循环检测
+    ///   └─ 状态机：WaitReenumeration → WindowDetected → OpenAttempt → Acquired
     ///   └─ 扫描 BROM PID（0x0003）→ 10 秒超时，200ms 重试
     /// ```
     pub fn smart_init(
@@ -84,7 +93,10 @@ impl ConnectionManager {
         info!(
             "等待设备连接 (Preloader: 直接连接 / BROM: Vol+ + Vol- + Power)"
         );
-        info!("[DRIVER] backend={:?}", self.backend);
+
+        // 实时检测后端（不缓存）
+        let backend = driver::detect_backend(context, 0x0E8D, 0x0003);
+        info!("[DRIVER] backend={:?}", backend);
 
         // === STEP 1: USB fast scan ===
         // 尝试直接打开 BROM 设备（UsbDk 优先）
@@ -94,11 +106,6 @@ impl ConnectionManager {
                 device.vid, device.pid, device.stage
             );
             info!("{}", "USB 直接连接成功 (BROM 模式)".green().bold());
-            self.backend = if driver::has_usbdk() {
-                DeviceBackend::UsbDk
-            } else {
-                DeviceBackend::Libusb
-            };
             self.mode = DeviceMode::Brom;
             self.stage = UsbStage::Brom;
             return Ok((Preloader::new(Box::new(device)), DeviceMode::Brom));
@@ -116,17 +123,21 @@ impl ConnectionManager {
 
         // === STEP 2: COM scan + handshake ===
         if let Some((port_name, preloader)) = self.serial_connect()? {
-            info!("串口握手成功，准备切换到 USB 模式...");
+            info!("[COM] handshake success {}", port_name);
 
             // === STEP 3: COM → USB 切换 ===
-            // 关键：必须释放 COM 句柄，否则 USB 无法打开
+            info!("[COM] releasing serial interface...");
             drop(preloader);
             debug!("串口已释放");
 
-            // 等待设备重枚举（设备从 CDC 切换到 BROM VID/PID）
+            // 等待设备重枚举窗口（状态机等待，最多 3 秒）
             // 不同设备枚举时间不同：MT6768 约 300ms，MT6785 约 500ms
-            info!("等待设备重枚举...");
-            std::thread::sleep(Duration::from_millis(500));
+            info!("[USB] waiting re-enumeration window...");
+            if driver::wait_reenumeration_window(context, 0x0E8D, 0x0003, 3000) {
+                info!("[USB] re-enumeration window detected, proceeding to reconnect...");
+            } else {
+                info!("[USB] re-enumeration window not detected within 3s, trying reconnect_loop anyway...");
+            }
 
             // reconnect_loop: 循环检测 BROM 设备（10 秒，200ms 重试）
             let usb_device = self.reconnect_loop(context, UsbStage::Brom)?;
@@ -136,11 +147,6 @@ impl ConnectionManager {
                 usb_device.vid, usb_device.pid, usb_device.stage
             );
 
-            self.backend = if driver::has_usbdk() {
-                DeviceBackend::UsbDk
-            } else {
-                DeviceBackend::Libusb
-            };
             self.mode = DeviceMode::Brom;
             self.stage = UsbStage::Brom;
             self.port_name = Some(port_name);
@@ -160,11 +166,6 @@ impl ConnectionManager {
             usb_device.vid, usb_device.pid, usb_device.stage
         );
 
-        self.backend = if driver::has_usbdk() {
-            DeviceBackend::UsbDk
-        } else {
-            DeviceBackend::Libusb
-        };
         self.mode = DeviceMode::Brom;
         self.stage = UsbStage::Brom;
         Ok((Preloader::new(Box::new(usb_device)), DeviceMode::Brom))
@@ -210,11 +211,23 @@ impl ConnectionManager {
         Ok(None)
     }
 
-    /// libusb 重连循环（支持阶段过滤 + 设备状态模型）
+    /// libusb 重连循环（MTKClient 风格窗口捕获 + 状态机）
     /// 
     /// 对齐 MTKClient Python 行为：
     /// - usblib.py::connect() 循环扫描设备
     /// - mtk_preloader.py::init() 重试机制
+    /// - stage2.py USB reset handling
+    /// 
+    /// 状态机流程：
+    /// ```
+    /// WaitReenumeration → 等待设备重枚举
+    ///     ↓
+    /// WindowDetected → 检测到设备窗口
+    ///     ↓
+    /// OpenAttempt → 尝试打开并验证（短时间 3~5 秒）
+    ///     ↓
+    /// Acquired → 成功获取设备
+    /// ```
     /// 
     /// 关键特性：
     /// - 10 秒超时，200ms 重试间隔
@@ -224,6 +237,7 @@ impl ConnectionManager {
     /// - 支持 DA 加载后重连
     /// - 所有错误自动重试，不信任单次连接
     /// - 设备状态模型：避免误连（检查 interface count / endpoints）
+    /// - 每次 reconnect 实时判断后端（不缓存）
     /// 
     /// 阶段过滤：
     /// - UsbStage::Brom → 扫描 PID 0x0003
@@ -233,9 +247,8 @@ impl ConnectionManager {
     /// 日志输出：
     /// ```
     /// [RECONNECT] scanning for stage=Brom...
-    /// [RECONNECT] retry 1/50...
-    /// [RECONNECT] retry 6/50...
-    /// [RECONNECT] success on attempt 3/50 (stage=Brom, PID=0x0003)
+    /// [RECONNECT] state=WindowDetected (PID=0x0003)
+    /// [RECONNECT] success on attempt 3 (stage=Brom, PID=0x0003)
     /// ```
     pub fn reconnect_loop(
         &self,
@@ -256,6 +269,8 @@ impl ConnectionManager {
             UsbStage::Unknown => vec![0x0003u16, 0x2000u16],
         };
 
+        let mut state = ReconnectState::WaitReenumeration;
+
         while retry < max_retries {
             retry += 1;
 
@@ -263,11 +278,25 @@ impl ConnectionManager {
             for &pid in &pids {
                 match usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, pid) {
                     Ok(device) => {
+                        // 设备窗口检测到，进入 OpenAttempt 状态
+                        if state == ReconnectState::WaitReenumeration {
+                            state = ReconnectState::WindowDetected;
+                            info!(
+                                "[RECONNECT] window detected (stage={:?}, PID=0x{:04X})",
+                                device.stage, device.pid
+                            );
+                        }
+
                         // 设备状态模型验证：确认设备可用
                         if self.validate_device(&device) {
+                            // 实时检测后端（不缓存）
+                            let _backend = driver::detect_backend(context, device.vid, device.pid);
+                            info!("[USB] device opened successfully");
+                            info!("[USB] interface claimed");
+
                             info!(
-                                "[RECONNECT] success on attempt {}/{} (stage={:?}, PID=0x{:04X})",
-                                retry, max_retries, device.stage, device.pid
+                                "[RECONNECT] success on attempt {} (stage={:?}, PID=0x{:04X})",
+                                retry, device.stage, device.pid
                             );
                             return Ok(device);
                         } else {
@@ -279,14 +308,14 @@ impl ConnectionManager {
                     }
                     Err(e) => {
                         // 静默失败，继续尝试下一个 PID
-                        // 只在 debug 模式下记录
                         debug!("[RECONNECT] open_by_vid_pid failed for PID=0x{:04X}: {}", pid, e);
                     }
                 }
             }
 
             if retry % 5 == 1 || retry == max_retries {
-                debug!("[RECONNECT] retry {}/{} (scanning {} PIDs)...", retry, max_retries, pids.len());
+                debug!("[RECONNECT] retry {}/{} (state={:?}, scanning {} PIDs)...", 
+                       retry, max_retries, state, pids.len());
             }
             std::thread::sleep(Duration::from_millis(INTERVAL_MS));
         }
@@ -372,6 +401,20 @@ impl ConnectionManager {
         self.reconnect_loop(context, UsbStage::Brom)
     }
 
+    /// USB reset 后重连
+    /// 
+    /// 对齐 mtkclient usblib.py reconnect loop:
+    /// - USB reset 后设备断开并重新枚举
+    /// - 需要等待重枚举后重新连接
+    pub fn reconnect_after_usb_reset(
+        &self,
+        context: &UsbContext,
+    ) -> Result<usb::UsbDevice, String> {
+        info!("[USB] USB reset detected, waiting for re-enumeration...");
+        std::thread::sleep(Duration::from_millis(500));
+        self.reconnect_loop(context, UsbStage::Brom)
+    }
+
     /// 快速连接尝试（用于 DA 后快速重连）
     /// 
     /// 参数：
@@ -400,11 +443,6 @@ impl ConnectionManager {
     /// 获取当前 USB 阶段
     pub fn stage(&self) -> &UsbStage {
         &self.stage
-    }
-
-    /// 获取当前驱动后端
-    pub fn backend(&self) -> &DeviceBackend {
-        &self.backend
     }
 
     /// 获取串口名称
