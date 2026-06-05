@@ -146,13 +146,15 @@ pub struct UsbDevice {
     pub vid: u16,
     pub pid: u16,
     device_type: DeviceType,
-    ep_out: u8,
-    ep_in: u8,
+    pub ep_out: u8,
+    pub ep_in: u8,
     timeout: Duration,
 }
 
 impl UsbDevice {
     /// 通过指定 VID/PID 打开设备
+    /// 
+    /// 完整流程：open → detach_kernel → claim_interface → endpoint 扫描
     pub fn open_by_vid_pid(context: &UsbContext, vid: u16, pid: u16) -> Result<Self, String> {
         let ctx = context.as_ptr();
         unsafe {
@@ -161,14 +163,30 @@ impl UsbDevice {
                 return Err(format!("未找到设备 VID=0x{:04X} PID=0x{:04X}", vid, pid));
             }
 
-            // 对齐 Python usblib.py connect()：先 claim 0 再 claim 1
-            libusb1_sys::libusb_detach_kernel_driver(handle, 0);
-            let _ = libusb1_sys::libusb_claim_interface(handle, 0);
-            libusb1_sys::libusb_detach_kernel_driver(handle, 1);
+            // 1. detach kernel driver (interface 0)
+            let _ = libusb1_sys::libusb_detach_kernel_driver(handle, 0);
+
+            // 2. claim interface 0 with retry
+            let mut claim_retry = 0;
+            while claim_retry < 3 {
+                let ret = libusb1_sys::libusb_claim_interface(handle, 0);
+                if ret == 0 {
+                    break;
+                }
+                claim_retry += 1;
+                if claim_retry == 3 {
+                    return Err(format!("claim interface 0 failed (error {})", ret));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+
+            // 3. detach + claim interface 1
+            let _ = libusb1_sys::libusb_detach_kernel_driver(handle, 1);
             if libusb1_sys::libusb_claim_interface(handle, 1) != 0 {
                 return Err("claim interface 1 failed".into());
             }
 
+            // 4. scan endpoints from config descriptor
             let device = libusb1_sys::libusb_get_device(handle);
             if device.is_null() {
                 return Err("获取设备描述失败：设备可能已断开".into());
@@ -182,13 +200,15 @@ impl UsbDevice {
 
             debug!("[USB] scanning endpoints...");
             let mut config_ptr: *const libusb1_sys::libusb_config_descriptor = std::ptr::null();
+            // 默认端点：OUT=0x01, IN=0x81
             let mut ep_out_addr: u8 = 0x01;
             let mut ep_in_addr: u8 = 0x81;
-            let mut ep_out_max_pkt: u16 = 512;
+            let mut found_endpoints = false;
+
             let ret = libusb1_sys::libusb_get_active_config_descriptor(device, &mut config_ptr);
             if ret != 0 || config_ptr.is_null() {
                 info!(
-                    "[USB] WARNING: get_active_config_descriptor failed (ret={}), trying known combos...",
+                    "[USB] WARNING: get_active_config_descriptor failed (ret={}), using default endpoints",
                     ret
                 );
             } else {
@@ -200,20 +220,22 @@ impl UsbDevice {
                         for k in 0..alt.bNumEndpoints as isize {
                             let ep = &*alt.endpoint.wrapping_add(k as usize);
                             let addr = ep.bEndpointAddress;
-                            let dir = if addr & 0x80 != 0 { "IN" } else { "OUT" };
-                            let ep_type = match ep.bmAttributes & 0x03 {
-                                0 => "Control",
-                                1 => "Isochronous",
-                                2 => "Bulk",
-                                3 => "Interrupt",
-                                _ => "Unknown",
-                            };
-                            if dir == "OUT" && ep_type == "Bulk" {
+                            let is_in = (addr & 0x80) != 0;
+                            let is_bulk = (ep.bmAttributes & 0x03) == 2;
+                            debug!(
+                                "[USB]   EP: 0x{:02X} dir={} type={} size={}",
+                                addr,
+                                if is_in { "IN" } else { "OUT" },
+                                if is_bulk { "Bulk" } else { "Other" },
+                                ep.wMaxPacketSize
+                            );
+                            if is_bulk && !is_in {
                                 ep_out_addr = addr;
-                                ep_out_max_pkt = ep.wMaxPacketSize;
+                                found_endpoints = true;
                             }
-                            if dir == "IN" && ep_type == "Bulk" {
+                            if is_bulk && is_in {
                                 ep_in_addr = addr;
+                                found_endpoints = true;
                             }
                         }
                     }
@@ -221,10 +243,12 @@ impl UsbDevice {
                 libusb1_sys::libusb_free_config_descriptor(config_ptr);
             }
 
-            info!(
-                "[USB] 已打开设备 VID=0x{:04X} PID=0x{:04X} EP_OUT=0x{:02X} EP_IN=0x{:02X}",
-                vid, pid, ep_out_addr, ep_in_addr
-            );
+            if found_endpoints {
+                debug!(
+                    "[USB] 已打开设备 VID=0x{:04X} PID=0x{:04X} EP_OUT=0x{:02X} EP_IN=0x{:02X}",
+                    vid, pid, ep_out_addr, ep_in_addr
+                );
+            }
 
             Ok(UsbDevice {
                 handle,

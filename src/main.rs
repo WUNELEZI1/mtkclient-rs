@@ -1,6 +1,6 @@
 use clap::Parser;
 use colored::Colorize;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use std::process;
 use std::time::Duration;
 use usb::UsbContext;
@@ -19,6 +19,7 @@ mod da_partition;
 mod da_xflash;
 mod frp;
 mod kamakiri2;
+mod libusb_filter;
 mod paths;
 mod sej;
 mod seccfg;
@@ -49,6 +50,8 @@ fn detect_mode(vid: u16, pid: u16) -> DeviceMode {
 }
 
 /// 统一设备初始化入口 — 优先尝试串口 (Preloader)，失败后回退到 USB (BROM)
+/// 
+/// 刷机匣流程：串口握手 → 关闭看门狗 → 安装 libusb filter → 释放串口 → libusb 接管
 fn smart_init(context: &UsbContext) -> Result<(preloader::Preloader, DeviceMode), String> {
     // 先尝试串口检测 (Preloader 模式) — 轮询等待 COM 端口出现
     info!("{}", "等待设备连接 (Preloader: 直接连接 / BROM: Vol+ + Vol- + Power)".yellow());
@@ -69,8 +72,63 @@ fn smart_init(context: &UsbContext) -> Result<(preloader::Preloader, DeviceMode)
             let mut preloader_instance = preloader::Preloader::new(serial_device);
             if preloader_instance.init().unwrap_or(false) {
                 info!("{}", "串口设备握手成功".green().bold());
-                info!("{}", "Preloader 模式连接成功".green().bold());
-                return Ok((preloader_instance, DeviceMode::Preloader));
+
+                // 串口 init 完成后，安装 libusb filter 并切换到 USB 模式
+                info!("正在安装 libusb-win32 filter...");
+                match libusb_filter::install_libusb_filter() {
+                    Ok(()) => {
+                        info!("{}", "libusb filter 安装成功，切换到 USB 模式".green().bold());
+
+                        // 释放串口连接
+                        drop(preloader_instance);
+                        debug!("串口已释放");
+
+                        // 等待设备重枚举（释放串口后设备需要时间重新 enumerate）
+                        info!("等待设备重枚举...");
+                        std::thread::sleep(Duration::from_millis(500));
+
+                        // 循环检测 libusb 设备（最多 10 秒）
+                        const LIBUSB_WAIT_MS: u64 = 10_000;
+                        const LIBUSB_RETRY_INTERVAL_MS: u64 = 200;
+                        let max_retries = (LIBUSB_WAIT_MS / LIBUSB_RETRY_INTERVAL_MS) as usize;
+                        let mut retry = 0;
+
+                        while retry < max_retries {
+                            retry += 1;
+
+                            // 尝试打开设备（内部自动 detach + claim + endpoint 扫描）
+                            match usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
+                                Ok(usb_device) => {
+                                    info!(
+                                        "  VID: {:04x}, PID: {:04x}, EP_OUT=0x{:02X}, EP_IN=0x{:02X}",
+                                        usb_device.vid, usb_device.pid,
+                                        usb_device.ep_out, usb_device.ep_in
+                                    );
+                                    info!("{}", "已切换到 libusb 模式".green().bold());
+                                    return Ok((
+                                        preloader::Preloader::new(Box::new(usb_device)),
+                                        DeviceMode::Brom,
+                                    ));
+                                }
+                                Err(e) => {
+                                    if retry % 5 == 1 {
+                                        debug!("libusb 连接尝试 {}/{}: {}", retry, max_retries, e);
+                                    }
+                                    std::thread::sleep(Duration::from_millis(LIBUSB_RETRY_INTERVAL_MS));
+                                }
+                            }
+                        }
+
+                        // filter 安装成功后不再回退串口（设备状态已变化，串口无法恢复）
+                        return Err("libusb 接管失败：filter 安装成功但设备未枚举为 libusb".to_string());
+                    }
+                    Err(e) => {
+                        warn!("libusb filter 安装失败: {}，继续使用串口", e);
+                        // filter 失败，继续使用串口
+                        info!("{}", "Preloader 模式连接成功".green().bold());
+                        return Ok((preloader_instance, DeviceMode::Preloader));
+                    }
+                }
             }
             info!("串口握手失败，继续轮询...");
         }
