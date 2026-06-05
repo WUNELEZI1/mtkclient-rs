@@ -3,35 +3,126 @@ use log::info;
 use std::fs::File;
 use std::io::Write;
 
+/// 分区条目信息
+#[derive(Debug, Clone)]
+pub struct PartitionEntry {
+    pub name: String,
+    pub first_lba: u64,
+    pub last_lba: u64,
+    pub start_addr: u64,
+    pub size: u64,
+}
+
 /// GPT 分区表信息
-pub struct GptInfo {
+pub struct GptInfo<'a> {
     pub num_part_entries: u32,
     pub part_entry_size: u32,
     pub part_entry_start_lba: u64,
+    pub revision: u32,
+    pub header_size: u32,
+    pub first_usable_lba: u64,
+    pub current_lba: u64,
+    data: &'a [u8],
+    base_offset: usize,
 }
 
-impl GptInfo {
+impl<'a> GptInfo<'a> {
     /// 从 GPT 数据解析 GPT 信息
-    pub fn parse(data: &[u8]) -> Result<Self, String> {
-        let base = data
+    pub fn parse(data: &'a [u8]) -> Result<Self, String> {
+        let base_offset = data
             .windows(8)
             .position(|w| w == b"EFI PART")
             .ok_or_else(|| "GPT 数据无效".to_string())?;
 
-        let num_part_entries = u32::from_le_bytes(data[base + 80..base + 84].try_into().unwrap());
-        let part_entry_size = u32::from_le_bytes(data[base + 84..base + 88].try_into().unwrap());
+        let revision = u32::from_le_bytes(data[base_offset + 8..base_offset + 12].try_into().unwrap());
+        let header_size = u32::from_le_bytes(data[base_offset + 12..base_offset + 16].try_into().unwrap());
+        let num_part_entries = u32::from_le_bytes(data[base_offset + 80..base_offset + 84].try_into().unwrap());
+        let part_entry_size = u32::from_le_bytes(data[base_offset + 84..base_offset + 88].try_into().unwrap());
         let part_entry_start_lba =
-            u64::from_le_bytes(data[base + 72..base + 80].try_into().unwrap());
+            u64::from_le_bytes(data[base_offset + 72..base_offset + 80].try_into().unwrap());
+        let first_usable_lba = u64::from_le_bytes(data[base_offset + 32..base_offset + 40].try_into().unwrap());
+        let current_lba = u64::from_le_bytes(data[base_offset + 24..base_offset + 32].try_into().unwrap());
+
         Ok(GptInfo {
             num_part_entries,
             part_entry_size,
             part_entry_start_lba,
+            revision,
+            header_size,
+            first_usable_lba,
+            current_lba,
+            data,
+            base_offset,
         })
     }
 
-    /// 计算分区表起始偏移
+    /// 计算分区表起始偏移（处理可能的状态包残渣）
     pub fn table_start(&self) -> usize {
-        (self.part_entry_start_lba as usize) * 512
+        let mut start = (self.part_entry_start_lba as usize) * 512;
+        if start + 4 <= self.data.len() && self.data[start..start + 4].iter().all(|&b| b == 0) {
+            start += 4;
+        }
+        start
+    }
+
+    /// 解析单个分区条目
+    fn parse_entry(&self, entry_offset: usize) -> Option<PartitionEntry> {
+        if entry_offset + self.part_entry_size as usize > self.data.len() {
+            return None;
+        }
+
+        let entry = &self.data[entry_offset..entry_offset + self.part_entry_size as usize];
+
+        // 检查条目是否全零（结束标记）
+        let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
+        if unique_guid_zero {
+            return None;
+        }
+
+        let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
+        let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
+
+        // 解析分区名称（UTF-16LE）
+        let name_utf16: Vec<u16> = (0..28)
+            .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
+            .collect();
+        let name = String::from_utf16_lossy(&name_utf16)
+            .trim_end_matches('\0')
+            .to_string();
+
+        let start = first_lba.saturating_mul(512);
+        let size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
+
+        Some(PartitionEntry {
+            name,
+            first_lba,
+            last_lba,
+            start_addr: start,
+            size,
+        })
+    }
+
+    /// 迭代所有分区条目
+    pub fn iter_partitions(&self) -> impl Iterator<Item = PartitionEntry> + '_ {
+        let table_start = self.table_start();
+        let part_entry_size = self.part_entry_size as usize;
+        let num_entries = self.num_part_entries as usize;
+
+        (0..num_entries).filter_map(move |i| {
+            let entry_offset = table_start + i * part_entry_size;
+            self.parse_entry(entry_offset)
+        })
+    }
+
+    /// 按名称查找分区（不区分大小写）
+    pub fn find_partition(&self, name: &str) -> Option<PartitionEntry> {
+        self.iter_partitions()
+            .find(|entry| entry.name.eq_ignore_ascii_case(name))
+    }
+
+    /// 获取所有分区列表
+    pub fn partitions(&self) -> Vec<PartitionEntry> {
+        self.iter_partitions().collect()
     }
 }
 
@@ -48,19 +139,21 @@ impl<'a> DAXFlash<'a> {
         }
 
         // 复用 GptInfo::parse 解析 GPT 头（自动搜索 EFI PART 签名定位基址）
-        let gpt_info = GptInfo::parse(&gpt_data)?;
-        let num_entries = gpt_info.num_part_entries as u64;
-        let entry_size = gpt_info.part_entry_size as u64;
-        let needed_len = 512 + num_entries * entry_size;
+        {
+            let gpt_info = GptInfo::parse(&gpt_data)?;
+            let num_entries = gpt_info.num_part_entries as u64;
+            let entry_size = gpt_info.part_entry_size as u64;
+            let needed_len = 512 + num_entries * entry_size;
 
-        info!(
-            "  GPT 分区数: {}, 分区项大小: {} 字节, 需要: {} 字节",
-            num_entries, entry_size, needed_len
-        );
+            info!(
+                "  GPT 分区数: {}, 分区项大小: {} 字节, 需要: {} 字节",
+                num_entries, entry_size, needed_len
+            );
 
-        // 第二步：如果 32KB 不够，再扩展读取完整大小
-        if needed_len > initial_len {
-            gpt_data = self.readflash_data(0, needed_len)?;
+            // 第二步：如果 32KB 不够，再扩展读取完整大小
+            if needed_len > initial_len {
+                gpt_data = self.readflash_data(0, needed_len)?;
+            }
         }
         info!("  读取 GPT 数据: {} 字节", gpt_data.len());
 
@@ -87,44 +180,12 @@ impl<'a> DAXFlash<'a> {
             .ok_or_else(|| "无 GPT 数据，请先运行 printgpt".to_string())?;
 
         let gpt_info = GptInfo::parse(gpt_data)?;
-        let mut table_start = gpt_info.table_start();
-        if table_start + 4 <= gpt_data.len()
-            && gpt_data[table_start..table_start + 4]
-                .iter()
-                .all(|&b| b == 0)
-        {
-            table_start += 4;
+
+        if let Some(entry) = gpt_info.find_partition(partition) {
+            Ok((entry.start_addr, entry.size))
+        } else {
+            Err(format!("未找到分区: {}", partition))
         }
-
-        for i in 0..gpt_info.num_part_entries {
-            let entry_offset = table_start + (i as usize) * (gpt_info.part_entry_size as usize);
-            if entry_offset + gpt_info.part_entry_size as usize > gpt_data.len() {
-                break;
-            }
-
-            let entry = &gpt_data[entry_offset..entry_offset + gpt_info.part_entry_size as usize];
-            let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
-            if unique_guid_zero {
-                break;
-            }
-
-            let name_utf16: Vec<u16> = (0..28)
-                .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
-                .collect();
-            let name = String::from_utf16_lossy(&name_utf16)
-                .trim_end_matches('\0')
-                .to_string();
-
-            if name.eq_ignore_ascii_case(partition) {
-                let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
-                let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
-                let start = first_lba.saturating_mul(512);
-                let size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
-                return Ok((start, size));
-            }
-        }
-
-        Err(format!("未找到分区: {}", partition))
     }
 
     /// 读取分区数据到文件
@@ -138,58 +199,17 @@ impl<'a> DAXFlash<'a> {
             .ok_or_else(|| "无 GPT 数据，请先运行 printgpt".to_string())?;
 
         let gpt_info = GptInfo::parse(gpt_data)?;
-        let mut table_start = gpt_info.table_start();
-        if table_start + 4 <= gpt_data.len()
-            && gpt_data[table_start..table_start + 4]
-                .iter()
-                .all(|&b| b == 0)
-        {
-            table_start += 4;
-        }
 
-        let mut found = false;
-        let mut part_start_addr = 0u64;
-        let mut part_size = 0u64;
-
-        for i in 0..gpt_info.num_part_entries {
-            let entry_offset = table_start + (i as usize) * (gpt_info.part_entry_size as usize);
-            if entry_offset + gpt_info.part_entry_size as usize > gpt_data.len() {
-                break;
-            }
-
-            let entry = &gpt_data[entry_offset..entry_offset + gpt_info.part_entry_size as usize];
-            let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
-            if unique_guid_zero {
-                break;
-            }
-
-            let name_utf16: Vec<u16> = (0..28)
-                .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
-                .collect();
-            let name = String::from_utf16_lossy(&name_utf16)
-                .trim_end_matches('\0')
-                .to_string();
-
-            if name.eq_ignore_ascii_case(partition) {
-                let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
-                let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
-                part_start_addr = first_lba.saturating_mul(512);
-                part_size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
-                found = true;
-                break;
-            }
-        }
-
-        if !found {
-            return Err(format!("未找到分区: {}", partition));
-        }
+        let entry = gpt_info
+            .find_partition(partition)
+            .ok_or_else(|| format!("未找到分区: {}", partition))?;
 
         info!(
             "找到分区 {}，起始地址: 0x{:X}，大小: {} 字节",
-            partition, part_start_addr, part_size
+            partition, entry.start_addr, entry.size
         );
 
-        let data = self.readflash_data(part_start_addr, part_size)?;
+        let data = self.readflash_data(entry.start_addr, entry.size)?;
         info!("  读取到 {} 字节", data.len());
 
         let mut file = File::create(output_file).map_err(|e| format!("创建文件失败: {}", e))?;
@@ -404,91 +424,35 @@ impl<'a> DAXFlash<'a> {
 }
 
 /// 解析 GPT 分区表（独立函数，不依赖 USB）
-/// 自动检测偏移：如果 0x200 处没有 EFI PART，则尝试偏移 4 字节（跳过可能的状态包）
 pub fn parse_gpt_from_data(data: &[u8]) -> Result<(), String> {
     println!("  数据大小: {} 字节", data.len());
 
-    // 搜索 EFI PART 签名
-    let base = match data.windows(8).position(|w| w == b"EFI PART") {
-        Some(off) => off,
-        None => return Err("未找到 GPT 签名 (EFI PART)".to_string()),
-    };
+    let gpt_info = GptInfo::parse(data)?;
 
-    println!("GPT 头部 (偏移=0x{:X}):", base);
+    println!("GPT 头部 (偏移=0x{:X}):", gpt_info.base_offset);
 
     // 验证 revision
-    let revision = u32::from_le_bytes(data[base + 8..base + 12].try_into().unwrap());
-    if revision != 0x10000 {
-        return Err(format!("GPT revision 不匹配: 0x{:08X}", revision));
+    if gpt_info.revision != 0x10000 {
+        return Err(format!("GPT revision 不匹配: 0x{:08X}", gpt_info.revision));
     }
 
-    // 读取 header 字段
-    let num_part_entries = u32::from_le_bytes(data[base + 80..base + 84].try_into().unwrap());
-    let part_entry_size = u32::from_le_bytes(data[base + 84..base + 88].try_into().unwrap());
-    let part_entry_start_lba = u64::from_le_bytes(data[base + 72..base + 80].try_into().unwrap());
-    let first_usable_lba = u64::from_le_bytes(data[base + 32..base + 40].try_into().unwrap());
-
-    println!("  修订版本: 0x{:08X}", revision);
-    println!(
-        "  头部大小: {} 字节",
-        u32::from_le_bytes(data[base + 12..base + 16].try_into().unwrap())
-    );
-    println!(
-        "  当前 LBA: {}",
-        u64::from_le_bytes(data[base + 24..base + 32].try_into().unwrap())
-    );
-    println!("  首个可用 LBA: {}", first_usable_lba);
-    println!("  分区项 LBA: {}", part_entry_start_lba);
-    println!("  分区数量: {}", num_part_entries);
-    println!("  分区项大小: {} 字节", part_entry_size);
-
-    // 分区表从绝对偏移 part_entry_start_lba * 512 开始
-    let mut table_start = (part_entry_start_lba as usize) * 512;
-
-    // 如果分区表位置前 4 字节全零（状态包残渣），跳过
-    if table_start + 4 <= data.len() && data[table_start..table_start + 4].iter().all(|&b| b == 0) {
-        table_start += 4;
-    }
+    println!("  修订版本: 0x{:08X}", gpt_info.revision);
+    println!("  头部大小: {} 字节", gpt_info.header_size);
+    println!("  当前 LBA: {}", gpt_info.current_lba);
+    println!("  首个可用 LBA: {}", gpt_info.first_usable_lba);
+    println!("  分区项 LBA: {}", gpt_info.part_entry_start_lba);
+    println!("  分区数量: {}", gpt_info.num_part_entries);
+    println!("  分区项大小: {} 字节", gpt_info.part_entry_size);
 
     println!("\n分区信息:");
     println!("{:<30} {:<16} {:<16}", "分区名称", "起始地址", "大小");
 
-    let mut count = 0;
-    for i in 0..num_part_entries {
-        let entry_offset = table_start + (i as usize) * (part_entry_size as usize);
-
-        // 边界检查
-        if entry_offset + part_entry_size as usize > data.len() {
-            println!("  ... 缓冲区不足，仅显示 {} 个分区", count);
-            break;
-        }
-
-        let entry = &data[entry_offset..entry_offset + part_entry_size as usize];
-
-        // 检查条目是否全零（结束标记）
-        let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
-        if unique_guid_zero {
-            break;
-        }
-
-        let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
-        let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
-        let start = first_lba.saturating_mul(512);
-        let size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
-
-        // UTF-16LE 名称在偏移 56..112
-        let name_utf16: Vec<u16> = (0..28)
-            .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
-            .collect();
-        let name = String::from_utf16_lossy(&name_utf16)
-            .trim_end_matches('\0')
-            .to_string();
-
-        count += 1;
-        println!("{:<30} 0x{:014X} 0x{:014X}", name, start, size);
+    let partitions = gpt_info.partitions();
+    for entry in &partitions {
+        println!("{:<30} 0x{:014X} 0x{:014X}", entry.name, entry.start_addr, entry.size);
     }
 
-    println!("\n共 {} 个分区", count);
+    println!("\n共 {} 个分区", partitions.len());
     Ok(())
 }
 
@@ -498,26 +462,8 @@ pub fn generate_scatter_from_gpt(
     gpt_data: &[u8],
     output_file: &str,
 ) -> Result<Vec<(String, u64, u64, u32)>, String> {
-    let base = match gpt_data.windows(8).position(|w| w == b"EFI PART") {
-        Some(off) => off,
-        None => return Err("未找到 GPT 签名 (EFI PART)".to_string()),
-    };
+    let gpt_info = GptInfo::parse(gpt_data)?;
 
-    let num_part_entries = u32::from_le_bytes(gpt_data[base + 80..base + 84].try_into().unwrap());
-    let part_entry_size = u32::from_le_bytes(gpt_data[base + 84..base + 88].try_into().unwrap());
-    let part_entry_start_lba =
-        u64::from_le_bytes(gpt_data[base + 72..base + 80].try_into().unwrap());
-
-    let mut table_start = (part_entry_start_lba as usize) * 512;
-    if table_start + 4 <= gpt_data.len()
-        && gpt_data[table_start..table_start + 4]
-            .iter()
-            .all(|&b| b == 0)
-    {
-        table_start += 4;
-    }
-
-    // 构建 scatter 内容
     let mut scatter_lines: Vec<String> = Vec::new();
     let mut partition_info_list: Vec<(String, u64, u64, u32)> = Vec::new();
 
@@ -530,7 +476,7 @@ pub fn generate_scatter_from_gpt(
     scatter_lines.push("  is_reserved: 0".to_string());
     scatter_lines.push("  linear_addr: 0x0".to_string());
     scatter_lines.push("}".to_string());
-    scatter_lines.push(String::new()); // 空行
+    scatter_lines.push(String::new());
 
     // 添加 EMMC_BOOT_1 区域
     scatter_lines.push("EMMC_BOOT_1 0x0".to_string());
@@ -540,7 +486,7 @@ pub fn generate_scatter_from_gpt(
     scatter_lines.push("  is_download: 1".to_string());
     scatter_lines.push("  is_reserved: 0".to_string());
     scatter_lines.push("}".to_string());
-    scatter_lines.push(String::new()); // 空行
+    scatter_lines.push(String::new());
 
     // 添加 EMMC_BOOT_2 区域
     scatter_lines.push("EMMC_BOOT_2 0x0".to_string());
@@ -550,47 +496,23 @@ pub fn generate_scatter_from_gpt(
     scatter_lines.push("  is_download: 1".to_string());
     scatter_lines.push("  is_reserved: 0".to_string());
     scatter_lines.push("}".to_string());
-    scatter_lines.push(String::new()); // 空行
+    scatter_lines.push(String::new());
 
     // 遍历 GPT 分区表生成条目
-    for i in 0..num_part_entries {
-        let entry_offset = table_start + (i as usize) * (part_entry_size as usize);
-        if entry_offset + part_entry_size as usize > gpt_data.len() {
-            break;
-        }
-
-        let entry = &gpt_data[entry_offset..entry_offset + part_entry_size as usize];
-
-        let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
-        if unique_guid_zero {
-            break;
-        }
-
-        let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
-        let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
-        let start = first_lba.saturating_mul(512);
-        let size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
-
-        let name_utf16: Vec<u16> = (0..28)
-            .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
-            .collect();
-        let name = String::from_utf16_lossy(&name_utf16)
-            .trim_end_matches('\0')
-            .to_string();
-
+    for entry in gpt_info.iter_partitions() {
         // 生成 scatter 条目
-        scatter_lines.push(format!("{} 0x{:X}", name.to_uppercase(), start));
+        scatter_lines.push(format!("{} 0x{:X}", entry.name.to_uppercase(), entry.start_addr));
         scatter_lines.push("{".to_string());
         scatter_lines.push("  is_upgradeable: 1".to_string());
         scatter_lines.push("  is_download: 1".to_string());
         scatter_lines.push("  is_reserved: 0".to_string());
         scatter_lines.push("  reserve: 0".to_string());
         scatter_lines.push("  operation: UPDATE".to_string());
-        scatter_lines.push(format!("  partition_size: 0x{:X}", size));
+        scatter_lines.push(format!("  partition_size: 0x{:X}", entry.size));
         scatter_lines.push("}".to_string());
-        scatter_lines.push(String::new()); // 空行
+        scatter_lines.push(String::new());
 
-        partition_info_list.push((name.clone(), start, size, 1));
+        partition_info_list.push((entry.name, entry.start_addr, entry.size, 1));
     }
 
     // 写入文件
@@ -603,30 +525,13 @@ pub fn generate_scatter_from_gpt(
 
 /// 从 GPT 数据生成刷机匣格式的 scatter 文件（YAML-like）
 /// 对齐刷机匣 Shoujixia 的 scatter 输出格式
-#[allow(dead_code)] // 预留：printgpt 命令中调用生成刷机匣格式 scatter
+#[allow(dead_code)]
 pub fn generate_scatter_shoujixia(
     gpt_data: &[u8],
     output_file: &str,
     platform: &str,
 ) -> Result<Vec<(String, u64, u64)>, String> {
-    let base = match gpt_data.windows(8).position(|w| w == b"EFI PART") {
-        Some(off) => off,
-        None => return Err("未找到 GPT 签名 (EFI PART)".to_string()),
-    };
-
-    let num_part_entries = u32::from_le_bytes(gpt_data[base + 80..base + 84].try_into().unwrap());
-    let part_entry_size = u32::from_le_bytes(gpt_data[base + 84..base + 88].try_into().unwrap());
-    let part_entry_start_lba =
-        u64::from_le_bytes(gpt_data[base + 72..base + 80].try_into().unwrap());
-
-    let mut table_start = (part_entry_start_lba as usize) * 512;
-    if table_start + 4 <= gpt_data.len()
-        && gpt_data[table_start..table_start + 4]
-            .iter()
-            .all(|&b| b == 0)
-    {
-        table_start += 4;
-    }
+    let gpt_info = GptInfo::parse(gpt_data)?;
 
     let mut scatter_lines: Vec<String> = Vec::new();
     let mut partition_info_list: Vec<(String, u64, u64)> = Vec::new();
@@ -671,37 +576,14 @@ pub fn generate_scatter_shoujixia(
     let mut sys_idx: u32 = 1;
 
     // 遍历 GPT 分区表生成条目
-    for i in 0..num_part_entries {
-        let entry_offset = table_start + (i as usize) * (part_entry_size as usize);
-        if entry_offset + part_entry_size as usize > gpt_data.len() {
-            break;
-        }
-
-        let entry = &gpt_data[entry_offset..entry_offset + part_entry_size as usize];
-        let unique_guid_zero = entry[16..32].iter().all(|&b| b == 0);
-        if unique_guid_zero {
-            break;
-        }
-
-        let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
-        let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
-        let start = first_lba.saturating_mul(512);
-        let size = (last_lba.saturating_sub(first_lba) + 1).saturating_mul(512);
-
-        let name_utf16: Vec<u16> = (0..28)
-            .map(|j| u16::from_le_bytes([entry[56 + j * 2], entry[56 + j * 2 + 1]]))
-            .collect();
-        let name = String::from_utf16_lossy(&name_utf16)
-            .trim_end_matches('\0')
-            .to_string();
-
+    for entry in gpt_info.iter_partitions() {
         // 跳过 flashinfo 和未分配伪分区
-        if name == "flashinfo" || name.starts_with("Unalloc_") {
+        if entry.name == "flashinfo" || entry.name.starts_with("Unalloc_") {
             continue;
         }
 
         // 判断 type、region、operation_type
-        let (part_type, region, operation_type) = match name.as_str() {
+        let (part_type, region, operation_type) = match entry.name.as_str() {
             "preloader" | "pgpt" | "sgpt" => (
                 "SV5_BL_BIN",
                 "EMMC_BOOT1_BOOT2",
@@ -710,26 +592,26 @@ pub fn generate_scatter_shoujixia(
             _ => ("NORMAL_ROM", "EMMC_USER", "UPDATE"),
         };
 
-        let file_name = format!("{}.img", name);
+        let file_name = format!("{}.img", entry.name);
 
         scatter_lines.push(format!("- partition_index: SYS{}", sys_idx));
-        scatter_lines.push(format!("  partition_name: {}", name));
+        scatter_lines.push(format!("  partition_name: {}", entry.name));
         scatter_lines.push(format!("  file_name: {}", file_name));
         scatter_lines.push("  is_download: true".to_string());
         scatter_lines.push(format!("  type: {}", part_type));
-        scatter_lines.push(format!("  linear_start_addr: 0x{:X}", start));
-        scatter_lines.push(format!("  physical_start_addr: 0x{:X}", start));
-        scatter_lines.push(format!("  partition_size: 0x{:X}", size));
+        scatter_lines.push(format!("  linear_start_addr: 0x{:X}", entry.start_addr));
+        scatter_lines.push(format!("  physical_start_addr: 0x{:X}", entry.start_addr));
+        scatter_lines.push(format!("  partition_size: 0x{:X}", entry.size));
         scatter_lines.push(format!("  region: {}", region));
         scatter_lines.push("  storage: HW_STORAGE_EMMC".to_string());
         scatter_lines.push("  boundary_check: false".to_string());
         scatter_lines.push("  is_reserved: false".to_string());
         scatter_lines.push(format!("  operation_type: {}", operation_type));
         scatter_lines.push("  reserve: 0".to_string());
-        scatter_lines.push(format!("  partition_hint: {}", name));
+        scatter_lines.push(format!("  partition_hint: {}", entry.name));
         scatter_lines.push(String::new());
 
-        partition_info_list.push((name, start, size));
+        partition_info_list.push((entry.name, entry.start_addr, entry.size));
         sys_idx += 1;
     }
 
