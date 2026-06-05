@@ -1,6 +1,7 @@
 use crate::preloader::{self, BromTransport, Preloader};
 use crate::usb;
 use crate::usb::UsbContext;
+use colored::Colorize;
 use log::{debug, info};
 use std::time::Duration;
 
@@ -9,7 +10,7 @@ use std::time::Duration;
 pub enum DeviceMode {
     /// BROM 模式（通过 libusb 通信）
     Brom,
-    /// Preloader 模式（通过串口通信，最终仍切换到 USB）
+    /// Preloader 模式（串口已释放，切换到 USB BROM）
     Preloader,
 }
 
@@ -21,18 +22,25 @@ pub enum DeviceMode {
 /// 3. 自动重连（reconnect_loop）
 /// 4. 对齐 MTKClient Python 行为
 /// 
-/// 连接优先级：
-/// 1. 串口检测（Preloader 模式，快速）
-/// 2. 串口握手 → init → 释放串口 → USB 重枚举 → libusb 接管
-/// 3. 如果串口不可用 → 直接 libusb 连接
+/// 连接优先级（工程级稳定）：
+/// 1. USB 直接检测（BROM VID=0x0E8D PID=0x0003）→ 最快路径
+/// 2. 串口检测（Preloader 模式）→ 握手 → 释放 → USB 重枚举
+/// 3. reconnect_loop（10 秒超时，200ms 重试）
 /// 
 /// 对齐 MTKClient Python:
-/// - usblib.py::connect() → 动态扫描 + detach + claim + endpoint 发现
-/// - mtk_preloader.py::init() → 循环重试 + reconnect after exploit
-/// - Port.py::run_handshake() → 4 字节握手唤醒设备
+/// - usblib.py::connect() → UsbDevice::open_by_vid_pid()
+/// - mtk_preloader.py::init() → ConnectionManager::smart_init()
+/// - Port.py::run_handshake() → SerialPortTransport::do_handshake()
+/// 
+/// 驱动策略：
+/// - 不使用 libusb-win32 filter（install-filter.exe）
+/// - 依赖 UsbDk 或系统 WinUSB
+/// - 串口释放后设备自动重枚举为 BROM VID/PID
 pub struct ConnectionManager {
     mode: DeviceMode,
     port_name: Option<String>,
+    /// 设备重连后自动调用的回调（预留：DA 加载后重连使用）
+    reconnect_callback: Option<Box<dyn Fn() -> Result<(), String>>>,
 }
 
 impl ConnectionManager {
@@ -40,6 +48,7 @@ impl ConnectionManager {
         ConnectionManager {
             mode: DeviceMode::Preloader,
             port_name: None,
+            reconnect_callback: None,
         }
     }
 
@@ -47,13 +56,15 @@ impl ConnectionManager {
     /// 
     /// 完整流程（对齐刷机匣 + MTKClient Python）：
     /// ```
-    /// 1. 扫描 COM 端口（Preloader 模式）
-    /// 2. 串口握手：A0 → FA（BROM handshake）
-    /// 3. init：get_hw_code → watchdog disable → BROM sync
-    /// 4. 释放串口（drop COM 句柄）
-    /// 5. 等待 USB 重枚举（设备从 CDC 切换到 BROM VID/PID）
-    /// 6. libusb 连接：open → detach → claim → endpoint 扫描
-    /// 7. 返回 Preloader(libusb transport)
+    /// 优先级 1: USB 直接连接（BROM 模式）
+    ///   └─ open_by_vid_pid(0x0E8D, 0x0003) → 成功 → 返回
+    /// 
+    /// 优先级 2: 串口检测 + 握手 + 切换
+    ///   └─ 扫描 COM 端口 → 打开串口 → BROM 握手 → init
+    ///   └─ 释放串口 → 等待重枚举 → reconnect_loop → libusb 接管
+    /// 
+    /// 优先级 3: reconnect_loop 循环检测
+    ///   └─ 10 秒超时，200ms 重试
     /// ```
     pub fn smart_init(
         &mut self,
@@ -63,19 +74,31 @@ impl ConnectionManager {
             "等待设备连接 (Preloader: 直接连接 / BROM: Vol+ + Vol- + Power)"
         );
 
-        // === 阶段 1：串口检测 + 握手 ===
+        // === 优先级 1：USB 直接连接（最快路径） ===
+        if let Ok(device) = usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
+            info!(
+                "  VID: {:04x}, PID: {:04x}, EP_OUT=0x{:02X}, EP_IN=0x{:02X}",
+                device.vid, device.pid, device.ep_out, device.ep_in
+            );
+            info!("{}", "USB 直接连接成功 (BROM 模式)".green().bold());
+            self.mode = DeviceMode::Brom;
+            return Ok((Preloader::new(Box::new(device)), DeviceMode::Brom));
+        }
+        debug!("USB 直接连接失败，尝试串口检测...");
+
+        // === 优先级 2：串口检测 + 握手 + 切换 ===
         if let Some((port_name, preloader)) = self.serial_connect()? {
             info!("串口握手成功，准备切换到 USB 模式...");
 
-            // 释放串口
+            // 释放串口（关键：必须释放 COM 句柄，否则 USB 无法打开）
             drop(preloader);
             debug!("串口已释放");
 
-            // 等待设备重枚举
+            // 等待设备重枚举（设备从 CDC 切换到 BROM VID/PID）
             info!("等待设备重枚举...");
             std::thread::sleep(Duration::from_millis(500));
 
-            // === 阶段 2：libusb 重连 ===
+            // reconnect_loop: 循环检测 libusb 设备（10 秒，200ms 重试）
             let usb_device = self.reconnect_loop(context, 0x0E8D, 0x0003)?;
 
             info!(
@@ -91,8 +114,8 @@ impl ConnectionManager {
             ));
         }
 
-        // === 阶段 3：串口不可用，直接尝试 libusb ===
-        info!("串口检测超时，尝试 USB 直接连接...");
+        // === 优先级 3：reconnect_loop 循环检测 ===
+        info!("串口检测超时，尝试 USB 循环连接...");
 
         let usb_device = self.reconnect_loop(context, 0x0E8D, 0x0003)?;
 
@@ -108,6 +131,11 @@ impl ConnectionManager {
     /// 串口连接 + 握手
     /// 
     /// 扫描 COM 端口 → 打开串口 → BROM 握手 → init → 返回 Preloader
+    /// 
+    /// 对齐 MTKClient Python:
+    /// - com.py::detect_port() → 扫描 COM 端口
+    /// - Port.py::connect() → 打开串口 + 握手
+    /// - mtk_preloader.py::init() → 完整初始化
     fn serial_connect(&self) -> Result<Option<(String, Preloader)>, String> {
         let mut attempt = 0;
         const MAX_ATTEMPTS: usize = 30;
@@ -132,6 +160,7 @@ impl ConnectionManager {
             std::thread::sleep(Duration::from_secs(1));
         }
 
+        debug!("串口检测完成，未找到可用设备");
         Ok(None)
     }
 
@@ -141,10 +170,20 @@ impl ConnectionManager {
     /// - usblib.py::connect() 循环扫描设备
     /// - mtk_preloader.py::init() 重试机制
     /// 
-    /// 参数：
-    /// - timeout_ms: 总超时（默认 10000ms）
-    /// - interval_ms: 重试间隔（默认 200ms）
-    fn reconnect_loop(
+    /// 关键特性：
+    /// - 10 秒超时，200ms 重试间隔
+    /// - 支持 USB reset 后重连
+    /// - 支持 Kamakiri exploit 后重连
+    /// - 支持 DA 加载后重连
+    /// - 所有错误自动重试，不信任单次连接
+    /// 
+    /// 日志输出：
+    /// ```
+    /// [RECONNECT] retry 1/50...
+    /// [RECONNECT] retry 6/50...
+    /// [RECONNECT] success on attempt 3/50
+    /// ```
+    pub fn reconnect_loop(
         &self,
         context: &UsbContext,
         vid: u16,
@@ -162,12 +201,12 @@ impl ConnectionManager {
 
             match usb::UsbDevice::open_by_vid_pid(context, vid, pid) {
                 Ok(device) => {
-                    info!("libusb 连接成功 (尝试 {}/{})", retry, max_retries);
+                    info!("[RECONNECT] success on attempt {}/{}", retry, max_retries);
                     return Ok(device);
                 }
                 Err(e) => {
                     if retry % 5 == 1 || retry == max_retries {
-                        debug!("libusb 连接尝试 {}/{}: {}", retry, max_retries, e);
+                        debug!("[RECONNECT] retry {}/{}: {}", retry, max_retries, e);
                     }
                     std::thread::sleep(Duration::from_millis(INTERVAL_MS));
                 }
@@ -180,13 +219,48 @@ impl ConnectionManager {
         ))
     }
 
-    /// 获取当前连接模式（预留：诊断和状态显示）
+    /// DA 加载后重连（预留）
+    /// 
+    /// 对齐 MTKClient Python:
+    /// - DA 加载后设备会 USB reset
+    /// - 需要等待重枚举后重新连接
+    /// 
+    /// 用法：
+    /// ```
+    /// conn_mgr.reconnect_after_da(&context)?;
+    /// ```
+    #[allow(dead_code)]
+    pub fn reconnect_after_da(
+        &self,
+        context: &UsbContext,
+    ) -> Result<usb::UsbDevice, String> {
+        info!("[DA] 等待设备重枚举...");
+        std::thread::sleep(Duration::from_millis(1000));
+        self.reconnect_loop(context, 0x0E8D, 0x0003)
+    }
+
+    /// Kamakiri exploit 后重连（预留）
+    /// 
+    /// 对齐 mtkclient stage2.py:
+    /// - 发送 payload 后设备 USB reset
+    /// - 需要等待重枚举后重新连接
+    #[allow(dead_code)]
+    pub fn reconnect_after_kamakiri(
+        &self,
+        context: &UsbContext,
+    ) -> Result<usb::UsbDevice, String> {
+        info!("[KAMAKIRI] 等待设备重枚举...");
+        std::thread::sleep(Duration::from_millis(500));
+        self.reconnect_loop(context, 0x0E8D, 0x0003)
+    }
+
+    /// 获取当前连接模式
     #[allow(dead_code)]
     pub fn mode(&self) -> &DeviceMode {
         &self.mode
     }
 
-    /// 获取串口名称（预留：调试和日志）
+    /// 获取串口名称
     #[allow(dead_code)]
     pub fn port_name(&self) -> Option<&str> {
         self.port_name.as_deref()

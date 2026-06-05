@@ -155,7 +155,28 @@ impl UsbDevice {
     /// 通过指定 VID/PID 打开设备
     /// 
     /// 完整流程：open → detach_kernel → claim_interface → endpoint 扫描
+    /// 
+    /// 对齐 MTKClient Python usblib.py::connect():
+    /// - 遍历所有 USB 设备，匹配 VID/PID
+    /// - detach kernel driver（允许失败）
+    /// - claim interface（带 3 次重试）
+    /// - 动态扫描 endpoint（不写死地址）
+    /// 
+    /// 支持的 VID/PID：
+    /// - 0x0E8D:0x0003 → BROM 模式
+    /// - 0x0E8D:0x2000 → Preloader 模式（USB）
     pub fn open_by_vid_pid(context: &UsbContext, vid: u16, pid: u16) -> Result<Self, String> {
+        Self::open_device(context, vid, pid)
+    }
+
+    /// 内部核心：打开 USB 设备并完成初始化
+    /// 
+    /// 工程级错误处理：
+    /// - detach_kernel_driver 允许失败（不 panic）
+    /// - claim_interface 重试 3 次（间隔 100ms）
+    /// - endpoint 扫描失败时使用默认值
+    /// - 所有错误返回 Result，不 unwrap
+    fn open_device(context: &UsbContext, vid: u16, pid: u16) -> Result<Self, String> {
         let ctx = context.as_ptr();
         unsafe {
             let handle = libusb1_sys::libusb_open_device_with_vid_pid(ctx, vid, pid);
@@ -163,38 +184,56 @@ impl UsbDevice {
                 return Err(format!("未找到设备 VID=0x{:04X} PID=0x{:04X}", vid, pid));
             }
 
-            // 1. detach kernel driver (interface 0)
-            let _ = libusb1_sys::libusb_detach_kernel_driver(handle, 0);
+            // 1. detach kernel driver (interface 0) — 允许失败
+            let detach_ret0 = libusb1_sys::libusb_detach_kernel_driver(handle, 0);
+            if detach_ret0 != 0 && detach_ret0 != -6 { // -6 = LIBUSB_ERROR_NOT_FOUND
+                debug!("[USB] detach_kernel_driver(0) returned {}", detach_ret0);
+            }
 
-            // 2. claim interface 0 with retry
+            // 2. claim interface 0 with retry（处理 device busy 等竞态条件）
             let mut claim_retry = 0;
+            let mut claim_err = 0i32;
             while claim_retry < 3 {
                 let ret = libusb1_sys::libusb_claim_interface(handle, 0);
                 if ret == 0 {
                     break;
                 }
+                claim_err = ret;
                 claim_retry += 1;
-                if claim_retry == 3 {
-                    return Err(format!("claim interface 0 failed (error {})", ret));
+                if claim_retry < 3 {
+                    debug!("[USB] claim_interface(0) failed (error {}), retrying...", ret);
+                    std::thread::sleep(Duration::from_millis(100));
                 }
-                std::thread::sleep(Duration::from_millis(100));
             }
+            if claim_retry == 3 {
+                let _ = libusb1_sys::libusb_close(handle);
+                return Err(format!("claim interface 0 failed after 3 retries (error {})", claim_err));
+            }
+            debug!("[USB] claim_interface(0) OK");
 
             // 3. detach + claim interface 1
             let _ = libusb1_sys::libusb_detach_kernel_driver(handle, 1);
-            if libusb1_sys::libusb_claim_interface(handle, 1) != 0 {
-                return Err("claim interface 1 failed".into());
+            let claim1_ret = libusb1_sys::libusb_claim_interface(handle, 1);
+            if claim1_ret != 0 {
+                let _ = libusb1_sys::libusb_release_interface(handle, 0);
+                let _ = libusb1_sys::libusb_close(handle);
+                return Err(format!("claim interface 1 failed (error {})", claim1_ret));
             }
+            debug!("[USB] claim_interface(1) OK");
 
             // 4. scan endpoints from config descriptor
             let device = libusb1_sys::libusb_get_device(handle);
             if device.is_null() {
+                let _ = libusb1_sys::libusb_release_interface(handle, 1);
+                let _ = libusb1_sys::libusb_release_interface(handle, 0);
+                let _ = libusb1_sys::libusb_close(handle);
                 return Err("获取设备描述失败：设备可能已断开".into());
             }
 
             let mut desc: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
             let ret_desc = libusb1_sys::libusb_get_device_descriptor(device, &mut desc);
             if ret_desc != 0 {
+                let _ = libusb1_sys::libusb_close(handle);
                 return Err(format!("获取设备描述失败 (error {})", ret_desc));
             }
 
@@ -203,12 +242,11 @@ impl UsbDevice {
             // 默认端点：OUT=0x01, IN=0x81
             let mut ep_out_addr: u8 = 0x01;
             let mut ep_in_addr: u8 = 0x81;
-            let mut found_endpoints = false;
 
             let ret = libusb1_sys::libusb_get_active_config_descriptor(device, &mut config_ptr);
             if ret != 0 || config_ptr.is_null() {
-                info!(
-                    "[USB] WARNING: get_active_config_descriptor failed (ret={}), using default endpoints",
+                debug!(
+                    "[USB] get_active_config_descriptor failed (ret={}), using default endpoints",
                     ret
                 );
             } else {
@@ -231,11 +269,9 @@ impl UsbDevice {
                             );
                             if is_bulk && !is_in {
                                 ep_out_addr = addr;
-                                found_endpoints = true;
                             }
                             if is_bulk && is_in {
                                 ep_in_addr = addr;
-                                found_endpoints = true;
                             }
                         }
                     }
@@ -243,12 +279,10 @@ impl UsbDevice {
                 libusb1_sys::libusb_free_config_descriptor(config_ptr);
             }
 
-            if found_endpoints {
-                debug!(
-                    "[USB] 已打开设备 VID=0x{:04X} PID=0x{:04X} EP_OUT=0x{:02X} EP_IN=0x{:02X}",
-                    vid, pid, ep_out_addr, ep_in_addr
-                );
-            }
+            debug!(
+                "[USB] VID=0x{:04X} PID=0x{:04X} detected, EP_OUT=0x{:02X}, EP_IN=0x{:02X}",
+                vid, pid, ep_out_addr, ep_in_addr
+            );
 
             Ok(UsbDevice {
                 handle,

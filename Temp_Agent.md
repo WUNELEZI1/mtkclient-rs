@@ -734,3 +734,32 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - `Port.py::run_handshake()` → `SerialPortTransport` 握手
      - 验证：cargo build 通过，1 个旧 warning（`config.rs::from_vid_pid` 不再使用）
 
+27. **工程级稳定连接架构：USB 优先 + reconnect_loop + 错误处理完善**（2026-06-04）：
+     - 问题：串口优先策略导致 BROM 模式下多绕一圈；claim_interface 竞态条件处理不完善；reconnect 日志不够详细
+     - 方案：完全对齐 MTKClient Python 行为，USB 优先策略，reconnect_loop 为核心
+     - 修复：
+       - **`connection.rs` 重构**：
+         - `smart_init()` 改为 USB 优先：先尝试 `open_by_vid_pid(0x0E8D, 0x0003)` → 成功直接返回
+         - USB 失败 → 串口检测 → 握手 → 释放 → reconnect_loop
+         - 串口也失败 → reconnect_loop 循环检测
+         - 新增 `reconnect_after_da()` — DA 加载后重连（预留）
+         - 新增 `reconnect_after_kamakiri()` — exploit 后重连（预留）
+         - 日志输出 `[RECONNECT] retry N/50...` 和 `[RECONNECT] success on attempt N/50`
+       - **`usb.rs::open_device` 完善**：
+         - detach_kernel_driver 日志更详细（区分 NOT_FOUND 和其他错误）
+         - claim_interface 失败时自动 cleanup（release + close），防止句柄泄漏
+         - endpoint 扫描从 info! 降级为 debug!（减少噪音）
+         - 日志输出 `[USB] VID=0x0E8D PID=0x0003 detected, EP_OUT=0x01, EP_IN=0x81`
+     - 关键设计原则：
+       - USB 优先（不是串口）
+       - reconnect_loop 是核心（不是辅助）
+       - 所有模式切换都依赖 USB 重连
+       - 不依赖驱动注入（install-filter.exe）
+       - 不信任一次连接（必须 retry）
+     - 对齐 MTKClient Python：
+       - `usblib.connect()` → `UsbDevice::open_by_vid_pid()` (detach + claim + endpoint 扫描)
+       - `reconnect loop` → `reconnect_loop()` (10s/200ms, 50 次重试)
+       - `preloader init` → `preloader.rs::init()` (握手 + watchdog + BROM sync)
+       - `get_connection_agent` → `ConnectionManager` (统一状态机)
+     - 验证：cargo build 通过，2 个 warning（1 个旧 `from_vid_pid`，1 个预留 `reconnect_callback`）
+
