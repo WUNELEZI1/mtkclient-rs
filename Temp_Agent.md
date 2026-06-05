@@ -821,3 +821,31 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - device state model → `validate_device()`
      - 验证：cargo build 通过，3 个 warning（旧 `from_vid_pid` + 预留方法 + SerialCom variant）
 
+30. **工程级稳定连接架构完善：UsbDk 真实验证 + 窗口捕获 + 设备所有权 + 状态机**（2026-06-04）：
+     - 问题：reconnect_loop 永久扫描但设备不可打开；COM → USB 切换无状态同步；backend 缓存不实时更新
+     - 根因：UsbDk 只检测文件存在未真实验证；reconnect_loop 是简单 polling 无状态机；backend 在 ConnectionManager::new() 中缓存
+     - 修复：
+       - **`driver.rs` 全面重构**：
+         - 新增 `DeviceOwner` 枚举：`UsbDkOwned` / `WinUsbOwned` / `SerialOwned` / `Unknown`
+         - 新增 `usbdk_open_test(context, vid, pid)` — UsbDk 真实接管验证（open + descriptor + endpoint 验证）
+         - 新增 `detect_device_owner(context, vid, pid)` — 检测设备驱动所有权状态
+         - 重构 `detect_backend(context, vid, pid)` — 每次调用实时检测，不再缓存结果
+         - 新增 `wait_reenumeration_window(context, vid, pid, timeout_ms)` — 状态机等待设备重枚举窗口
+         - 扩展 UsbDk 检测路径：新增 `C:\Program Files (x86)\Daytona\UsbDk` 支持
+       - **`connection.rs` 全面重构**：
+         - 移除 `backend` 缓存字段，改为每次 reconnect 实时调用 `detect_backend()`
+         - 新增 `ReconnectState` 状态机枚举：`WaitReenumeration` → `WindowDetected` → `Acquired`
+         - `smart_init()` 中 COM → USB 切换加入 `wait_reenumeration_window()` 延迟窗口（100ms 间隔扫描，最多 3 秒）
+         - `reconnect_loop()` 改为 MTKClient 风格窗口捕获：
+           - 状态机流转：WaitReenumeration → 检测到设备 → WindowDetected → 验证 → Acquired
+           - 成功时实时检测后端：`driver::detect_backend(context, device.vid, device.pid)`
+           - 日志：`[RECONNECT] window detected (stage=Brom, PID=0x0003)`
+         - 新增 `reconnect_after_usb_reset()` — USB reset 后重连
+         - 统一日志标准：`[COM] handshake success COM12` / `[COM] releasing serial interface` / `[USB] waiting re-enumeration window...` / `[USB] backend=UsbDk selected` / `[USB] ownership=UsbDkOwned` / `[USB] device opened successfully` / `[USB] interface claimed` / `[RECONNECT] window detected` / `[RECONNECT] success on attempt 3`
+     - 核心设计原则：
+       - timing window control（不是盲目 polling）
+       - driver ownership detection（不是猜测）
+       - reconnect state machine（不是简单循环）
+       - backend fallback chain（不是固定后端）
+     - 验证：cargo build 通过，4 个 warning（1 个旧 `from_vid_pid` + 3 个预留方法/变体）
+

@@ -190,9 +190,7 @@ impl UsbDevice {
     /// - claim interface（带 3 次重试）
     /// - 动态扫描 endpoint（不写死地址）
     /// 
-    /// 支持的 VID/PID：
-    /// - 0x0E8D:0x0003 → BROM 模式
-    /// - 0x0E8D:0x2000 → Preloader 模式（USB）
+    /// 支持所有已知 PID（0x0003 BROM, 0x2000 Preloader）
     pub fn open_by_vid_pid(context: &UsbContext, vid: u16, pid: u16) -> Result<Self, String> {
         Self::open_device(context, vid, pid)
     }
