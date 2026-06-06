@@ -1,6 +1,6 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
-> 最近更新：2026-06-05
+> 最近更新：2026-06-06
 > 完整历史：Temp_Agent_Archive.md
 
 ## 当前状态
@@ -10,7 +10,7 @@
   - `r分区` ⚠️
   - `w/e` ❌
   - `auto-dump` ⚠️
-- 最近工作区状态：连接流程已重构为 USB 优先 → 串口回退。串口 BROM 不切 libusb。`install_libusb_filter` 仅在 kamakiri2 exploit 阶段调用
+- 最近工作区状态：传输层重构完成。commands 层在 bypass_security 前自动检测串口并切换 libusb。串口负责"进入系统"，libusb 负责"接管系统"
 - 最近提交基线：`24fffaf`（重写连接流程为 USB → 串口回退）
 
 ## 关键协议

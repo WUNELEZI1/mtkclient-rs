@@ -1,6 +1,9 @@
 use crate::config::{CHIP_CONFIGS, ChipConfig, TargetConfig};
+use crate::driver;
+use crate::usb;
+use crate::usb::UsbContext;
 use colored::Colorize;
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::time::Duration;
 
 /// BROM 传输抽象层 — 统一 USB 和串口的读写接口
@@ -11,6 +14,11 @@ pub trait BromTransport {
     fn set_timeout(&mut self, duration: Duration);
     fn get_timeout(&self) -> Duration;
     fn do_handshake(&mut self) -> Result<bool, String>;
+
+    /// 判断当前传输层是否为 libusb（用于决定是否可执行 exploit）
+    fn is_libusb(&self) -> bool {
+        false
+    }
 
     // USB 专属方法 — 默认返回错误，仅 UsbDevice 实现
     fn ctrl_transfer_out(
@@ -146,6 +154,29 @@ impl BromTransport for SerialPortTransport {
     }
 }
 
+/// 临时占位传输层 — 仅用于 switch_to_libusb 期间的短暂过渡
+/// 不实现任何实际功能，唯一用途是被 drop 释放旧设备句柄
+struct ClosingTransport;
+
+impl BromTransport for ClosingTransport {
+    fn write(&mut self, _data: &[u8]) -> Result<usize, String> {
+        Err("ClosingTransport: not usable".into())
+    }
+    fn read_exact(&mut self, _buf: &mut [u8]) -> Result<usize, String> {
+        Err("ClosingTransport: not usable".into())
+    }
+    fn read(&mut self, _buf: &mut [u8]) -> Result<usize, String> {
+        Err("ClosingTransport: not usable".into())
+    }
+    fn set_timeout(&mut self, _duration: Duration) {}
+    fn get_timeout(&self) -> Duration {
+        Duration::from_millis(1000)
+    }
+    fn do_handshake(&mut self) -> Result<bool, String> {
+        Err("ClosingTransport: not usable".into())
+    }
+}
+
 /// Preloader / BROM protocol handler
 pub struct Preloader {
     pub device: Box<dyn BromTransport>,
@@ -170,6 +201,61 @@ impl Preloader {
     /// 条件：init() 成功完成（握手 + 看门狗 + 同步 + HW info）
     pub fn is_brom_ready(&self) -> bool {
         self.brom_initialized
+    }
+
+    /// 从串口 BROM 切换到 libusb BROM
+    /// 
+    /// 必须在执行 Kamakiri exploit 前调用，因为 exploit 需要 USB control transfer
+    /// 串口不支持 control transfer，因此必须切换到 libusb
+    /// 
+    /// 流程：
+    /// 1. 安装 libusb filter（内部自动去重）
+    /// 2. 释放串口句柄（drop）
+    /// 3. 等待设备重新枚举
+    /// 4. 通过 libusb 打开设备
+    /// 5. 替换 transport
+    pub fn switch_to_libusb(&mut self, context: &UsbContext) -> Result<(), String> {
+        // 如果已经是 libusb，无需切换
+        if self.device.is_libusb() {
+            debug!("当前已是 libusb 模式，无需切换");
+            return Ok(());
+        }
+
+        info!("当前为串口模式，切换 libusb 执行 exploit");
+
+        // 1. 安装 filter（内部自动去重）
+        if let Err(e) = driver::install_libusb_filter(0x0E8D, 0x0003) {
+            warn!("install filter 失败: {}", e);
+        } else {
+            info!("libusb filter 安装完成");
+        }
+
+        // 2. 释放串口（必须，否则 libusb 无法打开）
+        // 使用 std::mem::replace 把 device 替换为一个临时占位符，从而取出旧的串口
+        let _old_device = std::mem::replace(
+            &mut self.device,
+            Box::new(ClosingTransport),
+        );
+        // _old_device 在这里被 drop，串口句柄被释放
+
+        // 3. 等待设备重新枚举
+        std::thread::sleep(Duration::from_millis(500));
+
+        // 4. 轮询等待设备出现（5 秒超时，100ms 间隔）
+        let switch_start = std::time::Instant::now();
+        loop {
+            if let Ok(usb_device) = usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
+                info!("BROM 设备连接成功（libusb），已切换到 libusb 模式");
+                self.device = Box::new(usb_device);
+                return Ok(());
+            }
+
+            if switch_start.elapsed().as_secs() > 5 {
+                return Err("切换到 libusb 超时：设备重新枚举失败".into());
+            }
+
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     /// 完整初始化：握手 + 关闭看门狗 + 读取设备信息

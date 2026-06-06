@@ -255,6 +255,24 @@ pub fn detect_backend(context: &UsbContext, vid: u16, pid: u16) -> DeviceBackend
     }
 }
 
+/// 轮询等待 USB 设备出现（VID/PID 匹配）
+///
+/// 通过尝试打开设备来判断是否可发现，不 claim interface
+pub fn wait_for_device(vid: u16, pid: u16, timeout_ms: u64) -> Result<(), String> {
+    let context = UsbContext::new()?;
+    let start = std::time::Instant::now();
+    while start.elapsed().as_millis() < timeout_ms as u128 {
+        if crate::usb::UsbDevice::open_by_vid_pid(&context, vid, pid).is_ok() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Err(format!(
+        "等待设备 {:04X}:{:04X} 超时 ({}ms)",
+        vid, pid, timeout_ms
+    ))
+}
+
 /// 获取后端状态摘要（用于日志）
 pub fn backend_status() -> String {
     let filter_exe = find_install_filter()

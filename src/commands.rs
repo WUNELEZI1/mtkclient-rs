@@ -6,6 +6,7 @@ use crate::connection::DeviceMode;
 use crate::config::AppConfig;
 use crate::da_partition::{generate_scatter_from_gpt, generate_scatter_shoujixia};
 use crate::da_xflash::DAXFlash;
+use crate::driver;
 use crate::frp;
 use crate::usb::UsbContext;
 
@@ -65,6 +66,28 @@ pub fn handle_command(
         }
 
         if preloader_file.is_empty() {
+            // 🔥 在调用 bypass_security 前确保 transport 已经是 libusb
+            // bypass_security 内部的 Kamakiri exploit 需要 USB control transfer
+            // 串口不支持 control transfer，必须切换到 libusb
+            if !da.preloader.device.is_libusb() {
+                info!("当前为串口模式，切换到 libusb 执行 exploit");
+
+                // 1. 安装 filter（内部自动去重）
+                if let Err(e) = driver::install_libusb_filter(0x0E8D, 0x0003) {
+                    warn!("install filter 失败: {}", e);
+                } else {
+                    info!("libusb filter 安装完成");
+                }
+
+                // 2. 释放串口（必须，否则 libusb 无法打开）
+                // 3. 等待设备重新枚举
+                // 4. 通过 libusb 打开设备并替换 transport
+                da.preloader.switch_to_libusb(_context)
+                    .map_err(|e| format!("切换 libusb 失败: {}", e))?;
+
+                info!("backend=Libusb");
+            }
+
             match da.preloader.get_target_config() {
                 Ok(cfg) => info!("{}", cfg.format_info()),
                 Err(e) => warn!("获取 target config 失败: {}", e),
