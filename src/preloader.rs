@@ -3,7 +3,7 @@ use crate::driver;
 use crate::usb;
 use crate::usb::UsbContext;
 use colored::Colorize;
-use log::{debug, info, warn};
+use log::{debug, info};
 use std::time::Duration;
 
 /// BROM 传输抽象层 — 统一 USB 和串口的读写接口
@@ -29,6 +29,7 @@ pub trait BromTransport {
         _index: u16,
         _data: &[u8],
     ) -> Result<usize, String> {
+        log::error!("!!! SERIAL ctrl_transfer_out 被调用 !!! 串口不支持 USB control transfer");
         Err("ctrl_transfer_out not supported on this transport".to_string())
     }
     fn ctrl_transfer_in(
@@ -39,6 +40,7 @@ pub trait BromTransport {
         _index: u16,
         _length: u16,
     ) -> Result<Vec<u8>, String> {
+        log::error!("!!! SERIAL ctrl_transfer_in 被调用 !!! 串口不支持 USB control transfer");
         Err("ctrl_transfer_in not supported on this transport".to_string())
     }
     fn clear_halt_in(&mut self) -> Result<(), String> {
@@ -203,59 +205,73 @@ impl Preloader {
         self.brom_initialized
     }
 
-    /// 从串口 BROM 切换到 libusb BROM
+    /// 确保传输层为 libusb（串口 BROM → libusb BROM 的唯一切换入口）
     /// 
-    /// 必须在执行 Kamakiri exploit 前调用，因为 exploit 需要 USB control transfer
-    /// 串口不支持 control transfer，因此必须切换到 libusb
+    /// 必须在执行 Kamakiri exploit 前调用，因为 exploit 需要 USB control transfer。
+    /// 串口不支持 control transfer，因此必须切换到 libusb。
     /// 
     /// 流程：
-    /// 1. 安装 libusb filter（内部自动去重）
-    /// 2. 释放串口句柄（drop）
-    /// 3. 等待设备重新枚举
-    /// 4. 通过 libusb 打开设备
-    /// 5. 替换 transport
-    pub fn switch_to_libusb(&mut self, context: &UsbContext) -> Result<(), String> {
-        // 如果已经是 libusb，无需切换
+    /// 1. 检测当前传输层类型
+    /// 2. 安装 libusb filter（内部自动去重）
+    /// 3. 释放串口句柄（drop）→ 触发设备重新枚举
+    /// 4. 等待设备重新枚举
+    /// 5. 通过 libusb 打开设备
+    /// 6. 替换 transport
+    /// 7. 验证切换成功
+    pub fn ensure_libusb(&mut self, context: &UsbContext) -> Result<(), String> {
+        // Step 1：如果已经是 libusb，直接返回
         if self.device.is_libusb() {
             debug!("当前已是 libusb 模式，无需切换");
             return Ok(());
         }
 
-        info!("当前为串口模式，切换 libusb 执行 exploit");
+        info!("[TRANSPORT] 当前为串口模式，准备切换到 libusb");
 
-        // 1. 安装 filter（内部自动去重）
-        if let Err(e) = driver::install_libusb_filter(0x0E8D, 0x0003) {
-            warn!("install filter 失败: {}", e);
-        } else {
-            info!("libusb filter 安装完成");
-        }
+        // Step 2：安装 filter（内部自动去重）
+        driver::install_libusb_filter(0x0E8D, 0x0003)
+            .map_err(|e| format!("安装 libusb filter 失败: {}", e))?;
+        info!("[TRANSPORT] libusb filter 已就绪");
 
-        // 2. 释放串口（必须，否则 libusb 无法打开）
-        // 使用 std::mem::replace 把 device 替换为一个临时占位符，从而取出旧的串口
+        // Step 3：释放串口句柄（必须，否则 Windows 不会重新枚举 USB）
         let _old_device = std::mem::replace(
             &mut self.device,
             Box::new(ClosingTransport),
         );
-        // _old_device 在这里被 drop，串口句柄被释放
+        drop(_old_device);
+        debug!("[TRANSPORT] 串口句柄已释放");
 
-        // 3. 等待设备重新枚举
+        // Step 4：等待设备重新枚举（给 Windows 时间处理设备断开/重连）
         std::thread::sleep(Duration::from_millis(500));
 
-        // 4. 轮询等待设备出现（5 秒超时，100ms 间隔）
+        // Step 5：轮询打开 libusb 设备（5 秒超时，200ms 间隔）
         let switch_start = std::time::Instant::now();
-        loop {
+        let mut switched = false;
+        for _ in 0..25 {
             if let Ok(usb_device) = usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
-                info!("BROM 设备连接成功（libusb），已切换到 libusb 模式");
                 self.device = Box::new(usb_device);
-                return Ok(());
+                switched = true;
+                break;
             }
 
             if switch_start.elapsed().as_secs() > 5 {
                 return Err("切换到 libusb 超时：设备重新枚举失败".into());
             }
 
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(200));
         }
+
+        if !switched {
+            return Err("切换到 libusb 超时：设备重新枚举失败".into());
+        }
+
+        // Step 6：验证切换成功
+        if !self.device.is_libusb() {
+            return Err("切换 libusb 失败：验证不通过".into());
+        }
+
+        // Step 7：打印日志
+        info!("[TRANSPORT] Serial → Libusb 切换成功");
+        Ok(())
     }
 
     /// 完整初始化：握手 + 关闭看门狗 + 读取设备信息
