@@ -269,33 +269,3 @@ pub fn backend_status() -> String {
         .unwrap_or_else(|| "not found".to_string());
     format!("libusb-filter: {}", filter_exe)
 }
-
-/// 等待设备重枚举窗口
-///
-/// 安装 filter 后，设备需要短暂时间重新枚举
-/// 实现状态机等待：
-/// WAIT_REENUMERATION → DEVICE WINDOW DETECTED → OPEN ATTEMPT
-pub fn wait_reenumeration_window(context: &UsbContext, vid: u16, pid: u16, timeout_ms: u64) -> bool {
-    use std::time::{Duration, Instant};
-
-    info!("[USB] waiting re-enumeration window...");
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut retry = 0;
-
-    while Instant::now() < deadline {
-        retry += 1;
-
-        match crate::usb::UsbDevice::open_by_vid_pid(context, vid, pid) {
-            Ok(_) => {
-                info!("[USB] re-enumeration window detected (retry {})", retry);
-                return true;
-            }
-            Err(_) => {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-        }
-    }
-
-    debug!("[USB] re-enumeration window not detected within {}ms", timeout_ms);
-    false
-}

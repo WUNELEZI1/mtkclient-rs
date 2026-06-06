@@ -1,10 +1,11 @@
-use crate::driver::{self};
+use crate::driver;
 use crate::preloader::{self, BromTransport, Preloader};
 use crate::usb;
 use crate::usb::{UsbContext, UsbStage};
 use colored::Colorize;
 use log::{debug, info, warn};
 use std::time::Duration;
+use std::process::Stdio;
 
 /// 设备模式
 #[derive(Debug, PartialEq, Clone)]
@@ -119,38 +120,14 @@ impl ConnectionManager {
         debug!("USB BROM 直接连接失败，尝试串口检测...");
 
         // === STEP 2: COM scan + handshake ===
-        if let Some((port_name, preloader)) = self.serial_connect()? {
-            info!("[COM] handshake success {}", port_name);
-
-            // === STEP 3: COM → USB 切换 ===
-            info!("[COM] releasing serial interface...");
-            drop(preloader);
-            debug!("串口已释放");
-
-            // 等待设备重枚举窗口（状态机等待，最多 3 秒）
-            // 不同设备枚举时间不同：MT6768 约 300ms，MT6785 约 500ms
-            info!("[USB] waiting re-enumeration window...");
-            if driver::wait_reenumeration_window(context, 0x0E8D, 0x0003, 3000) {
-                info!("[USB] re-enumeration window detected, proceeding to reconnect...");
-            } else {
-                info!("[USB] re-enumeration window not detected within 3s, trying reconnect_loop anyway...");
-            }
-
-            // reconnect_loop: 循环检测 BROM 设备（10 秒，200ms 重试）
-            let usb_device = self.reconnect_loop(context, UsbStage::Brom)?;
-
-            info!(
-                "  VID: {:04x}, PID: {:04x}, stage={:?}",
-                usb_device.vid, usb_device.pid, usb_device.stage
-            );
+        // COM 握手成功后释放 COM → 安装 filter → 轮询 libusb 接管
+        if let Some((port_name, preloader)) = self.serial_connect(context)? {
+            info!("[COM] COM → libusb 切换成功 {}", port_name);
 
             self.mode = DeviceMode::Brom;
             self.stage = UsbStage::Brom;
             self.port_name = Some(port_name);
-            return Ok((
-                Preloader::new(Box::new(usb_device)),
-                DeviceMode::Brom,
-            ));
+            return Ok((preloader, DeviceMode::Brom));
         }
 
         // === STEP 4: reconnect_loop 循环检测 ===
@@ -168,9 +145,9 @@ impl ConnectionManager {
         Ok((Preloader::new(Box::new(usb_device)), DeviceMode::Brom))
     }
 
-    /// 串口连接 + 握手
+    /// 串口连接 + 握手 → 释放 COM → 安装 libusb-filter → 轮询 libusb 接管
     /// 
-    /// 扫描 COM 端口 → 打开串口 → BROM 握手 → init → 返回 Preloader
+    /// 扫描 COM 端口 → 打开串口 → BROM 握手 → init → 释放 COM → 安装 filter → 轮询 libusb
     /// 
     /// init 流程（严格对齐刷机匣日志）：
     /// - A0 → FA（BROM handshake）
@@ -180,7 +157,7 @@ impl ConnectionManager {
     /// - FE → BROM sync
     /// - FF → 进入 ID 阶段
     /// - FC → 读 HW info
-    fn serial_connect(&self) -> Result<Option<(String, Preloader)>, String> {
+    fn serial_connect(&self, context: &UsbContext) -> Result<Option<(String, Preloader)>, String> {
         let mut attempt = 0;
         const MAX_ATTEMPTS: usize = 30;
 
@@ -196,7 +173,44 @@ impl ConnectionManager {
                 let mut preloader = Preloader::new(device);
 
                 if preloader.init().unwrap_or(false) {
-                    return Ok(Some((port_name, preloader)));
+                    info!("COM 口握手成功: {}", port_name);
+
+                    // 获取 hw_code（在释放 COM 前）
+                    let _hw_code = preloader.get_hw_code();
+
+                    // 释放 COM 口
+                    drop(preloader);
+                    info!("COM 口已释放，等待设备重新枚举...");
+
+                    // 等设备稳定
+                    std::thread::sleep(Duration::from_millis(500));
+
+                    // 安装 libusb filter（只对 0E8D:0003）
+                    let filter_exe = std::env::current_exe()
+                        .ok()
+                        .and_then(|p| p.parent().map(|d| d.join("install-filter.exe")));
+                    if let Some(ref exe) = filter_exe {
+                        if exe.exists() {
+                            info!("[FILTER] 安装 libusb filter: {}", exe.display());
+                            std::process::Command::new(exe)
+                                .args(["install", "--device=USB\\VID_0E8D&PID_0003"])
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::null())
+                                .status()
+                                .ok();
+                        }
+                    }
+
+                    // 轮询等待 libusb 能打开设备（最多 20 次，每次 500ms = 10 秒）
+                    for i in 0..20 {
+                        if let Ok(d) = usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
+                            info!("libusb 接管成功 (attempt {}/{})", i + 1, 20);
+                            return Ok(Some((port_name, Preloader::new(Box::new(d)))));
+                        }
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+
+                    return Err("切换到 libusb 失败：设备重新枚举后无法通过 libusb 打开".into());
                 }
                 debug!("串口握手失败，继续轮询...");
             }
