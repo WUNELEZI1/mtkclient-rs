@@ -1,7 +1,4 @@
 use crate::config::{CHIP_CONFIGS, ChipConfig, TargetConfig};
-use crate::driver;
-use crate::usb;
-use crate::usb::UsbContext;
 use colored::Colorize;
 use log::{debug, info};
 use std::time::Duration;
@@ -156,29 +153,6 @@ impl BromTransport for SerialPortTransport {
     }
 }
 
-/// 临时占位传输层 — 仅用于 switch_to_libusb 期间的短暂过渡
-/// 不实现任何实际功能，唯一用途是被 drop 释放旧设备句柄
-struct ClosingTransport;
-
-impl BromTransport for ClosingTransport {
-    fn write(&mut self, _data: &[u8]) -> Result<usize, String> {
-        Err("ClosingTransport: not usable".into())
-    }
-    fn read_exact(&mut self, _buf: &mut [u8]) -> Result<usize, String> {
-        Err("ClosingTransport: not usable".into())
-    }
-    fn read(&mut self, _buf: &mut [u8]) -> Result<usize, String> {
-        Err("ClosingTransport: not usable".into())
-    }
-    fn set_timeout(&mut self, _duration: Duration) {}
-    fn get_timeout(&self) -> Duration {
-        Duration::from_millis(1000)
-    }
-    fn do_handshake(&mut self) -> Result<bool, String> {
-        Err("ClosingTransport: not usable".into())
-    }
-}
-
 /// Preloader / BROM protocol handler
 pub struct Preloader {
     pub device: Box<dyn BromTransport>,
@@ -203,76 +177,6 @@ impl Preloader {
     /// 条件：init() 成功完成（握手 + 看门狗 + 同步 + HW info）
     pub fn is_brom_ready(&self) -> bool {
         self.brom_initialized
-    }
-
-    /// 确保传输层为 libusb（串口 BROM → libusb BROM 的唯一切换入口）
-    /// 
-    /// 必须在执行 Kamakiri exploit 前调用，因为 exploit 需要 USB control transfer。
-    /// 串口不支持 control transfer，因此必须切换到 libusb。
-    /// 
-    /// 注意：USB 设备在 BROM 串口状态下不会重新枚举，因此不需要等待设备重新出现，
-    /// 只需释放串口句柄后直接通过 libusb 打开即可。
-    /// 
-    /// 流程：
-    /// 1. 检测当前传输层类型
-    /// 2. 安装 libusb filter（内部自动去重）
-    /// 3. 释放串口句柄（drop）
-    /// 4. 直接通过 libusb 打开设备（无需重新枚举）
-    /// 5. 替换 transport
-    /// 6. 验证切换成功
-    pub fn ensure_libusb(&mut self, context: &UsbContext) -> Result<(), String> {
-        // Step 1：如果已经是 libusb，直接返回
-        if self.device.is_libusb() {
-            debug!("当前已是 libusb 模式，无需切换");
-            return Ok(());
-        }
-
-        info!("[TRANSPORT] Serial → Libusb");
-
-        // Step 2：安装 filter（内部自动去重）
-        driver::install_libusb_filter(0x0E8D, 0x0003)
-            .map_err(|e| format!("安装 libusb filter 失败: {}", e))?;
-        info!("[TRANSPORT] libusb filter 已就绪");
-
-        // Step 3：释放串口句柄
-        debug!("[TRANSPORT] 释放串口句柄");
-        let _old_device = std::mem::replace(
-            &mut self.device,
-            Box::new(ClosingTransport),
-        );
-        drop(_old_device);
-
-        // Step 4：短暂等待后直接打开设备（无需等待重新枚举）
-        std::thread::sleep(Duration::from_millis(200));
-        info!("[USB] 尝试直接打开设备（无需重新枚举）");
-
-        let mut switched = false;
-        for _ in 0..30 {
-            match usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
-                Ok(usb_device) => {
-                    self.device = Box::new(usb_device);
-                    info!("[USB] open_by_vid_pid 成功");
-                    switched = true;
-                    break;
-                }
-                Err(e) => {
-                    debug!("[USB] open_by_vid_pid 失败: {}", e);
-                }
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
-
-        if !switched {
-            return Err("切换到 libusb 失败：无法打开设备".into());
-        }
-
-        // Step 5：验证切换成功
-        if !self.device.is_libusb() {
-            return Err("切换 libusb 失败：验证不通过".into());
-        }
-
-        info!("[TRANSPORT] Serial → Libusb 切换成功");
-        Ok(())
     }
 
     /// 完整初始化：握手 + 关闭看门狗 + 读取设备信息

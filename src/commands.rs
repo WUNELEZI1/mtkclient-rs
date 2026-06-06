@@ -45,7 +45,7 @@ pub fn handle_command(
     log_level: u8,
     _quiet_dump: bool,
     preloader_file: &str,
-    context: &UsbContext,
+    _context: &UsbContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let is_brom = !da.preloader.is_preloader_mode;
     let mut auto_dumped_file: Option<String> = None;
@@ -71,7 +71,7 @@ pub fn handle_command(
             }
 
             da.preloader
-                .bypass_security(context)
+                .bypass_security()
                 .map_err(|e| format!("bypass_security 失败: {}", e))?;
 
             let data = da
@@ -357,33 +357,10 @@ fn cmd_print_scatter(
     println!("{}", " Scatter 文件 (SP Flash Tool 格式) ".on_green().black());
     println!();
 
-    println!("PRELOADER 0x0");
-    println!("{{");
-    println!("  <Physical_Storage_Type_1>");
-    println!("  is_upgradeable: 1");
-    println!("  is_download: 1");
-    println!("  is_reserved: 0");
-    println!("  linear_addr: 0x0");
-    println!("}}");
-    println!();
-
-    println!("EMMC_BOOT_1 0x0");
-    println!("{{");
-    println!("  type: EMPC_BOOT_1");
-    println!("  is_upgradeable: 1");
-    println!("  is_download: 1");
-    println!("  is_reserved: 0");
-    println!("}}");
-    println!();
-
-    println!("EMMC_BOOT_2 0x0");
-    println!("{{");
-    println!("  type: EMPC_BOOT_2");
-    println!("  is_upgradeable: 1");
-    println!("  is_download: 1");
-    println!("  is_reserved: 0");
-    println!("}}");
-    println!();
+    let header = crate::da_partition::generate_scatter_header();
+    for line in header.lines() {
+        println!("{}", line);
+    }
 
     for entry in gpt_info.iter_partitions() {
         println!("{} 0x{:X}", entry.name.to_uppercase().green(), entry.start_addr);
