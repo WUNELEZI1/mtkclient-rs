@@ -210,14 +210,16 @@ impl Preloader {
     /// 必须在执行 Kamakiri exploit 前调用，因为 exploit 需要 USB control transfer。
     /// 串口不支持 control transfer，因此必须切换到 libusb。
     /// 
+    /// 注意：USB 设备在 BROM 串口状态下不会重新枚举，因此不需要等待设备重新出现，
+    /// 只需释放串口句柄后直接通过 libusb 打开即可。
+    /// 
     /// 流程：
     /// 1. 检测当前传输层类型
     /// 2. 安装 libusb filter（内部自动去重）
-    /// 3. 释放串口句柄（drop）→ 触发设备重新枚举
-    /// 4. 等待设备重新枚举
-    /// 5. 通过 libusb 打开设备
-    /// 6. 替换 transport
-    /// 7. 验证切换成功
+    /// 3. 释放串口句柄（drop）
+    /// 4. 直接通过 libusb 打开设备（无需重新枚举）
+    /// 5. 替换 transport
+    /// 6. 验证切换成功
     pub fn ensure_libusb(&mut self, context: &UsbContext) -> Result<(), String> {
         // Step 1：如果已经是 libusb，直接返回
         if self.device.is_libusb() {
@@ -225,51 +227,50 @@ impl Preloader {
             return Ok(());
         }
 
-        info!("[TRANSPORT] 当前为串口模式，准备切换到 libusb");
+        info!("[TRANSPORT] Serial → Libusb");
 
         // Step 2：安装 filter（内部自动去重）
         driver::install_libusb_filter(0x0E8D, 0x0003)
             .map_err(|e| format!("安装 libusb filter 失败: {}", e))?;
         info!("[TRANSPORT] libusb filter 已就绪");
 
-        // Step 3：释放串口句柄（必须，否则 Windows 不会重新枚举 USB）
+        // Step 3：释放串口句柄
+        debug!("[TRANSPORT] 释放串口句柄");
         let _old_device = std::mem::replace(
             &mut self.device,
             Box::new(ClosingTransport),
         );
         drop(_old_device);
-        debug!("[TRANSPORT] 串口句柄已释放");
 
-        // Step 4：等待设备重新枚举（给 Windows 时间处理设备断开/重连）
-        std::thread::sleep(Duration::from_millis(500));
+        // Step 4：短暂等待后直接打开设备（无需等待重新枚举）
+        std::thread::sleep(Duration::from_millis(200));
+        info!("[USB] 尝试直接打开设备（无需重新枚举）");
 
-        // Step 5：轮询打开 libusb 设备（5 秒超时，200ms 间隔）
-        let switch_start = std::time::Instant::now();
         let mut switched = false;
-        for _ in 0..25 {
-            if let Ok(usb_device) = usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
-                self.device = Box::new(usb_device);
-                switched = true;
-                break;
+        for _ in 0..30 {
+            match usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
+                Ok(usb_device) => {
+                    self.device = Box::new(usb_device);
+                    info!("[USB] open_by_vid_pid 成功");
+                    switched = true;
+                    break;
+                }
+                Err(e) => {
+                    debug!("[USB] open_by_vid_pid 失败: {}", e);
+                }
             }
-
-            if switch_start.elapsed().as_secs() > 5 {
-                return Err("切换到 libusb 超时：设备重新枚举失败".into());
-            }
-
             std::thread::sleep(Duration::from_millis(200));
         }
 
         if !switched {
-            return Err("切换到 libusb 超时：设备重新枚举失败".into());
+            return Err("切换到 libusb 失败：无法打开设备".into());
         }
 
-        // Step 6：验证切换成功
+        // Step 5：验证切换成功
         if !self.device.is_libusb() {
             return Err("切换 libusb 失败：验证不通过".into());
         }
 
-        // Step 7：打印日志
         info!("[TRANSPORT] Serial → Libusb 切换成功");
         Ok(())
     }
