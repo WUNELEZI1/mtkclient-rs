@@ -33,7 +33,12 @@ impl Preloader {
     }
 
     /// Kamakiri2 单步：设置 BROM 内存访问指针
-    /// 通过 USB ctrl_transfer（libusb）或 brom_register_access（串口）发送
+    /// 
+    /// libusb 路径：USB control transfer exploit（标准 kamakiri2）
+    /// 串口路径：NO-OP（跳过 setup steps，直接 brom_register_access）
+    /// 
+    /// 原因：刷机匣在串口模式下不调用 kamakiri2 setup steps，
+    /// 直接使用 brom_register_access 完成内存读写。
     fn kamakiri2_step(&mut self, lc: &[u8], _ptr_da_bra: u32, addr: u32) -> Result<(), String> {
         debug!("[STEP] addr=0x{:08X}", addr);
         if self.device.is_libusb() {
@@ -43,16 +48,8 @@ impl Preloader {
             self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d)?;
             let _ = self.device.ctrl_transfer_in(0x80, 0x06, 0x02FF, 0, 9);
         } else {
-            // 串口路径：brom_register_access 等效实现
-            // 向目标地址写入 linecode + 地址
-            let mut d = lc.to_vec();
-            d.extend(&addr.to_le_bytes());
-            let _ = self.brom_register_access(
-                addr,
-                (d.len() / 4).max(1) as u32,
-                Some(&d),
-                false,
-            );
+            // 串口路径：NO-OP（对齐刷机匣行为 — 不调用 setup steps）
+            debug!("[STEP] serial mode — skipping kamakiri2 setup step");
         }
         Ok(())
     }
@@ -115,9 +112,8 @@ impl Preloader {
         );
         self.da_setup(lc, ptr_da_bra, watchdog)?;
 
-        let bra_addr = addr.wrapping_sub(0x40);
-
         if addr < 0x40 {
+            // addr < 0x40: 4 steps, ptr_da_bra - 2, -1, 0, +1 (原逻辑 ptr_da_bra - 6 + (4 - i), i=0..4)
             self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
             self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(1))?;
             self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(0))?;
@@ -126,10 +122,12 @@ impl Preloader {
             self.brom_register_access(addr, (data.len() / 4) as u32, Some(data), check_status)?;
             Ok(())
         } else {
+            // addr >= 0x40: 3 steps, ptr_da_bra - 2, -1, 0 (原逻辑 ptr_da_bra - 5 + (3 - i), i=0..3)
+            let bra_addr = addr.wrapping_sub(0x40);
             self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
             self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(1))?;
             self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(0))?;
-            debug!("[da_write] bra_addr=0x{:08X}", bra_addr);
+            debug!("[da_write] bra_addr=0x{:08X} (addr-0x40)", bra_addr);
             self.brom_register_access(
                 bra_addr,
                 (data.len() / 4) as u32,
@@ -406,8 +404,8 @@ impl Preloader {
             std::fs::read(&payload_path).map_err(|e| format!("读取 patcher payload: {}", e))?;
 
         // 注入 patcher payload
-        // 对齐 Python bypass_security：在 crasher 创建的已 init 连接上注入 payload，
-        // 设备执行 payload 后不重启，保持 BROM 状态，直接在同一个连接上握手
+        // 串口：通过 brom_register_access 完成（对齐刷机匣行为）
+        // libusb：通过 ctrl_transfer 完成
         self.inject_payload(&payload, 0xA1A2A3A4)?;
         debug!("patcher payload 注入完成");
 
