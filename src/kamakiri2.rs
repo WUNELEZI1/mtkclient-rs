@@ -41,23 +41,12 @@ impl Preloader {
 
     /// Kamakiri2 单步：设置 BROM 内存访问指针
     /// 
-    /// libusb 模式：通过 USB ctrl_transfer 发送 linecode + 地址（exploit 漏洞路径）
-    /// 串口模式：通过 brom_register_access 直接写入目标地址（BROM 协议路径）
-    fn kamakiri2_step(&mut self, lc: &[u8], _ptr_da_bra: u32, addr: u32) -> Result<(), String> {
-        if self.device.is_libusb() {
-            // libusb 模式：USB control transfer exploit
-            let mut d = lc.to_vec();
-            d.extend(&addr.to_le_bytes());
-            self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d)?;
-            let _ = self.device.ctrl_transfer_in(0x80, 0x06, 0x02FF, 0, 9);
-        } else {
-            // 串口模式：通过 BROM 协议写入内存（无需 exploit）
-            // 向目标地址写入 linecode + 地址，等效于 USB ctrl_transfer_out 的效果
-            let mut d = lc.to_vec();
-            d.extend(&addr.to_le_bytes());
-            // brom_register_access 写入模式：addr 为目标地址，data 为写入内容
-            let _ = self.brom_register_access(addr, (d.len() / 4).max(1) as u32, Some(&d), false);
-        }
+    /// 纯 brom_register_access 实现（不依赖 USB ctrl_transfer）
+    /// libusb 和串口共用同一套 BROM 协议路径
+    fn kamakiri2_step(&mut self, _lc: &[u8], ptr_da_bra: u32, addr: u32) -> Result<(), String> {
+        // 通过 BROM 协议向目标内存地址写入 ptr_da_bra（设置内存访问指针）
+        // addr 是目标内存地址，写入 ptr_da_bra 来设置 BROM 的访问指针
+        let _ = self.brom_register_access(addr, 1, Some(&ptr_da_bra.to_le_bytes()), false);
         Ok(())
     }
 
@@ -193,18 +182,10 @@ impl Preloader {
             "[inject] ptr_da_bra=0x{:08X} ptr_da=0x{:08X}",
             ptr_da_bra, ptr_da
         );
+        info!("[EXPLOIT] using serial backend — Kamakiri2 via brom_register_access");
 
-        // 获取 linecode：libusb 模式通过 USB ctrl_transfer，串口模式通过 BROM 协议
-        let linecode = if self.device.is_libusb() {
-            self.device.ctrl_transfer_in(0xA1, 0x21, 0, 0, 7)?
-        } else {
-            // 串口模式：通过 BROM 协议读取 serial/me_id 等效数据
-            // 在串口 BROM 下 linecode 通常不影响操作，使用全零占位
-            vec![0u8; 7]
-        };
-        let mut lc = linecode.to_vec();
-        lc.push(0);
-        debug!("[inject] linecode={:02X?}", lc);
+        // 串口模式下 kamakiri2_step 不使用 linecode，使用空数组
+        let lc: Vec<u8> = Vec::new();
 
         let ptr_send = self.read_payload_address(&lc, ptr_da_bra, ptr_da, chip.watchdog)?;
         debug!("[inject] ptr_send=0x{:08X}", ptr_send);
@@ -478,7 +459,7 @@ impl Preloader {
     }
 
     /// 通过 Kamakiri2 payload 流式 dump preloader（对齐 Python pltools.run_dump_preloader）
-    /// 使用 exploit 路径（inject_payload = ctrl_transfer），
+    /// 使用 exploit 路径（inject_payload = brom_register_access），
     /// BROM 阶段的正确方式
     pub fn dump_preloader_payload(
         &mut self,
@@ -535,7 +516,7 @@ impl Preloader {
             payload.push(0);
         }
 
-        // exploit 路径：inject_payload 通过 ctrl_transfer 注入
+        // exploit 路径：inject_payload 通过 brom_register_access 注入
         debug!("[dump] inject_payload: size={}", payload.len());
         self.inject_payload(&payload, 0xC1C2C3C4)?;
 
