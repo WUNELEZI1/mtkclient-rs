@@ -1,6 +1,6 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
-> 最近更新：2026-06-04
+> 最近更新：2026-06-05
 > 完整历史：Temp_Agent_Archive.md
 
 ## 当前状态
@@ -10,8 +10,8 @@
   - `r分区` ⚠️
   - `w/e` ❌
   - `auto-dump` ⚠️
-- 最近工作区状态：已抽取 `src/seccfg.rs` 并统一 SecCfgV3/V4；新增 `src/sej.rs` HACC 后端与 `sej_hacc_sign`；新增 `src/frp.rs` FRP OEM 开关；驱动安装已切到 `libusb-win32 filter`
-- 最近提交基线：`34a988a`（0xD1 方向切换）
+- 最近工作区状态：已移除 UsbDk，改用 libusb-filter 方案（对齐 C# MtkClient 刷机匣）；`install-filter.exe` 已集成到 binaries/libusb/
+- 最近提交基线：`15091a5`（移除 UsbDk 改用 libusb-filter）
 
 ## 关键协议
 - BROM：
@@ -36,8 +36,8 @@ src/da_xflash.rs   - DA/XFlash 上传、扩展、读写、erase、reset
 src/sej.rs         - HACC/SEJ 寄存器后端与签名接口
 src/seccfg.rs      - SecCfgV3/V4 解析、锁解、离线处理
 src/da_partition.rs - GPT 读取、分区解析、地址查找
-src/driver.rs      - libusb-win32 filter 驱动检测与安装、watchdog 关闭
-src/filter.rs      - install-filter.exe 包装与设备 filter 检测
+src/driver.rs      - libusb-filter 检测与安装、install-filter 状态检查、COM 占用检测
+src/filter.rs      - （已合并到 driver.rs，install-filter.exe 包装与设备 filter 检测）
 src/frp.rs         - FRP OEM unlocking 预留入口
 src/usb.rs         - USB 底层通信
 src/config.rs      - 芯片配置与寄存器常量
