@@ -195,6 +195,26 @@ impl UsbDevice {
         Self::open_device(context, vid, pid)
     }
 
+    /// 检测设备是否存在（通过尝试打开来判断，不 claim interface）
+    pub fn device_present(vid: u16, pid: u16) -> bool {
+        match UsbContext::new() {
+            Ok(ctx) => {
+                let handle = unsafe {
+                    libusb1_sys::libusb_open_device_with_vid_pid(ctx.as_ptr(), vid, pid)
+                };
+                if handle.is_null() {
+                    false
+                } else {
+                    unsafe {
+                        libusb1_sys::libusb_close(handle);
+                    }
+                    true
+                }
+            }
+            Err(_) => false,
+        }
+    }
+
     /// 内部核心：打开 USB 设备并完成初始化
     /// 
     /// 工程级错误处理：
@@ -642,6 +662,7 @@ impl UsbDevice {
     ) -> Result<Vec<u8>, String> {
         debug!("[USB CTRL] IN rt=0x{:02X} r=0x{:02X} v=0x{:04X} i=0x{:04X} len={}",
             rt, r, v, i, len);
+        info!("[USB] ctrl_transfer 正常执行 (IN)");
         unsafe {
             let mut buf = vec![0u8; len as usize];
             let ret = libusb1_sys::libusb_control_transfer(
@@ -706,6 +727,7 @@ impl UsbDevice {
     ) -> Result<(), String> {
         // TX trace: 记录 control transfer 发送的数据
         usb_trace("TX", "UsbDevice::ctrl_transfer_out", data);
+        info!("[USB] ctrl_transfer 正常执行 (OUT)");
         debug!(
             "[CTRL] OUT rt=0x{:02X} r=0x{:02X} v=0x{:04X} i=0x{:04X} data={:02X?}",
             rt, r, v, i, data

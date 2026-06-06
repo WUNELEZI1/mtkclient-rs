@@ -71,7 +71,7 @@ pub fn handle_command(
             }
 
             da.preloader
-                .bypass_security()
+                .bypass_security(_context)
                 .map_err(|e| format!("bypass_security 失败: {}", e))?;
 
             let data = da
