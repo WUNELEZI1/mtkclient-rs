@@ -40,29 +40,22 @@ pub trait BromTransport {
 
 /// 扫描 COM 端口寻找 MediaTek 设备
 pub fn detect_serial_preloader() -> Option<String> {
-    info!("开始扫描 COM 端口 (1-20)...");
-    
     // 直接尝试打开 COM1-COM20，不使用 available_ports()
     for i in 1..=20 {
         let port_name = format!("COM{}", i);
-        info!("尝试打开 {}...", port_name);
         match serialport::new(&port_name, 115200)
             .timeout(std::time::Duration::from_millis(200))
             .open() {
             Ok(_port) => {
-                info!("成功打开 {} - 可能是 MediaTek 设备", port_name);
+                info!("成功打开 {} - 找到 MediaTek 设备", port_name);
                 return Some(port_name);
             }
-            Err(e) => {
-                // 记录错误，但只记录前几个端口
-                if i <= 5 {
-                    info!("{} 打开失败: {}", port_name, e);
-                }
+            Err(_e) => {
+                // 静默跳过不可用端口
             }
         }
     }
     
-    info!("未找到可用的 COM 端口");
     None
 }
 #[allow(dead_code)]
