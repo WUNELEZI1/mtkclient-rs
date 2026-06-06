@@ -640,10 +640,8 @@ impl UsbDevice {
         i: u16,
         len: u16,
     ) -> Result<Vec<u8>, String> {
-        debug!(
-            "[CTRL] IN rt=0x{:02X} r=0x{:02X} v=0x{:04X} i=0x{:04X} len={}",
-            rt, r, v, i, len
-        );
+        debug!("[USB CTRL] IN rt=0x{:02X} r=0x{:02X} v=0x{:04X} i=0x{:04X} len={}",
+            rt, r, v, i, len);
         unsafe {
             let mut buf = vec![0u8; len as usize];
             let ret = libusb1_sys::libusb_control_transfer(

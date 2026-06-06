@@ -373,12 +373,13 @@ impl Preloader {
         Ok(preloader)
     }
 
-    pub fn bypass_security(&mut self) -> Result<(), String> {
+    pub fn bypass_security(&mut self, context: &UsbContext) -> Result<(), String> {
         info!("正在绕过安全保护...");
 
-        // 安装 libusb-filter（对齐 C# MtkClient 刷机匣行为）
-        // 在 exploit 阶段安装，确保 libusb 可以访问设备
-        let _ = crate::driver::install_libusb_filter(0x0E8D, 0x0003);
+        // 🔥 确保传输层为 libusb（串口不支持 ctrl_transfer，必须切换）
+        self.ensure_libusb(context)?;
+
+        debug!("bypass_security: is_libusb = {}", self.device.is_libusb());
 
         let payload_path = exe_relative_path("payloads/generic_patcher_payload.bin");
         let payload =
