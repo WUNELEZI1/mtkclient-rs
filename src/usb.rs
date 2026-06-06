@@ -879,6 +879,9 @@ impl crate::preloader::BromTransport for UsbDevice {
     fn do_handshake(&mut self) -> Result<bool, String> {
         self.do_handshake()
     }
+    fn is_libusb(&self) -> bool {
+        true
+    }
 }
 
 impl Drop for UsbDevice {
