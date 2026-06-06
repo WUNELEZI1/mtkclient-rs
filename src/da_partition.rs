@@ -456,6 +456,39 @@ pub fn parse_gpt_from_data(data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Scatter header 统一生成（PRELOADER + EMMC_BOOT_1 + EMMC_BOOT_2）
+/// console / file 输出共用，避免重复定义
+pub fn generate_scatter_header() -> String {
+    let lines: Vec<String> = vec![
+        "PRELOADER 0x0".to_string(),
+        "{".to_string(),
+        "  <Physical_Storage_Type_1>".to_string(),
+        "  is_upgradeable: 1".to_string(),
+        "  is_download: 1".to_string(),
+        "  is_reserved: 0".to_string(),
+        "  linear_addr: 0x0".to_string(),
+        "}".to_string(),
+        String::new(),
+        "EMMC_BOOT_1 0x0".to_string(),
+        "{".to_string(),
+        "  type: EMPC_BOOT_1".to_string(),
+        "  is_upgradeable: 1".to_string(),
+        "  is_download: 1".to_string(),
+        "  is_reserved: 0".to_string(),
+        "}".to_string(),
+        String::new(),
+        "EMMC_BOOT_2 0x0".to_string(),
+        "{".to_string(),
+        "  type: EMPC_BOOT_2".to_string(),
+        "  is_upgradeable: 1".to_string(),
+        "  is_download: 1".to_string(),
+        "  is_reserved: 0".to_string(),
+        "}".to_string(),
+        String::new(),
+    ];
+    lines.join("\n") + "\n"
+}
+
 /// 从 GPT 数据生成 SP Flash Tool 格式的 scatter 文件
 /// 对齐 C# 版：包含 PRELOADER 块、EMMC_BOOT_1/2 区域、无 {} 空行
 pub fn generate_scatter_from_gpt(
@@ -467,36 +500,11 @@ pub fn generate_scatter_from_gpt(
     let mut scatter_lines: Vec<String> = Vec::new();
     let mut partition_info_list: Vec<(String, u64, u64, u32)> = Vec::new();
 
-    // 添加 PRELOADER 块（对齐 C# 版）
-    scatter_lines.push("PRELOADER 0x0".to_string());
-    scatter_lines.push("{".to_string());
-    scatter_lines.push("  <Physical_Storage_Type_1>".to_string());
-    scatter_lines.push("  is_upgradeable: 1".to_string());
-    scatter_lines.push("  is_download: 1".to_string());
-    scatter_lines.push("  is_reserved: 0".to_string());
-    scatter_lines.push("  linear_addr: 0x0".to_string());
-    scatter_lines.push("}".to_string());
-    scatter_lines.push(String::new());
-
-    // 添加 EMMC_BOOT_1 区域
-    scatter_lines.push("EMMC_BOOT_1 0x0".to_string());
-    scatter_lines.push("{".to_string());
-    scatter_lines.push("  type: EMPC_BOOT_1".to_string());
-    scatter_lines.push("  is_upgradeable: 1".to_string());
-    scatter_lines.push("  is_download: 1".to_string());
-    scatter_lines.push("  is_reserved: 0".to_string());
-    scatter_lines.push("}".to_string());
-    scatter_lines.push(String::new());
-
-    // 添加 EMMC_BOOT_2 区域
-    scatter_lines.push("EMMC_BOOT_2 0x0".to_string());
-    scatter_lines.push("{".to_string());
-    scatter_lines.push("  type: EMPC_BOOT_2".to_string());
-    scatter_lines.push("  is_upgradeable: 1".to_string());
-    scatter_lines.push("  is_download: 1".to_string());
-    scatter_lines.push("  is_reserved: 0".to_string());
-    scatter_lines.push("}".to_string());
-    scatter_lines.push(String::new());
+    // 添加 PRELOADER + EMMC_BOOT_1 + EMMC_BOOT_2（统一入口）
+    let header = generate_scatter_header();
+    for line in header.lines() {
+        scatter_lines.push(line.to_string());
+    }
 
     // 遍历 GPT 分区表生成条目
     for entry in gpt_info.iter_partitions() {
