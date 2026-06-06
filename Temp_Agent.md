@@ -10,8 +10,8 @@
   - `r分区` ⚠️
   - `w/e` ❌
   - `auto-dump` ⚠️
-- 最近工作区状态：已移除 UsbDk，改用 libusb-filter 方案（对齐 C# MtkClient 刷机匣）；COM 握手后自动释放串口 → 安装 filter → 轮询 libusb 接管；`install-filter.exe` 已集成到 binaries/libusb/
-- 最近提交基线：`8ed51ed`（COM 握手后释放串口并切换 libusb 接管）
+- 最近工作区状态：已移除 UsbDk，改用 libusb-filter 方案（对齐 C# MtkClient 刷机匣）；COM 握手后自动释放串口 → 等待 BROM 设备出现 → 安装 filter → 等待重枚举 → 轮询 libusb 接管；`install-filter.exe` 已集成到 binaries/libusb/
+- 最近提交基线：`893f077`（COM 握手后使用 wait_for_device + install-filter + libusb 接管）
 
 ## 关键协议
 - BROM：
@@ -880,4 +880,24 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - 不需要 UsbDk，不需要全局 filter
      - 验证：cargo build && cargo clippy 通过，0 新增 error/warning
      - 基线提交：`8ed51ed`
+
+33. **COM 握手后使用 wait_for_device + install-filter + libusb 接管** (2026-06-05)
+     - 触发：用户要求优化 COM → libusb 切换流程，使用 device_present 轻量检测 + 两步 wait_for_device
+     - 改动：
+       - `src/usb.rs` 新增 `UsbDevice::device_present(context, vid, pid)` — 只判断设备是否可打开（libusb_open_device_with_vid_pid），不 claim interface，用于快速轮询
+       - `src/connection.rs` 新增 `wait_for_device(context, vid, pid, timeout_ms)` 辅助函数 — 轮询 device_present 直到成功或超时
+       - `serial_connect` 改为三步流程：
+         1. `drop(preloader)` 释放 COM 口
+         2. `wait_for_device(0x0E8D, 0x0003, 3000)` — 等待 BROM 设备出现
+         3. `driver::install_libusb_filter(0x0E8D, 0x0003)` — 安装 filter（内部已检查是否已安装）
+         4. `wait_for_device(0x0E8D, 0x0003, 3000)` — 等待 filter 安装后设备重新枚举
+         5. 轮询 `open_by_vid_pid`（200ms 间隔，5 秒超时）直到成功
+       - 删除旧的内联 filter 安装代码，统一通过 `driver::install_libusb_filter` 调用
+       - 删除未使用的 `use std::process::Stdio`
+     - 关键设计：
+       - `device_present` 只做 open + close，不 claim interface，开销远小于完整 open
+       - 两步 wait_for_device 确保：先检测 COM 释放后设备出现 → 再检测 filter 安装后设备稳定
+       - filter 安装通过 `driver::install_libusb_filter` 统一入口，内部检查是否已安装避免重复
+     - 验证：cargo build && cargo clippy 通过，0 新增 error/warning
+     - 基线提交：`893f077`
 
