@@ -151,6 +151,8 @@ pub struct Preloader {
     pub device: Box<dyn BromTransport>,
     pub is_preloader_mode: bool,
     pub chip: Option<ChipConfig>,
+    /// BROM 初始化是否完成（init 成功后为 true）
+    pub brom_initialized: bool,
 }
 
 impl Preloader {
@@ -159,7 +161,15 @@ impl Preloader {
             device,
             is_preloader_mode: false,
             chip: None,
+            brom_initialized: false,
         }
+    }
+
+    /// 判断是否已经进入 BROM 模式
+    /// 
+    /// 条件：init() 成功完成（握手 + 看门狗 + 同步 + HW info）
+    pub fn is_brom_ready(&self) -> bool {
+        self.brom_initialized
     }
 
     /// 完整初始化：握手 + 关闭看门狗 + 读取设备信息
@@ -266,6 +276,7 @@ impl Preloader {
         );
 
         debug!("{}", "BROM 初始化完成".green().bold());
+        self.brom_initialized = true;
         Ok(true)
     }
 
