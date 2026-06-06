@@ -335,7 +335,7 @@ impl Preloader {
             .map_err(|e| format!("安装 libusb filter 失败: {}", e))?;
         info!("[SWITCH] libusb filter 已就绪");
 
-        // Step 3：释放串口句柄（必须，否则 Windows 不会重新枚举 USB）
+        // Step 3：释放串口句柄（必须，否则 Windows 不会释放 USB 设备）
         info!("[SWITCH] closing serial");
         let _old_device = std::mem::replace(
             &mut self.device,
@@ -343,27 +343,28 @@ impl Preloader {
         );
         drop(_old_device);
 
-        // Step 4：等待设备重新枚举（给 Windows 时间处理设备断开/重连）
+        // Step 4：等待设备释放（给 Windows 时间处理串口关闭 + 设备重新枚举）
         info!("[SWITCH] waiting for device");
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(1000));
 
-        // Step 5：轮询等待设备出现 + 打开 libusb
+        // Step 5：轮询打开 libusb 设备（50 次 × 100ms = 5 秒超时）
+        // open_by_vid_pid 内部会调用 detach_kernel_driver 从串口驱动接管设备
         info!("[SWITCH] opening libusb");
         let mut switched = false;
         for attempt in 1..=50 {
-            // 先检测设备是否出现
-            if crate::usb::UsbDevice::device_present(0x0E8D, 0x0003) {
-                info!("[SWITCH] device detected");
-
-                // 设备已出现，尝试打开
-                if let Ok(usb_device) = usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
+            match usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
+                Ok(usb_device) => {
                     self.device = Box::new(usb_device);
                     info!("[SWITCH] libusb open success (attempt {})", attempt);
                     switched = true;
                     break;
                 }
+                Err(e) => {
+                    if attempt % 10 == 1 {
+                        debug!("[SWITCH] attempt {} failed: {}", attempt, e);
+                    }
+                }
             }
-
             std::thread::sleep(Duration::from_millis(100));
         }
 
@@ -411,6 +412,8 @@ impl Preloader {
                         "[ECHO_1] mismatch: expected 0x{:02X}, got 0x{:02X}",
                         cmd, buf[0]
                     );
+                    // 不匹配时清空输入缓冲，防止后续读取错位
+                    self.flush_input();
                     Ok(false)
                 }
             }
@@ -693,6 +696,17 @@ impl Preloader {
     pub fn read32_brom(&mut self, addr: u32, dwords: usize) -> Result<Vec<u8>, String> {
         self.brom_register_access(addr, dwords as u32, None, true)
             .map(|r| r.unwrap_or_default())
+    }
+
+    /// 清空输入缓冲（串口模式下丢弃所有待读数据，防止 echo mismatch 后读取错位）
+    pub fn flush_input(&mut self) {
+        let mut buf = [0u8; 256];
+        loop {
+            match self.device.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {} // 继续读取直到为空
+            }
+        }
     }
 
     /// 读 n 字节
