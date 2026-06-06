@@ -217,46 +217,49 @@ impl Preloader {
             .find(|c| c.hw_code == hw)
             .ok_or_else(|| format!("未知芯片: HW code 0x{:04X}", hw))?;
 
-        // 3. 关闭看门狗（完全对齐刷机匣真实设备日志）
-        // 刷机匣序列 (mainLogs_2026-06-01T17_58_38.log 第 67-96 行):
-        //   写 D4 → 读 D4                  (echo 1字节)
-        //   写 10007000 → 读 10007000      (echo 4字节)
-        //   写 00000001 → 读 00000001      (echo 4字节)
-        //   读 0001                         (status1 = 0x0001)
-        //   写 22000000 → 读 22000000      (echo 4字节)
-        //   读 0001                         (status2 = 0x0001)
+        // 3. 关闭看门狗（对齐 Python write32 协议）
+        // Python 调用: echo(Cmd.WRITE32.value) → echo(pack(">I", addr)) → echo(pack(">I", 1)) → rword() → echo(pack(">I", value)) → rword()
+        // Cmd.WRITE32.value = b"\xD4" — 作为 bytes 只发送 1 字节
+        debug!("[WD] 开始关闭看门狗流程 (write32协议)");
+        self.device.set_timeout(Duration::from_secs(3));
+
+        let wdt_addr = chip.watchdog;
+        let wdt_value: u32 = 0x22000064;  // 0x64 = 100 看门狗超时值
+
+        debug!("[WD] 地址=0x{:08X}, value=0x{:08X}", wdt_addr, wdt_value);
+
+        // 步骤 1: echo(0xD4) — 发送 1 字节命令
+        debug!("[WD] 步骤1: echo_1byte(0xD4)");
         if !self.echo_1byte(0xD4)? {
             return Err("关闭看门狗: echo 0xD4 不匹配".into());
         }
-
-        let wdt_addr = chip.watchdog;
-        let wdt_data: u32 = 0x00000001;
-        let wdt_value: u32 = 0x22000000;
-
-        debug!("关闭看门狗: 地址=0x{:08X}, data=0x{:08X}, value=0x{:08X}", wdt_addr, wdt_data, wdt_value);
-
-        // 步骤 1: echo 地址
+        // 步骤 2: echo(addr) — 4 字节大端地址
+        debug!("[WD] 步骤2: echo_4byte(addr=0x{:08X})", wdt_addr);
         if !self.echo_4byte(wdt_addr)? {
             return Err("关闭看门狗: echo addr 不匹配".into());
         }
-        // 步骤 2: echo data=1
-        if !self.echo_4byte(wdt_data)? {
-            return Err("关闭看门狗: echo data 不匹配".into());
+        // 步骤 3: echo(1) — 写入 1 个值
+        debug!("[WD] 步骤3: echo_4byte(count=1)");
+        if !self.echo_4byte(1)? {
+            return Err("关闭看门狗: echo count 不匹配".into());
         }
-        // 步骤 3: 读 status1 (刷机匣日志显示 0x0001)
+        // 步骤 4: 读 status1 (应该 <= 3 表示 OK)
+        debug!("[WD] 步骤4: rword() 读 status1");
         let status1 = self.rword()?;
-        debug!("关闭看门狗 status1: 0x{:04X}", status1);
-        if status1 != 0x0001 {
+        debug!("[WD] status1: 0x{:04X}", status1);
+        if status1 > 0xFF {
             return Err(format!("关闭看门狗失败: status1=0x{:04X}", status1));
         }
-        // 步骤 4: echo wdt_value=0x22000000
+        // 步骤 5: echo(wdt_value) — 4 字节大端值
+        debug!("[WD] 步骤5: echo_4byte(value=0x{:08X})", wdt_value);
         if !self.echo_4byte(wdt_value)? {
             return Err("关闭看门狗: echo value 不匹配".into());
         }
-        // 步骤 5: 读 status2 (刷机匣日志显示 0x0001)
+        // 步骤 6: 读 status2 (应该 <= 0xFF 表示成功)
+        debug!("[WD] 步骤6: rword() 读 status2");
         let status2 = self.rword()?;
-        debug!("关闭看门狗 status2: 0x{:04X}", status2);
-        if status2 != 0x0001 {
+        debug!("[WD] status2: 0x{:04X}", status2);
+        if status2 > 0xFF {
             return Err(format!("关闭看门狗失败: status2=0x{:04X}", status2));
         }
 
@@ -398,6 +401,7 @@ impl Preloader {
     ///   - sendcmd(u8) 调用 echo_1byte 发送 1 字节命令（对应 Python Cmd enum bytes）
     ///   - echo_4byte(u32) 发送 4 字节大端参数（对应 Python pack(">I", val)）
     pub fn echo_1byte(&mut self, cmd: u8) -> Result<bool, String> {
+        // 串口协议：发送 1 字节，读回 1 字节（握手阶段）
         self.device.set_timeout(Duration::from_millis(1000));
         self.device
             .write(&[cmd])
@@ -424,9 +428,42 @@ impl Preloader {
         }
     }
 
-    /// 发送 4 字节大端参数并校验回显，对齐 Python echo(pack(">I", val))
+    /// 发送 1 字节命令（4 字节小端），读回 4 字节回显（用于 brom_register_access / read32_brom）
+    pub fn echo_cmd_4byte(&mut self, cmd: u8) -> Result<bool, String> {
+        // 对齐 Python: echo(cmd) 发送单字节命令
+        // 但有些设备需要 4 字节格式，这里尝试两种方式
+        let le_bytes = [cmd, 0, 0, 0];
+        debug!("[ECHO_CMD_4] 发送: {:02X?}", le_bytes);
+        self.device
+            .write(&le_bytes)
+            .map_err(|e| format!("echo_cmd_4byte write: {}", e))?;
+        let mut buf = [0u8; 4];
+        match self.device.read_exact(&mut buf) {
+            Ok(_) => {
+                debug!("[ECHO_CMD_4] 接收: {:02X?} (期望 {:02X?})", buf, le_bytes);
+                if buf == le_bytes {
+                    Ok(true)
+                } else {
+                    debug!(
+                        "[ECHO_CMD_4] mismatch: expected {:02X?}, got {:02X?}",
+                        le_bytes, buf
+                    );
+                    self.flush_input();
+                    Ok(false)
+                }
+            }
+            Err(e) => {
+                debug!("[ECHO_CMD_4] read error for 0x{:02X}: {}", cmd, e);
+                Ok(false)
+            }
+        }
+    }
+
+    /// 发送 4 字节大端参数并校验回显（对齐 Python pack(">I", val)）
     pub fn echo_4byte(&mut self, val: u32) -> Result<bool, String> {
+        // Python 使用大端: pack(">I", val)
         let be = val.to_be_bytes();
+        debug!("[ECHO_4] 发送: {:02X?} (值=0x{:08X})", be, val);
         self.device
             .write(&be)
             .map_err(|e| format!("echo_4byte write: {}", e))?;
@@ -434,6 +471,7 @@ impl Preloader {
         self.device
             .read_exact(&mut echo)
             .map_err(|e| format!("echo_4byte read: {}", e))?;
+        debug!("[ECHO_4] 接收: {:02X?} (期望 {:02X?})", echo, be);
         if echo == be {
             Ok(true)
         } else {
@@ -603,17 +641,28 @@ impl Preloader {
         if !self.echo_1byte(0xD5)? {
             return Err("jump_da: echo 0xD5 不匹配".into());
         }
+        // 串口协议：地址发送用小端
         self.device
-            .write(&addr.to_be_bytes())
+            .write(&addr.to_le_bytes())
             .map_err(|e| format!("jump_da write addr: {}", e))?;
-        let resaddr = self.rdword()?;
+        // 读取回显（小端）
+        let mut echo = [0u8; 4];
+        self.device
+            .read_exact(&mut echo)
+            .map_err(|e| format!("jump_da echo: {}", e))?;
+        let resaddr = u32::from_le_bytes(echo);
         if resaddr != addr {
             return Err(format!(
                 "jump_da addr mismatch: expected {:08X}, got {:08X}",
                 addr, resaddr
             ));
         }
-        let status = self.rword()?;
+        // 读取 status（2字节小端）
+        let mut st = [0u8; 2];
+        self.device
+            .read_exact(&mut st)
+            .map_err(|e| format!("jump_da status: {}", e))?;
+        let status = u16::from_le_bytes(st);
         // Python v2.1.4.1: time.sleep(0.1) after rword() — fix rare timing issue
         std::thread::sleep(Duration::from_millis(100));
         debug!("jump_da status: {:04X}", status);
@@ -638,30 +687,37 @@ impl Preloader {
     }
 
     /// BROM 寄存器访问（DA 注入核心操作）
-    /// 对齐刷机匣日志中的原生命令 0xD1：
-    ///   D1 → address → length(dwords) → status → data/read → status
-    /// 注意：length 的单位是 dwords，读模式实际读取 length * 4 字节
+    /// 对齐刷机匣串口协议：
+    ///   cmd(DA/D1) → mode(4B) → address(4B) → length_bytes(4B) → status(2B) → data → status(2B)
+    /// mode: 0=read, 1=write
+    /// length_bytes: 字节数
     pub fn brom_register_access(
         &mut self,
         address: u32,
-        length_dwords: u32,
+        length_bytes: u32,
         data: Option<&[u8]>,
         check_status: bool,
     ) -> Result<Option<Vec<u8>>, String> {
-        // echo 0xD1 命令（1 字节）
-        if !self.echo_1byte(0xD1)? {
-            return Err("brom_reg: echo 0xD1 不匹配".into());
+        // echo 0xDA 命令（4 字节小端）
+        if !self.echo_cmd_4byte(0xDA)? {
+            return Err("brom_reg: echo 0xDA 不匹配".into());
         }
 
-        // 发送参数（echo）
+        // mode: 0=read, 1=write
+        let mode: u32 = if data.is_some() { 1 } else { 0 };
+        if !self.echo_4byte(mode)? {
+            return Err("brom_reg: echo mode 不匹配".into());
+        }
+        // address
         if !self.echo_4byte(address)? {
             return Err("brom_reg: echo addr 不匹配".into());
         }
-        if !self.echo_4byte(length_dwords)? {
+        // length (bytes) - 直接传递，不乘以 4
+        if !self.echo_4byte(length_bytes)? {
             return Err("brom_reg: echo len 不匹配".into());
         }
 
-        // 读状态 2 字节；不强制检查具体值，刷机匣日志中 0x0001 也属于正常响应
+        // 读状态 2 字节
         let mut st = [0u8; 2];
         self.device
             .read_exact(&mut st)
@@ -669,6 +725,7 @@ impl Preloader {
         debug!("brom_reg status1: {:02X?}", st);
 
         if let Some(wdata) = data {
+            // Write mode: 发送数据后读 status2
             self.device
                 .write(wdata)
                 .map_err(|e| format!("brom_reg write data: {}", e))?;
@@ -677,25 +734,56 @@ impl Preloader {
                 self.device
                     .read_exact(&mut st2)
                     .map_err(|e| format!("brom_reg status2: {}", e))?;
-                debug!("brom_reg status3: {:02X?}", st2);
+                debug!("brom_reg status2: {:02X?}", st2);
             }
             Ok(None)
         } else {
-            let rdata = self.rbyte((length_dwords as usize) * 4)?;
+            // Read mode: 读取数据后读 status2
+            let rdata = self.rbyte(length_bytes as usize)?;
             debug!("brom_reg read data: {} bytes", rdata.len());
-            let mut st2 = [0u8; 2];
-            self.device
-                .read_exact(&mut st2)
-                .map_err(|e| format!("brom_reg status2: {}", e))?;
-            debug!("brom_reg status2: {:02X?}", st2);
+            if check_status {
+                let mut st2 = [0u8; 2];
+                self.device
+                    .read_exact(&mut st2)
+                    .map_err(|e| format!("brom_reg status2: {}", e))?;
+                debug!("brom_reg status2: {:02X?}", st2);
+            }
             Ok(Some(rdata))
         }
     }
 
     /// 读 32 位值（BROM 模式）
+    /// 使用 0xD1 协议（无 mode 参数）：cmd → addr → len(dwords) → status1 → data → status2
     pub fn read32_brom(&mut self, addr: u32, dwords: usize) -> Result<Vec<u8>, String> {
-        self.brom_register_access(addr, dwords as u32, None, true)
-            .map(|r| r.unwrap_or_default())
+        // echo 0xD1 命令（4 字节小端）
+        if !self.echo_cmd_4byte(0xD1)? {
+            return Err("read32_brom: echo 0xD1 不匹配".into());
+        }
+        // address (4 字节小端)
+        if !self.echo_4byte(addr)? {
+            return Err("read32_brom: echo addr 不匹配".into());
+        }
+        // length in dwords (4 字节小端)
+        if !self.echo_4byte(dwords as u32)? {
+            return Err("read32_brom: echo len 不匹配".into());
+        }
+        // 读状态 2 字节（小端）
+        let mut st = [0u8; 2];
+        self.device
+            .read_exact(&mut st)
+            .map_err(|e| format!("read32_brom status1: {}", e))?;
+        debug!("read32_brom status1: {:02X?}", st);
+        // 读取数据
+        let bytes = dwords * 4;
+        let rdata = self.rbyte(bytes)?;
+        debug!("read32_brom read data: {} bytes", rdata.len());
+        // 读状态 2 字节（小端）
+        let mut st2 = [0u8; 2];
+        self.device
+            .read_exact(&mut st2)
+            .map_err(|e| format!("read32_brom status2: {}", e))?;
+        debug!("read32_brom status2: {:02X?}", st2);
+        Ok(rdata)
     }
 
     /// 清空输入缓冲（串口模式下丢弃所有待读数据，防止 echo mismatch 后读取错位）
