@@ -376,6 +376,10 @@ impl Preloader {
     pub fn bypass_security(&mut self) -> Result<(), String> {
         info!("正在绕过安全保护...");
 
+        // 安装 libusb-filter（对齐 C# MtkClient 刷机匣行为）
+        // 在 exploit 阶段安装，确保 libusb 可以访问设备
+        crate::driver::install_libusb_filter(0x0E8D, 0x0003);
+
         let payload_path = exe_relative_path("payloads/generic_patcher_payload.bin");
         let payload =
             std::fs::read(&payload_path).map_err(|e| format!("读取 patcher payload: {}", e))?;
