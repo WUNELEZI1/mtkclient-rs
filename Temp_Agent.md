@@ -10,8 +10,8 @@
   - `r分区` ⚠️
   - `w/e` ❌
   - `auto-dump` ⚠️
-- 最近工作区状态：已移除 UsbDk，改用 libusb-filter 方案（对齐 C# MtkClient 刷机匣）；`install-filter.exe` 已集成到 binaries/libusb/
-- 最近提交基线：`15091a5`（移除 UsbDk 改用 libusb-filter）
+- 最近工作区状态：已移除 UsbDk，改用 libusb-filter 方案（对齐 C# MtkClient 刷机匣）；COM 握手后自动释放串口 → 安装 filter → 轮询 libusb 接管；`install-filter.exe` 已集成到 binaries/libusb/
+- 最近提交基线：`8ed51ed`（COM 握手后释放串口并切换 libusb 接管）
 
 ## 关键协议
 - BROM：
@@ -848,4 +848,36 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - reconnect state machine（不是简单循环）
        - backend fallback chain（不是固定后端）
      - 验证：cargo build 通过，4 个 warning（1 个旧 `from_vid_pid` + 3 个预留方法/变体）
+
+31. **移除 UsbDk 改用 libusb-filter** (2026-06-05)
+     - 触发：用户要求移除 UsbDk，改用和刷机匣（C# MtkClient）一样的 libusb-filter 方案
+     - 改动：
+       - `src/driver.rs` 完全重写：删除 `has_usbdk()`、`DeviceOwner::UsbDkOwned`、`DeviceBackend::UsbDk`、`usbdk_open_test()`
+       - 新增 `install_libusb_filter()` — 调用 `install-filter.exe install --device=USB\VID_0E8D&PID_0003`
+       - 新增 `is_filter_installed()` — 调用 `install-filter.exe list` 检查是否已安装
+       - `src/kamakiri2.rs` 的 `bypass_security()` 开头调用 `install_libusb_filter(0x0E8D, 0x0003)`
+       - `build.rs` 添加 `rerun-if-changed` 指令，简化 libusb 文件拷贝
+       - `binaries/libusb/install-filter.exe` 从刷机匣复制过来
+     - 验证：cargo build 通过，0 新增 warning
+     - 基线提交：`15091a5`
+
+32. **COM 握手后释放串口并切换 libusb 接管** (2026-06-05)
+     - 触发：用户要求 COM 口前期握手后切 libusb 接管后续所有通信
+     - 改动：
+       - `src/connection.rs` 的 `serial_connect()` 改写：
+         1. COM 握手成功后获取 hw_code
+         2. `drop(preloader)` 释放 COM 口
+         3. 等待 500ms 设备稳定
+         4. 调用 `install-filter.exe install --device=USB\VID_0E8D&PID_0003`
+         5. 轮询 20 次 × 500ms 等待 `UsbDevice::open_by_vid_pid(0x0E8D, 0x0003)` 成功
+         6. 成功后返回 libusb 设备 + Preloader，后续走完整 BROM→DA 流程
+       - `smart_init` STEP 2 简化：直接使用 serial_connect 返回的 libusb 设备，删除旧的 drop+wait_reenumeration+reconnect_loop 流程
+       - `src/driver.rs` 删除不再使用的 `wait_reenumeration_window()` 函数
+     - 关键设计：
+       - COM 只用于前期握手（init），后续全部通过 libusb 通信
+       - filter 只对 0E8D:0003 安装，不影响其他 USB 设备
+       - 轮询而非盲目等待，10 秒超时
+       - 不需要 UsbDk，不需要全局 filter
+     - 验证：cargo build && cargo clippy 通过，0 新增 error/warning
+     - 基线提交：`8ed51ed`
 
