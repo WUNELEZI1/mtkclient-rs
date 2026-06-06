@@ -1,7 +1,31 @@
 use crate::config::{CHIP_CONFIGS, ChipConfig, TargetConfig};
+use crate::driver;
+use crate::usb;
+use crate::usb::UsbContext;
 use colored::Colorize;
 use log::{debug, info};
 use std::time::Duration;
+
+/// 临时占位传输层 — 仅用于 ensure_libusb 期间释放旧设备句柄
+struct ClosingTransport;
+impl BromTransport for ClosingTransport {
+    fn write(&mut self, _data: &[u8]) -> Result<usize, String> {
+        Err("ClosingTransport: not usable".into())
+    }
+    fn read_exact(&mut self, _buf: &mut [u8]) -> Result<usize, String> {
+        Err("ClosingTransport: not usable".into())
+    }
+    fn read(&mut self, _buf: &mut [u8]) -> Result<usize, String> {
+        Err("ClosingTransport: not usable".into())
+    }
+    fn set_timeout(&mut self, _duration: Duration) {}
+    fn get_timeout(&self) -> Duration {
+        Duration::from_millis(1000)
+    }
+    fn do_handshake(&mut self) -> Result<bool, String> {
+        Err("ClosingTransport: not usable".into())
+    }
+}
 
 /// BROM 传输抽象层 — 统一 USB 和串口的读写接口
 pub trait BromTransport {
@@ -285,6 +309,75 @@ impl Preloader {
         debug!("{}", "BROM 初始化完成".green().bold());
         self.brom_initialized = true;
         Ok(true)
+    }
+
+    /// 串口 BROM → libusb BROM 切换（刷机匣级稳定性）
+    /// 
+    /// 流程：
+    /// 1. 检测当前传输层类型
+    /// 2. 安装 libusb filter（内部自动去重）
+    /// 3. 释放串口句柄（drop）→ 触发设备重新枚举
+    /// 4. 等待设备重新枚举（wait_for_device）
+    /// 5. 通过 libusb 打开设备
+    /// 6. 替换 transport
+    /// 7. 验证切换成功
+    pub fn ensure_libusb(&mut self, context: &UsbContext) -> Result<(), String> {
+        // Step 1：如果已经是 libusb，直接返回
+        if self.device.is_libusb() {
+            debug!("当前已是 libusb 模式，无需切换");
+            return Ok(());
+        }
+
+        info!("[SWITCH] Serial → Libusb 切换开始");
+
+        // Step 2：安装 filter（内部自动去重）
+        driver::install_libusb_filter(0x0E8D, 0x0003)
+            .map_err(|e| format!("安装 libusb filter 失败: {}", e))?;
+        info!("[SWITCH] libusb filter 已就绪");
+
+        // Step 3：释放串口句柄（必须，否则 Windows 不会重新枚举 USB）
+        info!("[SWITCH] closing serial");
+        let _old_device = std::mem::replace(
+            &mut self.device,
+            Box::new(ClosingTransport),
+        );
+        drop(_old_device);
+
+        // Step 4：等待设备重新枚举（给 Windows 时间处理设备断开/重连）
+        info!("[SWITCH] waiting for device");
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Step 5：轮询等待设备出现 + 打开 libusb
+        info!("[SWITCH] opening libusb");
+        let mut switched = false;
+        for attempt in 1..=50 {
+            // 先检测设备是否出现
+            if crate::usb::UsbDevice::device_present(0x0E8D, 0x0003) {
+                info!("[SWITCH] device detected");
+
+                // 设备已出现，尝试打开
+                if let Ok(usb_device) = usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
+                    self.device = Box::new(usb_device);
+                    info!("[SWITCH] libusb open success (attempt {})", attempt);
+                    switched = true;
+                    break;
+                }
+            }
+
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        if !switched {
+            return Err("切换到 libusb 失败：无法打开设备".into());
+        }
+
+        // Step 6：验证切换成功
+        if !self.device.is_libusb() {
+            return Err("切换 libusb 失败：验证不通过".into());
+        }
+
+        info!("[SWITCH] Serial → Libusb 切换成功");
+        Ok(())
     }
 
     /// BROM echo 协议：完全对齐 Python Port.echo() (Port.py:210-229)

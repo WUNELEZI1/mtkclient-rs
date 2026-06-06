@@ -259,13 +259,12 @@ pub fn detect_backend(context: &UsbContext, vid: u16, pid: u16) -> DeviceBackend
 ///
 /// 通过尝试打开设备来判断是否可发现，不 claim interface
 pub fn wait_for_device(vid: u16, pid: u16, timeout_ms: u64) -> Result<(), String> {
-    let context = UsbContext::new()?;
     let start = std::time::Instant::now();
     while start.elapsed().as_millis() < timeout_ms as u128 {
-        if crate::usb::UsbDevice::open_by_vid_pid(&context, vid, pid).is_ok() {
+        if crate::usb::UsbDevice::device_present(vid, pid) {
             return Ok(());
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
     Err(format!(
         "等待设备 {:04X}:{:04X} 超时 ({}ms)",
