@@ -10,8 +10,8 @@
   - `r分区` ⚠️
   - `w/e` ❌
   - `auto-dump` ⚠️
-- 最近工作区状态：核心流程已重构为 COM 握手 → 安装 filter → drop COM → 高速轮询 open_by_vid_pid 50ms。删除 wait_for_device/device_present。install_libusb_filter 改为返回 Result
-- 最近提交基线：`4cac7f6`（重构 COM → libusb 切换流程为核心四步）
+- 最近工作区状态：连接流程已重构为 USB 优先 → 串口回退。串口 BROM 不切 libusb。`install_libusb_filter` 仅在 kamakiri2 exploit 阶段调用
+- 最近提交基线：`24fffaf`（重写连接流程为 USB → 串口回退）
 
 ## 关键协议
 - BROM：
@@ -937,4 +937,42 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - ❌ 依赖 USB 枚举稳定
      - 验证：cargo build 成功，0 新增 error/warning（3 个原有 warning 不变）
      - 基线提交：`4cac7f6`
+
+35. **重写连接流程为 USB → 串口回退** (2026-06-05)
+     - 触发：用户要求核心重构，串口 BROM 不能切 libusb，串口 BROM ≠ USB BROM
+     - 核心设计原则：
+       1. 禁止无条件切 libusb
+       2. 如果已经在 BROM（串口），必须继续使用串口
+       3. 只有在"需要 exploit（如 Kamakiri）"时才使用 libusb
+       4. 禁止在 BROM 串口状态 drop 设备
+       5. 串口 BROM ≠ USB BROM（两者不可混用）
+     - 改动：
+       - `src/preloader.rs` 新增 `brom_initialized: bool` 字段和 `is_brom_ready()` 方法
+       - `src/connection.rs` 完全重写：
+         - `smart_init` 流程改为：USB BROM 尝试 → 失败 → COM 扫描 + 握手 → 判断 BROM 状态 → BROM 返回串口，否则返回 Preloader → 失败 → reconnect_loop
+         - `serial_connect` 删除所有 drop/filter/wait_for_device/libusb 切换逻辑
+         - 串口握手成功后直接使用串口设备，不释放、不切换
+         - 删除 `use crate::driver`、`wait_for_device`、`ReconnectState` 枚举
+       - `src/driver.rs` 保留 `install_libusb_filter`（仅在 kamakiri2.rs exploit 阶段调用）
+       - `src/main.rs` 无需改动（`DeviceMode::Brom` 可对应串口或 libusb）
+     - 连接流程：
+       ```
+       尝试 USB BROM（libusb）
+       ↓ 失败
+       扫描 COM 端口
+       ↓ 发现设备
+       Preloader 握手 + init
+       ↓ 判断 is_brom_ready()
+       是 → 直接使用串口 BROM（不切 libusb）
+       否 → 返回 Preloader 模式
+       ```
+     - libusb 使用策略（严格限制）：
+       - ✅ Kamakiri exploit
+       - ✅ SLA / DA 认证绕过
+       - ✅ 特殊 USB payload 操作
+       - ❌ 连接阶段切换
+       - ❌ BROM 串口状态切换
+       - ❌ 自动安装 filter 并切换
+     - 验证：cargo build 成功，7 个 warning（全部为原有代码，0 新增）
+     - 基线提交：`24fffaf`
 
