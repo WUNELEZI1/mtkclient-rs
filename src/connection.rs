@@ -30,12 +30,12 @@ enum ReconnectState {
 /// 1. 统一设备入口（smart_init）
 /// 2. 管理连接状态（BROM ↔ Preloader ↔ DA 切换）
 /// 3. 自动重连（reconnect_loop）
-/// 4. 自动驱动后端选择（UsbDk → libusb → COM）
+/// 4. 自动驱动后端选择（libusb-filter → libusb → COM）
 /// 5. 对齐 MTKClient Python 行为
 /// 
 /// 三层驱动架构：
-/// Layer 1: UsbDk backend（优先，Windows 原生，可绕过 COM 占用）
-/// Layer 2: libusb backend（fallback，需设备未被 Windows 驱动占用）
+/// Layer 1: libusb-filter（优先，通过 install-filter.exe 安装设备过滤器）
+/// Layer 2: libusb 直接访问（fallback，需设备未被 Windows 驱动占用）
 /// Layer 3: Serial COM（仅 Preloader 阶段，握手后释放 → USB 重枚举）
 /// 
 /// 对齐 MTKClient Python:
@@ -43,7 +43,7 @@ enum ReconnectState {
 /// - mtk_preloader.py::init() → ConnectionManager::smart_init()
 /// - Port.py::run_handshake() → SerialPortTransport::do_handshake()
 /// - get_connection_agent() → driver::detect_backend()
-/// - dynamic backend selection → UsbDk detection + fallback
+/// - dynamic backend selection → libusb-filter detection + fallback
 /// - reconnect state machine → reconnect_loop with window detection
 pub struct ConnectionManager {
     mode: DeviceMode,
@@ -66,10 +66,10 @@ impl ConnectionManager {
     /// 
     /// 完整流程（对齐刷机匣 + MTKClient Python）：
     /// ```
-    /// STEP 1: USB fast scan（UsbDk 优先）
+    /// STEP 1: USB fast scan（libusb-filter 优先）
     ///   └─ 实时 detect_backend() 选择最佳后端
     ///   └─ 尝试打开 BROM PID（0x0003）
-    ///   └─ 成功 → backend = UsbDk/Libusb → 返回
+    ///   └─ 成功 → backend = Libusb → 返回
     ///   └─ 失败 → 进入 STEP 2
     /// 
     /// STEP 2: COM scan + handshake
@@ -99,7 +99,7 @@ impl ConnectionManager {
         info!("[DRIVER] backend={:?}", backend);
 
         // === STEP 1: USB fast scan ===
-        // 尝试直接打开 BROM 设备（UsbDk 优先）
+        // 尝试直接打开 BROM 设备
         if let Ok(device) = usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
             info!(
                 "  VID: {:04x}, PID: {:04x}, stage={:?}",
@@ -114,10 +114,7 @@ impl ConnectionManager {
         // 检测是否被 COM 占用
         if driver::is_device_com_occupied(0x0E8D, 0x0003) {
             info!("[USB] 设备被 Windows COM 驱动占用，libusb 无法直接打开");
-            if !driver::has_usbdk() {
-                warn!("[USB] UsbDk 不可用，建议安装 UsbDk 以自动接管设备");
-                warn!("[USB] 或等待串口握手完成后自动切换");
-            }
+            info!("[USB] 将尝试安装 libusb-filter 以自动接管设备");
         }
         debug!("USB BROM 直接连接失败，尝试串口检测...");
 
