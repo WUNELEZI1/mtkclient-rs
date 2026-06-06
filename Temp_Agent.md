@@ -10,8 +10,8 @@
   - `r分区` ⚠️
   - `w/e` ❌
   - `auto-dump` ⚠️
-- 最近工作区状态：已移除 UsbDk，改用 libusb-filter 方案（对齐 C# MtkClient 刷机匣）；COM 握手后自动释放串口 → 等待 BROM 设备出现 → 安装 filter → 等待重枚举 → 轮询 libusb 接管；`install-filter.exe` 已集成到 binaries/libusb/
-- 最近提交基线：`893f077`（COM 握手后使用 wait_for_device + install-filter + libusb 接管）
+- 最近工作区状态：核心流程已重构为 COM 握手 → 安装 filter → drop COM → 高速轮询 open_by_vid_pid 50ms。删除 wait_for_device/device_present。install_libusb_filter 改为返回 Result
+- 最近提交基线：`4cac7f6`（重构 COM → libusb 切换流程为核心四步）
 
 ## 关键协议
 - BROM：
@@ -900,4 +900,41 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - filter 安装通过 `driver::install_libusb_filter` 统一入口，内部检查是否已安装避免重复
      - 验证：cargo build && cargo clippy 通过，0 新增 error/warning
      - 基线提交：`893f077`
+
+34. **重构 COM → libusb 切换流程为核心四步** (2026-06-05)
+     - 触发：用户要求彻底重构流程，保证不丢 BROM 枚举窗口
+     - 核心设计原则：
+       1. filter 必须在 drop(preloader) 之前安装
+       2. 禁止使用 wait_for_device / device_present
+       3. 设备检测唯一方式：libusb open_by_vid_pid
+       4. BROM 枚举窗口极短（<500ms），必须立即轮询 open
+       5. COM 释放后不能有阻塞操作（尤其 install-filter）
+       6. open 失败是正常行为，必须高速重试
+     - 改动：
+       - 删除 `src/connection.rs` 的 `wait_for_device` 函数
+       - 删除 `src/usb.rs` 的 `device_present` 函数
+       - 删除所有 "等待设备出现" 和 "检测 USB 再操作" 的逻辑
+       - `serial_connect` 改为核心四步：
+         1. `driver::install_libusb_filter(0x0E8D, 0x0003)` — 提前安装 filter
+         2. `drop(preloader)` — 释放 COM，触发 USB 重枚举
+         3. `sleep(100ms)` — USB 栈稳定
+         4. 高速轮询 `open_by_vid_pid`（50ms 间隔，5 秒超时）
+       - `driver::install_libusb_filter` 改为返回 `Result<(), String>`
+       - `src/kamakiri2.rs` 的 `bypass_security` 使用 `let _ =` 忽略 Result
+     - 日志输出要求：
+       ```
+       COM 口握手成功
+       安装 libusb filter / libusb filter 已安装
+       释放 COM 口
+       开始轮询 BROM
+       BROM 连接成功（libusb）
+       ```
+     - 禁止行为：
+       - ❌ drop 后再 install filter
+       - ❌ wait_for_device / device_present
+       - ❌ sleep 500ms+ 再检测
+       - ❌ 先检测设备再 open
+       - ❌ 依赖 USB 枚举稳定
+     - 验证：cargo build 成功，0 新增 error/warning（3 个原有 warning 不变）
+     - 基线提交：`4cac7f6`
 
