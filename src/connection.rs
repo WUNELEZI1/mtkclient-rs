@@ -5,7 +5,21 @@ use crate::usb::{UsbContext, UsbStage};
 use colored::Colorize;
 use log::{debug, info, warn};
 use std::time::Duration;
-use std::process::Stdio;
+
+/// 轮询等待设备出现（VID/PID 匹配）
+/// 
+/// 使用 usb::UsbDevice::device_present 判断设备是否可发现
+/// 不需要 claim interface，只需 open 成功即可
+fn wait_for_device(context: &UsbContext, vid: u16, pid: u16, timeout_ms: u64) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed().as_millis() < timeout_ms as u128 {
+        if usb::UsbDevice::device_present(context, vid, pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
 
 /// 设备模式
 #[derive(Debug, PartialEq, Clone)]
@@ -145,9 +159,9 @@ impl ConnectionManager {
         Ok((Preloader::new(Box::new(usb_device)), DeviceMode::Brom))
     }
 
-    /// 串口连接 + 握手 → 释放 COM → 安装 libusb-filter → 轮询 libusb 接管
+    /// 串口连接 + 握手 → 释放 COM → 等待设备出现 → 安装 filter → 轮询 libusb 接管
     /// 
-    /// 扫描 COM 端口 → 打开串口 → BROM 握手 → init → 释放 COM → 安装 filter → 轮询 libusb
+    /// 扫描 COM 端口 → 打开串口 → BROM 握手 → init → 释放 COM → 轮询 libusb
     /// 
     /// init 流程（严格对齐刷机匣日志）：
     /// - A0 → FA（BROM handshake）
@@ -175,42 +189,33 @@ impl ConnectionManager {
                 if preloader.init().unwrap_or(false) {
                     info!("COM 口握手成功: {}", port_name);
 
-                    // 获取 hw_code（在释放 COM 前）
-                    let _hw_code = preloader.get_hw_code();
-
                     // 释放 COM 口
                     drop(preloader);
-                    info!("COM 口已释放，等待设备重新枚举...");
 
-                    // 等设备稳定
-                    std::thread::sleep(Duration::from_millis(500));
-
-                    // 安装 libusb filter（只对 0E8D:0003）
-                    let filter_exe = std::env::current_exe()
-                        .ok()
-                        .and_then(|p| p.parent().map(|d| d.join("install-filter.exe")));
-                    if let Some(ref exe) = filter_exe {
-                        if exe.exists() {
-                            info!("[FILTER] 安装 libusb filter: {}", exe.display());
-                            std::process::Command::new(exe)
-                                .args(["install", "--device=USB\\VID_0E8D&PID_0003"])
-                                .stdout(Stdio::null())
-                                .stderr(Stdio::null())
-                                .status()
-                                .ok();
-                        }
+                    // 等待 BROM 设备出现
+                    if !wait_for_device(context, 0x0E8D, 0x0003, 3000) {
+                        return Err("未检测到 BROM 设备".into());
                     }
 
-                    // 轮询等待 libusb 能打开设备（最多 20 次，每次 500ms = 10 秒）
-                    for i in 0..20 {
+                    // 安装 libusb filter（仅首次）
+                    crate::driver::install_libusb_filter(0x0E8D, 0x0003);
+
+                    // 等待 filter 安装后设备重新枚举
+                    if !wait_for_device(context, 0x0E8D, 0x0003, 3000) {
+                        return Err("filter 安装后设备未重新枚举".into());
+                    }
+
+                    // 轮询打开 libusb 设备（最多 5 秒）
+                    let start = std::time::Instant::now();
+                    while start.elapsed().as_secs() < 5 {
                         if let Ok(d) = usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
-                            info!("libusb 接管成功 (attempt {}/{})", i + 1, 20);
+                            info!("已切换到 libusb 模式");
                             return Ok(Some((port_name, Preloader::new(Box::new(d)))));
                         }
-                        std::thread::sleep(Duration::from_millis(500));
+                        std::thread::sleep(Duration::from_millis(200));
                     }
 
-                    return Err("切换到 libusb 失败：设备重新枚举后无法通过 libusb 打开".into());
+                    return Err("libusb 打开设备超时".into());
                 }
                 debug!("串口握手失败，继续轮询...");
             }
