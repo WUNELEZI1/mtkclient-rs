@@ -147,7 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => warn!("获取 target config 失败: {}", e),
         }
         da.preloader
-            .bypass_security(&usb_context)
+            .bypass_security()
             .map_err(|e| format!("bypass_security 失败: {}", e))?;
         let data = da
             .preloader
