@@ -195,22 +195,6 @@ impl UsbDevice {
         Self::open_device(context, vid, pid)
     }
 
-    /// 检测设备是否存在于系统中（VID/PID 匹配）
-    /// 
-    /// 只判断设备是否可打开（open），不需要 claim interface
-    /// 用于轮询等待设备出现，避免重复 open 的完整初始化开销
-    pub fn device_present(context: &UsbContext, vid: u16, pid: u16) -> bool {
-        unsafe {
-            let handle = libusb1_sys::libusb_open_device_with_vid_pid(context.ctx, vid, pid);
-            if handle.is_null() {
-                return false;
-            }
-            // 打开成功，立即关闭，不 claim interface
-            libusb1_sys::libusb_close(handle);
-            true
-        }
-    }
-
     /// 内部核心：打开 USB 设备并完成初始化
     /// 
     /// 工程级错误处理：

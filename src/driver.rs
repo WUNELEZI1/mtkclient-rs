@@ -11,7 +11,7 @@
 //! - 先检查 filter 是否已安装，避免重复安装
 
 use crate::usb::UsbContext;
-use log::{debug, info, warn};
+use log::{debug, info};
 use std::path::{Path, PathBuf};
 
 /// 设备驱动绑定状态
@@ -118,27 +118,22 @@ fn is_filter_installed(vid: u16, pid: u16) -> bool {
 ///
 /// 只针对 0E8D:0003 设备安装 filter，不影响其他 USB 设备
 /// 如果 filter 已安装则跳过
-pub fn install_libusb_filter(vid: u16, pid: u16) -> bool {
+/// 同步执行（阻塞等待完成）
+pub fn install_libusb_filter(vid: u16, pid: u16) -> Result<(), String> {
     // 先检查是否已安装
     if is_filter_installed(vid, pid) {
-        info!("[FILTER] libusb filter already installed for VID_{:04X}&PID_{:04X}", vid, pid);
-        return true;
+        info!("[FILTER] libusb filter 已安装 VID_{:04X}&PID_{:04X}", vid, pid);
+        return Ok(());
     }
 
     let filter_exe = match find_install_filter() {
         Some(p) => p,
         None => {
-            warn!("[FILTER] install-filter.exe not found, skipping filter installation");
-            return false;
+            return Err("install-filter.exe 未找到".to_string());
         }
     };
 
-    info!(
-        "[FILTER] installing libusb filter for VID_{:04X}&PID_{:04X} using {}",
-        vid,
-        pid,
-        filter_exe.display()
-    );
+    info!("安装 libusb filter for VID_{:04X}&PID_{:04X}", vid, pid);
 
     let device_id = format!("USB\\VID_{:04X}&PID_{:04X}", vid, pid);
     let result = std::process::Command::new(&filter_exe)
@@ -150,16 +145,14 @@ pub fn install_libusb_filter(vid: u16, pid: u16) -> bool {
     match result {
         Ok(status) => {
             if status.success() {
-                info!("[FILTER] libusb filter installed successfully");
-                true
+                info!("libusb filter 安装成功");
+                Ok(())
             } else {
-                warn!("[FILTER] install-filter.exe exited with code: {:?}", status.code());
-                false
+                Err(format!("install-filter.exe 退出码: {:?}", status.code()))
             }
         }
         Err(e) => {
-            warn!("[FILTER] failed to run install-filter.exe: {}", e);
-            false
+            Err(format!("执行 install-filter.exe 失败: {}", e))
         }
     }
 }
@@ -252,7 +245,7 @@ pub fn detect_backend(context: &UsbContext, vid: u16, pid: u16) -> DeviceBackend
         DeviceOwner::SerialOwned => {
             info!("[DRIVER] owner=SerialOwned, trying to install filter then Libusb");
             // 尝试安装 filter
-            install_libusb_filter(vid, pid);
+            let _ = install_libusb_filter(vid, pid);
             DeviceBackend::Libusb
         }
         DeviceOwner::Unknown => {

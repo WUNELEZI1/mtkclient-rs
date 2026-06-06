@@ -378,7 +378,7 @@ impl Preloader {
 
         // 安装 libusb-filter（对齐 C# MtkClient 刷机匣行为）
         // 在 exploit 阶段安装，确保 libusb 可以访问设备
-        crate::driver::install_libusb_filter(0x0E8D, 0x0003);
+        let _ = crate::driver::install_libusb_filter(0x0E8D, 0x0003);
 
         let payload_path = exe_relative_path("payloads/generic_patcher_payload.bin");
         let payload =
