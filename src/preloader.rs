@@ -130,18 +130,20 @@ impl BromTransport for SerialPortTransport {
     }
 
     fn do_handshake(&mut self) -> Result<bool, String> {
-        // 标准 BROM 握手协议: 发送 [A0, 0A, 50, 05], 接收 [50, 05, A0, 0A]
-        // 参考 mediatek-brom 库的标准实现
+        // BROM 握手协议: 逐字节发送 [A0, 0A, 50, 05]，每字节期望取反回复
+        // 参考 mtkclient Port.py 实现
         let startcmd = [0xA0u8, 0x0A, 0x50, 0x05];
-        self.write(&startcmd)?;
-        let mut buf = [0u8; 4];
-        self.read_exact(&mut buf)?;
-        let expected = [0x50u8, 0x05, 0xA0, 0x0A];
-        if buf != expected {
-            return Err(format!(
-                "握手回复不匹配: 期望 {:02X?}, 收到 {:02X?}",
-                expected, buf
-            ));
+        for i in 0..4 {
+            self.write(&[startcmd[i]])?;
+            let mut buf = [0u8; 1];
+            self.read_exact(&mut buf)?;
+            let expected = !startcmd[i] & 0xFF;
+            if buf[0] != expected {
+                return Err(format!(
+                    "握手失败: 字节 {}: 期望 0x{:02X}, 收到 0x{:02X}",
+                    i, expected, buf[0]
+                ));
+            }
         }
         debug!("SerialPort BROM 握手成功");
         Ok(true)
