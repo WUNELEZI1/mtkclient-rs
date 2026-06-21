@@ -1,31 +1,8 @@
 use crate::config::{CHIP_CONFIGS, ChipConfig, TargetConfig};
-use crate::driver;
-use crate::usb;
-use crate::usb::UsbContext;
+use crate::usb::UsbDevice;
 use colored::Colorize;
-use log::{debug, info};
+use log::debug;
 use std::time::Duration;
-
-/// 临时占位传输层 — 仅用于 ensure_libusb 期间释放旧设备句柄
-struct ClosingTransport;
-impl BromTransport for ClosingTransport {
-    fn write(&mut self, _data: &[u8]) -> Result<usize, String> {
-        Err("ClosingTransport: not usable".into())
-    }
-    fn read_exact(&mut self, _buf: &mut [u8]) -> Result<usize, String> {
-        Err("ClosingTransport: not usable".into())
-    }
-    fn read(&mut self, _buf: &mut [u8]) -> Result<usize, String> {
-        Err("ClosingTransport: not usable".into())
-    }
-    fn set_timeout(&mut self, _duration: Duration) {}
-    fn get_timeout(&self) -> Duration {
-        Duration::from_millis(1000)
-    }
-    fn do_handshake(&mut self) -> Result<bool, String> {
-        Err("ClosingTransport: not usable".into())
-    }
-}
 
 /// BROM 传输抽象层 — 统一 USB 和串口的读写接口
 pub trait BromTransport {
@@ -35,11 +12,7 @@ pub trait BromTransport {
     fn set_timeout(&mut self, duration: Duration);
     fn get_timeout(&self) -> Duration;
     fn do_handshake(&mut self) -> Result<bool, String>;
-
-    /// 判断当前传输层是否为 libusb（用于决定是否可执行 exploit）
-    fn is_libusb(&self) -> bool {
-        false
-    }
+    fn is_libusb(&self) -> bool;
 
     // USB 专属方法 — 默认返回错误，仅 UsbDevice 实现
     fn ctrl_transfer_out(
@@ -50,7 +23,6 @@ pub trait BromTransport {
         _index: u16,
         _data: &[u8],
     ) -> Result<usize, String> {
-        log::error!("!!! SERIAL ctrl_transfer_out 被调用 !!! 串口不支持 USB control transfer");
         Err("ctrl_transfer_out not supported on this transport".to_string())
     }
     fn ctrl_transfer_in(
@@ -61,7 +33,6 @@ pub trait BromTransport {
         _index: u16,
         _length: u16,
     ) -> Result<Vec<u8>, String> {
-        log::error!("!!! SERIAL ctrl_transfer_in 被调用 !!! 串口不支持 USB control transfer");
         Err("ctrl_transfer_in not supported on this transport".to_string())
     }
     fn clear_halt_in(&mut self) -> Result<(), String> {
@@ -69,33 +40,12 @@ pub trait BromTransport {
     }
 }
 
-/// 扫描 COM 端口寻找 MediaTek 设备
-pub fn detect_serial_preloader() -> Option<String> {
-    // 直接尝试打开 COM1-COM20，不使用 available_ports()
-    for i in 1..=20 {
-        let port_name = format!("COM{}", i);
-        match serialport::new(&port_name, 115200)
-            .timeout(std::time::Duration::from_millis(200))
-            .open() {
-            Ok(_port) => {
-                info!("成功打开 {} - 找到 MediaTek 设备", port_name);
-                return Some(port_name);
-            }
-            Err(_e) => {
-                // 静默跳过不可用端口
-            }
-        }
-    }
-    
-    None
-}
-#[allow(dead_code)]
+/// serialport 实现 BROM 传输
 pub struct SerialPortTransport {
     port: Box<dyn serialport::SerialPort>,
     timeout: Duration,
 }
 
-#[allow(dead_code)]
 impl SerialPortTransport {
     pub fn new(port_name: &str, baud_rate: u32) -> Result<Self, String> {
         let port = serialport::new(port_name, baud_rate)
@@ -106,6 +56,46 @@ impl SerialPortTransport {
             port,
             timeout: Duration::from_millis(1000),
         })
+    }
+
+    /// 枚举所有 COM 口，找到 MediaTek BROM/Preloader 设备
+    /// 无限轮询，每 200ms 扫描一次，直到找到为止
+    pub fn find_brom_port() -> Option<String> {
+        const INTERVAL_MS: u64 = 200;
+        let mut retry = 0;
+
+        loop {
+            retry += 1;
+            let ports = match serialport::available_ports() {
+                Ok(p) => p,
+                Err(e) => {
+                    debug!("available_ports 失败 (retry {}): {}", retry, e);
+                    std::thread::sleep(std::time::Duration::from_millis(INTERVAL_MS));
+                    continue;
+                }
+            };
+
+            if retry == 1 || retry % 25 == 1 {
+                debug!("available_ports 返回 {} 个端口 (retry {})", ports.len(), retry);
+                for p in &ports {
+                    debug!("  {} - {:?}", p.port_name, p.port_type);
+                }
+            }
+
+            for p in &ports {
+                if let serialport::SerialPortType::UsbPort(ref info) = p.port_type {
+                    // BROM 模式: VID=0E8D PID=0003
+                    // Preloader 模式: VID=0E8D PID=2000
+                    if info.vid == 0x0E8D && (info.pid == 0x0003 || info.pid == 0x2000) {
+                        debug!("找到 MTK COM 口: {} (PID=0x{:04X}, retry {})",
+                              p.port_name, info.pid, retry);
+                        return Some(p.port_name.clone());
+                    }
+                }
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(INTERVAL_MS));
+        }
     }
 }
 
@@ -125,20 +115,9 @@ impl BromTransport for SerialPortTransport {
     }
 
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
-        // 循环读满，因为 serialport::SerialPort::read 不保证读满 buf
-        let mut total = 0;
-        while total < buf.len() {
-            match self.port.read(&mut buf[total..]) {
-                Ok(n) => {
-                    if n == 0 {
-                        return Err("serial read: unexpected EOF".into());
-                    }
-                    total += n;
-                }
-                Err(e) => return Err(format!("serial read: {}", e)),
-            }
-        }
-        Ok(total)
+        self.port
+            .read(buf)
+            .map_err(|e| format!("serial read: {}", e))
     }
 
     fn set_timeout(&mut self, duration: Duration) {
@@ -151,29 +130,83 @@ impl BromTransport for SerialPortTransport {
     }
 
     fn do_handshake(&mut self) -> Result<bool, String> {
-        // 对齐 Python mtkclient：一次性发送 4 字节握手命令，然后读取 4 字节回显
-        // 串口模式下，设备可能批量响应，不是字节对字节的 echo
+        // 标准 BROM 握手协议: 发送 [A0, 0A, 50, 05], 接收 [50, 05, A0, 0A]
+        // 参考 mediatek-brom 库的标准实现
         let startcmd = [0xA0u8, 0x0A, 0x50, 0x05];
-        
-        // 一次性发送 4 字节
         self.write(&startcmd)?;
-        
-        // 一次性读取 4 字节回显
-        let mut response = [0u8; 4];
-        self.read_exact(&mut response)?;
-        
-        // 验证每个字节都是取反的回显
-        for (i, (recv, cmd_byte)) in response.iter().zip(startcmd.iter()).enumerate() {
-            let expected = !*cmd_byte;
-            if *recv != expected {
-                return Err(format!(
-                    "串口握手失败 字节 {}: 期望 0x{:02X}, 收到 0x{:02X}",
-                    i, expected, recv
-                ));
-            }
+        let mut buf = [0u8; 4];
+        self.read_exact(&mut buf)?;
+        let expected = [0x50u8, 0x05, 0xA0, 0x0A];
+        if buf != expected {
+            return Err(format!(
+                "握手回复不匹配: 期望 {:02X?}, 收到 {:02X?}",
+                expected, buf
+            ));
         }
-        info!("SerialPort BROM 握手成功");
+        debug!("SerialPort BROM 握手成功");
         Ok(true)
+    }
+
+    fn is_libusb(&self) -> bool {
+        false
+    }
+}
+
+/// UsbDevice 实现 BROM 传输
+impl BromTransport for UsbDevice {
+    fn write(&mut self, data: &[u8]) -> Result<usize, String> {
+        UsbDevice::write(self, data)
+    }
+
+    fn read_exact(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+        UsbDevice::read_exact(self, buf)
+    }
+
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+        UsbDevice::read(self, buf)
+    }
+
+    fn set_timeout(&mut self, duration: Duration) {
+        UsbDevice::set_timeout(self, duration);
+    }
+
+    fn get_timeout(&self) -> Duration {
+        UsbDevice::get_timeout(self)
+    }
+
+    fn do_handshake(&mut self) -> Result<bool, String> {
+        UsbDevice::do_handshake(self)
+    }
+
+    fn is_libusb(&self) -> bool {
+        true
+    }
+
+    fn ctrl_transfer_out(
+        &mut self,
+        req_type: u8,
+        req: u8,
+        value: u16,
+        index: u16,
+        data: &[u8],
+    ) -> Result<usize, String> {
+        UsbDevice::ctrl_transfer_out(self, req_type, req, value, index, data)?;
+        Ok(data.len())
+    }
+
+    fn ctrl_transfer_in(
+        &mut self,
+        req_type: u8,
+        req: u8,
+        value: u16,
+        index: u16,
+        length: u16,
+    ) -> Result<Vec<u8>, String> {
+        UsbDevice::ctrl_transfer_in(self, req_type, req, value, index, length)
+    }
+
+    fn clear_halt_in(&mut self) -> Result<(), String> {
+        UsbDevice::clear_halt_in(self)
     }
 }
 
@@ -312,76 +345,6 @@ impl Preloader {
         debug!("{}", "BROM 初始化完成".green().bold());
         self.brom_initialized = true;
         Ok(true)
-    }
-
-    /// 串口 BROM → libusb BROM 切换（刷机匣级稳定性）
-    /// 
-    /// 流程：
-    /// 1. 检测当前传输层类型
-    /// 2. 安装 libusb filter（内部自动去重）
-    /// 3. 释放串口句柄（drop）→ 触发设备重新枚举
-    /// 4. 等待设备重新枚举（wait_for_device）
-    /// 5. 通过 libusb 打开设备
-    /// 6. 替换 transport
-    /// 7. 验证切换成功
-    pub fn ensure_libusb(&mut self, context: &UsbContext) -> Result<(), String> {
-        // Step 1：如果已经是 libusb，直接返回
-        if self.device.is_libusb() {
-            debug!("当前已是 libusb 模式，无需切换");
-            return Ok(());
-        }
-
-        info!("[SWITCH] Serial → Libusb 切换开始");
-
-        // Step 2：安装 filter（内部自动去重）
-        driver::install_libusb_filter(0x0E8D, 0x0003)
-            .map_err(|e| format!("安装 libusb filter 失败: {}", e))?;
-        info!("[SWITCH] libusb filter 已就绪");
-
-        // Step 3：释放串口句柄（必须，否则 Windows 不会释放 USB 设备）
-        info!("[SWITCH] closing serial");
-        let _old_device = std::mem::replace(
-            &mut self.device,
-            Box::new(ClosingTransport),
-        );
-        drop(_old_device);
-
-        // Step 4：等待设备释放（给 Windows 时间处理串口关闭 + 设备重新枚举）
-        info!("[SWITCH] waiting for device");
-        std::thread::sleep(Duration::from_millis(1000));
-
-        // Step 5：轮询打开 libusb 设备（50 次 × 100ms = 5 秒超时）
-        // open_by_vid_pid 内部会调用 detach_kernel_driver 从串口驱动接管设备
-        info!("[SWITCH] opening libusb");
-        let mut switched = false;
-        for attempt in 1..=50 {
-            match usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
-                Ok(usb_device) => {
-                    self.device = Box::new(usb_device);
-                    info!("[SWITCH] libusb open success (attempt {})", attempt);
-                    switched = true;
-                    break;
-                }
-                Err(e) => {
-                    if attempt % 10 == 1 {
-                        debug!("[SWITCH] attempt {} failed: {}", attempt, e);
-                    }
-                }
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-
-        if !switched {
-            return Err("切换到 libusb 失败：无法打开设备".into());
-        }
-
-        // Step 6：验证切换成功
-        if !self.device.is_libusb() {
-            return Err("切换 libusb 失败：验证不通过".into());
-        }
-
-        info!("[SWITCH] Serial → Libusb 切换成功");
-        Ok(())
     }
 
     /// BROM echo 协议：完全对齐 Python Port.echo() (Port.py:210-229)
@@ -597,11 +560,11 @@ impl Preloader {
         // rword() 读状态
         let status = self.rword()?;
         debug!("SEND_DA status: {:04X}", status);
-        if status == 0x1D0D {
-            return Err("SLA required".into());
-        }
         if status > 0xFF {
             return Err(format!("SEND_DA status error: {:04X}", status));
+        }
+        if status == 0x1D0D {
+            return Err("SLA required".into());
         }
 
         // upload_data: 发送数据 + ZLP + 读校验和
