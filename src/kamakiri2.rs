@@ -55,7 +55,7 @@ impl Preloader {
     }
 
     fn da_setup(&mut self, lc: &[u8], ptr_da_bra: u32, watchdog: u32) -> Result<(), String> {
-        let _ = self.brom_register_access(0, 1, None, true);
+        let _ = self.brom_register_access(0, 0, 1, None, true);
         let _ = self.read32_brom(watchdog + 0x50, 1);
         // 串口路径：跳过 kamakiri2 steps（对齐刷机匣日志）
         if self.device.is_libusb() {
@@ -80,12 +80,12 @@ impl Preloader {
         if !self.device.is_libusb() {
             self.da_setup(lc, ptr_da_bra, watchdog)?;
             if addr < 0x40 {
-                let r = self.brom_register_access(addr, len / 4, None, true)?;
+                let r = self.brom_register_access(0, addr, len, None, true)?;
                 Ok(r.unwrap_or_default())
             } else {
                 let bra_addr = addr.wrapping_sub(0x40);
                 debug!("[da_read] bra_addr=0x{:08X}", bra_addr);
-                let r = self.brom_register_access(bra_addr, len / 4, None, true)?;
+                let r = self.brom_register_access(0, bra_addr, len, None, true)?;
                 Ok(r.unwrap_or_default())
             }
         } else {
@@ -97,15 +97,15 @@ impl Preloader {
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(1))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(0))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(1))?;
-                let r = self.brom_register_access(addr, len / 4, None, true)?;
+                let r = self.brom_register_access(0, addr, len, None, true)?;
                 Ok(r.unwrap_or_default())
             } else {
+                // libusb 路径已执行 Kamakiri2 步进，直接用原始地址
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(1))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(0))?;
-                let bra_addr = addr.wrapping_sub(0x40);
-                debug!("[da_read] bra_addr=0x{:08X}", bra_addr);
-                let r = self.brom_register_access(bra_addr, len / 4, None, true)?;
+                debug!("[da_read] using addr=0x{:08X} (libusb path)", addr);
+                let r = self.brom_register_access(0, addr, len, None, true)?;
                 Ok(r.unwrap_or_default())
             }
         }
@@ -134,14 +134,15 @@ impl Preloader {
             self.da_setup(lc, ptr_da_bra, watchdog)?;
             if addr < 0x40 {
                 debug!("[da_write] bra_addr=0x{:08X} (no offset)", addr);
-                self.brom_register_access(addr, (data.len() / 4) as u32, Some(data), check_status)?;
+                self.brom_register_access(1, addr, data.len() as u32, Some(data), check_status)?;
                 Ok(())
             } else {
                 let bra_addr = addr.wrapping_sub(0x40);
                 debug!("[da_write] bra_addr=0x{:08X} (addr-0x40)", bra_addr);
                 self.brom_register_access(
+                    1,
                     bra_addr,
-                    (data.len() / 4) as u32,
+                    data.len() as u32,
                     Some(data),
                     check_status,
                 )?;
@@ -158,18 +159,18 @@ impl Preloader {
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(0))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(1))?;
                 debug!("[da_write] bra_addr=0x{:08X} (no offset)", addr);
-                self.brom_register_access(addr, (data.len() / 4) as u32, Some(data), check_status)?;
+                self.brom_register_access(1, addr, data.len() as u32, Some(data), check_status)?;
                 Ok(())
             } else {
-                // addr >= 0x40: 3 steps, ptr_da_bra - 2, -1, 0 (原逻辑 ptr_da_bra - 5 + (3 - i), i=0..3)
-                let bra_addr = addr.wrapping_sub(0x40);
+                // addr >= 0x40: 3 steps, 直接用原始地址（libusb 路径已执行 Kamakiri2 步进）
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(1))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(0))?;
-                debug!("[da_write] bra_addr=0x{:08X} (addr-0x40)", bra_addr);
+                debug!("[da_write] using addr=0x{:08X} (libusb path, no -0x40)", addr);
                 self.brom_register_access(
-                    bra_addr,
-                    (data.len() / 4) as u32,
+                    1,
+                    addr,
+                    data.len() as u32,
                     Some(data),
                     check_status,
                 )?;
