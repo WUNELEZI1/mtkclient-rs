@@ -617,6 +617,17 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
 14. **命令执行后不复位设备**：删除 jump_bl() 调用，保持 DA 活跃
 15. **--quiet CLI 参数**：跳过 info 输出，只显示错误
 16. **info→debug 简化**：upload_da 中间步骤改为 debug!
+17. **git 提交前必须读取系统代理**（2026-06-25）：
+    - 每次 `git push` 前，先通过注册表读取当前系统代理端口：
+      ```powershell
+      reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyServer
+      ```
+    - 将 git 代理设置为系统代理：
+      ```powershell
+      git config --global http.proxy http://127.0.0.1:<端口>
+      git config --global https.proxy http://127.0.0.1:<端口>
+      ```
+    - 然后再执行 `git push`
 17. **#[allow(dead_code)] 清理**：移除已使用项的标注，给预留项加用途注释
 18. **jump_da 后 100ms 延迟**：对齐 Python v2.1.4.1 修复时序问题
 19. **readflash_final clear_halt_in**：超时后复位 bulk IN 端点
