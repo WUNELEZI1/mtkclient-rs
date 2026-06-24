@@ -661,21 +661,26 @@ impl Preloader {
     /// length_bytes: 字节数
     pub fn brom_register_access(
         &mut self,
+        mode: u32,           // 新增：0=读，1=写
         address: u32,
-        length_dwords: u32,
+        length_bytes: u32,  // 字节数，对齐 Python
         data: Option<&[u8]>,
         check_status: bool,
     ) -> Result<Option<Vec<u8>>, String> {
-        // 使用 echo 协议发送 0xD1 命令（对齐 b9d7440 版本）
+        // 命令字节 0xD1：使用 echo 协议
         if !self.echo_1byte(0xD1)? {
             return Err("brom_reg: echo 0xD1 不匹配".into());
+        }
+        // mode: 0=read, 1=write（4 字节大端，对齐 Python echo(pack(">I", mode))）
+        if !self.echo_4byte(mode)? {
+            return Err("brom_reg: echo mode 不匹配".into());
         }
         // 地址（大端）
         if !self.echo_4byte(address)? {
             return Err("brom_reg: echo addr 不匹配".into());
         }
-        // 长度（大端，DWORD 数）
-        if !self.echo_4byte(length_dwords)? {
+        // 长度（大端，字节数，对齐 Python）
+        if !self.echo_4byte(length_bytes)? {
             return Err("brom_reg: echo len 不匹配".into());
         }
 
@@ -689,7 +694,7 @@ impl Preloader {
         if let Some(wdata) = data {
             // Write mode: 发送数据后读 status2
             self.device
-                .write(wdata)
+                .write(&wdata[..length_bytes as usize])
                 .map_err(|e| format!("brom_reg write data: {}", e))?;
             if check_status {
                 let mut st2 = [0u8; 2];
@@ -700,9 +705,8 @@ impl Preloader {
             }
             Ok(None)
         } else {
-            // Read mode: 读取数据后读 status2
-            let byte_count = (length_dwords * 4) as usize;
-            let mut buf = vec![0u8; byte_count];
+            // Read mode: 读取 length_bytes 字节
+            let mut buf = vec![0u8; length_bytes as usize];
             self.device
                 .read_exact(&mut buf)
                 .map_err(|e| format!("brom_reg read data: {}", e))?;

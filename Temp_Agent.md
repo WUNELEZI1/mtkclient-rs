@@ -1091,3 +1091,15 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - 看门狗地址 `0x10007000`，值 `0x22000064`
      - 验证：cargo build 通过，0 error
 
+47. **da_read/da_write libusb 路径地址修正** (2026-06-24)
+     - 触发：`brom_register_access` 返回 `0x081D` 错误，地址 `0xC150` 无效
+     - 根因：libusb 路径已执行 Kamakiri2 步进，应该直接使用原始地址（如 `0xC190`），而不是减 `0x40` 后的地址（`0xC150`）。减 `0x40` 只在串口路径（未执行 Kamakiri2）时需要
+     - 改动：
+       - `da_read` 中 libusb 路径（addr >= 0x40）不再减 `0x40`，直接使用 `addr`
+       - `da_write` 中 libusb 路径（addr >= 0x40）不再减 `0x40`，直接使用 `addr`
+       - 添加调试日志：`[da_read] using addr=0x{:08X} (libusb path)` 和 `[da_write] using addr=0x{:08X} (libusb path, no -0x40)`
+     - 关键理解：
+       - 串口路径：未执行 Kamakiri2 步进，需要减 `0x40` 对齐 BROM 寄存器地址
+       - libusb 路径：已执行 Kamakiri2 步进，直接使用原始地址
+     - 验证：cargo build 通过，0 error
+
