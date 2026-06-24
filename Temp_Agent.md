@@ -1,6 +1,6 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
-> 最近更新：2026-06-06
+> 最近更新：2026-06-24
 > 完整历史：Temp_Agent_Archive.md
 
 ## 当前状态
@@ -975,4 +975,119 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - ❌ 自动安装 filter 并切换
      - 验证：cargo build 成功，7 个 warning（全部为原有代码，0 新增）
      - 基线提交：`24fffaf`
+
+36. **libusb0 FFI 绑定重构 + 结构体布局对齐 Windows** (2026-06-24)
+     - 触发：libusb1-sys 与 install-filter.exe 安装的 libusb0 驱动不匹配，导致设备无法打开
+     - 根因：Rust 项目使用 libusb1-sys（libusb-1.0 FFI），但 install-filter.exe 安装的是 libusb0（libusb-win32）驱动，两者 API 完全不同
+     - 改动：
+       - 新增 `src/libusb0.rs` — libusb0 FFI 绑定模块：
+         - `usb_bus` 结构体：`#[repr(C, packed)]`，`dirname: [c_uchar; 512]`（LIBUSB_PATH_MAX=512 on Windows），`devices: *mut usb_device`，`location: u32`，`root_dev: *mut usb_device`
+         - `usb_device` 结构体：`#[repr(C, packed)]`，`filename: [c_uchar; 512]`，`descriptor: usb_device_descriptor`，`config: *mut usb_config_descriptor`
+         - `usb_device_descriptor`、`usb_config_descriptor`、`usb_interface`、`usb_interface_descriptor`、`usb_endpoint_descriptor` 完整定义
+         - FFI 函数绑定：`usb_init`、`usb_find_busses`、`usb_find_devices`、`usb_get_busses`、`usb_open`、`usb_close`、`usb_bulk_read`、`usb_bulk_write`、`usb_control_msg`、`usb_clear_halt` 等
+         - 链接 `#[link(name = "libusb0", kind = "dylib")]`
+       - `src/usb.rs` 完全重写为 libusb0 API 调用
+       - 移除 `libusb1-sys` 依赖
+     - 关键发现：
+       - Linux `PATH_MAX=4096` vs Windows `LIBUSB_PATH_MAX=512`，`dirname` 数组大小差异导致 `devices` 指针偏移量不同
+       - Windows libusb0 使用 `#include <pshpack1.h>` 强制字节对齐，Rust 必须用 `#[repr(C, packed)]`
+       - `usb_bus` size 从 1072 bytes 修正为 548 bytes，`usb_device` size 从 1112 bytes 修正为 582 bytes
+       - `usb_bus.devices` offset 从 1048 修正为 528
+     - 验证：cargo build 通过，0 error
+
+37. **设备遍历空指针崩溃修复 + packed struct 安全访问** (2026-06-24)
+     - 触发：设备遍历到 `current_dev` 时崩溃，`null pointer dereference occurred` at `src\usb.rs:227`
+     - 根因：`current_dev` 指针非空但指向无效内存（悬垂指针），直接解引用 `&*current_dev` 导致崩溃
+     - 改动：
+       - 设备遍历添加最大迭代次数限制（64 个设备）
+       - 使用 `std::ptr::read_unaligned(std::ptr::addr_of!(...))` 代替直接解引用，避免 packed struct 对齐问题
+       - 添加自引用检测：`if next_dev == current_dev { break; }`
+       - 添加详细调试日志：打印 bus 结构体非零区域、devices 指针值、每个设备的 VID/PID
+     - 验证：cargo build 通过，0 error
+
+38. **USB 配置/接口声明 + 握手协议修复** (2026-06-24)
+     - 触发 1：`usb_open` 成功后 `usb_bulk_write` 返回 `-22`（EINVAL）
+     - 根因 1：打开设备后未调用 `usb_set_configuration` 和 `usb_claim_interface`
+     - 修复 1：`usb_open` 后添加 `usb_set_configuration(handle, 1)` + `usb_claim_interface(handle, 0)` + `usb_claim_interface(handle, 1)`
+     - 触发 2：配置和接口声明成功后，握手 `handshake mismatch at byte 0: got 0xA0, expected 0x5F`
+     - 根因 2：USB 模式下设备使用标准协议（回复原值），但代码使用取反协议校验（期望 `!cmd[i]`）
+     - 修复 2：`do_handshake` 校验逻辑从 `!cmd[i]` 改为 `cmd[i]`（标准回复）
+     - 后续修复：`usb_set_configuration(handle, 1)` 导致某些 BROM 设备不兼容，改为先尝试 config 1 失败则尝试 config 0
+     - 验证：程序成功运行，USB 设备成功打开和配置，握手成功
+
+39. **Kamakiri2 ptr_da 地址修复 + payload 文件路径确认** (2026-06-24)
+     - 触发：Kamakiri2 步进地址错误，`brom_register_access` 返回 `0x1D1A`（DA_INVALID_ADDR_AND_LEN）
+     - 根因：`ptr_da` 使用了 `chip.brom_register_access.0`（0xC598），但 mtkclient 使用 `brom_register_access[0][1]`（0xC650）
+     - 改动：
+       - `kamakiri2.rs` 中 `let ptr_da = chip.brom_register_access.1`（0xC650），与 `ptr_da_bra` 一致
+       - 确认 `dump_preloader_payload` 中 payload 路径已是 `generic_preloader_dump_payload.bin`
+     - 验证：Kamakiri2 步进地址正确（0xC655, 0xC656, 0xC657）
+
+40. **USB control transfer 参数对齐 mtkclient** (2026-06-24)
+     - 触发：`ctrl_transfer_in` 返回 `-5`（LIBUSB_ERROR_IO）
+     - 根因：`bRequest` 使用 `0x21`，长度 `7`，但 mtkclient 使用 `0x25`，长度 `8`
+     - 改动：
+       - `ctrl_transfer_in` 参数从 `(0xA1, 0x21, 0, 0, 7)` 改为 `(0xA1, 0x25, 0, 0, 8)`
+       - 移除 `lc.push(0)`（现在直接是 8 字节）
+     - 后续修复：`ctrl_transfer_in` 在 Kamakiri2 步进后仍返回 `-5`，改为硬编码 linecode `vec![0x00, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00]`（仅 MT6768）
+     - 最终修复：改回动态获取 `ctrl_transfer_in(0xA1, 0x21, 0, 0, 7)` + `lc.push(0)` 补齐到 8 字节（Kamakiri2 步进前设备状态正常时可成功读取）
+     - 验证：ctrl_transfer_in 成功获取 linecode `[00, C2, 01, 00, 00, 00, 08]`
+
+41. **brom_register_access 命令修复：0xDA → 0xD1 + echo 协议恢复** (2026-06-24)
+     - 触发 1：`brom_register_access` 使用 `echo_1byte(0xDA)` 返回 `0x1D1A` 错误
+     - 根因 1：`0xDA` 是 Kamakiri2 漏洞利用命令，需要先触发漏洞才能工作；`0xD1` 是 BROM 原生读写命令，可直接使用
+     - 修复 1：`brom_register_access` 中 `echo_1byte(0xDA)` 改为 `echo_1byte(0xD1)`
+     - 触发 2：改用直接 `write(&[0xD1])` 后 `write` 返回 `-116`
+     - 根因 2：设备需要在 `write` 后立即 `read` 回显来同步状态，直接 `write` 不读取回显导致设备进入错误状态
+     - 修复 2：恢复使用 `echo_1byte(0xD1)` + `echo_4byte(address)` + `echo_4byte(length_dwords)` 完整 echo 协议
+     - 触发 3：`brom_register_access` 的 `length` 参数单位错误（字节数 vs DWORD 数）
+     - 修复 3：`da_read`/`da_write` 调用 `brom_register_access` 时 `len` 改为 `len / 4`（DWORD 数）
+     - 关键发现：
+       - `brom_register_access` 的 `length` 参数是 DWORD 数（4 字节单位），不是字节数
+       - `echo_1byte` 在读取回显失败时返回 `Ok(false)` 而不是 `Err`，对齐 b9d7440 版本
+       - Kamakiri2 步进后 echo 协议仍然可用（前提是 Kamakiri2 步进之前 echo 正常工作）
+     - 验证：cargo build 通过，0 error
+
+42. **kamakiri2_step 精简：移除 ctrl_transfer_in + clear_halt** (2026-06-24)
+     - 触发：`ctrl_transfer_in(0x80, 0x06, 0x02FF, 0, 9)` 返回 `-5`
+     - 根因：Kamakiri2 步进中 `ctrl_transfer_out` 成功后，`ctrl_transfer_in` 被设备拒绝
+     - 改动：
+       - `kamakiri2_step` 中移除 `ctrl_transfer_in` 调用，只保留 `ctrl_transfer_out`
+       - 移除 `clear_halt_out()`/`clear_halt_in()` 调用（对齐 b9d7440 版本）
+     - 验证：cargo build 通过，0 error
+
+43. **安全保护条件判断 bypass_security** (2026-06-24)
+     - 触发：无安全保护的设备（SBC/SLA/DAA 全关）不需要执行 Kamakiri2 bypass
+     - 改动：
+       - `commands.rs` 中 `get_target_config` 成功后判断 `cfg.sbc || cfg.sla || cfg.daa`
+       - 有安全保护 → 执行 `bypass_security`
+       - 无安全保护 → 跳过 Kamakiri2，直接进入 DA 模式
+       - 获取 config 失败 → 保守执行 bypass
+     - 验证：cargo build 通过，0 error
+
+44. **看门狗地址修复** (2026-06-24)
+     - 触发：看门狗地址被误改为 `0x22000000`，导致 COM 口 init 失败
+     - 根因：`0x22000000` 是看门狗值，不是地址
+     - 修复：看门狗地址改回 `0x10007000`（config.rs），值保持 `0x22000064`（preloader.rs）
+     - 验证：cargo build 通过，0 error
+
+45. **日志时间戳系统** (2026-06-24)
+     - 触发：用户要求日志加上年/月/日/时/分/秒/毫秒时间
+     - 改动：
+       - `main.rs` 日志格式改为 `[YYYY/MM/DD HH:MM:SS.mmm] [LEVEL] message`
+       - Windows 使用 `GetLocalTime` API 获取本地时间（避免引入 chrono 依赖）
+       - 非 Windows 使用 `std::time::SystemTime` 回退方案
+     - 验证：cargo build 通过，0 error
+
+46. **最终对齐 b9d7440 版本** (2026-06-24)
+     - 确认所有关键差异已对齐：
+       - `brom_register_access` 使用 `echo_1byte(0xD1)` + `echo_4byte` 完整 echo 协议
+       - `echo_1byte` 读取失败返回 `Ok(false)` 而不是 `Err`
+       - Kamakiri2 步进地址基于 `ptr_da_bra`（0xC650）
+       - `ptr_da` 使用 `brom_register_access.1`（0xC650）
+       - `brom_register_access` 的 `length` 参数是 DWORD 数（`len / 4`）
+       - linecode 动态获取：`ctrl_transfer_in(0xA1, 0x21, 0, 0, 7)` + `push(0)`
+       - `kamakiri2_step` 只执行 `ctrl_transfer_out`，不执行 `ctrl_transfer_in`
+       - 看门狗地址 `0x10007000`，值 `0x22000064`
+     - 验证：cargo build 通过，0 error
 

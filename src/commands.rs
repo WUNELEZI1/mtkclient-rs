@@ -2,7 +2,6 @@ use colored::Colorize;
 use log::{error, info, warn};
 use std::time::SystemTime;
 
-use crate::connection::DeviceMode;
 use crate::config::AppConfig;
 use crate::da_partition::{generate_scatter_from_gpt, generate_scatter_shoujixia};
 use crate::da_xflash::DAXFlash;
@@ -40,7 +39,6 @@ pub fn print_help() {
 /// 单命令执行入口
 pub fn handle_command(
     da: &mut DAXFlash,
-    _mode: &DeviceMode,
     app_config: &AppConfig,
     log_level: u8,
     _quiet_dump: bool,
@@ -65,14 +63,30 @@ pub fn handle_command(
         }
 
         if preloader_file.is_empty() {
-            match da.preloader.get_target_config() {
-                Ok(cfg) => info!("{}", cfg.format_info()),
-                Err(e) => warn!("获取 target config 失败: {}", e),
-            }
+            let needs_bypass = match da.preloader.get_target_config() {
+                Ok(cfg) => {
+                    info!("{}", cfg.format_info());
+                    // 只有当 SBC/SLA/DAA 任一开启时才执行 bypass
+                    if cfg.sbc || cfg.sla || cfg.daa {
+                        info!("设备有安全保护，执行 Kamakiri2 bypass...");
+                        true
+                    } else {
+                        info!("设备无安全保护（SBC/SLA/DAA 全关），跳过 Kamakiri2，直接进入 DA 模式");
+                        false
+                    }
+                }
+                Err(e) => {
+                    warn!("获取 target config 失败: {}", e);
+                    // 无法获取 config 时，保守执行 bypass
+                    true
+                }
+            };
 
-            da.preloader
-                .bypass_security(_context)
-                .map_err(|e| format!("bypass_security 失败: {}", e))?;
+            if needs_bypass {
+                da.preloader
+                    .bypass_security(_context)
+                    .map_err(|e| format!("bypass_security 失败: {}", e))?;
+            }
 
             let data = da
                 .preloader

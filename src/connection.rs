@@ -1,8 +1,8 @@
-use crate::preloader::{self, BromTransport, Preloader};
+use crate::preloader::{Preloader, SerialPortTransport};
 use crate::usb;
 use crate::usb::{UsbContext, UsbStage};
 use colored::Colorize;
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::time::Duration;
 
 /// 设备模式
@@ -16,21 +16,15 @@ pub enum DeviceMode {
 
 /// 统一连接管理器
 ///
-/// 职责：
-/// 1. 统一设备入口（smart_init）
-/// 2. 管理连接状态（BROM ↔ Preloader）
-/// 3. 自动重连（reconnect_loop）
-///
 /// 连接流程：
 /// ```
-/// 尝试 USB BROM（libusb）
-/// ↓ 失败
-/// 扫描 COM 端口
-/// ↓ 发现设备
-/// Preloader 握手
-/// ↓ 判断 BROM 状态
-/// 是 → 直接返回串口 BROM
-/// 否 → 返回 Preloader 模式
+/// STEP 1: COM 口扫描 → 握手 → 关看门狗 → 获取 hw_code
+///   └─ 成功 → 释放 COM 口 → 装 filter → sleep → libusb 打开 → 重新握手 → 返回
+///   └─ 失败 → STEP 2
+///
+/// STEP 2: libusb 轮询（10秒/200ms）
+///   └─ 成功 → 返回 libusb 设备
+///   └─ 失败 → 报错
 /// ```
 pub struct ConnectionManager {
     mode: DeviceMode,
@@ -48,53 +42,33 @@ impl ConnectionManager {
     }
 
     /// 统一设备初始化入口
-    ///
-    /// 完整流程：
-    /// ```
-    /// STEP 1: 尝试 USB BROM（libusb 直接打开）
-    ///   └─ 成功 → 返回 libusb BROM
-    ///   └─ 失败 → STEP 2
-    ///
-    /// STEP 2: COM 端口扫描 + 握手
-    ///   └─ 发现设备 → init → 判断 BROM 状态
-    ///   └─ BROM → 返回串口 BROM（不切换 libusb）
-    ///   └─ Preloader → 返回 Preloader
-    ///   └─ 失败 → STEP 3
-    ///
-    /// STEP 3: reconnect_loop 循环检测 USB
-    /// ```
     pub fn smart_init(
         &mut self,
         context: &UsbContext,
     ) -> Result<(Preloader, DeviceMode), String> {
-        info!("等待设备连接 (Preloader: 直接连接 / BROM: Vol+ + Vol- + Power)");
+        info!("等待设备连接 (BROM: Vol+ + Vol- + Power)");
 
-        // === STEP 1: 尝试 USB BROM ===
-        if let Ok(device) = usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003) {
-            info!(
-                "  VID: {:04x}, PID: {:04x}, stage={:?}",
-                device.vid, device.pid, device.stage
-            );
-            info!("{}", "USB 直接连接成功 (BROM 模式)".green().bold());
-            self.mode = DeviceMode::Brom;
-            self.stage = UsbStage::Brom;
-            return Ok((Preloader::new(Box::new(device)), DeviceMode::Brom));
+        // === STEP 0: 无需卸载 filter（install-filter.exe 会直接安装） ===
+
+        // === STEP 1: COM 口前置握手 ===
+        if let Some(port_name) = SerialPortTransport::find_brom_port() {
+            info!("发现 BROM COM 口: {}", port_name);
+
+            match self.serial_handshake_and_switch(&port_name, context) {
+                Ok(preloader) => {
+                    info!("{}", "COM 口前置握手成功，已切换到 libusb".green().bold());
+                    self.mode = DeviceMode::Brom;
+                    self.stage = UsbStage::Brom;
+                    return Ok((preloader, DeviceMode::Brom));
+                }
+                Err(e) => {
+                    warn!("COM 口前置握手失败: {}，尝试 libusb 直连", e);
+                }
+            }
         }
 
-        info!("USB 直接连接失败，进入串口扫描...");
-
-        // === STEP 2: COM 端口扫描 + 握手 ===
-        if let Some((port_name, preloader)) = self.serial_connect()? {
-            let is_brom = preloader.is_brom_ready();
-            let mode = if is_brom { DeviceMode::Brom } else { DeviceMode::Preloader };
-            self.mode = mode.clone();
-            self.port_name = Some(port_name);
-            return Ok((preloader, mode));
-        }
-
-        // === STEP 3: reconnect_loop 循环检测 USB ===
-        info!("串口检测超时，尝试 USB 循环连接...");
-
+        // === STEP 2: libusb 轮询 ===
+        info!("尝试 libusb 直连...");
         let usb_device = self.reconnect_loop(context, UsbStage::Brom)?;
 
         info!(
@@ -107,50 +81,62 @@ impl ConnectionManager {
         Ok((Preloader::new(Box::new(usb_device)), DeviceMode::Brom))
     }
 
-    /// 串口连接 + 握手
+    /// COM 口前置握手 → 释放 → libusb 接管
     ///
     /// 流程：
-    /// 1. 扫描 COM 端口
-    /// 2. 打开串口
-    /// 3. BROM 握手 + init
-    /// 4. 判断是否已是 BROM → 直接返回串口设备
-    /// 5. 否 → 返回 Preloader 模式
-    fn serial_connect(&self) -> Result<Option<(String, Preloader)>, String> {
-        let mut attempt = 0;
-        const MAX_ATTEMPTS: usize = 30;
+    /// 1. 打开 COM 口
+    /// 2. 握手 + init()（关看门狗 + 获取 hw_code）
+    /// 3. 释放 COM 口
+    /// 4. 安装 libusb filter
+    /// 5. 等待设备重枚举
+    /// 6. libusb 打开设备
+    /// 7. 重新握手
+    /// 8. 返回 libusb Preloader
+    fn serial_handshake_and_switch(
+        &self,
+        port_name: &str,
+        context: &UsbContext,
+    ) -> Result<Preloader, String> {
+        // 1. 打开串口
+        let transport = SerialPortTransport::new(port_name, 115200)?;
+        let mut serial_preloader = Preloader::new(Box::new(transport));
 
-        while attempt < MAX_ATTEMPTS {
-            attempt += 1;
-
-            if let Some(port_name) = preloader::detect_serial_preloader() {
-                info!("发现 Preloader 串口设备: {}", port_name);
-
-                let transport = preloader::SerialPortTransport::new(&port_name, 115200)
-                    .map_err(|e| format!("打开串口失败: {}", e))?;
-                let device: Box<dyn BromTransport> = Box::new(transport);
-                let mut preloader = Preloader::new(device);
-
-                if preloader.init().unwrap_or(false) {
-                    info!("COM 口握手成功: {}", port_name);
-
-                    // 判断是否已经是 BROM
-                    if preloader.is_brom_ready() {
-                        info!("检测到 BROM（串口模式），直接使用串口通信");
-                        return Ok(Some((port_name, preloader)));
-                    }
-
-                    // 仍在 Preloader 模式
-                    info!("当前为 Preloader 模式");
-                    return Ok(Some((port_name, preloader)));
-                }
-                debug!("串口握手失败，继续轮询...");
-            }
-
-            std::thread::sleep(Duration::from_secs(1));
+        // 2. 完整 init：握手 + 关看门狗 + 获取 hw_code + 设置 chip
+        if !serial_preloader.init().map_err(|e| format!("串口 init 失败: {}", e))? {
+            return Err("串口握手失败".to_string());
         }
 
-        debug!("串口检测完成，未找到可用设备");
-        Ok(None)
+        let chip = serial_preloader.chip;
+        info!("COM 口 init 成功，chip={:?}", chip.map(|c| c.hw_code));
+
+        // 3. 释放 COM 口
+        drop(serial_preloader);
+        info!("COM 口已释放");
+
+        // 4. 安装 libusb0 filter
+        if let Err(e) = crate::driver::install_winusb_with_wdi(0x0E8D, 0x0003) {
+            warn!("安装 libusb0 filter 失败: {}", e);
+        }
+
+        // 5. 等待设备重枚举（filter 安装后设备会重新枚举）
+        std::thread::sleep(Duration::from_secs(3));
+
+        // 6. libusb 打开设备（轮询 10 秒）
+        let usb_device = self.reconnect_loop(context, UsbStage::Brom)?;
+        info!("libusb 打开成功: VID={:04X} PID={:04X}", usb_device.vid, usb_device.pid);
+
+        // 7. 重新握手
+        let mut libusb_preloader = Preloader::new(Box::new(usb_device));
+        if !libusb_preloader.init().map_err(|e| format!("libusb 重新握手失败: {}", e))? {
+            return Err("libusb 重新握手失败".to_string());
+        }
+
+        // 8. 确保 chip 已设置
+        if libusb_preloader.chip.is_none() {
+            libusb_preloader.chip = chip;
+        }
+
+        Ok(libusb_preloader)
     }
 
     /// libusb 重连循环
