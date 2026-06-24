@@ -4,21 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# USB 通信
-libusb1-sys = "0.7"
 # 日志
 log = "0.4"
 env_logger = "0.11"
 # 终端彩色输出
-colored = "3.1"           # 从 2 升级到 3
+colored = "3.1"
 # 命令行参数解析
 clap = { version = "4", features = ["derive"] }
 # 串口通信
 serialport = "4.7"
 # 加密算法
-sha2 = "0.11"             # 从 0.10 升级到 0.11
-aes = "0.9"               # 从 0.8 升级到 0.9
-cbc = "0.2"               # 从 0.1 升级到 0.2
+sha2 = "0.11"
+aes = "0.9"
+cbc = "0.2"
 
 [profile.dev]
 # 开发模式：编译最快，不优化，保留完整调试信息

@@ -9,29 +9,20 @@ fn main() {
     let target_dir = PathBuf::from(&manifest_dir).join("target").join(&profile);
     fs::create_dir_all(&target_dir).ok();
 
-    // 拷贝 libusb.exe（如果有）
+    // 拷贝 libusb.exe（用于 reset 命令）
     let libusb_src = PathBuf::from(&manifest_dir).join("binaries").join("drivers").join("libusb.exe");
     if libusb_src.exists() {
         let dest = target_dir.join("libusb.exe");
         fs::copy(&libusb_src, &dest).ok();
     }
 
-    // 拷贝 libusb-filter 文件到 target/{profile}/libusb/
-    // install-filter.exe, libusb0.dll, libusb0.sys
-    println!("cargo:rerun-if-changed=binaries/libusb/install-filter.exe");
-    println!("cargo:rerun-if-changed=binaries/libusb/libusb0.dll");
-    println!("cargo:rerun-if-changed=binaries/libusb/libusb0.sys");
+    // 告诉链接器去哪里找 libusb0.lib
+    let libusb_lib_dir = PathBuf::from(&manifest_dir).join("binaries").join("libusb");
+    println!("cargo:rustc-link-search=native={}", libusb_lib_dir.display());
 
-    let filter_dir = PathBuf::from(&manifest_dir).join("binaries").join("libusb");
-    if filter_dir.exists() {
-        let filter_dest = target_dir.join("libusb");
-        fs::create_dir_all(&filter_dest).ok();
-        for entry in fs::read_dir(&filter_dir).ok().into_iter().flatten().flatten() {
-            let src_path = entry.path();
-            if src_path.is_file() {
-                let dest_path = filter_dest.join(entry.file_name());
-                fs::copy(&src_path, &dest_path).ok();
-            }
-        }
-    }
+    // 抑制 wdi-rs (libwdi) 的 linker 警告
+    // LNK4098: LIBCMT 与其他库冲突（libwdi 静态库用 /MT 编译）
+    // LNK4099: 静态库未附带 PDB 调试符号文件
+    println!("cargo:rustc-link-arg=/NODEFAULTLIB:LIBCMT");
+    println!("cargo:rustc-link-arg=/IGNORE:4099");
 }

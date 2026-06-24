@@ -38,6 +38,9 @@ pub trait BromTransport {
     fn clear_halt_in(&mut self) -> Result<(), String> {
         Err("clear_halt_in not supported on this transport".to_string())
     }
+    fn clear_halt_out(&mut self) -> Result<(), String> {
+        Err("clear_halt_out not supported on this transport".to_string())
+    }
 }
 
 /// serialport 实现 BROM 传输
@@ -259,7 +262,7 @@ impl Preloader {
         self.device.set_timeout(Duration::from_secs(3));
 
         let wdt_addr = chip.watchdog;
-        let wdt_value: u32 = 0x22000064;  // 0x64 = 100 看门狗超时值
+        let wdt_value: u32 = 0x22000064;  // 对齐 Python: wdt==0x10007000 时用 0x22000064
 
         debug!("[WD] 地址=0x{:08X}, value=0x{:08X}", wdt_addr, wdt_value);
 
@@ -606,28 +609,28 @@ impl Preloader {
         if !self.echo_1byte(0xD5)? {
             return Err("jump_da: echo 0xD5 不匹配".into());
         }
-        // 串口协议：地址发送用小端
+        // Python: usbwrite(pack(">I", addr)) — 大端
         self.device
-            .write(&addr.to_le_bytes())
+            .write(&addr.to_be_bytes())
             .map_err(|e| format!("jump_da write addr: {}", e))?;
-        // 读取回显（小端）
+        // Python: rdword() — 大端回读
         let mut echo = [0u8; 4];
         self.device
             .read_exact(&mut echo)
             .map_err(|e| format!("jump_da echo: {}", e))?;
-        let resaddr = u32::from_le_bytes(echo);
+        let resaddr = u32::from_be_bytes(echo);
         if resaddr != addr {
             return Err(format!(
                 "jump_da addr mismatch: expected {:08X}, got {:08X}",
                 addr, resaddr
             ));
         }
-        // 读取 status（2字节小端）
+        // Python: rword() — 大端状态
         let mut st = [0u8; 2];
         self.device
             .read_exact(&mut st)
             .map_err(|e| format!("jump_da status: {}", e))?;
-        let status = u16::from_le_bytes(st);
+        let status = u16::from_be_bytes(st);
         // Python v2.1.4.1: time.sleep(0.1) after rword() — fix rare timing issue
         std::thread::sleep(Duration::from_millis(100));
         debug!("jump_da status: {:04X}", status);
@@ -659,26 +662,20 @@ impl Preloader {
     pub fn brom_register_access(
         &mut self,
         address: u32,
-        length_bytes: u32,
+        length_dwords: u32,
         data: Option<&[u8]>,
         check_status: bool,
     ) -> Result<Option<Vec<u8>>, String> {
-        // echo 0xDA 命令（4 字节小端）
-        if !self.echo_cmd_4byte(0xDA)? {
-            return Err("brom_reg: echo 0xDA 不匹配".into());
+        // 使用 echo 协议发送 0xD1 命令（对齐 b9d7440 版本）
+        if !self.echo_1byte(0xD1)? {
+            return Err("brom_reg: echo 0xD1 不匹配".into());
         }
-
-        // mode: 0=read, 1=write
-        let mode: u32 = if data.is_some() { 1 } else { 0 };
-        if !self.echo_4byte(mode)? {
-            return Err("brom_reg: echo mode 不匹配".into());
-        }
-        // address
+        // 地址（大端）
         if !self.echo_4byte(address)? {
             return Err("brom_reg: echo addr 不匹配".into());
         }
-        // length (bytes) - 直接传递，不乘以 4
-        if !self.echo_4byte(length_bytes)? {
+        // 长度（大端，DWORD 数）
+        if !self.echo_4byte(length_dwords)? {
             return Err("brom_reg: echo len 不匹配".into());
         }
 
@@ -704,8 +701,12 @@ impl Preloader {
             Ok(None)
         } else {
             // Read mode: 读取数据后读 status2
-            let rdata = self.rbyte(length_bytes as usize)?;
-            debug!("brom_reg read data: {} bytes", rdata.len());
+            let byte_count = (length_dwords * 4) as usize;
+            let mut buf = vec![0u8; byte_count];
+            self.device
+                .read_exact(&mut buf)
+                .map_err(|e| format!("brom_reg read data: {}", e))?;
+            debug!("brom_reg read data: {} bytes", buf.len());
             if check_status {
                 let mut st2 = [0u8; 2];
                 self.device
@@ -713,15 +714,15 @@ impl Preloader {
                     .map_err(|e| format!("brom_reg status2: {}", e))?;
                 debug!("brom_reg status2: {:02X?}", st2);
             }
-            Ok(Some(rdata))
+            Ok(Some(buf))
         }
     }
 
     /// 读 32 位值（BROM 模式）
     /// 使用 0xD1 协议（无 mode 参数）：cmd → addr → len(dwords) → status1 → data → status2
     pub fn read32_brom(&mut self, addr: u32, dwords: usize) -> Result<Vec<u8>, String> {
-        // echo 0xD1 命令（4 字节小端）
-        if !self.echo_cmd_4byte(0xD1)? {
+        // echo 0xD1 命令（1 字节，对齐 Python echo(Cmd.READ32.value)）
+        if !self.echo_1byte(0xD1)? {
             return Err("read32_brom: echo 0xD1 不匹配".into());
         }
         // address (4 字节小端)

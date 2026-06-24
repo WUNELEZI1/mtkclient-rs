@@ -1,7 +1,8 @@
+#![allow(dead_code)]
+
 use clap::Parser;
 use colored::Colorize;
 use log::{error, info, warn};
-use std::process;
 use usb::UsbContext;
 
 #[cfg(target_os = "windows")]
@@ -20,6 +21,7 @@ mod da_xflash;
 mod driver;
 mod frp;
 mod kamakiri2;
+mod libusb0;
 mod paths;
 mod sej;
 mod seccfg;
@@ -27,7 +29,7 @@ mod vbmeta;
 mod preloader;
 mod usb;
 
-use connection::{ConnectionManager, DeviceMode};
+use connection::ConnectionManager;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
@@ -49,15 +51,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     usb::set_usb_log_enabled(cli.usb_log);
 
+    // --quiet-dump: 抑制 USB 读取日志和进度条
+    if cli.quiet_dump {
+        usb::set_quiet_usb_read(true);
+    }
+
     let log_level = if cli.quiet {
-        log::LevelFilter::Warn
+        log::LevelFilter::Error  // --quiet: 只输出 ERROR
     } else {
         app_config.log_level
     };
 
     env_logger::builder()
         .filter_level(log_level)
-        .parse_default_env()
+        .filter_module("mtkclient_rs", log_level)  // 明确指定本 crate 的日志级别
         .format(|buf, record| {
             use std::io::Write;
             let level = match record.level() {
@@ -67,7 +74,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 log::Level::Debug => "DEBUG",
                 log::Level::Trace => "TRACE",
             };
-            writeln!(buf, "[{}] {}", level, record.args())
+            // 使用 Windows API 获取本地时间
+            #[cfg(target_os = "windows")]
+            let timestamp = {
+                #[repr(C)]
+                struct SystemTime {
+                    w_year: u16,
+                    w_month: u16,
+                    w_day_of_week: u16,
+                    w_day: u16,
+                    w_hour: u16,
+                    w_minute: u16,
+                    w_second: u16,
+                    w_milliseconds: u16,
+                }
+                unsafe extern "system" {
+                    fn GetLocalTime(lpSystemTime: *mut SystemTime);
+                }
+                let mut st = SystemTime {
+                    w_year: 0, w_month: 0, w_day_of_week: 0, w_day: 0,
+                    w_hour: 0, w_minute: 0, w_second: 0, w_milliseconds: 0,
+                };
+                unsafe { GetLocalTime(&mut st); }
+                format!("{:04}/{:02}/{:02} {:02}:{:02}:{:02}.{:03}",
+                    st.w_year, st.w_month, st.w_day,
+                    st.w_hour, st.w_minute, st.w_second, st.w_milliseconds)
+            };
+            #[cfg(not(target_os = "windows"))]
+            let timestamp = {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                let secs = now.as_secs();
+                let millis = now.subsec_millis();
+                let hours = (secs % 86400) / 3600;
+                let minutes = (secs % 3600) / 60;
+                let seconds = secs % 60;
+                format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
+            };
+            writeln!(buf, "[{}] [{}] {}", timestamp, level, record.args())
         })
         .init();
 
@@ -78,70 +123,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    if cmd == "reset" {
-        let usb_context = UsbContext::new().inspect_err(|e| {
-            error!("{}", e);
-        })?;
-        let mut conn_mgr = ConnectionManager::new();
-        let (mut preloader, _mode) = conn_mgr.smart_init(&usb_context).inspect_err(|e| {
-            error!("{}", e);
-        })?;
-        let _ = preloader.jump_bl();
-        return Ok(());
-    }
-
-    if cmd == "dump-preloader" {
-        let usb_context = UsbContext::new().inspect_err(|e| {
-            error!("{}", e);
-        })?;
-
-        let mut conn_mgr = ConnectionManager::new();
-        let (mut preloader, _mode) = conn_mgr.smart_init(&usb_context).inspect_err(|e| {
-            error!("{}", e);
-        })?;
-
-        match preloader.dump_preloader_payload(false, false, &usb_context) {
-            Ok((data, filename)) => {
-                if data.is_empty() {
-                    error!("dump_preloader_payload 返回空数据");
-                    process::exit(1);
-                }
-                std::fs::write(&filename, &data).expect("保存 preloader 失败");
-                info!("Preloader 已提取: {} ({} 字节)", filename, data.len());
-            }
-            Err(e) => {
-                error!("提取 Preloader 失败: {}", e);
-                process::exit(1);
-            }
-        }
-
-        return Ok(());
-    }
-
     let usb_context = UsbContext::new().inspect_err(|e| {
         error!("{}", e);
     })?;
 
+    // COM 口前置握手 + libusb 后续通信
+    // 注意：filter 卸载和重新安装在 smart_init 内部处理
     let mut conn_mgr = ConnectionManager::new();
-    let (mut preloader, mode) = conn_mgr.smart_init(&usb_context).inspect_err(|e| {
-        error!("{}", e);
-    })?;
+    let (mut preloader, _mode) = conn_mgr.smart_init(&usb_context)?;
 
-    info!("{}", format!("连接模式: {:?}", mode).green().bold());
+    info!("{}", "连接成功 (BROM 模式)".green().bold());
 
     let final_preloader_path = if let Some(ref path) = app_config.preloader_path {
         info!("使用指定的 preloader 文件: {}", path);
         path.clone()
-    } else if mode == DeviceMode::Brom {
-        String::new()
     } else {
-        "preloader_k69v1_64_k419.bin".to_string()
+        String::new()
     };
 
     let mut da = da_xflash::DAXFlash::new(&mut preloader);
     da.patch_da = cli.patch_da;
 
-    if mode == DeviceMode::Brom && final_preloader_path.is_empty() {
+    if final_preloader_path.is_empty() {
         match da.preloader.get_target_config() {
             Ok(cfg) => info!("{}", cfg.format_info()),
             Err(e) => warn!("获取 target config 失败: {}", e),
@@ -200,7 +203,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     commands::handle_command(
         &mut da,
-        &mode,
         &app_config,
         cli.log_level,
         cli.quiet_dump,
