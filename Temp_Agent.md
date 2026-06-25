@@ -636,15 +636,28 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
     - 对齐 Python：libusb 路径总计 `addr < 0x40` → 3+4=7 步，`addr >= 0x40` → 3+0=3 步
     - 验证：cargo build 通过（0 error）
 
-20. **brom_register_access length 参数修复**（2026-06-25）：
+20. **brom_register_access 命令字节与 length 参数修复**（2026-06-25）：
     - 问题：`echo_4byte(length)` 返回 `0x091D`（无效参数）
-    - 根因：`brom_register_access` 的 length 参数应为 DWORD 数，但调用处传了字节数
-    - Python 协议：`echo(pack(">I", length))` — length 是 DWORD 数（`len // 4`）
-    - Rust 旧实现：`echo_4byte(length_bytes)` — length 是字节数（`len`）
+    - 根因 1：命令字节错误 — Rust 使用 `0xD1`（READ32），但应该使用 `0xDA`（BROM_REGISTER_ACCESS）
+    - 根因 2：length 参数语义错误 — Rust 参数名是 `length_dwords`（DWORD 数），但 Python 协议中 length 是字节数
+    - Python 协议：
+      ```python
+      echo(self.Cmd.brom_register_access.value)  # 0xDA
+      echo(pack(">I", mode))
+      echo(pack(">I", address))
+      echo(pack(">I", length))  # length 是字节数
+      ```
+    - Rust 旧实现：
+      ```rust
+      echo_1byte(0xD1)  // 错误：应该是 0xDA
+      echo_4byte(mode)
+      echo_4byte(address)
+      echo_4byte(length_dwords)  // 错误：参数名暗示 DWORD 数，但调用处传字节数
+      ```
     - 修复：
-      - `preloader.rs`：`length_bytes` → `length_dwords`，内部 `byte_count = length_dwords * 4`
-      - `kamakiri2.rs`：`da_read`/`da_write` 调用处 `len` → `len / 4`，`data.len()` → `(data.len() / 4) as u32`
-    - 验证：cargo build 通过（0 error）
+      - `preloader.rs`：`echo_1byte(0xD1)` → `echo_1byte(0xDA)`，参数名 `length_dwords` → `length_bytes`，内部计算从 `length_dwords * 4` → `length_bytes`
+      - `kamakiri2.rs`：调用处保持不变（传字节数）
+    - 验证：cargo build 通过（0 error 0 warning）
 17. **#[allow(dead_code)] 清理与注释完善**（2026-06-25）：
     - **目标**：区分"已使用但编译器误报"和"真正预留的功能"，提升代码可读性
     - **移除 `#[allow(dead_code)]` 的项**（实际已被调用）：
