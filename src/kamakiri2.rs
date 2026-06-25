@@ -103,7 +103,7 @@ impl Preloader {
                 let r = self.brom_register_access(0, addr, len / 4, None, true)?;
                 Ok(r.unwrap_or_default())
             } else {
-                // addr >= 0x40: 3 additional steps, use addr - 0x40
+                // addr >= 0x40: 3 additional steps (-2, -3, -4), then use addr - 0x40
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(3))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
@@ -166,7 +166,7 @@ impl Preloader {
                 self.brom_register_access(1, addr, (data.len() / 4) as u32, Some(data), check_status)?;
                 Ok(())
             } else {
-                // addr >= 0x40: 3 additional steps, use addr - 0x40
+                // addr >= 0x40: 3 additional steps (-2, -3, -4), then use addr - 0x40
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(3))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
@@ -210,14 +210,11 @@ impl Preloader {
         // linecode：libusb 通过 ctrl_transfer 动态获取，串口使用全零（Kamakiri2 serial 路径不依赖 linecode）
         let linecode = if self.device.is_libusb() {
             info!("[EXPLOIT] using libusb backend — Kamakiri2 via ctrl_transfer");
-            // 从设备读取 linecode（对齐 b9d7440 版本）
-            let linecode = self.device.ctrl_transfer_in(0xA1, 0x21, 0, 0, 7)?;
-            let mut lc = linecode;
-            lc.push(0);  // 补齐到 8 字节
-            lc
+            // 从设备读取 linecode（对齐 Python：7 字节，不补齐）
+            self.device.ctrl_transfer_in(0xA1, 0x21, 0, 0, 7)?
         } else {
             info!("[EXPLOIT] using serial backend — Kamakiri2 via brom_register_access");
-            vec![0u8; 8]
+            vec![0u8; 7]  // 对齐 libusb 路径：7 字节
         };
         let lc = linecode;
         debug!("[inject] linecode={:02X?}", lc);
