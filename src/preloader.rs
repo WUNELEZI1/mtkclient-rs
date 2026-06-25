@@ -663,13 +663,13 @@ impl Preloader {
         &mut self,
         mode: u32,           // 0=读，1=写
         address: u32,
-        length_dwords: u32,  // DWORD 数，对齐 Python
+        length_bytes: u32,   // 字节数，对齐 Python
         data: Option<&[u8]>,
         check_status: bool,
     ) -> Result<Option<Vec<u8>>, String> {
-        // 命令字节 0xD1：使用 echo 协议
-        if !self.echo_1byte(0xD1)? {
-            return Err("brom_reg: echo 0xD1 不匹配".into());
+        // 命令字节 0xDA：使用 echo 协议（对齐 Python Cmd.brom_register_access.value）
+        if !self.echo_1byte(0xDA)? {
+            return Err("brom_reg: echo 0xDA 不匹配".into());
         }
         // mode: 0=read, 1=write（4 字节大端，对齐 Python echo(pack(">I", mode))）
         if !self.echo_4byte(mode)? {
@@ -679,8 +679,8 @@ impl Preloader {
         if !self.echo_4byte(address)? {
             return Err("brom_reg: echo addr 不匹配".into());
         }
-        // 长度（大端，DWORD 数，对齐 Python）
-        if !self.echo_4byte(length_dwords)? {
+        // 长度（大端，字节数，对齐 Python）
+        if !self.echo_4byte(length_bytes)? {
             return Err("brom_reg: echo len 不匹配".into());
         }
 
@@ -692,8 +692,8 @@ impl Preloader {
         debug!("brom_reg status1: {:02X?}", st);
 
         if let Some(wdata) = data {
-            // Write mode: 发送 length_dwords * 4 字节数据后读 status2
-            let byte_count = (length_dwords * 4) as usize;
+            // Write mode: 发送 length_bytes 字节数据后读 status2
+            let byte_count = length_bytes as usize;
             self.device
                 .write(&wdata[..byte_count])
                 .map_err(|e| format!("brom_reg write data: {}", e))?;
@@ -706,8 +706,8 @@ impl Preloader {
             }
             Ok(None)
         } else {
-            // Read mode: 读取 length_dwords * 4 字节
-            let byte_count = (length_dwords * 4) as usize;
+            // Read mode: 读取 length_bytes 字节
+            let byte_count = length_bytes as usize;
             let mut buf = vec![0u8; byte_count];
             self.device
                 .read_exact(&mut buf)
