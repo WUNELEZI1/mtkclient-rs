@@ -723,17 +723,24 @@ class Preloader(metaclass=LogBase):
             mode = 0
         else:
             mode = 1
+        print(f"[BROM_REG_DEBUG] ENTER: mode={mode}, address=0x{address:X}, length={length}, data_len={len(data) if data else 0}, check_status={check_status}")
         if DEBUG_USB:
             usb_debug_log("BROM_REG", None, message=f"[BROM_REG] mode={mode} addr=0x{address:X} len={length}")
         if self.mtk.port.echo(self.Cmd.brom_register_access.value, cmd_name="brom_register_access"):
+            print(f"[BROM_REG_DEBUG] echo(0xDA) OK")
             self.mtk.port.echo(pack(">I", mode), cmd_name="mode")
+            print(f"[BROM_REG_DEBUG] echo(mode) sent: {mode} (0x{mode:08X})")
             self.mtk.port.echo(pack(">I", address), cmd_name="addr")
+            print(f"[BROM_REG_DEBUG] echo(address) sent: 0x{address:08X}")
             self.mtk.port.echo(pack(">I", length), cmd_name="len")
+            print(f"[BROM_REG_DEBUG] echo(length) sent: {length} (0x{length:08X})")
             status = self.mtk.port.usbread(2)
+            print(f"[BROM_REG_DEBUG] status1 raw: {status.hex()}")
             try:
                 status = unpack("<H", status)[0]
             except Exception:
                 pass
+            print(f"[BROM_REG_DEBUG] status1 parsed: 0x{status:04X}")
 
             if status != 0:
                 if status == 0x1A1D:
@@ -745,19 +752,24 @@ class Preloader(metaclass=LogBase):
 
             if mode == 0:
                 data = self.mtk.port.usbread(length)
+                print(f"[BROM_REG_DEBUG] read {len(data)} bytes")
             else:
+                print(f"[BROM_REG_DEBUG] writing {len(data[:length])} bytes")
                 self.mtk.port.usbwrite(data[:length])
 
             if check_status:
-                status = self.mtk.port.usbread(2)
+                status2 = self.mtk.port.usbread(2)
+                print(f"[BROM_REG_DEBUG] status2 raw: {status2.hex()}")
                 try:
-                    status = unpack("<H", status)[0]
+                    status2 = unpack("<H", status2)[0]
                 except Exception:
                     pass
-                if status != 0:
-                    raise RuntimeError(self.eh.status(status))
+                print(f"[BROM_REG_DEBUG] status2 parsed: 0x{status2:04X}")
+                if status2 != 0:
+                    raise RuntimeError(self.eh.status(status2))
             if DEBUG_USB:
                 usb_debug_log("BROM_REG", None, message=f"[BROM_REG] result=OK, got {len(data) if data else 0} bytes")
+            print(f"[BROM_REG_DEBUG] EXIT: success, got {len(data) if data else 0} bytes")
             return data
 
     def get_plcap(self):
