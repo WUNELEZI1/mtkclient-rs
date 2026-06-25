@@ -96,15 +96,19 @@ impl Preloader {
             if addr < 0x40 {
                 // addr < 0x40: 4 additional steps
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(1))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(0))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(1))?;
+                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(3))?;
+                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
+                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(5))?;
                 let r = self.brom_register_access(0, addr, len / 4, None, true)?;
                 Ok(r.unwrap_or_default())
             } else {
-                // addr >= 0x40: 0 additional steps, use original address
-                debug!("[da_read] using addr=0x{:08X} (libusb path, no offset)", addr);
-                let r = self.brom_register_access(0, addr, len / 4, None, true)?;
+                // addr >= 0x40: 3 additional steps, use addr - 0x40
+                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
+                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(3))?;
+                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
+                let bra_addr = addr.wrapping_sub(0x40);
+                debug!("[da_read] using bra_addr=0x{:08X} (libusb path, addr-0x40)", bra_addr);
+                let r = self.brom_register_access(0, bra_addr, len / 4, None, true)?;
                 Ok(r.unwrap_or_default())
             }
         }
@@ -152,20 +156,24 @@ impl Preloader {
             self.da_setup(lc, ptr_da_bra, watchdog)?;
 
             if addr < 0x40 {
-                // addr < 0x40: 4 steps, ptr_da_bra - 2, -1, 0, +1 (原逻辑 ptr_da_bra - 6 + (4 - i), i=0..4)
+                // addr < 0x40: 4 steps
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(1))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(0))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(1))?;
+                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(3))?;
+                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
+                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(5))?;
                 debug!("[da_write] bra_addr=0x{:08X} (no offset)", addr);
                 self.brom_register_access(1, addr, (data.len() / 4) as u32, Some(data), check_status)?;
                 Ok(())
             } else {
-                // addr >= 0x40: 0 additional steps, use original address
-                debug!("[da_write] using addr=0x{:08X} (libusb path, no offset)", addr);
+                // addr >= 0x40: 3 additional steps, use addr - 0x40
+                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
+                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(3))?;
+                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
+                let bra_addr = addr.wrapping_sub(0x40);
+                debug!("[da_write] using bra_addr=0x{:08X} (libusb path, addr-0x40)", bra_addr);
                 self.brom_register_access(
                     1,
-                    addr,
+                    bra_addr,
                     (data.len() / 4) as u32,
                     Some(data),
                     check_status,
