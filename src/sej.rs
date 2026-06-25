@@ -129,7 +129,7 @@ const G_HACC_CFG_1: [u32; 8] = [
     0x9ED40400, 0x00E884A1, 0xE3F083BD, 0x2F4E6D8A, 0xFF838E5C, 0xE940A0E3, 0x8D4DECC6, 0x45FC0989,
 ];
 
-#[allow(dead_code)]
+#[allow(dead_code)] // 预留：HACC 签名自定义 seed/IV 生成，用于安全启动绕过
 fn generate_custom_seed_iv() -> [u8; 16] {
     let seed = u32::from_le_bytes(CUSTOM_SEED_PREFIX);
     let rot = seed.rotate_left(16);

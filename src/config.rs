@@ -30,7 +30,7 @@ impl DeviceType {
     }
 
     /// 判断是否为 Preloader 设备
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：Preloader 模式下区分设备类型
     pub fn is_preloader(&self) -> bool {
         matches!(self, DeviceType::Preloader | DeviceType::PreloaderVariant)
     }
@@ -237,7 +237,6 @@ pub struct TargetConfig {
 }
 
 impl TargetConfig {
-    #[allow(dead_code)] // 兼容旧入口：u32 形式的 raw 配置转换
     pub fn from_raw(raw: u32) -> Self {
         TargetConfig::from_raw_u64(raw as u64)
     }

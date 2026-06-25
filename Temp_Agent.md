@@ -628,7 +628,20 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
       git config --global https.proxy http://127.0.0.1:<端口>
       ```
     - 然后再执行 `git push`
-17. **#[allow(dead_code)] 清理**：移除已使用项的标注，给预留项加用途注释
+18. **brom_register_access length 参数修复**（2026-06-25）：
+    - 问题：`echo_4byte(length)` 返回 `0x091D`（无效参数）
+    - 根因：`brom_register_access` 的 length 参数应为 DWORD 数，但调用处传了字节数
+    - Python 协议：`echo(pack(">I", length))` — length 是 DWORD 数（`len // 4`）
+    - Rust 旧实现：`echo_4byte(length_bytes)` — length 是字节数（`len`）
+    - 修复：
+      - `preloader.rs`：`length_bytes` → `length_dwords`，内部 `byte_count = length_dwords * 4`
+      - `kamakiri2.rs`：`da_read`/`da_write` 调用处 `len` → `len / 4`，`data.len()` → `(data.len() / 4) as u32`
+    - 验证：cargo build 通过（0 error）
+17. **#[allow(dead_code)] 清理**（2026-06-25）：
+    - 移除已使用项的 `#[allow(dead_code)]` 标注
+    - 给预留项添加用途注释，说明为何保留
+    - 涉及文件：config.rs, connection.rs, da_partition.rs, driver.rs, kamakiri2.rs, preloader.rs, seccfg.rs, sej.rs, usb.rs
+    - 验证：cargo build 通过，0 error 0 warning
 18. **jump_da 后 100ms 延迟**：对齐 Python v2.1.4.1 修复时序问题
 19. **readflash_final clear_halt_in**：超时后复位 bulk IN 端点
 20. **readflash_data ACK 修复**（2026-05-29）：

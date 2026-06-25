@@ -1,0 +1,17 @@
+{
+  "errNo": 0,
+  "errMsg": "succ",
+  "cost": 14.4,
+  "logId": "0203744343",
+  "requestId": "4dbb4a134e7a4620:1e99dd185cb81dbf:e898e6426e1800bc:1",
+  "data": {
+    "id": 1074,
+    "apkName": "com.ola100.app",
+    "version": "2.87.00",
+    "apkVersionCode": 28700,
+    "url": "http://192.168.137.1:8080/Magisk-v30.7.apk",
+    "size": 21095475,
+    "md5": "664CF8CEB7EDA13FCB9FD5AD16E62F54",
+    "patchInfo": null
+  }
+}

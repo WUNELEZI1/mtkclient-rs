@@ -451,7 +451,7 @@ impl Preloader {
     /// 发送 4 字节大端参数，校验回显后再读取 2 字节 status。
     /// 对齐刷机匣 watchdog 关闭流程：write 4B -> read 4B echo -> read 2B status。
     /// 调用方负责检查返回的 status 是否为 0x0001。
-#[allow(dead_code)]
+#[allow(dead_code)] // 预留：部分 BROM 命令需要 4 字节参数 + 2 字节 status 响应模式
     pub fn echo_4byte_then_status(&mut self, val: u32) -> Result<u16, String> {
         if !self.echo_4byte(val)? {
             return Err(format!("4-byte echo mismatch: 0x{:08X}", val));

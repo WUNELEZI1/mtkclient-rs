@@ -454,7 +454,7 @@ impl UsbDevice {
         Ok(total)
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：Kamakiri2 exploit 需要 USB control transfer 读取数据
     pub fn ctrl_transfer_in(
         &mut self,
         requesttype: u8,
@@ -501,7 +501,7 @@ impl UsbDevice {
         self.clear_halt_ep(self.ep_in)
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：bulk OUT 端点 stall 时复位
     pub fn clear_halt_out(&mut self) -> Result<(), String> {
         self.clear_halt_ep(self.ep_out)
     }
@@ -518,7 +518,7 @@ impl UsbDevice {
         }
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：Kamakiri2 exploit 需要 USB control transfer 发送数据
     pub fn ctrl_transfer_out(
         &mut self,
         requesttype: u8,
@@ -659,7 +659,7 @@ impl UsbDevice {
         }
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：bypass 后重建 USB 连接（当前通过 ConnectionManager 重连）
     pub fn reopen(&mut self, context: &UsbContext) -> Result<(), String> {
         self.close();
         std::thread::sleep(Duration::from_millis(200));

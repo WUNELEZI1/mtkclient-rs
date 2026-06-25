@@ -1,0 +1,15 @@
+fix: brom_register_access 显式 mode 参数修复 — 对齐 Python echo 协议序列
+
+根因：缺少 mode 参数 echo，协议序列错位导致设备返回 0x091D（无效参数）
+和 echo_1byte(0xD1) 超时（-116）。
+
+Python 协议：cmd(1B) → mode(4B) → address(4B) → length(4B)
+Rust 旧实现：cmd(1B) → address(4B) → length(4B)（缺少 mode）
+
+改动：
+- preloader.rs：brom_register_access 新增 mode: u32 参数（0=读，1=写）
+- preloader.rs：添加 echo_4byte(mode) 步骤（命令后、地址前）
+- preloader.rs：length 参数从 DWORD 数改为字节数（对齐 Python）
+- kamakiri2.rs：所有调用处添加 mode 参数（读=0，写=1）
+- kamakiri2.rs：da_setup 初始调用修正为 brom_register_access(0, 0, 1, None, true)
+- Temp_Agent.md：记录修复详情
