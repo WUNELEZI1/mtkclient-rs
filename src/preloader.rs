@@ -656,14 +656,14 @@ impl Preloader {
 
     /// BROM 寄存器访问（DA 注入核心操作）
     /// 对齐刷机匣串口协议：
-    ///   cmd(DA/D1) → mode(4B) → address(4B) → length_bytes(4B) → status(2B) → data → status(2B)
+    ///   cmd(D1) → mode(4B) → address(4B) → length_dwords(4B) → status(2B) → data → status(2B)
     /// mode: 0=read, 1=write
-    /// length_bytes: 字节数
+    /// length_dwords: DWORD 数（设备期望的单位）
     pub fn brom_register_access(
         &mut self,
-        mode: u32,           // 新增：0=读，1=写
+        mode: u32,           // 0=读，1=写
         address: u32,
-        length_bytes: u32,  // 字节数，对齐 Python
+        length_dwords: u32,  // DWORD 数，对齐 Python
         data: Option<&[u8]>,
         check_status: bool,
     ) -> Result<Option<Vec<u8>>, String> {
@@ -679,8 +679,8 @@ impl Preloader {
         if !self.echo_4byte(address)? {
             return Err("brom_reg: echo addr 不匹配".into());
         }
-        // 长度（大端，字节数，对齐 Python）
-        if !self.echo_4byte(length_bytes)? {
+        // 长度（大端，DWORD 数，对齐 Python）
+        if !self.echo_4byte(length_dwords)? {
             return Err("brom_reg: echo len 不匹配".into());
         }
 
@@ -692,9 +692,10 @@ impl Preloader {
         debug!("brom_reg status1: {:02X?}", st);
 
         if let Some(wdata) = data {
-            // Write mode: 发送数据后读 status2
+            // Write mode: 发送 length_dwords * 4 字节数据后读 status2
+            let byte_count = (length_dwords * 4) as usize;
             self.device
-                .write(&wdata[..length_bytes as usize])
+                .write(&wdata[..byte_count])
                 .map_err(|e| format!("brom_reg write data: {}", e))?;
             if check_status {
                 let mut st2 = [0u8; 2];
@@ -705,8 +706,9 @@ impl Preloader {
             }
             Ok(None)
         } else {
-            // Read mode: 读取 length_bytes 字节
-            let mut buf = vec![0u8; length_bytes as usize];
+            // Read mode: 读取 length_dwords * 4 字节
+            let byte_count = (length_dwords * 4) as usize;
+            let mut buf = vec![0u8; byte_count];
             self.device
                 .read_exact(&mut buf)
                 .map_err(|e| format!("brom_reg read data: {}", e))?;
