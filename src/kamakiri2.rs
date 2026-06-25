@@ -76,7 +76,8 @@ impl Preloader {
         len: u32,
     ) -> Result<Vec<u8>, String> {
         debug!("[da_read] addr=0x{:08X} len={}", addr, len);
-        // 串口路径：调用 da_setup（reset + watchdog），但跳过 kamakiri2 steps
+        
+        // 串口路径：调用 da_setup（reset + watchdog），不执行 kamakiri2 steps
         if !self.device.is_libusb() {
             self.da_setup(lc, ptr_da_bra, watchdog)?;
             if addr < 0x40 {
@@ -89,10 +90,11 @@ impl Preloader {
                 Ok(r.unwrap_or_default())
             }
         } else {
-            // libusb 路径：需要 setup 和 steps
+            // libusb 路径：da_setup 后根据地址范围执行不同数量的 kamakiri2 steps
             self.da_setup(lc, ptr_da_bra, watchdog)?;
 
             if addr < 0x40 {
+                // addr < 0x40: 4 additional steps
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(1))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(0))?;
@@ -100,11 +102,8 @@ impl Preloader {
                 let r = self.brom_register_access(0, addr, len / 4, None, true)?;
                 Ok(r.unwrap_or_default())
             } else {
-                // libusb 路径已执行 Kamakiri2 步进，直接用原始地址
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(1))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(0))?;
-                debug!("[da_read] using addr=0x{:08X} (libusb path)", addr);
+                // addr >= 0x40: 0 additional steps, use original address
+                debug!("[da_read] using addr=0x{:08X} (libusb path, no offset)", addr);
                 let r = self.brom_register_access(0, addr, len / 4, None, true)?;
                 Ok(r.unwrap_or_default())
             }
@@ -162,11 +161,8 @@ impl Preloader {
                 self.brom_register_access(1, addr, (data.len() / 4) as u32, Some(data), check_status)?;
                 Ok(())
             } else {
-                // addr >= 0x40: 3 steps, 直接用原始地址（libusb 路径已执行 Kamakiri2 步进）
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(1))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(0))?;
-                debug!("[da_write] using addr=0x{:08X} (libusb path, no -0x40)", addr);
+                // addr >= 0x40: 0 additional steps, use original address
+                debug!("[da_write] using addr=0x{:08X} (libusb path, no offset)", addr);
                 self.brom_register_access(
                     1,
                     addr,
