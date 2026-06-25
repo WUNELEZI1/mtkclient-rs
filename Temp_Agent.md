@@ -659,6 +659,12 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
       - `preloader.rs`：`echo_1byte(0xD1)` → `echo_1byte(0xDA)`，参数名 `length_bytes` → `length_dwords`，内部计算从 `length_bytes` → `length_dwords * 4`
       - `kamakiri2.rs`：调用处从 `len` → `len / 4`，`data.len() as u32` → `(data.len() / 4) as u32`
     - 验证：cargo build 通过（0 error 0 warning）
+
+21. **libusb 直连路径缺少 init() 调用**（2026-06-25）：
+    - 问题：COM 口被占用时走 libusb 直连，但 `get_target_config` 失败（echo 0xD8 返回 0xD9）
+    - 根因：`smart_init` 的 libusb 直连路径没有调用 `init()`，设备没有完成握手和看门狗关闭，echo 协议状态不对
+    - 修复：在 `connection.rs::smart_init` 的 libusb 直连路径中添加 `init()` 调用
+    - 验证：cargo build 通过（0 error 0 warning）
 17. **#[allow(dead_code)] 清理与注释完善**（2026-06-25）：
     - **目标**：区分"已使用但编译器误报"和"真正预留的功能"，提升代码可读性
     - **移除 `#[allow(dead_code)]` 的项**（实际已被调用）：

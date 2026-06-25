@@ -76,9 +76,15 @@ impl ConnectionManager {
             usb_device.vid, usb_device.pid, usb_device.stage
         );
 
+        // libusb 直连也需要 init()：握手 + 关看门狗 + 获取 hw_code + 设置 chip
+        let mut libusb_preloader = Preloader::new(Box::new(usb_device));
+        if !libusb_preloader.init().map_err(|e| format!("libusb init 失败: {}", e))? {
+            return Err("libusb 握手失败".to_string());
+        }
+
         self.mode = DeviceMode::Brom;
         self.stage = UsbStage::Brom;
-        Ok((Preloader::new(Box::new(usb_device)), DeviceMode::Brom))
+        Ok((libusb_preloader, DeviceMode::Brom))
     }
 
     /// COM 口前置握手 → 释放 → libusb 接管
