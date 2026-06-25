@@ -597,11 +597,12 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
 
 1. 不要运行 `cargo run`（需要设备连接）
 2. 不要修改 `main.rs` 中的命令路由逻辑
-3. `read_gpt()` 内部调用 `send_devctrl(0x040007)` + `readflash_data`，已包含 reinit 逻辑
-4. DA 命令执行后必须调 `jump_bl()` 恢复 BROM 状态
-5. `dump_preloader_payload` 是验证成功的 preloader 提取方法，优先使用
-6. **echo 协议**：BROM 命令字节 1 字节（`echo_1byte`），参数 4 字节大端（`echo_4byte`）—— 全部使用 echo（发+读比较），**不能用 write**
-7. **USB read_exact**：现在会循环读满 buf.len()，不再残留字节
+3. **编译使用 debug 模式**：`cargo build` 而不是 `cargo build --release`，release 编译太慢
+4. `read_gpt()` 内部调用 `send_devctrl(0x040007)` + `readflash_data`，已包含 reinit 逻辑
+5. DA 命令执行后必须调 `jump_bl()` 恢复 BROM 状态
+6. `dump_preloader_payload` 是验证成功的 preloader 提取方法，优先使用
+7. **echo 协议**：BROM 命令字节 1 字节（`echo_1byte`），参数 4 字节大端（`echo_4byte`）—— 全部使用 echo（发+读比较），**不能用 write**
+8. **USB read_exact**：现在会循环读满 buf.len()，不再残留字节
 8. **upload_data sleep**：35ms（对齐 Python 0.035s）
 9. **MT6768 配置**：已修复，与 Python brom_config.py 一致
 10. **MT6771 配置**：原始即正确
