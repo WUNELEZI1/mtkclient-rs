@@ -46,7 +46,8 @@ impl Preloader {
             let mut d = lc.to_vec();
             d.extend(&addr.to_le_bytes());
             self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d)?;
-            // 不执行 ctrl_transfer_in，对齐刷机匣行为
+            // 对齐 Python：第二个 ctrl_transfer_in 触发漏洞
+            let _ = self.device.ctrl_transfer_in(0x80, 0x6, 0x02FF, 0, 9);
         } else {
             // 串口路径：NO-OP（对齐刷机匣行为 — 跳过 setup steps）
             debug!("[STEP] serial mode — skipping kamakiri2 setup step");
