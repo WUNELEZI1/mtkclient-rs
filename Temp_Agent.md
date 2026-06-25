@@ -629,7 +629,14 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
       git config --global https.proxy http://127.0.0.1:<端口>
       ```
     - 然后再执行 `git push`
-18. **brom_register_access length 参数修复**（2026-06-25）：
+18.19. **kamakiri2 步骤数修复**（2026-06-25）：
+    - 问题：`da_read`/`da_write` 中 `addr >= 0x40` 的 libusb 路径多执行了 3 个 kamakiri2 步骤
+    - 根因：Python `da_read_write` 中 `addr >= 0x40` 时不执行额外步骤，但 Rust 实现错误地添加了 3 个步骤
+    - 修复：删除 `da_read`/`da_write` 中 `addr >= 0x40` 分支的额外 kamakiri2 步骤
+    - 对齐 Python：libusb 路径总计 `addr < 0x40` → 3+4=7 步，`addr >= 0x40` → 3+0=3 步
+    - 验证：cargo build 通过（0 error）
+
+20. **brom_register_access length 参数修复**（2026-06-25）：
     - 问题：`echo_4byte(length)` 返回 `0x091D`（无效参数）
     - 根因：`brom_register_access` 的 length 参数应为 DWORD 数，但调用处传了字节数
     - Python 协议：`echo(pack(">I", length))` — length 是 DWORD 数（`len // 4`）
