@@ -1,0 +1,16 @@
+LIBRARY libusb0
+EXPORTS
+    usb_bulk_read
+    usb_bulk_write
+    usb_claim_interface
+    usb_clear_halt
+    usb_close
+    usb_control_msg
+    usb_find_busses
+    usb_find_devices
+    usb_get_busses
+    usb_init
+    usb_open
+    usb_release_interface
+    usb_set_configuration
+    usb_strerror

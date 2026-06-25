@@ -533,7 +533,7 @@ pub fn generate_scatter_from_gpt(
 
 /// 从 GPT 数据生成刷机匣格式的 scatter 文件（YAML-like）
 /// 对齐刷机匣 Shoujixia 的 scatter 输出格式
-#[allow(dead_code)]
+#[allow(dead_code)] // 预留：scatter 文件导出功能，用于分区表可视化
 pub fn generate_scatter_shoujixia(
     gpt_data: &[u8],
     output_file: &str,

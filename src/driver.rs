@@ -87,7 +87,7 @@ fn install_filter(exe_path: &std::path::Path, vid: u16, pid: u16) -> Result<(), 
 }
 
 /// 卸载 libusb0 filter
-#[allow(dead_code)]
+#[allow(dead_code)] // 预留：驱动卸载/恢复流程，install-drivers 反向操作
 pub fn uninstall_filter(vid: u16, pid: u16) -> Result<(), String> {
     let exe_path = find_install_filter_exe()?;
     let device_id = format!("USB\\VID_{:04X}&PID_{:04X}", vid, pid);

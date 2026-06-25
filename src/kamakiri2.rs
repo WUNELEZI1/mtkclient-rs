@@ -319,7 +319,7 @@ impl Preloader {
     }
 
     // 预留：bypass_security 修复时使用
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：bypass_security 修复时注入自定义 payload 入口
     pub fn run_payload(&mut self, filename: &str, expected_ack: u32) -> Result<(), String> {
         let payload_path = exe_relative_path(&format!("payloads/{}", filename));
         let payload = std::fs::read(&payload_path)

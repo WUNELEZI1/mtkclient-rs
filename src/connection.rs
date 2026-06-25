@@ -189,7 +189,7 @@ impl ConnectionManager {
     }
 
     /// DA 加载后重连
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：DA 加载后设备重枚举流程
     pub fn reconnect_after_da(
         &self,
         context: &UsbContext,
@@ -208,7 +208,7 @@ impl ConnectionManager {
     }
 
     /// Kamakiri exploit 后重连
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：Kamakiri2 exploit 后设备重枚举流程
     pub fn reconnect_after_kamakiri(
         &self,
         context: &UsbContext,
@@ -219,7 +219,7 @@ impl ConnectionManager {
     }
 
     /// USB reset 后重连
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：USB reset 后设备重枚举流程
     pub fn reconnect_after_usb_reset(
         &self,
         context: &UsbContext,
@@ -230,7 +230,7 @@ impl ConnectionManager {
     }
 
     /// 快速连接尝试
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：DA 后快速重连场景（被 reconnect_after_da 内部调用）
     fn try_quick_connect(
         &self,
         context: &UsbContext,
@@ -248,19 +248,19 @@ impl ConnectionManager {
     }
 
     /// 获取当前连接模式
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：查询当前连接状态（串口/USB）
     pub fn mode(&self) -> &DeviceMode {
         &self.mode
     }
 
     /// 获取当前 USB 阶段
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：查询设备当前所处阶段（BROM/Preloader）
     pub fn stage(&self) -> &UsbStage {
         &self.stage
     }
 
     /// 获取串口名称
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：调试/日志输出当前使用的串口名
     pub fn port_name(&self) -> Option<&str> {
         self.port_name.as_deref()
     }

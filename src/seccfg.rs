@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 
 /// SecCfg V4 解析和修改
 // 预留：unlock/lock 功能使用
-#[allow(dead_code)]
+#[allow(dead_code)] // 预留：unlock-bootloader / lock-bootloader 命令使用
 pub(crate) struct SecCfgV4 {
     magic: u32,
     seccfg_ver: u32,
@@ -129,7 +129,7 @@ impl SecCfgV4 {
     /// 修改 seccfg V4（lock/unlock）
     /// 对齐 C# 版正确行为：只修改 lock_state(0x0C)，不动 critical_lock_state/dm_verity(0x10)
     /// Python mtkclient 的 Bug：错误地将 offset 0x10 写为 01，导致 dm-verity corruption
-    #[allow(dead_code)]
+    #[allow(dead_code)] // 预留：unlock-bootloader / lock-bootloader 命令调用入口
     pub(crate) fn create(&self, lockflag: &str, partition_size: usize) -> Result<Vec<u8>, String> {
         let new_lock = if lockflag == "unlock" {
             if self.lock_state == 3 {
@@ -212,7 +212,7 @@ impl SecCfgV4 {
 // 加密数据段 + endflag(4)
 
 // 预留：unlock/lock 功能使用
-#[allow(dead_code)]
+#[allow(dead_code)] // 预留：V3 版 SecCfg 解析，兼容旧版设备
 pub(crate) struct SecCfgV3 {
     info_header: [u8; 16],
     magic: u32,
