@@ -88,8 +88,16 @@ impl SessionState {
 }
 
 /// 尝试复用现有 DA 会话
-/// 如果 .state 存在且设备已处于 DA 模式（PID=0x2000），跳过 BROM→DA 流程
+/// 如果 .state 存在且设备已处于 DA 模式（PID=0x2000 / 0x0005），跳过 BROM→DA 流程
 pub fn try_reuse_da_session(vid: u16, pid: u16) -> bool {
+    // 核心安全检查：只有当设备明确处于 DA 模式时，才允许复用
+    // PID 0x2000 是标准的 DA 模式 PID
+    // PID 0x0005 是某些旧芯片或特定 DA 的 PID
+    if pid != 0x2000 && pid != 0x0005 {
+        debug!("[session] 设备 PID=0x{:04X} 不属于 DA 模式，拒绝复用会话", pid);
+        return false;
+    }
+
     if let Some(state) = SessionState::load() {
         if state.da_loaded && state.device_online(vid, pid) {
             info!(
@@ -98,7 +106,7 @@ pub fn try_reuse_da_session(vid: u16, pid: u16) -> bool {
             );
             return true;
         } else {
-            debug!("[session] .state 存在但设备不在线或 DA 未加载，重新初始化");
+            debug!("[session] .state 存在但设备 PID/VID 不匹配或 DA 未加载，重新初始化");
         }
     }
     false
