@@ -1256,3 +1256,43 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - `InstallHinfSection` → 不支持 INSTALLFLAG_FORCE
        - ✅ `wdi-rs::prepare_driver` + `UpdateDriverForPlugAndPlayDevicesW` → Zadig 同款，最稳
 
+50. **WinUSB 安装后链接不上 — 前置 libusb 枚举检测** (2026-06-26)
+     - 触发：WinUSB 驱动安装成功后，拔掉设备再插上，再次运行程序
+     - 日志：
+       ```
+       [INFO ] 等待设备连接 (BROM: Vol+ + Vol- + Power)
+       [INFO ] [COM] 尝试第 1/3 次连接...
+       [DEBUG] available_ports 返回 0 个端口 (retry 1)
+       [DEBUG] find_brom_port 超时 (5000ms)
+       ...（重复 3 次，耗时 21 秒）...
+       [WARN ] [COM] 连续 3 次失败，降级到 WinUSB 直连模式
+       [INFO ] [RECONNECT] scanning for stage=Brom...
+       [DEBUG] open_by_vid_pid failed for PID=0x0003: 未找到设备 VID=0E8D PID=0003
+       ...（重复 50 次，耗时 10 秒）...
+       ```
+     - 根因：WinUSB 已安装后，设备没有 COM 口（usbser.sys 已被 WinUSB 取代），
+       程序却先花 21 秒扫描 COM 口（必然失败），然后降到 libusb 模式。
+       而此时 libusb 可能因为设备枚举时序问题也找不到设备。
+     - 改动：
+       1. `src/usb.rs` — 新增 `check_mediatek_device_via_libusb()`：
+          - 创建临时 libusb context，调用 `libusb_get_device_list` 枚举所有 USB 设备
+          - 遍历检查是否有 VID=0x0E8D 的 MediaTek 设备
+          - 返回 `Option<(pid, DeviceType)>`
+          - 不打开设备，只读描述符，轻量快速
+       2. `src/connection.rs` — `smart_init` 新增 **STEP 0** 前置检测：
+          - 在 COM 扫描之前调用 `check_mediatek_device_via_libusb()`
+          - 如果找到设备，直接打印 `[USB] 前置检测命中：PID=0xXXXX, type=Brom`
+          - 跳转到 `fallback_to_winusb()`（新增的公共方法），跳过 21 秒 COM 扫描
+       3. `src/connection.rs` — 提取 `fallback_to_winusb()` 公共方法：
+          - 原来的 STEP 2 降级逻辑抽出为独立方法
+          - 被 STEP 0（前置命中）和 STEP 2（COM 超时）共用
+     - 新流程（设备已装 WinUSB 时）：
+       ```
+       0. check_mediatek_device_via_libusb()  → 发现设备（~10ms）
+       1. 直接 fallback_to_winusb() → reconnect_loop → 打开设备
+       ```
+       耗时从 ~31 秒降到 ~10 秒（甚至 0 秒如果设备响应快）
+     - 文件：`src/usb.rs`, `src/connection.rs`
+     - 验证：cargo build 通过，0 error / 0 warning
+
+

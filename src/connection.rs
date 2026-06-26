@@ -44,6 +44,8 @@ impl ConnectionManager {
     /// 统一设备初始化入口
     ///
     /// 流程：
+    /// 0. 前置检测：libusb 枚举 USB 设备，如果已有 MediaTek 设备（WinUSB 已安装），
+    ///    直接走 STEP 2 WinUSB 模式，跳过 COM 扫描（节省 21 秒）
     /// 1. COM 口优先，最多重试 3 次（每次 5 秒超时）
     /// 2. COM 口成功：握手 → 关看门狗 → 获取芯片信息 → 切 WinUSB
     /// 3. COM 口 3 次都失败：降级到 USB 直连（跳过 BROM 握手初始化）
@@ -52,6 +54,17 @@ impl ConnectionManager {
         context: &UsbContext,
     ) -> Result<(Preloader, DeviceMode), String> {
         info!("等待设备连接 (BROM: Vol+ + Vol- + Power)");
+
+        // === STEP 0: 前置检测 — libusb 能否直接发现设备（WinUSB 已安装） ===
+        // 如果设备已经有 WinUSB 驱动，就不会产生 COM 口，
+        // 走 COM 扫描只会浪费 21 秒然后超时降级。
+        if let Some((pid, dev_type)) = usb::check_mediatek_device_via_libusb() {
+            info!(
+                "[USB] 前置检测命中：PID=0x{:04X}, type={:?}，跳过 COM 扫描",
+                pid, dev_type
+            );
+            return self.fallback_to_winusb(context);
+        }
 
         const MAX_COM_RETRY: usize = 3;
         const COM_TIMEOUT_MS: u64 = 5000;
@@ -98,6 +111,15 @@ impl ConnectionManager {
 
         // === STEP 2: WinUSB 直连（降级路径） ===
         warn!("[COM] 连续 {} 次失败，降级到 WinUSB 直连模式", MAX_COM_RETRY);
+        self.fallback_to_winusb(context)
+    }
+
+    /// WinUSB 直连（跳过 BROM 握手初始化）
+    ///
+    /// 被两个入口调用：
+    /// - STEP 0: 前置检测命中（设备已装 WinUSB）
+    /// - STEP 2: COM 口扫描 3 次失败后降级
+    fn fallback_to_winusb(&mut self, context: &UsbContext) -> Result<(Preloader, DeviceMode), String> {
         info!("[USB] 尝试 WinUSB 直连（跳过 BROM 握手初始化）...");
 
         let usb_device = self.reconnect_loop(context, UsbStage::Brom)?;
