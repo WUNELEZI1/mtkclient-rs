@@ -28,6 +28,15 @@ pub trait BromTransport {
     fn do_handshake(&mut self) -> Result<bool, String>;
     fn is_libusb(&self) -> bool;
 
+    /// 获取 USB VID（仅 UsbDevice 有效，串口返回 None）
+    fn get_vid(&self) -> Option<u16> {
+        None
+    }
+    /// 获取 USB PID（仅 UsbDevice 有效，串口返回 None）
+    fn get_pid(&self) -> Option<u16> {
+        None
+    }
+
     // USB 专属方法 — 默认返回错误，仅 UsbDevice 实现
     fn ctrl_transfer_out(
         &mut self,
@@ -225,6 +234,14 @@ impl BromTransport for UsbDevice {
 
     fn is_libusb(&self) -> bool {
         true
+    }
+
+    fn get_vid(&self) -> Option<u16> {
+        Some(self.vid)
+    }
+
+    fn get_pid(&self) -> Option<u16> {
+        Some(self.pid)
     }
 
     fn ctrl_transfer_out(
@@ -582,6 +599,9 @@ impl Preloader {
     ///   echo(Cmd.SEND_DA.value)  → echo(addr) → echo(len(data)) → echo(sig_len)
     ///   status = rword()
     ///   if status ok: upload_data(data, gen_chksum)
+    ///
+    /// 注意：mtkclient 2.0.1 在 upload_data 之前没有 clear_halt 也没有 warm-up ZLP，
+    /// 但 pyusb 内部在 write 超时后会自动处理端点停止。libusb 需要显式 clear_halt。
     pub fn send_da(
         &mut self,
         address: u32,
@@ -620,17 +640,46 @@ impl Preloader {
             return Err("SLA required".into());
         }
 
+        // === upload_data 准备 ===
+        // 步骤 1: 复位 OUT 端点，清除可能残留的 halt/stall 状态
+        if self.device.is_libusb() {
+            debug!("[UPLOAD] clear_halt_out ...");
+            if let Err(e) = self.device.clear_halt_out() {
+                debug!("[UPLOAD] clear_halt_out (warn): {}", e);
+                // 非致命，继续
+            }
+        }
+
+        // 步骤 2: 给设备时间准备接收数据
+        debug!("[UPLOAD] delay 10ms before upload_data...");
+        std::thread::sleep(Duration::from_millis(10));
+
+        // 步骤 3: 发送一个 ZLP 作为"唤醒包"，让设备进入批量接收就绪状态
+        debug!("[UPLOAD] warm-up ZLP...");
+        self.device
+            .write(&[])
+            .map_err(|e| format!("upload_data warm-up ZLP: {}", e))?;
+        std::thread::sleep(Duration::from_millis(5));
+
+        // 步骤 4: 写超时改为 5000ms
+        let orig_timeout = self.device.get_timeout();
+        self.device.set_timeout(Duration::from_millis(5000));
+
         // upload_data: 发送数据 + ZLP + 读校验和
         let data = dadata;
-        let chunk_size = 64;
+        let chunk_size: usize = 512; // 高带宽 USB 使用 512 字节块
         let mut pos = 0;
+        debug!("[UPLOAD] sending {} bytes in chunks of {}", data.len(), chunk_size);
         while pos < data.len() {
             let end = (pos + chunk_size).min(data.len());
             self.device
                 .write(&data[pos..end])
-                .map_err(|e| format!("upload_data write: {}", e))?;
+                .map_err(|e| format!("upload_data write (pos={}): {}", pos, e))?;
             pos = end;
         }
+
+        // 恢复超时
+        self.device.set_timeout(orig_timeout);
 
         // ZLP (Zero Length Packet) — 对应 Python usbwrite(b"")
         self.device

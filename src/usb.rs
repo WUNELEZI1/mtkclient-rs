@@ -85,6 +85,56 @@ pub fn check_mediatek_device_via_libusb() -> Option<(u16, DeviceType)> {
     }
 }
 
+/// 枚举 USB 设备列表，返回第一个 MediaTek 设备的 (VID, PID, DeviceType)
+///
+/// 与 check_mediatek_device_via_libusb 的区别：
+/// - check_mediatek_device_via_libusb 只识别 BROM 设备 (PID 0x0003)，用于前置检测
+/// - 本函数识别所有 MediaTek 设备（BROM/Preloader/DA），用于 DA 会话复用检查
+///
+/// 用途：main.rs 启动时检测 DA 会话复用：
+/// 1. 枚举所有 MediaTek USB 设备
+/// 2. 找到第一个设备的 (VID, PID)
+/// 3. 与 .state 文件比对，如果 .state 中 da_loaded=true 且设备在线，触发会话复用
+pub fn get_first_mediatek_vid_pid() -> Option<(u16, u16, DeviceType)> {
+    unsafe {
+        let mut ctx: *mut libusb1_sys::libusb_context = std::ptr::null_mut();
+        if libusb1_sys::libusb_init(&mut ctx) != 0 {
+            return None;
+        }
+
+        let mut dev_list: *const *mut libusb1_sys::libusb_device = std::ptr::null_mut();
+        let dev_count = libusb1_sys::libusb_get_device_list(ctx, &mut dev_list);
+        if dev_count <= 0 {
+            libusb1_sys::libusb_free_device_list(dev_list, 1);
+            libusb1_sys::libusb_exit(ctx);
+            return None;
+        }
+
+        let mut result = None;
+        for i in 0..dev_count as isize {
+            let dev = *dev_list.wrapping_offset(i);
+            let mut desc: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
+            if libusb1_sys::libusb_get_device_descriptor(dev, &mut desc) != 0 {
+                continue;
+            }
+            if desc.idVendor != 0x0E8D {
+                continue;
+            }
+            let dev_type = DeviceType::from_vid_pid(desc.idVendor, desc.idProduct);
+            debug!(
+                "[USB] get_first_mediatek_vid_pid: 找到 MediaTek 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
+                desc.idVendor, desc.idProduct, dev_type
+            );
+            result = Some((desc.idVendor, desc.idProduct, dev_type));
+            break;
+        }
+
+        libusb1_sys::libusb_free_device_list(dev_list, 1);
+        libusb1_sys::libusb_exit(ctx);
+        result
+    }
+}
+
 /// 全局静默标志：设置为 true 时，read() 不打印 [USB READ] 日志
 static QUIET_USB_READ: AtomicBool = AtomicBool::new(false);
 
@@ -338,7 +388,7 @@ impl UsbDevice {
                 ep_out: ep_out_addr,
                 ep_in: ep_in_addr,
                 ep_out_max_packet_size: ep_out_max_pkt,
-                timeout: Duration::from_millis(1000),
+                timeout: Duration::from_millis(5000),
             })
         }
     }
@@ -424,7 +474,7 @@ impl UsbDevice {
                 ep_out: ep_out_addr,
                 ep_in: ep_in_addr,
                 ep_out_max_packet_size: ep_out_max_pkt,
-                timeout: Duration::from_millis(1000),
+                timeout: Duration::from_millis(5000),
             })
         }
     }
