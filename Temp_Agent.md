@@ -1179,3 +1179,80 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
        - libusb 路径：已执行 Kamakiri2 步进，直接使用原始地址
      - 验证：cargo build 通过，0 error
 
+48. **UpdateDriverForPlugAndPlayDevicesW error 87 修复** (2026-06-26)
+     - 触发：串口握手成功 → wdi-rs `prepare_driver` 生成/签名 WinUSB INF 成功 → 调用 `UpdateDriverForPlugAndPlayDevicesW` 返回 `err=87 (ERROR_INVALID_PARAMETER)`
+     - 日志片段：
+       ```
+       libwdi:info [CreateCat] Successfully created file '...mtk_brom_winusb.cat'
+       libwdi:info [SelfSignFile] Successfully signed file '...mtk_brom_winusb.cat'
+       [DRIVER] WinUSB INF 已生成、签名、并注册到驱动商店
+       [DRIVER] 调用 UpdateDriverForPlugAndPlayDevicesW (INSTALLFLAG_FORCE)...
+       [WARN ] 切换 WinUSB 驱动失败: UpdateDriverForPlugAndPlayDevicesW 失败: 参数错误。 (os error 87) (err=87)
+       ```
+     - 根因：`UpdateDriverForPlugAndPlayDevicesW` 的 `HardwareId` 参数**不能为 NULL**，即便 `FullInfPath` 已经提供。我之前传了 `std::ptr::null()`，Windows 直接拒绝
+     - 官方函数签名（setupapi.dll）：
+       ```c
+       BOOL UpdateDriverForPlugAndPlayDevicesW(
+         HWND   hwndParent,
+         LPCWSTR HardwareId,    // ← 必须非 NULL（或 FullInfPath 也必须非 NULL 且有效）
+         LPCWSTR FullInfPath,
+         DWORD   InstallFlags,
+         PBOOL   bRebootRequired
+       );
+       ```
+     - libwdi 内部做法（`wdi_install_driver`）：
+       - 取 `device_info->hardware_id`（如 `USB\VID_0E8D&PID_0003`），回退到 `device_id`
+       - 转成 wide string 传过去
+     - 改动（`src/driver.rs`）：
+       - `force_install_via_api(inf_dir: &PathBuf)` 改签名为 `force_install_via_api(device: &wdi_rs::Device, inf_dir: &PathBuf)`
+       - 从 `wdi_rs::Device` 取 `hardware_id`（回退 `device_id`）：
+         ```rust
+         let hardware_id = device
+             .hardware_id
+             .as_deref()
+             .or_else(|| device.device_id.as_deref())
+             .ok_or_else(|| "设备没有 hardware_id 或 device_id...".to_string())?;
+         ```
+       - 转成 `Vec<u16>` null-terminated wide string 传给 API
+       - `switch_to_winusb` 透传 `&device` 到 `force_install_via_api(&device, &inf_dir)?`
+     - 关键学习：
+       - libwdi 高层 `DriverInstaller::install()` 在 `device.driver` 已有 wdm_usb 时会返回 `Error::Exists` 并**跳过** INF 生成
+       - 解决：只用 `wdi-rs::prepare_driver`（不做 exists 检查）+ 自己用 raw FFI 调 `UpdateDriverForPlugAndPlayDevicesW` 强制安装
+       - 这就是 Zadig 的"全自动"套路：只要知道 VID/PID，wdi 生成 INF + Windows API 强制安装，**不需要先卸载设备、也不需要重插**
+     - 验证：cargo build 通过，0 error / 0 warning
+     - 文件：`src/driver.rs`
+     - 相关 commit 准备：本次修复
+
+49. **Zadig 风格驱动切换 — 完整工作流总结** (2026-06-26)
+     - 背景：MTK 设备断电后进入 BROM 模式（PID 0x0003），Windows 自动加载 usbser.sys（VCOM），
+       而 libusb1-sys 需要 WinUSB 才能访问。必须把驱动从 usbser.sys 切到 WinUSB
+     - 完整流程（`smart_init` → `switch_to_winusb`）：
+       ```
+       1. serialport::available_ports() 找 COM 口
+       2. CreateFileW("\\\\.\\COMx") 验证 COM 口真的能开
+       3. 串口 init: 0xA0 字节 → 等 0x5F（关看门狗）
+       4. 关掉 COM 口（设备可能短暂重枚举）
+       5. 200ms 稳定等待
+       6. wdi-rs::create_list(list_all=true) 找 BROM 设备（3 次重试）
+       7. wdi-rs::prepare_driver 生成/签名 WinUSB INF
+       8. UpdateDriverForPlugAndPlayDevicesW(hardware_id, inf_path, INSTALLFLAG_FORCE|NONINTERACTIVE)
+       9. poll 10s 验证 libusb1-sys::libusb_open_device_with_vid_pid 成功
+       10. libusb1-sys 进入正常 BROM 通信
+       ```
+     - 关键参数（绝不能错）：
+       - `CreateListOptions.list_all = true`（否则 wdm_usb 设备被过滤掉）
+       - `INSTALLFLAG_FORCE | INSTALLFLAG_NONINTERACTIVE`
+       - `HardwareId` 必须是 wdi-rs::Device::hardware_id（不是 NULL）
+     - 失败原因对照表：
+       | 错误 | 根因 | 修复 |
+       |------|------|------|
+       | `wdi-rs NotFound` | pnputil 卸载设备后设备消失 | 不卸载，直接 `prepare_driver` + `UpdateDriverForPlugAndPlayDevicesW` |
+       | `UpdateDriverForPlugAndPlayDevicesW err=87` | HardwareId 传了 NULL | 传 `device.hardware_id` |
+       | `wdi-rs Error::Exists` | 设备已有 wdm_usb | 用 `prepare_driver` 而非 `install()` |
+       | `libusb1-sys open 失败` | INF 没正确注册 | 等 200ms 设备稳定 + list_all=true |
+     - 替代方案对比：
+       - `pnputil /remove-device` + `pnputil /add-driver` → 设备会消失，导致 wdi-rs 找不到
+       - `devcon` → 已 deprecated
+       - `InstallHinfSection` → 不支持 INSTALLFLAG_FORCE
+       - ✅ `wdi-rs::prepare_driver` + `UpdateDriverForPlugAndPlayDevicesW` → Zadig 同款，最稳
+

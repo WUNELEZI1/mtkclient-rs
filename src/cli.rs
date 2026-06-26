@@ -67,6 +67,13 @@ pub struct Cli {
     pub patch_da: bool,
 
     #[arg(
+        long = "no-elevate",
+        default_value_t = false,
+        help = "跳过管理员提权检查（已手动以管理员身份运行时使用）"
+    )]
+    pub no_elevate: bool,
+
+    #[arg(
         help = "要执行的命令",
         long_help = "可用命令:\n\
           printgpt        - 打印 GPT 分区表\n\

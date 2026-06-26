@@ -21,7 +21,6 @@ mod da_xflash;
 mod driver;
 mod frp;
 mod kamakiri2;
-mod libusb0;
 mod paths;
 mod sej;
 mod seccfg;
@@ -46,6 +45,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let cli = cli::Cli::parse();
+
+    // Windows: 驱动安装 (pnputil / wdi-rs) 必须管理员，提前提权
+    // 用环境变量 MTKCLIENT_ELEVATED 标记避免子进程重复提权造成死循环
+    #[cfg(target_os = "windows")]
+    {
+        if !cli.no_elevate
+            && !driver::is_admin()
+            && std::env::var_os("MTKCLIENT_ELEVATED").is_none()
+        {
+            // 提示用户（UAC 弹窗会覆盖这个）
+            eprintln!("[MAIN] 需要管理员权限以安装 WinUSB 驱动，正在请求提权...");
+            if let Err(e) = driver::restart_as_admin() {
+                eprintln!("[MAIN] 提权失败: {}", e);
+                eprintln!("[MAIN] 请右键以管理员身份运行本程序，或加 --no-elevate 跳过（将无法切换 WinUSB）");
+                return Err(e.into());
+            }
+            // restart_as_admin 内部 std::process::exit(0)，不会回到这里
+        }
+    }
 
     let app_config = config::AppConfig::from_cli(&cli);
 

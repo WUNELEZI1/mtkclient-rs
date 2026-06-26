@@ -2,7 +2,21 @@ use crate::config::{CHIP_CONFIGS, ChipConfig, TargetConfig};
 use crate::usb::UsbDevice;
 use colored::Colorize;
 use log::debug;
+use std::fs::OpenOptions;
 use std::time::Duration;
+
+/// 验证 COM 口是否真实存在
+///
+/// serialport 的 available_ports() 可能返回注册表残留的无效端口，
+/// 通过 CreateFile 打开 \\.\COMx 来验证端口是否真的可用。
+fn verify_port_exists(port_name: &str) -> bool {
+    let path = format!("\\\\.\\{}", port_name);
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .is_ok()
+}
 
 /// BROM 传输抽象层 — 统一 USB 和串口的读写接口
 pub trait BromTransport {
@@ -41,6 +55,9 @@ pub trait BromTransport {
     fn clear_halt_out(&mut self) -> Result<(), String> {
         Err("clear_halt_out not supported on this transport".to_string())
     }
+    fn clear_halt_ep(&mut self, _ep: u8) -> Result<(), String> {
+        Err("clear_halt_ep not supported on this transport".to_string())
+    }
 }
 
 /// serialport 实现 BROM 传输
@@ -51,6 +68,9 @@ pub struct SerialPortTransport {
 
 impl SerialPortTransport {
     pub fn new(port_name: &str, baud_rate: u32) -> Result<Self, String> {
+        if !verify_port_exists(port_name) {
+            return Err(format!("端口 {} 不存在（注册表残留）", port_name));
+        }
         let port = serialport::new(port_name, baud_rate)
             .timeout(Duration::from_millis(1000))
             .open()
@@ -64,11 +84,27 @@ impl SerialPortTransport {
     /// 枚举所有 COM 口，找到 MediaTek BROM/Preloader 设备
     /// 无限轮询，每 200ms 扫描一次，直到找到为止
     pub fn find_brom_port() -> Option<String> {
+        Self::find_brom_port_with_timeout(u64::MAX)
+    }
+
+    /// 枚举所有 COM 口，找到 MediaTek BROM/Preloader 设备
+    /// 带超时的版本，超时返回 None
+    pub fn find_brom_port_with_timeout(timeout_ms: u64) -> Option<String> {
         const INTERVAL_MS: u64 = 200;
-        let mut retry = 0;
+        let max_retries = if timeout_ms == u64::MAX || timeout_ms == 0 {
+            usize::MAX
+        } else {
+            ((timeout_ms + INTERVAL_MS - 1) / INTERVAL_MS) as usize
+        };
+        let mut retry = 0usize;
 
         loop {
             retry += 1;
+            if retry > max_retries {
+                debug!("find_brom_port 超时 ({}ms)", timeout_ms);
+                return None;
+            }
+
             let ports = match serialport::available_ports() {
                 Ok(p) => p,
                 Err(e) => {
@@ -90,6 +126,10 @@ impl SerialPortTransport {
                     // BROM 模式: VID=0E8D PID=0003
                     // Preloader 模式: VID=0E8D PID=2000
                     if info.vid == 0x0E8D && (info.pid == 0x0003 || info.pid == 0x2000) {
+                        if !verify_port_exists(&p.port_name) {
+                            debug!("端口 {} 注册表残留但设备已拔出，跳过", p.port_name);
+                            continue;
+                        }
                         debug!("找到 MTK COM 口: {} (PID=0x{:04X}, retry {})",
                               p.port_name, info.pid, retry);
                         return Some(p.port_name.clone());
@@ -212,6 +252,14 @@ impl BromTransport for UsbDevice {
 
     fn clear_halt_in(&mut self) -> Result<(), String> {
         UsbDevice::clear_halt_in(self)
+    }
+
+    fn clear_halt_out(&mut self) -> Result<(), String> {
+        UsbDevice::clear_halt_out(self)
+    }
+
+    fn clear_halt_ep(&mut self, ep: u8) -> Result<(), String> {
+        UsbDevice::clear_halt_ep(self, ep)
     }
 }
 

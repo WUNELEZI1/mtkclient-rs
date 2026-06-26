@@ -48,8 +48,7 @@ impl Preloader {
             debug!("[STEP]   linecode: {:02X?}", lc);
             debug!("[STEP]   addr_le: {:02X?}", &addr.to_le_bytes());
             self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d)?;
-            std::thread::sleep(Duration::from_millis(10));
-            let _ = self.device.ctrl_transfer_in(0x80, 0x6, 0x02FF, 0, 9);
+            let _ = self.device.ctrl_transfer_in(0x80, 0x06, 0x02FF, 0, 9);
             std::thread::sleep(Duration::from_millis(50));
         } else {
             debug!("[STEP] serial mode — skipping kamakiri2 setup step");
