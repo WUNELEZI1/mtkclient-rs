@@ -826,8 +826,13 @@ impl Preloader {
     pub fn read32_brom(&mut self, addr: u32, dwords: usize) -> Result<Vec<u8>, String> {
         // 在执行关键 BROM 命令前，先清空可能残留的 USB 数据（例如 bypass_security 后的残留）
         if self.device.is_libusb() {
-            debug!("[read32_brom] 执行 pre-command drain...");
+            debug!("[read32_brom] 执行 pre-command 状态复位...");
             self.flush_input();
+            // 新增：显式清除端点 Halt 状态，防止由于之前的 payload 注入导致端点挂起
+            let _ = self.device.clear_halt_in();
+            let _ = self.device.clear_halt_out();
+            // 新增：给予设备短暂的准备时间
+            std::thread::sleep(Duration::from_millis(50));
         }
 
         // echo 0xD1 命令（1 字节，对齐 Python echo(Cmd.READ32.value)）
