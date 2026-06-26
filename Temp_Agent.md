@@ -282,7 +282,8 @@ mtkclient-rs printgpt
       - [preloader.rs](file:///d:/test/ZybClient/src/preloader.rs)：优化 `flush_input`，使用 10ms 短超时实现快速排空。
       - [preloader.rs](file:///d:/test/ZybClient/src/preloader.rs)：在 `read32_brom` 中移除会导致 10 秒延迟的 `clear_halt` 调用，解决 `bypass_security` 后的通信挂起问题。
       - [usb.rs](file:///d:/test/ZybClient/src/usb.rs)：优化 `read` 逻辑，针对 <50ms 的短超时请求，超时后立即返回不再重试，极大提升 `flush/drain` 效率。修复了 `timeout` 变量未定义的编译错误。
-      - [usb.rs](file:///d:/test/ZybClient/src/usb.rs)：移除了 `do_handshake` 中未使用的 `maxinsize` 变量。
+      - [usb.rs](file:///d:/test/ZybClient/src/usb.rs)：重新引入 `maxinsize` (作为 `ep_in_max_packet_size`)，并将其用于 `do_handshake` 中的缓冲区清理，对齐 mtkclient 的健壮性设计。
+      - [usb.rs](file:///d:/test/ZybClient/src/usb.rs)：移除了 `do_handshake` 中未使用的 `maxinsize` 变量（后又重新引入）。
     - 新增：
       - [commands.rs](file:///d:/test/ZybClient/src/commands.rs)：实现 `dumppreloader` 命令，使用 `dump_preloader_payload` 专有 payload 提取方式（比 RAM 方式更稳定）。
     - 结果：解决了 `printgpt` 过程中自动提取 preloader 失败的问题。

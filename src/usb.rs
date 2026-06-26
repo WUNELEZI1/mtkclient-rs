@@ -232,7 +232,11 @@ pub fn usb_trace(direction: &str, func_info: &str, data: &[u8]) {
     let seconds = (total_secs % 60) as u32;
 
     // 格式化 hex 数据
-    let hex_str: String = data.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+    let hex_str: String = data
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     // 格式化日志行
     let log_line = format!(
@@ -313,6 +317,7 @@ pub struct UsbDevice {
     pub ep_in: u8,
     #[allow(dead_code)]
     ep_out_max_packet_size: u16,
+    pub ep_in_max_packet_size: u16,
     timeout: Duration,
 }
 
@@ -358,7 +363,10 @@ impl UsbDevice {
             let mut desc: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
             let ret_desc = libusb1_sys::libusb_get_device_descriptor(device, &mut desc);
             if ret_desc != 0 {
-                return Err(format!("获取设备描述失败 (error {}): libusb 驱动异常", ret_desc));
+                return Err(format!(
+                    "获取设备描述失败 (error {}): libusb 驱动异常",
+                    ret_desc
+                ));
             }
 
             debug!("[USB] scanning endpoints...");
@@ -366,6 +374,7 @@ impl UsbDevice {
             let mut ep_out_addr: u8 = 0x01;
             let mut ep_in_addr: u8 = 0x81;
             let mut ep_out_max_pkt: u16 = 512;
+            let mut ep_in_max_pkt: u16 = 512;
             let ret = libusb1_sys::libusb_get_active_config_descriptor(device, &mut config_ptr);
             if ret != 0 || config_ptr.is_null() {
                 info!(
@@ -403,6 +412,7 @@ impl UsbDevice {
                             }
                             if dir == "IN" && ep_type == "Bulk" {
                                 ep_in_addr = addr;
+                                ep_in_max_pkt = ep.wMaxPacketSize;
                             }
                         }
                     }
@@ -426,6 +436,7 @@ impl UsbDevice {
                 ep_out: ep_out_addr,
                 ep_in: ep_in_addr,
                 ep_out_max_packet_size: ep_out_max_pkt,
+                ep_in_max_packet_size: ep_in_max_pkt,
                 timeout: Duration::from_millis(5000),
             })
         }
@@ -459,7 +470,10 @@ impl UsbDevice {
             let ret_desc = libusb1_sys::libusb_get_device_descriptor(device, &mut desc);
             if ret_desc != 0 {
                 libusb1_sys::libusb_close(handle);
-                return Err(format!("获取设备描述失败 (error {}): libusb 驱动异常", ret_desc));
+                return Err(format!(
+                    "获取设备描述失败 (error {}): libusb 驱动异常",
+                    ret_desc
+                ));
             }
 
             debug!("[USB] scanning endpoints...");
@@ -467,6 +481,7 @@ impl UsbDevice {
             let mut ep_out_addr: u8 = 0x01;
             let mut ep_in_addr: u8 = 0x81;
             let mut ep_out_max_pkt: u16 = 512;
+            let mut ep_in_max_pkt: u16 = 512;
             let ret = libusb1_sys::libusb_get_active_config_descriptor(device, &mut config_ptr);
             if ret != 0 || config_ptr.is_null() {
                 info!(
@@ -493,6 +508,7 @@ impl UsbDevice {
                             }
                             if dir == "IN" && ep_type == "Bulk" {
                                 ep_in_addr = addr;
+                                ep_in_max_pkt = ep.wMaxPacketSize;
                             }
                         }
                     }
@@ -501,7 +517,10 @@ impl UsbDevice {
             }
 
             let stage = UsbStage::from_pid(desc.idProduct);
-            debug!("[USB] open_by_vid_pid OK: VID={:04X} PID={:04X} stage={:?}", vid, pid, stage);
+            debug!(
+                "[USB] open_by_vid_pid OK: VID={:04X} PID={:04X} stage={:?}",
+                vid, pid, stage
+            );
 
             Ok(UsbDevice {
                 handle,
@@ -512,6 +531,7 @@ impl UsbDevice {
                 ep_out: ep_out_addr,
                 ep_in: ep_in_addr,
                 ep_out_max_packet_size: ep_out_max_pkt,
+                ep_in_max_packet_size: ep_in_max_pkt,
                 timeout: Duration::from_millis(5000),
             })
         }
@@ -643,7 +663,10 @@ impl UsbDevice {
                 // 这符合标准 read 语义，也避免了 handshake 等场景下的挂起
                 if total > 0 {
                     if !quiet {
-                        debug!("[USB READ] data received ({} bytes), returning early", total);
+                        debug!(
+                            "[USB READ] data received ({} bytes), returning early",
+                            total
+                        );
                     }
                     break;
                 }
@@ -716,7 +739,11 @@ impl UsbDevice {
                 if transferred == 0 {
                     if ret == LIBUSB_ERROR_TIMEOUT {
                         if total > 0 {
-                            debug!("[USB READ EXACT] partial read: {}/{} bytes before timeout", total, buf.len());
+                            debug!(
+                                "[USB READ EXACT] partial read: {}/{} bytes before timeout",
+                                total,
+                                buf.len()
+                            );
                             break;
                         }
                         return Err("read_exact timeout".to_string());
@@ -867,7 +894,7 @@ impl UsbDevice {
             // Drain any stale data first
             let orig_timeout = self.timeout;
             self.timeout = Duration::from_millis(50);
-            let mut drain = [0u8; 64];
+            let mut drain = vec![0u8; self.ep_in_max_packet_size as usize];
             loop {
                 match self.read(&mut drain) {
                     Ok(n) if n > 0 => continue,
@@ -940,6 +967,7 @@ impl UsbDevice {
         self.handle = new_device.handle;
         self.ep_in = new_device.ep_in;
         self.ep_out = new_device.ep_out;
+        self.ep_in_max_packet_size = new_device.ep_in_max_packet_size;
         self.vid = new_device.vid;
         self.pid = new_device.pid;
         self.stage = new_device.stage;
