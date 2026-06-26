@@ -824,15 +824,11 @@ impl Preloader {
     /// 读 32 位值（BROM 模式）
     /// 使用 0xD1 协议（无 mode 参数）：cmd → addr → len(dwords) → status1 → data → status2
     pub fn read32_brom(&mut self, addr: u32, dwords: usize) -> Result<Vec<u8>, String> {
-        // 在执行关键 BROM 命令前，先清空可能残留的 USB 数据（例如 bypass_security 后的残留）
+        // 在执行关键 BROM 命令前，给予设备微小的准备时间
         if self.device.is_libusb() {
-            debug!("[read32_brom] 执行 pre-command 状态复位...");
-            self.flush_input();
-            // 新增：显式清除端点 Halt 状态，防止由于之前的 payload 注入导致端点挂起
-            let _ = self.device.clear_halt_in();
-            let _ = self.device.clear_halt_out();
-            // 新增：给予设备短暂的准备时间
-            std::thread::sleep(Duration::from_millis(50));
+            // 注意：不要在此处调用 clear_halt，因为在 libusb-win32 下它可能导致 5 秒以上的驱动超时
+            // 之前的 bypass_security 已经完成了 drain 和 handshake，此处通信应是同步的
+            std::thread::sleep(Duration::from_millis(10));
         }
 
         // echo 0xD1 命令（1 字节，对齐 Python echo(Cmd.READ32.value)）
