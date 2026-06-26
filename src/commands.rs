@@ -14,8 +14,7 @@ pub fn print_help() {
     println!();
     println!("命令:");
     println!("  printgpt          打印 GPT 分区表");
-    println!("  dump-preloader    提取 Preloader (RAM 方式)");
-    println!("  dumppreloader     提取 Preloader (Exploit 方式，更推荐)");
+    println!("  dumppreloader     提取 Preloader (Exploit)");
     println!("  dumpbrom          提取 BROM");
     println!("  r <分区> <文件>   读取分区");
     println!("  r gpt <目录>      保存 GPT 原始数据到目录");
@@ -126,10 +125,6 @@ pub fn handle_command(
             }
         }
 
-        let cmd = app_config.command.as_deref().unwrap_or("");
-        if cmd == "dump-preloader" {
-            return Ok(());
-        }
     }
 
     let cmd: &str = match &app_config.command {
@@ -141,9 +136,6 @@ pub fn handle_command(
         }
     };
 
-    if cmd == "dump-preloader" {
-        return Ok(());
-    }
 
     let effective_file = auto_dumped_file.as_deref().unwrap_or(preloader_file);
     info!("加载 EMI 数据: {}", effective_file);

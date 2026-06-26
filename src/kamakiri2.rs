@@ -280,6 +280,12 @@ impl Preloader {
         }
         self.device.set_timeout(orig_timeout);
         debug!("payload 注入成功");
+
+        // 核心修复：Payload 运行后可能会返回多组 Ack 或其他干扰数据，
+        // 必须在返回前彻底清空输入缓冲区，否则后续 BROM 指令（如 0xD1）
+        // 的 echo 会读到这些残留数据（例如读到 0xA1 而不是 0xD1）。
+        self.flush_input();
+
         Ok(())
     }
 
