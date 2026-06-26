@@ -33,8 +33,10 @@ impl UsbStage {
 /// - `Some((pid, device_type))`：找到的第一个 MediaTek 设备
 /// - `None`：无 MediaTek 设备
 ///
-/// 用途：在 smart_init 的 COM 扫描之前调用，如果 libusb 已经能看到设备，
+/// 用途：在 smart_init 的 COM 扫描之前调用，如果 libusb 已经能看到 BROM 设备 (PID 0x0003)，
 /// 就直接走 WinUSB 模式，跳过耗时 21 秒的 COM 扫描。
+/// 注意：只识别 BROM 阶段设备 (PID 0x0003)，其他 PID（Preloader 0x2000、DA 0x2001、Unknown 0x2008 等）
+/// 一律忽略，避免误识别触发错误路径。
 pub fn check_mediatek_device_via_libusb() -> Option<(u16, DeviceType)> {
     unsafe {
         let mut ctx: *mut libusb1_sys::libusb_context = std::ptr::null_mut();
@@ -45,6 +47,7 @@ pub fn check_mediatek_device_via_libusb() -> Option<(u16, DeviceType)> {
         let mut dev_list: *const *mut libusb1_sys::libusb_device = std::ptr::null_mut();
         let dev_count = libusb1_sys::libusb_get_device_list(ctx, &mut dev_list);
         if dev_count <= 0 {
+            libusb1_sys::libusb_free_device_list(dev_list, 1);
             libusb1_sys::libusb_exit(ctx);
             return None;
         }
@@ -59,9 +62,17 @@ pub fn check_mediatek_device_via_libusb() -> Option<(u16, DeviceType)> {
             if desc.idVendor != 0x0E8D {
                 continue;
             }
+            // 只识别 BROM 阶段 (PID 0x0003) —— 其他阶段设备由后续 smart_init 正常路径处理
+            if desc.idProduct != 0x0003 {
+                debug!(
+                    "[USB] 前置检测：发现非 BROM 设备 VID=0x{:04X} PID=0x{:04X}，跳过",
+                    desc.idVendor, desc.idProduct
+                );
+                continue;
+            }
             let dev_type = DeviceType::from_vid_pid(desc.idVendor, desc.idProduct);
             info!(
-                "[USB] 前置检测：发现 MediaTek 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
+                "[USB] 前置检测：发现 BROM 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
                 desc.idVendor, desc.idProduct, dev_type
             );
             result = Some((desc.idProduct, dev_type));
