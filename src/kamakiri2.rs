@@ -467,26 +467,10 @@ impl Preloader {
         self.inject_payload(&payload, 0xA1A2A3A4)?;
         debug!("patcher payload 注入完成");
 
-        // 对齐 Python run_handshake 的逐字节握手自然 drain 行为：
-        // patcher payload 执行后 USB IN 端点有残留数据，需要彻底清空
-        self.device.set_timeout(Duration::from_millis(50));
-        let mut drain_buf = [0u8; 512];
-        for _ in 0..10 {
-            match self.device.read(&mut drain_buf) {
-                Ok(n) if n > 0 => continue,
-                _ => break, // 读到 0 就停止
-            }
-        }
-        self.device.set_timeout(Duration::from_millis(1000));
-
-        if !self.device.do_handshake()? {
-            return Err("绕过安全保护后重握手失败".into());
-        }
-
-        // 尝试获取 ID，但不强制同步，因为某些 patcher 可能不响应 FE
-        debug!("尝试获取设备识别信息...");
-        let _ = self.get_me_id();
-        let _ = self.get_soc_id();
+        // 根据 mtkclient-2.0.1\usb_debug.log (第647-648行):
+        // 在收到 a1a2a3a4 后，原版工具直接发送 D1 (READ32) 命令，
+        // 并没有执行 drain、handshake 或获取 ID 的操作。
+        // 额外的操作可能导致设备端 Patcher 状态异常或 USB 管道阻塞。
 
         info!("安全保护已成功绕过");
         Ok(())

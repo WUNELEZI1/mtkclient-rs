@@ -4,8 +4,8 @@
 > 完整历史：Temp_Agent_Archive.md
 
 ## 最近更新 (2026-06-26)
-- **修复 bypass_security 后的 BROM 同步超时**：移除 `kamakiri2.rs` 中绕过安全保护后强制执行 `sync_brom()` 的逻辑。原版 mtkclient 日志显示在 Payload 注入并 Ack 后，设备已进入待命状态，直接发送 `0xFE` 序列会导致设备不响应而超时。
-- **优化设备识别**：在 `bypass_security` 成功后，将 `get_me_id` 和 `get_soc_id` 改为尝试性获取，不再强制同步，避免因同步失败导致整个 bypass 流程退出。
+- **彻底对齐 mtkclient 指令流**：移除 `bypass_security` 后的 `drain` 和 `do_handshake` 逻辑。最新日志分析显示，在 `A1A2A3A4` Ack 之后执行任何非 BROM 命令（如 Handshake 或 Drain）都会导致设备端的 Patcher 状态异常，进而引发后续 `0xD1` 命令的 `LIBUSB_ERROR_TIMEOUT (-7)`。
+- **优化稳定序列策略**：将 `bypass_security` 后的 "稳定序列" 改为 "零干扰序列"，即注入 Ack 后直接进入 `read32_brom`。
 
 ## 当前状态
 - 功能状态表：
@@ -22,7 +22,7 @@
   - `0xD1` 读写
   - 大端 echo
   - watchdog 双 status
-  - **Payload 后同步**：注入 Ack (`A1 A2 A3 A4`) 后通常直接进入后续指令，无需 `FE/FF/FC`。
+  - **Payload 后同步**：注入 Ack (`A1 A2 A3 A4`) 后**严禁**执行 `do_handshake` 或 `drain`，必须立即发送后续指令（如 `0xD1`）。
 - XFlash：
   - `CMD_READ_DATA` + `send_param`
   - `send_ack` / `ack`
