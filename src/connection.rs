@@ -114,24 +114,39 @@ impl ConnectionManager {
         self.fallback_to_winusb(context)
     }
 
-    /// WinUSB 直连（跳过 BROM 握手初始化）
+    /// WinUSB 直连（降级路径：设备已装 WinUSB 驱动 / COM 口扫描失败）
     ///
     /// 被两个入口调用：
     /// - STEP 0: 前置检测命中（设备已装 WinUSB）
     /// - STEP 2: COM 口扫描 3 次失败后降级
+    ///
+    /// 流程：
+    /// 1. reconnect_loop 拿到 USB 设备句柄（无限等待 BROM 设备出现）
+    /// 2. 构造 Preloader 并执行完整 BROM 握手（handshake → 看门狗 → HW code → target_config）
+    ///    —— 这一步是关键，之前直接跳过导致设备不认识后续 DA 加载并重启
+    /// 3. 返回 (Preloader, DeviceMode::Brom)
     fn fallback_to_winusb(&mut self, context: &UsbContext) -> Result<(Preloader, DeviceMode), String> {
-        info!("[USB] 尝试 WinUSB 直连（跳过 BROM 握手初始化）...");
+        info!("[USB] 尝试 WinUSB 直连...");
+        info!("[USB] 等待 BROM 设备出现 (PID=0x0003, 无限等待)...");
 
         let usb_device = self.reconnect_loop(context, UsbStage::Brom)?;
 
         info!(
-            "[USB] WinUSB 直连成功: VID={:04x}, PID={:04x}, stage={:?}",
+            "[USB] WinUSB 设备已打开: VID={:04x}, PID={:04x}, stage={:?}",
             usb_device.vid, usb_device.pid, usb_device.stage
         );
 
-        // USB 直连降级路径：跳过 init，直接进入 Kamakiri2
+        // 构造 Preloader 并执行完整 BROM 握手
+        // —— 这一步是修复：之前直接 brom_initialized = false 跳过 init，
+        //    后续 Kamakiri2 步骤会让设备"不认识"而重启
         let mut preloader = Preloader::new(Box::new(usb_device));
-        preloader.brom_initialized = false; // 标记未初始化，后续 Kamakiri2 会 bypass
+        if !preloader
+            .init()
+            .map_err(|e| format!("WinUSB BROM 握手失败: {}", e))?
+        {
+            return Err("WinUSB BROM 握手未完成".to_string());
+        }
+        info!("{}", "[USB] BROM 握手成功（看门狗已关，HW code 已获取）".green().bold());
 
         self.mode = DeviceMode::Brom;
         self.stage = UsbStage::Brom;
