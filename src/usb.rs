@@ -62,12 +62,8 @@ pub fn check_mediatek_device_via_libusb() -> Option<(u16, DeviceType)> {
             if desc.idVendor != 0x0E8D {
                 continue;
             }
-            // 只识别 BROM 阶段 (PID 0x0003) —— 其他阶段设备由后续 smart_init 正常路径处理
+            // 严格仅识别 BROM 阶段 (PID 0x0003)
             if desc.idProduct != 0x0003 {
-                debug!(
-                    "[USB] 前置检测：发现非 BROM 设备 VID=0x{:04X} PID=0x{:04X}，跳过",
-                    desc.idVendor, desc.idProduct
-                );
                 continue;
             }
             let dev_type = DeviceType::from_vid_pid(desc.idVendor, desc.idProduct);
@@ -120,9 +116,13 @@ pub fn get_first_mediatek_vid_pid() -> Option<(u16, u16, DeviceType)> {
             if desc.idVendor != 0x0E8D {
                 continue;
             }
+            // 严格仅识别 BROM 阶段 (PID 0x0003)
+            if desc.idProduct != 0x0003 {
+                continue;
+            }
             let dev_type = DeviceType::from_vid_pid(desc.idVendor, desc.idProduct);
             debug!(
-                "[USB] get_first_mediatek_vid_pid: 找到 MediaTek 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
+                "[USB] get_first_mediatek_vid_pid: 找到 BROM 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
                 desc.idVendor, desc.idProduct, dev_type
             );
             result = Some((desc.idVendor, desc.idProduct, dev_type));
@@ -132,6 +132,44 @@ pub fn get_first_mediatek_vid_pid() -> Option<(u16, u16, DeviceType)> {
         libusb1_sys::libusb_free_device_list(dev_list, 1);
         libusb1_sys::libusb_exit(ctx);
         result
+    }
+}
+
+/// 检查当前是否连接了任何 MediaTek USB 设备（VID=0x0E8D）
+///
+/// 用于在 smart_init 中判断是否跳过串口扫描。只要设备以 USB 方式连接（无论什么 PID），
+/// 基本上就不会在串口上产生握手响应，直接走 USB 等待逻辑能节省 21 秒。
+pub fn has_any_mediatek_device() -> bool {
+    unsafe {
+        let mut ctx: *mut libusb1_sys::libusb_context = std::ptr::null_mut();
+        if libusb1_sys::libusb_init(&mut ctx) != 0 {
+            return false;
+        }
+
+        let mut dev_list: *const *mut libusb1_sys::libusb_device = std::ptr::null_mut();
+        let dev_count = libusb1_sys::libusb_get_device_list(ctx, &mut dev_list);
+        if dev_count <= 0 {
+            libusb1_sys::libusb_free_device_list(dev_list, 1);
+            libusb1_sys::libusb_exit(ctx);
+            return false;
+        }
+
+        let mut found = false;
+        for i in 0..dev_count as isize {
+            let dev = *dev_list.wrapping_offset(i);
+            let mut desc: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
+            if libusb1_sys::libusb_get_device_descriptor(dev, &mut desc) != 0 {
+                continue;
+            }
+            if desc.idVendor == 0x0E8D {
+                found = true;
+                break;
+            }
+        }
+
+        libusb1_sys::libusb_free_device_list(dev_list, 1);
+        libusb1_sys::libusb_exit(ctx);
+        found
     }
 }
 
@@ -594,6 +632,16 @@ impl UsbDevice {
                     return Err(format!("read err {}", ret));
                 }
                 total += transferred as usize;
+
+                // 核心修复：一旦读到任何数据，立即返回，不要等待读满整个 buf.len()
+                // 这符合标准 read 语义，也避免了 handshake 等场景下的挂起
+                if total > 0 {
+                    if !quiet {
+                        debug!("[USB READ] data received ({} bytes), returning early", total);
+                    }
+                    break;
+                }
+
                 if transferred == 0 {
                     // ZLP 或设备忙，对齐 PyUSB 行为：自动忽略 ZLP 继续等待数据
                     if ret == 0 {
@@ -833,12 +881,11 @@ impl UsbDevice {
                 }
                 // echo write trace
                 usb_trace("TX", "UsbDevice::do_handshake echo_write", &[cmd[i]]);
-                let mut r = vec![0u8; maxinsize as usize];
+                let mut r = [0u8; 1]; // 握手 echo 每次只读 1 字节
                 match self.read(&mut r) {
                     Ok(n) if n > 0 => {
                         // echo read trace
                         usb_trace("RX", "UsbDevice::do_handshake echo_read", &r[..n]);
-                        // Python: 检查最后一个字节
                         let last_byte = r[n - 1];
                         if last_byte == !cmd[i] {
                             i += 1;

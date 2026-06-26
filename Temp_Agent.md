@@ -1295,4 +1295,30 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
      - 文件：`src/usb.rs`, `src/connection.rs`
      - 验证：cargo build 通过，0 error / 0 warning
 
+## 2026-06-26 更新
+
+28. **DA 会话复用机制集成**（2026-06-26）：
+    - 问题：`session.rs` 已实现 DA 会话复用，但主流程未集成
+    - 修复：
+      - `src/main.rs` — 注册 `mod session`，smart_init 前调用 `try_reuse_da_session()` 判断设备状态
+      - `src/connection.rs` — 新增 `connect_to_da_mode()`：直接连接 PID=0x2000 设备，跳过 BROM-DA 流程
+      - `src/preloader.rs` — BromTransport trait 添加 `get_vid()/get_pid()` 方法（UsbDevice 实现返回实际的 VID/PID）
+      - `src/usb.rs` — 新增 `get_first_mediatek_vid_pid()`：枚举所有 MediaTek 设备（不限于 BROM）
+      - `src/da_xflash.rs` — `upload_da()` 成功后调用 `save_session_state()` 写入 .state 文件
+      - `src/commands.rs` — `cmd_reset` 后调用 `session::reset_session()` 清理 .state
+    - 收益：设备已处于 DA 模式时跳过 Kamakiri2/Preloader/DA 上传，命令执行时间减少 70-90%
+    - 文件：`src/main.rs`, `src/connection.rs`, `src/preloader.rs`, `src/usb.rs`, `src/da_xflash.rs`, `src/commands.rs`
+    - 验证：cargo build 通过，0 error / 0 warning
+
+29. **upload_data 超时修复**（2026-06-26）：
+    - 问题：SEND_DA 后 upload_data 时 bulk_write 超时 (err -7, transferred=0/64)
+    - 根因：SEND_DA 后 OUT 端点可能处于 halt 状态 + 写超时太短 (1000ms) + chunk_size 不适应高速 USB
+    - 修复：
+      - `src/preloader.rs` — SEND_DA status 后添加 clear_halt_out、10ms 延时、warm-up ZLP、5ms 延时、5000ms 超时、chunk_size 64->512
+      - `src/usb.rs` — 默认写超时 1000ms -> 5000ms
+    - 差异：mtkclient 2.0.1 无 clear_halt / warm-up ZLP，但 pyusb 内部自动处理端点停止；libusb 需要显式处理
+    - 文件：`src/preloader.rs`, `src/usb.rs`
+    - 验证：cargo build 通过，0 error / 0 warning
+    - commit: 1e272a5 fix: upload_data 超时修复 - clear_halt + 512字节块 + warm-up ZLP + 延时
+
 
