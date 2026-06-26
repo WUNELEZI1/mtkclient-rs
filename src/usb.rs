@@ -625,6 +625,12 @@ impl UsbDevice {
                         ret, transferred
                     );
                 }
+
+                if ret == LIBUSB_ERROR_TIMEOUT && timeout < 50 {
+                    // 优化：对于极短超时（如 flush/drain），超时即视为无更多数据，直接返回
+                    return Ok(total);
+                }
+
                 if ret != 0 && ret != LIBUSB_ERROR_TIMEOUT {
                     if !quiet {
                         debug!("[USB READ] error, returning");

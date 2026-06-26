@@ -280,7 +280,8 @@ mtkclient-rs printgpt
     - 修复：
       - [preloader.rs](file:///d:/test/ZybClient/src/preloader.rs)：`read32_brom` 增加起始 `drain` 逻辑清空缓冲区，并将地址/长度校验统一为大端序。
       - [preloader.rs](file:///d:/test/ZybClient/src/preloader.rs)：优化 `flush_input`，使用 10ms 短超时实现快速排空。
-      - [preloader.rs](file:///d:/test/ZybClient/src/preloader.rs)：进一步增强 `read32_brom`，增加 `clear_halt` 复位端点状态及 50ms 延迟，解决 `bypass_security` 后的通信挂起。
+      - [preloader.rs](file:///d:/test/ZybClient/src/preloader.rs)：在 `read32_brom` 中移除会导致 10 秒延迟的 `clear_halt` 调用，解决 `bypass_security` 后的通信挂起问题。
+      - [usb.rs](file:///d:/test/ZybClient/src/usb.rs)：优化 `read` 逻辑，针对 <50ms 的短超时请求，超时后立即返回不再重试，极大提升 `flush/drain` 效率。
     - 新增：
       - [commands.rs](file:///d:/test/ZybClient/src/commands.rs)：实现 `dumppreloader` 命令，使用 `dump_preloader_payload` 专有 payload 提取方式（比 RAM 方式更稳定）。
     - 结果：解决了 `printgpt` 过程中自动提取 preloader 失败的问题。
