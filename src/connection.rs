@@ -188,17 +188,16 @@ impl ConnectionManager {
     }
 
     /// WinUSB 重连循环
+    /// 无限等待直到设备出现（用户手动按组合键进入 BROM 模式可能需要几十秒到几分钟）
     pub fn reconnect_loop(
         &self,
         context: &UsbContext,
         target_stage: UsbStage,
     ) -> Result<usb::UsbDevice, String> {
-        const TIMEOUT_MS: u64 = 10_000;
         const INTERVAL_MS: u64 = 200;
-        let max_retries = (TIMEOUT_MS / INTERVAL_MS) as usize;
         let mut retry = 0;
 
-        info!("[RECONNECT] scanning for stage={:?}...", target_stage);
+        info!("[RECONNECT] scanning for stage={:?} (infinite wait)...", target_stage);
 
         let pids = match target_stage {
             UsbStage::Brom => vec![0x0003u16],
@@ -207,7 +206,7 @@ impl ConnectionManager {
             UsbStage::Unknown => vec![0x0003u16, 0x2000u16, 0x2001u16],
         };
 
-        while retry < max_retries {
+        loop {
             retry += 1;
 
             for &pid in &pids {
@@ -223,18 +222,11 @@ impl ConnectionManager {
                 }
             }
 
-            if retry % 5 == 1 || retry == max_retries {
-                debug!("[RECONNECT] retry {}/{} (scanning {} PIDs)...",
-                       retry, max_retries, pids.len());
+            if retry % 25 == 1 {
+                debug!("[RECONNECT] retry {} (scanning {} PIDs)...", retry, pids.len());
             }
             std::thread::sleep(Duration::from_millis(INTERVAL_MS));
         }
-
-        let pid_list: String = pids.iter().map(|p| format!("0x{:04X}", p)).collect::<Vec<_>>().join(", ");
-        Err(format!(
-            "WinUSB 连接超时 ({}ms)，未找到设备 PID=[{}]",
-            TIMEOUT_MS, pid_list
-        ))
     }
 
     /// DA 加载后重连
