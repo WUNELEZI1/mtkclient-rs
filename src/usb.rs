@@ -626,7 +626,7 @@ impl UsbDevice {
                     );
                 }
 
-                if ret == LIBUSB_ERROR_TIMEOUT && timeout < 50 {
+                if ret == LIBUSB_ERROR_TIMEOUT && self.timeout.as_millis() < 50 {
                     // 优化：对于极短超时（如 flush/drain），超时即视为无更多数据，直接返回
                     return Ok(total);
                 }
@@ -844,7 +844,6 @@ impl UsbDevice {
 
     pub fn do_handshake(&mut self) -> Result<bool, String> {
         let cmd = [0xA0u8, 0x0A, 0x50, 0x05];
-        let maxinsize = 512u16; // wMaxPacketSize for high-speed bulk
 
         // 使用缓存的设备类型判断握手策略
         if !self.device_type.is_brom() {
