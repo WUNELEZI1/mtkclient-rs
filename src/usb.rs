@@ -27,6 +27,53 @@ impl UsbStage {
     }
 }
 
+/// 枚举 USB 设备列表，检查是否有任何 MediaTek 设备（BROM 0x0003 / Preloader 0x2000/0x2001）
+///
+/// 返回值：
+/// - `Some((pid, device_type))`：找到的第一个 MediaTek 设备
+/// - `None`：无 MediaTek 设备
+///
+/// 用途：在 smart_init 的 COM 扫描之前调用，如果 libusb 已经能看到设备，
+/// 就直接走 WinUSB 模式，跳过耗时 21 秒的 COM 扫描。
+pub fn check_mediatek_device_via_libusb() -> Option<(u16, DeviceType)> {
+    unsafe {
+        let mut ctx: *mut libusb1_sys::libusb_context = std::ptr::null_mut();
+        if libusb1_sys::libusb_init(&mut ctx) != 0 {
+            return None;
+        }
+
+        let mut dev_list: *const *mut libusb1_sys::libusb_device = std::ptr::null_mut();
+        let dev_count = libusb1_sys::libusb_get_device_list(ctx, &mut dev_list);
+        if dev_count <= 0 {
+            libusb1_sys::libusb_exit(ctx);
+            return None;
+        }
+
+        let mut result = None;
+        for i in 0..dev_count as isize {
+            let dev = *dev_list.wrapping_offset(i);
+            let mut desc: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
+            if libusb1_sys::libusb_get_device_descriptor(dev, &mut desc) != 0 {
+                continue;
+            }
+            if desc.idVendor != 0x0E8D {
+                continue;
+            }
+            let dev_type = DeviceType::from_vid_pid(desc.idVendor, desc.idProduct);
+            info!(
+                "[USB] 前置检测：发现 MediaTek 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
+                desc.idVendor, desc.idProduct, dev_type
+            );
+            result = Some((desc.idProduct, dev_type));
+            break;
+        }
+
+        libusb1_sys::libusb_free_device_list(dev_list, 1);
+        libusb1_sys::libusb_exit(ctx);
+        result
+    }
+}
+
 /// 全局静默标志：设置为 true 时，read() 不打印 [USB READ] 日志
 static QUIET_USB_READ: AtomicBool = AtomicBool::new(false);
 
