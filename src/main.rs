@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use colored::Colorize;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use usb::UsbContext;
 
 #[cfg(target_os = "windows")]
@@ -24,6 +24,7 @@ mod kamakiri2;
 mod paths;
 mod sej;
 mod seccfg;
+mod session;
 mod vbmeta;
 mod preloader;
 mod usb;
@@ -148,7 +149,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // COM 口前置握手 + libusb 后续通信
     // 注意：filter 卸载和重新安装在 smart_init 内部处理
     let mut conn_mgr = ConnectionManager::new();
-    let (mut preloader, _mode) = conn_mgr.smart_init(&usb_context)?;
+
+    // === DA 会话复用检查 ===
+    // 如果 .state 存在且设备已经处于 DA 模式（PID=0x2000），
+    // 可以跳过 BROM→DA 流程，直接连接 DA 模式设备。
+    // 流程：
+    //   1. libusb 枚举当前 USB 设备，找到第一个 MediaTek 设备
+    //   2. 读 .state 文件，检查 da_loaded 标志和 VID/PID 匹配
+    //   3. 如果复用条件满足 → connect_to_da_mode（直接连接 PID=0x2000）
+    //   4. 否则 → 走正常的 smart_init 流程
+    let da_session_reused = if let Some((current_vid, current_pid, _dev_type)) = usb::get_first_mediatek_vid_pid() {
+        if current_pid == 0x0003 {
+            // 核心修复：如果当前设备是 BROM (0003)，说明设备已重启，必须重置 DA 会话
+            debug!("[session] 检测到 BROM 设备，强制重置旧的 DA 会话状态");
+            crate::session::reset_session();
+            false
+        } else if crate::session::try_reuse_da_session(current_vid, current_pid) {
+            info!("{}", "[DA_SESSION] 检测到现有 DA 会话，尝试复用...".green().bold());
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    let (mut preloader, _mode) = if da_session_reused {
+        match conn_mgr.connect_to_da_mode(&usb_context) {
+            Ok(pair) => pair,
+            Err(e) => {
+                warn!("[DA_SESSION] DA 会话复用失败: {}，回退到正常流程", e);
+                crate::session::reset_session();
+                conn_mgr.smart_init(&usb_context)?
+            }
+        }
+    } else {
+        conn_mgr.smart_init(&usb_context)?
+    };
 
     info!("{}", "连接成功 (BROM 模式)".green().bold());
 

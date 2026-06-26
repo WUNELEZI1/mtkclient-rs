@@ -268,6 +268,13 @@ mtkclient-rs printgpt
 
 **编译验证**：`cargo check` 通过，0 error
 
+32. **修复 DA 会话复用逻辑：基于 PID 模式校验（2026-06-26）**：
+    - 问题：设备重启回 BROM 模式 (0003) 时，程序错误复用旧的 DA 会话，导致连接 2000 模式超时。
+    - 修复：
+      - [session.rs](file:///d:/test/ZybClient/src/session.rs)：`try_reuse_da_session` 增加 PID 校验，仅在 PID=0x2000/0x0005 时允许复用。
+      - [main.rs](file:///d:/test/ZybClient/src/main.rs)：检测到当前设备为 BROM (0003) 时，强制调用 `reset_session()` 清理旧状态。
+    - 结果：消除了设备重启后的会话死锁问题，确保状态机正确重置。
+
 ---
 
 ## 新增文件结构
