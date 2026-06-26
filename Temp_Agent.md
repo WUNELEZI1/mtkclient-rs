@@ -275,6 +275,15 @@ mtkclient-rs printgpt
       - [main.rs](file:///d:/test/ZybClient/src/main.rs)：检测到当前设备为 BROM (0003) 时，强制调用 `reset_session()` 清理旧状态。
     - 结果：消除了设备重启后的会话死锁问题，确保状态机正确重置。
 
+33. **修复 Preloader 提取挂起与实现 dumppreloader 命令（2026-06-26）**：
+    - 问题：`read32_brom` 在提取时发生 `echo 0xD1 不匹配`，且在 USB 模式下容易因残留数据导致挂起。
+    - 修复：
+      - [preloader.rs](file:///d:/test/ZybClient/src/preloader.rs)：`read32_brom` 增加起始 `drain` 逻辑清空缓冲区，并将地址/长度校验统一为大端序。
+      - [preloader.rs](file:///d:/test/ZybClient/src/preloader.rs)：优化 `flush_input`，使用 10ms 短超时实现快速排空。
+    - 新增：
+      - [commands.rs](file:///d:/test/ZybClient/src/commands.rs)：实现 `dumppreloader` 命令，使用 `dump_preloader_payload` 专有 payload 提取方式（比 RAM 方式更稳定）。
+    - 结果：解决了 `printgpt` 过程中自动提取 preloader 失败的问题。
+
 ---
 
 ## 新增文件结构
