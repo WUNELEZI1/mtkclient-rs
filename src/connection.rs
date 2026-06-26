@@ -60,9 +60,17 @@ impl ConnectionManager {
         // 走 COM 扫描只会浪费 21 秒然后超时降级。
         if let Some((pid, dev_type)) = usb::check_mediatek_device_via_libusb() {
             info!(
-                "[USB] 前置检测命中：PID=0x{:04X}, type={:?}，跳过 COM 扫描",
+                "[USB] 前置检测命中：BROM 设备 PID=0x{:04X}, type={:?}，跳过 COM 扫描",
                 pid, dev_type
             );
+            return self.fallback_to_winusb(context);
+        }
+
+        // 进一步检测：是否存在任何 MediaTek 设备（即便不是 0003）
+        // 如果发现 2008 等 PID，说明设备已经在 USB 上，串口扫描必然超时，
+        // 此时直接进入 WinUSB 等待模式。
+        if usb::has_any_mediatek_device() {
+            info!("[USB] 检测到非 BROM 模式的 MediaTek 设备，跳过 COM 扫描直接进入 USB 等待");
             return self.fallback_to_winusb(context);
         }
 
@@ -319,5 +327,57 @@ impl ConnectionManager {
     #[allow(dead_code)] // 预留：调试/日志输出当前使用的串口名
     pub fn port_name(&self) -> Option<&str> {
         self.port_name.as_deref()
+    }
+
+    /// DA 会话复用入口：直接连接到已处于 DA 模式的设备（PID=0x2000）
+    ///
+    /// 用于以下场景：
+    /// - 设备已加载 DA，PID 切换为 0x2000（Preloader 模式）
+    /// - 上次 .state 文件中记录了 da_loaded=true
+    /// - 用户希望跳过 BROM→DA 流程，直接使用现有 DA 会话
+    ///
+    /// 流程：
+    /// 1. 等待 USB 设备出现（PID=0x2000）
+    /// 2. 构造 Preloader（DA 模式）
+    /// 3. 不做 BROM 握手（设备已加载 DA，无须握手）
+    /// 4. 返回 (Preloader, DeviceMode::Brom) — Preloader 内部 is_preloader_mode=true
+    pub fn connect_to_da_mode(
+        &mut self,
+        context: &UsbContext,
+    ) -> Result<(Preloader, DeviceMode), String> {
+        info!("[DA_SESSION] 直接连接 DA 模式设备 (PID=0x2000)...");
+        info!("[DA_SESSION] 等待 Preloader 设备出现 (PID=0x2000)...");
+
+        let usb_device = self.reconnect_loop(context, UsbStage::Preloader)?;
+
+        info!(
+            "[DA_SESSION] DA 设备已连接: VID={:04X}, PID={:04X}, stage={:?}",
+            usb_device.vid, usb_device.pid, usb_device.stage
+        );
+
+        // 构造 Preloader（DA 模式，不做 BROM 握手）
+        let mut preloader = Preloader::new(Box::new(usb_device));
+        preloader.is_preloader_mode = true; // 标记为 DA/Preloader 模式，跳过 BROM 流程
+        preloader.brom_initialized = true;  // 标记为已初始化（DA 模式不需要 BROM 握手）
+
+        // 从 .state 恢复 chip 配置（如果 .state 中有 hw_code）
+        if let Some(state) = crate::session::SessionState::load() {
+            if let Some(chip) = crate::config::CHIP_CONFIGS
+                .iter()
+                .find(|c| c.hw_code == state.hw_code)
+            {
+                preloader.chip = Some(*chip);
+                info!(
+                    "[DA_SESSION] 从 .state 恢复 chip 配置: HW code=0x{:04X}",
+                    state.hw_code
+                );
+            }
+        }
+
+        self.mode = DeviceMode::Brom;
+        self.stage = UsbStage::Preloader;
+
+        info!("{}", "[DA_SESSION] DA 会话复用成功".green().bold());
+        Ok((preloader, DeviceMode::Brom))
     }
 }
