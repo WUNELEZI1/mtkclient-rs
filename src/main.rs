@@ -22,12 +22,12 @@ mod driver;
 mod frp;
 mod kamakiri2;
 mod paths;
-mod sej;
-mod seccfg;
-mod session;
-mod vbmeta;
 mod preloader;
+mod seccfg;
+mod sej;
+mod session;
 mod usb;
+mod vbmeta;
 
 use connection::ConnectionManager;
 
@@ -59,7 +59,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("[MAIN] 需要管理员权限以安装 WinUSB 驱动，正在请求提权...");
             if let Err(e) = driver::restart_as_admin() {
                 eprintln!("[MAIN] 提权失败: {}", e);
-                eprintln!("[MAIN] 请右键以管理员身份运行本程序，或加 --no-elevate 跳过（将无法切换 WinUSB）");
+                eprintln!(
+                    "[MAIN] 请右键以管理员身份运行本程序，或加 --no-elevate 跳过（将无法切换 WinUSB）"
+                );
                 return Err(e.into());
             }
             // restart_as_admin 内部 std::process::exit(0)，不会回到这里
@@ -76,14 +78,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let log_level = if cli.quiet {
-        log::LevelFilter::Error  // --quiet: 只输出 ERROR
+        log::LevelFilter::Error // --quiet: 只输出 ERROR
     } else {
         app_config.log_level
     };
 
     env_logger::builder()
         .filter_level(log_level)
-        .filter_module("mtkclient_rs", log_level)  // 明确指定本 crate 的日志级别
+        .filter_module("mtkclient_rs", log_level) // 明确指定本 crate 的日志级别
         .format(|buf, record| {
             use std::io::Write;
             let level = match record.level() {
@@ -111,13 +113,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     fn GetLocalTime(lpSystemTime: *mut SystemTime);
                 }
                 let mut st = SystemTime {
-                    w_year: 0, w_month: 0, w_day_of_week: 0, w_day: 0,
-                    w_hour: 0, w_minute: 0, w_second: 0, w_milliseconds: 0,
+                    w_year: 0,
+                    w_month: 0,
+                    w_day_of_week: 0,
+                    w_day: 0,
+                    w_hour: 0,
+                    w_minute: 0,
+                    w_second: 0,
+                    w_milliseconds: 0,
                 };
-                unsafe { GetLocalTime(&mut st); }
-                format!("{:04}/{:02}/{:02} {:02}:{:02}:{:02}.{:03}",
-                    st.w_year, st.w_month, st.w_day,
-                    st.w_hour, st.w_minute, st.w_second, st.w_milliseconds)
+                unsafe {
+                    GetLocalTime(&mut st);
+                }
+                format!(
+                    "{:04}/{:02}/{:02} {:02}:{:02}:{:02}.{:03}",
+                    st.w_year,
+                    st.w_month,
+                    st.w_day,
+                    st.w_hour,
+                    st.w_minute,
+                    st.w_second,
+                    st.w_milliseconds
+                )
             };
             #[cfg(not(target_os = "windows"))]
             let timestamp = {
@@ -158,21 +175,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   2. 读 .state 文件，检查 da_loaded 标志和 VID/PID 匹配
     //   3. 如果复用条件满足 → connect_to_da_mode（直接连接 PID=0x2000）
     //   4. 否则 → 走正常的 smart_init 流程
-    let da_session_reused = if let Some((current_vid, current_pid, _dev_type)) = usb::get_first_mediatek_vid_pid() {
-        if current_pid == 0x0003 {
-            // 核心修复：如果当前设备是 BROM (0003)，说明设备已重启，必须重置 DA 会话
-            debug!("[session] 检测到 BROM 设备，强制重置旧的 DA 会话状态");
-            crate::session::reset_session();
-            false
-        } else if crate::session::try_reuse_da_session(current_vid, current_pid) {
-            info!("{}", "[DA_SESSION] 检测到现有 DA 会话，尝试复用...".green().bold());
-            true
+    let da_session_reused =
+        if let Some((current_vid, current_pid, _dev_type)) = usb::get_first_mediatek_vid_pid() {
+            if current_pid == 0x0003 {
+                // 核心修复：如果当前设备是 BROM (0003)，说明设备已重启，必须重置 DA 会话
+                debug!("[session] 检测到 BROM 设备，强制重置旧的 DA 会话状态");
+                crate::session::reset_session();
+                false
+            } else if crate::session::try_reuse_da_session(current_vid, current_pid) {
+                info!(
+                    "{}",
+                    "[DA_SESSION] 检测到现有 DA 会话，尝试复用..."
+                        .green()
+                        .bold()
+                );
+                true
+            } else {
+                false
+            }
         } else {
             false
-        }
-    } else {
-        false
-    };
+        };
 
     let (mut preloader, _mode) = if da_session_reused {
         match conn_mgr.connect_to_da_mode(&usb_context) {
@@ -212,20 +235,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .dump_preloader_from_ram(false)
             .map_err(|e| format!("dump_preloader_ram 失败: {}", e))?;
         if !data.is_empty() {
-            let filename = if let Some(info_idx) =
-                data.windows(16).position(|w| w == b"MTK_BLOADER_INFO")
-            {
-                let filename_start = info_idx + 0x1B;
-                let filename_end = std::cmp::min(filename_start + 0x30, data.len());
-                let filename_bytes = &data[filename_start..filename_end];
-                let filename_len = filename_bytes
-                    .iter()
-                    .position(|&b| b == 0)
-                    .unwrap_or(filename_bytes.len());
-                String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string()
-            } else {
-                "preloader_dumped.bin".to_string()
-            };
+            let filename =
+                if let Some(info_idx) = data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
+                    let filename_start = info_idx + 0x1B;
+                    let filename_end = std::cmp::min(filename_start + 0x30, data.len());
+                    let filename_bytes = &data[filename_start..filename_end];
+                    let filename_len = filename_bytes
+                        .iter()
+                        .position(|&b| b == 0)
+                        .unwrap_or(filename_bytes.len());
+                    String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string()
+                } else {
+                    "preloader_dumped.bin".to_string()
+                };
             if !filename.is_empty() {
                 info!("Preloader 已提取: {} ({} 字节)", filename, data.len());
             }

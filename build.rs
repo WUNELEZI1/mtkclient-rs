@@ -10,7 +10,10 @@ fn main() {
     fs::create_dir_all(&target_dir).ok();
 
     // 拷贝 libusb.exe（用于 reset 命令）
-    let libusb_src = PathBuf::from(&manifest_dir).join("binaries").join("drivers").join("libusb.exe");
+    let libusb_src = PathBuf::from(&manifest_dir)
+        .join("binaries")
+        .join("drivers")
+        .join("libusb.exe");
     if libusb_src.exists() {
         let dest = target_dir.join("libusb.exe");
         fs::copy(&libusb_src, &dest).ok();
@@ -18,7 +21,10 @@ fn main() {
 
     // 告诉链接器去哪里找 libusb0.lib
     let libusb_lib_dir = PathBuf::from(&manifest_dir).join("binaries").join("libusb");
-    println!("cargo:rustc-link-search=native={}", libusb_lib_dir.display());
+    println!(
+        "cargo:rustc-link-search=native={}",
+        libusb_lib_dir.display()
+    );
 
     // 抑制 wdi-rs (libwdi) 的 linker 警告
     // LNK4098: LIBCMT 与其他库冲突（libwdi 静态库用 /MT 编译）

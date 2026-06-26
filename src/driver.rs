@@ -5,7 +5,7 @@
 //! 2. wdi-rs create_list     → 找到 BROM 设备（device info）
 //! 3. wdi-rs prepare_driver  → 生成 + 自签名 + 注册 WinUSB INF 到驱动商店
 //! 4. UpdateDriverForPlugAndPlayDevicesW(INSTALLFLAG_FORCE)
-//!                          → 强制覆盖 wdm_usb（绕过 libwdi 预检）
+//!    → 强制覆盖 wdm_usb（绕过 libwdi 预检）
 //! 5. libusb 实际打开验证   → 唯一真相
 //!
 //! 关键点：
@@ -20,9 +20,7 @@ use log::{info, warn};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
-use wdi_rs::{
-    create_list, prepare_driver, CreateListOptions, DriverType, PrepareDriverOptions,
-};
+use wdi_rs::{CreateListOptions, DriverType, PrepareDriverOptions, create_list, prepare_driver};
 
 const MTK_VID: u16 = 0x0E8D;
 const MTK_BROM_PID: u16 = 0x0003;
@@ -34,11 +32,11 @@ const INF_NAME: &str = "mtk_brom_winusb.inf";
 
 #[cfg(target_os = "windows")]
 #[repr(C)]
-struct HWND__ {
+struct Hwnd__ {
     _unused: [u8; 0],
 }
 #[cfg(target_os = "windows")]
-type HWND = *mut HWND__;
+type Hwnd = *mut Hwnd__;
 
 #[cfg(target_os = "windows")]
 #[link(name = "setupapi")]
@@ -48,7 +46,7 @@ unsafe extern "system" {
     /// 当 `InstallFlags` 包含 `INSTALLFLAG_FORCE` 时，会强制覆盖现有驱动。
     /// Zadig 内部用的就是这个 API。
     fn UpdateDriverForPlugAndPlayDevicesW(
-        hwndParent: HWND,
+        hwndParent: Hwnd,
         hardwareId: *const u16,
         fullInfPath: *const u16,
         installFlags: u32,
@@ -96,7 +94,7 @@ pub fn restart_as_admin() -> Result<(), String> {
     );
 
     let result = std::process::Command::new("powershell")
-        .args(&["-NoProfile", "-Command", &ps_cmd])
+        .args(["-NoProfile", "-Command", &ps_cmd])
         .status()
         .map_err(|e| format!("启动管理员进程失败: {}", e))?;
 
@@ -239,7 +237,10 @@ fn find_brom_device() -> Result<wdi_rs::Device, String> {
                         return Ok(device);
                     }
                 }
-                last_err = format!("BROM 设备不在列表中 (VID=0x{:04X}, PID=0x{:04X})", MTK_VID, MTK_BROM_PID);
+                last_err = format!(
+                    "BROM 设备不在列表中 (VID=0x{:04X}, PID=0x{:04X})",
+                    MTK_VID, MTK_BROM_PID
+                );
                 warn!("[DRIVER] {}", last_err);
             }
             Err(e) => {
@@ -267,7 +268,7 @@ fn get_inf_dir() -> PathBuf {
 /// 关键：HardwareId 参数**不能为 NULL**，否则会返回 ERROR_INVALID_PARAMETER (87)。
 /// libwdi 内部就是把 `device.hardware_id`（如 `USB\VID_0E8D&PID_0003`）传过去。
 #[cfg(target_os = "windows")]
-fn force_install_via_api(device: &wdi_rs::Device, inf_dir: &PathBuf) -> Result<(), String> {
+fn force_install_via_api(device: &wdi_rs::Device, inf_dir: &std::path::Path) -> Result<(), String> {
     let inf_path = inf_dir.join(INF_NAME);
     if !inf_path.exists() {
         return Err(format!("INF 文件不存在: {}", inf_path.display()));
@@ -283,10 +284,16 @@ fn force_install_via_api(device: &wdi_rs::Device, inf_dir: &PathBuf) -> Result<(
     let hardware_id = device
         .hardware_id
         .as_deref()
-        .or_else(|| device.device_id.as_deref())
-        .ok_or_else(|| "设备没有 hardware_id 或 device_id（无法调用 UpdateDriverForPlugAndPlayDevicesW）".to_string())?;
+        .or(device.device_id.as_deref())
+        .ok_or_else(|| {
+            "设备没有 hardware_id 或 device_id（无法调用 UpdateDriverForPlugAndPlayDevicesW）"
+                .to_string()
+        })?;
 
-    info!("[DRIVER] 使用硬件 ID 调用 UpdateDriverForPlugAndPlayDevicesW: {}", hardware_id);
+    info!(
+        "[DRIVER] 使用硬件 ID 调用 UpdateDriverForPlugAndPlayDevicesW: {}",
+        hardware_id
+    );
 
     let hardware_id_w: Vec<u16> = hardware_id
         .encode_utf16()
@@ -297,9 +304,9 @@ fn force_install_via_api(device: &wdi_rs::Device, inf_dir: &PathBuf) -> Result<(
 
     let result = unsafe {
         UpdateDriverForPlugAndPlayDevicesW(
-            std::ptr::null_mut(),          // hwndParent = NULL
-            hardware_id_w.as_ptr(),        // HardwareId = USB\VID_0E8D&PID_0003
-            inf_path_w.as_ptr(),           // FullInfPath
+            std::ptr::null_mut(),   // hwndParent = NULL
+            hardware_id_w.as_ptr(), // HardwareId = USB\VID_0E8D&PID_0003
+            inf_path_w.as_ptr(),    // FullInfPath
             INSTALLFLAG_FORCE | INSTALLFLAG_NONINTERACTIVE,
             &mut reboot_required,
         )
@@ -322,7 +329,7 @@ fn force_install_via_api(device: &wdi_rs::Device, inf_dir: &PathBuf) -> Result<(
 }
 
 #[cfg(not(target_os = "windows"))]
-fn force_install_via_api(_device: &wdi_rs::Device, _inf_dir: &PathBuf) -> Result<(), String> {
+fn force_install_via_api(_device: &wdi_rs::Device, _inf_dir: &std::path::Path) -> Result<(), String> {
     Err("仅 Windows 支持".to_string())
 }
 
@@ -356,7 +363,7 @@ pub fn install_winusb_with_wdi(_vid: u16, _pid: u16) -> Result<(), String> {
 pub fn get_device_instance_id(vid: u16, pid: u16) -> Result<String, String> {
     let target = format!("USB\\VID_{:04X}&PID_{:04X}", vid, pid);
     let output = Command::new("pnputil")
-        .args(&["/enum-devices"])
+        .args(["/enum-devices"])
         .output()
         .map_err(|e| format!("pnputil 枚举失败: {}", e))?;
 

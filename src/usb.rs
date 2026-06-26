@@ -245,6 +245,7 @@ pub fn usb_trace(direction: &str, func_info: &str, data: &[u8]) {
     );
 
     // 写入文件
+    #[allow(clippy::collapsible_if)]
     if let Ok(mut guard) = USB_LOG_FILE.lock() {
         if let Some(ref mut file) = *guard {
             let _ = file.write_all(log_line.as_bytes());

@@ -76,7 +76,9 @@ pub fn handle_command(
                         info!("设备有安全保护，执行 Kamakiri2 bypass...");
                         true
                     } else {
-                        info!("设备无安全保护（SBC/SLA/DAA 全关），跳过 Kamakiri2，直接进入 DA 模式");
+                        info!(
+                            "设备无安全保护（SBC/SLA/DAA 全关），跳过 Kamakiri2，直接进入 DA 模式"
+                        );
                         false
                     }
                 }
@@ -154,8 +156,7 @@ pub fn handle_command(
         info!("DA 已加载，复用会话");
         da.reinit().map_err(|e| format!("DA reinit 失败: {}", e))?;
     } else {
-        da.upload_da()
-            .map_err(|e| format!("DA 加载失败: {}", e))?;
+        da.upload_da().map_err(|e| format!("DA 加载失败: {}", e))?;
     }
 
     if log_level >= 2 {
@@ -283,7 +284,10 @@ fn print_gpt_table(data: &[u8]) {
     println!("{}", " GPT 分区表 ".on_green().black());
     println!("  修订版本:     {}", format!("0x{:08X}", revision).green());
     println!("  头部大小:     {} 字节", gpt_info.header_size);
-    println!("  分区数量:     {}", format!("{}", num_part_entries).green());
+    println!(
+        "  分区数量:     {}",
+        format!("{}", num_part_entries).green()
+    );
     println!("  分区项大小:   {} 字节", part_entry_size);
 
     println!();
@@ -326,7 +330,10 @@ fn cmd_read_gpt(
 
     let gpt_data = da.get_last_gpt_data()?;
     std::fs::write(&output, gpt_data).map_err(|e| format!("写入失败: {}", e))?;
-    info!("{}", format!("GPT 已保存: {} ({} 字节)", output, gpt_data.len()).green());
+    info!(
+        "{}",
+        format!("GPT 已保存: {} ({} 字节)", output, gpt_data.len()).green()
+    );
 
     if log_level >= 2 {
         print_gpt_table(gpt_data);
@@ -351,7 +358,8 @@ fn cmd_read_all(da: &mut DAXFlash, dir: &str) -> Result<(), Box<dyn std::error::
             "  读取分区 {} (0x{:X} @ 0x{:X})",
             entry.name, entry.size, entry.start_addr
         );
-        let data = da.readflash_data(entry.start_addr, entry.size)
+        let data = da
+            .readflash_data(entry.start_addr, entry.size)
             .map_err(|e| format!("读取 {} 失败: {}", entry.name, e))?;
         std::fs::write(&output, &data).map_err(|e| format!("写入失败: {}", e))?;
         info!("{}", format!("  {} -> {}", entry.name, output).green());
@@ -361,10 +369,7 @@ fn cmd_read_all(da: &mut DAXFlash, dir: &str) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-fn cmd_print_scatter(
-    da: &mut DAXFlash,
-    log_level: u8,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_print_scatter(da: &mut DAXFlash, log_level: u8) -> Result<(), Box<dyn std::error::Error>> {
     if da.get_last_gpt_data().is_err() {
         da.read_gpt().map_err(|e| format!("GPT 读取失败: {}", e))?;
     }
@@ -373,7 +378,10 @@ fn cmd_print_scatter(
     let gpt_info = crate::da_partition::GptInfo::parse(gpt_data)?;
 
     println!();
-    println!("{}", " Scatter 文件 (SP Flash Tool 格式) ".on_green().black());
+    println!(
+        "{}",
+        " Scatter 文件 (SP Flash Tool 格式) ".on_green().black()
+    );
     println!();
 
     let header = crate::da_partition::generate_scatter_header();
@@ -382,7 +390,11 @@ fn cmd_print_scatter(
     }
 
     for entry in gpt_info.iter_partitions() {
-        println!("{} 0x{:X}", entry.name.to_uppercase().green(), entry.start_addr);
+        println!(
+            "{} 0x{:X}",
+            entry.name.to_uppercase().green(),
+            entry.start_addr
+        );
         println!("{{");
         println!("  is_upgradeable: 1");
         println!("  is_download: 1");
@@ -403,7 +415,10 @@ fn cmd_print_scatter(
     if let Err(e) = generate_scatter_shoujixia(gpt_data, shoujixia_file, "MT6768") {
         info!("Warning: 刷机匣格式 scatter 生成失败: {}", e);
     } else {
-        info!("{}", format!("刷机匣格式 scatter 已保存: {}", shoujixia_file).green());
+        info!(
+            "{}",
+            format!("刷机匣格式 scatter 已保存: {}", shoujixia_file).green()
+        );
     }
 
     if log_level >= 3 {
@@ -457,18 +472,32 @@ fn cmd_write(
     Ok(())
 }
 
-fn cmd_dumppreloader(da: &mut DAXFlash, context: &UsbContext) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_dumppreloader(
+    da: &mut DAXFlash,
+    context: &UsbContext,
+) -> Result<(), Box<dyn std::error::Error>> {
     // 强制执行 bypass_security 确保漏洞已利用
-    da.preloader.bypass_security(context).map_err(|e| format!("Bypass 失败: {}", e))?;
-    
+    da.preloader
+        .bypass_security(context)
+        .map_err(|e| format!("Bypass 失败: {}", e))?;
+
     // 使用专有的 payload 提取方式
-    let (data, filename) = da.preloader.dump_preloader_payload(false, false, context)
+    let (data, filename) = da
+        .preloader
+        .dump_preloader_payload(false, false, context)
         .map_err(|e| format!("Exploit 提取失败: {}", e))?;
-    
+
     if !data.is_empty() {
-        let output = if filename.is_empty() { "preloader_dumped.bin".to_string() } else { filename };
+        let output = if filename.is_empty() {
+            "preloader_dumped.bin".to_string()
+        } else {
+            filename
+        };
         std::fs::write(&output, &data)?;
-        info!("{}", format!("Preloader 已提取并保存到: {}", output).green());
+        info!(
+            "{}",
+            format!("Preloader 已提取并保存到: {}", output).green()
+        );
     } else {
         warn!("提取完成但未收到有效数据");
     }

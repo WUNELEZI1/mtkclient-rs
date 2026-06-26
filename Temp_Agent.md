@@ -3,10 +3,14 @@
 > 最近更新：2026-06-24
 > 完整历史：Temp_Agent_Archive.md
 
+## 最近更新 (2026-06-26)
+- **修复 bypass_security 后的 BROM 同步超时**：移除 `kamakiri2.rs` 中绕过安全保护后强制执行 `sync_brom()` 的逻辑。原版 mtkclient 日志显示在 Payload 注入并 Ack 后，设备已进入待命状态，直接发送 `0xFE` 序列会导致设备不响应而超时。
+- **优化设备识别**：在 `bypass_security` 成功后，将 `get_me_id` 和 `get_soc_id` 改为尝试性获取，不再强制同步，避免因同步失败导致整个 bypass 流程退出。
+
 ## 当前状态
 - 功能状态表：
-  - `printgpt` ✅
-  - `dump-preloader` ✅
+  - `printgpt` ✅ (待验证)
+  - `dump-preloader` ✅ (待验证)
   - `r分区` ⚠️
   - `w/e` ❌
   - `auto-dump` ⚠️
@@ -18,6 +22,7 @@
   - `0xD1` 读写
   - 大端 echo
   - watchdog 双 status
+  - **Payload 后同步**：注入 Ack (`A1 A2 A3 A4`) 后通常直接进入后续指令，无需 `FE/FF/FC`。
 - XFlash：
   - `CMD_READ_DATA` + `send_param`
   - `send_ack` / `ack`

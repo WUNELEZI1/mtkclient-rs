@@ -1174,7 +1174,49 @@ impl<'a> DAXFlash<'a> {
         }
 
         info!("DA 加载完成");
+
+        // === 保存 DA 会话状态 ===
+        // DA 加载成功后，将当前设备状态写入 .state 文件，
+        // 下次程序启动时如果检测到设备已处于 DA 模式且 .state 有效，可以跳过 BROM→DA 流程。
+        self.save_session_state();
+
         Ok(true)
+    }
+
+    /// 保存 DA 会话状态到 .state 文件
+    ///
+    /// 写入内容：
+    /// - usb_vid / usb_pid：当前 USB 设备的 VID/PID
+    /// - hw_code：当前芯片的 HW code
+    /// - target_config：当前设备的安全配置
+    /// - da_loaded=true：标记 DA 已加载
+    ///
+    /// 如果获取 VID/PID 或 HW code 失败，会静默忽略（不影响 DA 加载成功的结果）
+    fn save_session_state(&mut self) {
+        let vid = self.preloader.device.get_vid();
+        let pid = self.preloader.device.get_pid();
+
+        // 如果 transport 不是 USB（例如 COM 口），无法记录 VID/PID，跳过保存
+        if let (Some(vid), Some(pid)) = (vid, pid) {
+            // 获取 HW code（从 chip 配置中读取，避免再次发送 USB 命令）
+            let hw_code_result = self
+                .preloader
+                .chip
+                .map(|c| c.hw_code)
+                .ok_or_else(|| "chip not set".to_string());
+
+            // 获取 target_config（直接读取本地状态，不发送 USB 命令）
+            // 实际实现中 target_config 在 init() 时已读入 chip 配置
+            let target_config = 0u32; // 占位 — session.rs 的 target_config 字段当前不参与复用判断
+
+            if let Ok(hw_code) = hw_code_result {
+                crate::session::save_da_session(vid, pid, hw_code, target_config);
+            } else {
+                warn!("save_session_state: chip 未初始化，跳过 .state 保存");
+            }
+        } else {
+            debug!("save_session_state: 当前 transport 不是 USB，跳过 .state 保存");
+        }
     }
 
     /// 获取 EMMC 信息（Boot1/Boot2 大小）

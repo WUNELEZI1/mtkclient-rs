@@ -13,7 +13,10 @@ pub fn vbmeta_disable(da: &mut DAXFlash, mode: u32) -> Result<(), String> {
 
     for name in &candidates {
         if let Ok((addr, size)) = da.find_partition_addr(name) {
-            info!("  找到 vbmeta 分区: {} @ 0x{:X}, 大小: 0x{:X}", name, addr, size);
+            info!(
+                "  找到 vbmeta 分区: {} @ 0x{:X}, 大小: 0x{:X}",
+                name, addr, size
+            );
 
             let data = da.readflash_data(addr, size)?;
             info!("  读取到 {} 字节", data.len());
@@ -55,10 +58,7 @@ fn patch_vbmeta_data(data: &[u8], mode: u32) -> Result<Vec<u8>, String> {
     let old_flags = u32::from_le_bytes(result[flags_offset..flags_offset + 4].try_into().unwrap());
     result[flags_offset..flags_offset + 4].copy_from_slice(&mode.to_le_bytes());
 
-    info!(
-        "  修改 vbmeta flags: 0x{:08X} -> 0x{:08X}",
-        old_flags, mode
-    );
+    info!("  修改 vbmeta flags: 0x{:08X} -> 0x{:08X}", old_flags, mode);
 
     Ok(result)
 }
