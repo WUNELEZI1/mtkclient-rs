@@ -824,29 +824,43 @@ impl Preloader {
     /// 读 32 位值（BROM 模式）
     /// 使用 0xD1 协议（无 mode 参数）：cmd → addr → len(dwords) → status1 → data → status2
     pub fn read32_brom(&mut self, addr: u32, dwords: usize) -> Result<Vec<u8>, String> {
+        // 在执行关键 BROM 命令前，先清空可能残留的 USB 数据（例如 bypass_security 后的残留）
+        if self.device.is_libusb() {
+            debug!("[read32_brom] 执行 pre-command drain...");
+            self.flush_input();
+        }
+
         // echo 0xD1 命令（1 字节，对齐 Python echo(Cmd.READ32.value)）
+        debug!("[read32_brom] 发送命令 0xD1");
         if !self.echo_1byte(0xD1)? {
             return Err("read32_brom: echo 0xD1 不匹配".into());
         }
-        // address (4 字节小端)
+        // address (4 字节大端)
+        debug!("[read32_brom] 发送地址 0x{:08X}", addr);
         if !self.echo_4byte(addr)? {
             return Err("read32_brom: echo addr 不匹配".into());
         }
-        // length in dwords (4 字节小端)
+        // length in dwords (4 字节大端)
+        debug!("[read32_brom] 发送长度 {} dwords", dwords);
         if !self.echo_4byte(dwords as u32)? {
             return Err("read32_brom: echo len 不匹配".into());
         }
-        // 读状态 2 字节（小端）
+        // 读状态 2 字节（大端）
         let mut st = [0u8; 2];
         self.device
             .read_exact(&mut st)
             .map_err(|e| format!("read32_brom status1: {}", e))?;
         debug!("read32_brom status1: {:02X?}", st);
+        
         // 读取数据
         let bytes = dwords * 4;
-        let rdata = self.rbyte(bytes)?;
+        let mut rdata = vec![0u8; bytes];
+        self.device
+            .read_exact(&mut rdata)
+            .map_err(|e| format!("read32_brom data ({} bytes): {}", bytes, e))?;
         debug!("read32_brom read data: {} bytes", rdata.len());
-        // 读状态 2 字节（小端）
+        
+        // 读状态 2 字节（大端）
         let mut st2 = [0u8; 2];
         self.device
             .read_exact(&mut st2)
@@ -857,13 +871,20 @@ impl Preloader {
 
     /// 清空输入缓冲（串口模式下丢弃所有待读数据，防止 echo mismatch 后读取错位）
     pub fn flush_input(&mut self) {
-        let mut buf = [0u8; 256];
+        let mut buf = [0u8; 512];
+        let orig_timeout = self.device.get_timeout();
+        // 使用极短超时进行非阻塞排空
+        self.device.set_timeout(Duration::from_millis(10));
         loop {
             match self.device.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {} // 继续读取直到为空
+                Ok(n) if n > 0 => {
+                    debug!("[flush] drained {} bytes", n);
+                    continue;
+                }
+                _ => break, // 读到 0 或超时/错误就停止
             }
         }
+        self.device.set_timeout(orig_timeout);
     }
 
     /// 读 n 字节

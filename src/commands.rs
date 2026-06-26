@@ -14,7 +14,8 @@ pub fn print_help() {
     println!();
     println!("命令:");
     println!("  printgpt          打印 GPT 分区表");
-    println!("  dump-preloader    提取 Preloader");
+    println!("  dump-preloader    提取 Preloader (RAM 方式)");
+    println!("  dumppreloader     提取 Preloader (Exploit 方式，更推荐)");
     println!("  dumpbrom          提取 BROM");
     println!("  r <分区> <文件>   读取分区");
     println!("  r gpt <目录>      保存 GPT 原始数据到目录");
@@ -53,6 +54,10 @@ pub fn handle_command(
         match cmd {
             "dumpbrom" => {
                 cmd_dumpbrom(da, log_level)?;
+                return Ok(());
+            }
+            "dumppreloader" => {
+                cmd_dumppreloader(da, _context)?;
                 return Ok(());
             }
             "reset" => {
@@ -452,6 +457,24 @@ fn cmd_write(
     Ok(())
 }
 
+fn cmd_dumppreloader(da: &mut DAXFlash, context: &UsbContext) -> Result<(), Box<dyn std::error::Error>> {
+    // 强制执行 bypass_security 确保漏洞已利用
+    da.preloader.bypass_security(context).map_err(|e| format!("Bypass 失败: {}", e))?;
+    
+    // 使用专有的 payload 提取方式
+    let (data, filename) = da.preloader.dump_preloader_payload(false, false, context)
+        .map_err(|e| format!("Exploit 提取失败: {}", e))?;
+    
+    if !data.is_empty() {
+        let output = if filename.is_empty() { "preloader_dumped.bin".to_string() } else { filename };
+        std::fs::write(&output, &data)?;
+        info!("{}", format!("Preloader 已提取并保存到: {}", output).green());
+    } else {
+        warn!("提取完成但未收到有效数据");
+    }
+    Ok(())
+}
+
 fn cmd_erase(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
         return Err("用法: mtkclient erase <分区>".into());
@@ -477,11 +500,15 @@ fn cmd_reset(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error>> {
     match da.reset_device() {
         Ok(()) => {
             info!("{}", "设备已通过 DA 重启".green());
+            // 设备重启后会退出 DA 模式，下次启动时无法复用会话
+            crate::session::reset_session();
             Ok(())
         }
         Err(e) => {
             warn!("DA 重启失败，回退到 BROM jump_bl: {}", e);
             da.close_device(true);
+            // 设备重启后会退出 DA 模式，下次启动时无法复用会话
+            crate::session::reset_session();
             info!("{}", "设备已重启".green());
             Ok(())
         }
