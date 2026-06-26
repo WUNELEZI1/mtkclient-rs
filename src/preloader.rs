@@ -604,6 +604,8 @@ impl Preloader {
     ///
     /// 注意：mtkclient 2.0.1 在 upload_data 之前没有 clear_halt 也没有 warm-up ZLP，
     /// 但 pyusb 内部在 write 超时后会自动处理端点停止。libusb 需要显式 clear_halt。
+    /// SEND_DA: 发送 Download Agent 到设备
+    /// 对齐 Python mtkclient 2.0.1 的实现
     pub fn send_da(
         &mut self,
         address: u32,
@@ -616,12 +618,12 @@ impl Preloader {
             address, size, sig_len
         );
 
-        // echo(0xD7) 命令
+        // 1. echo(0xD7) 命令
         if !self.echo_1byte(0xD7)? {
             return Err("SEND_DA: echo 0xD7 不匹配".into());
         }
 
-        // 发送参数（echo，对齐 Python — 全部使用 echo）
+        // 2. 发送参数
         if !self.echo_4byte(address)? {
             return Err("SEND_DA: echo addr 不匹配".into());
         }
@@ -632,7 +634,7 @@ impl Preloader {
             return Err("SEND_DA: echo sig_len 不匹配".into());
         }
 
-        // rword() 读状态
+        // 3. rword() 读状态
         let status = self.rword()?;
         debug!("SEND_DA status: {:04X}", status);
         if status > 0xFF {
@@ -642,40 +644,24 @@ impl Preloader {
             return Err("SLA required".into());
         }
 
-        // === upload_data 准备 ===
-        // 步骤 1: 复位 OUT 端点，清除可能残留的 halt/stall 状态
+        // 4. 上传数据
+        debug!("[UPLOAD] sending {} bytes in chunks of 512", dadata.len());
+
+        // 4a. 清除端点状态（对应 pyUSB 自动处理的 clear_halt）
         if self.device.is_libusb() {
-            debug!("[UPLOAD] clear_halt_out ...");
-            if let Err(e) = self.device.clear_halt_out() {
-                debug!("[UPLOAD] clear_halt_out (warn): {}", e);
-                // 非致命，继续
-            }
+            debug!("[UPLOAD] clear_halt_out before upload");
+            let _ = self.device.clear_halt_out(); // 忽略错误，继续
         }
 
-        // 步骤 2: 给设备时间准备接收数据
-        debug!("[UPLOAD] delay 10ms before upload_data...");
-        std::thread::sleep(Duration::from_millis(10));
-
-        // 步骤 3: 发送一个 ZLP 作为"唤醒包"，让设备进入批量接收就绪状态
-        debug!("[UPLOAD] warm-up ZLP...");
-        self.device
-            .write(&[])
-            .map_err(|e| format!("upload_data warm-up ZLP: {}", e))?;
-        std::thread::sleep(Duration::from_millis(5));
-
-        // 步骤 4: 写超时改为 5000ms
+        // 4b. 设置超时
         let orig_timeout = self.device.get_timeout();
         self.device.set_timeout(Duration::from_millis(5000));
 
-        // upload_data: 发送数据 + ZLP + 读校验和
+        // 4c. 发送数据（512 字节块，不在这里发 ZLP）
         let data = dadata;
-        let chunk_size: usize = 512; // 高带宽 USB 使用 512 字节块
+        let chunk_size: usize = 512;
         let mut pos = 0;
-        debug!(
-            "[UPLOAD] sending {} bytes in chunks of {}",
-            data.len(),
-            chunk_size
-        );
+
         while pos < data.len() {
             let end = (pos + chunk_size).min(data.len());
             self.device
@@ -684,18 +670,19 @@ impl Preloader {
             pos = end;
         }
 
-        // 恢复超时
-        self.device.set_timeout(orig_timeout);
-
-        // ZLP (Zero Length Packet) — 对应 Python usbwrite(b"")
+        // 4d. 所有数据发完后，发一次 ZLP（pyUSB 自动做，libusb 需要手动）
+        debug!("[UPLOAD] sending ZLP");
         self.device
             .write(&[])
             .map_err(|e| format!("upload_data ZLP: {}", e))?;
 
-        // 等待设备处理
-        std::thread::sleep(Duration::from_millis(35));
+        // 4e. 等待设备处理
+        std::thread::sleep(Duration::from_millis(10));
 
-        // 读校验和 + 状态（Python: rword(2) → 2 个 16-bit big-endian）
+        // 4f. 恢复超时
+        self.device.set_timeout(orig_timeout);
+
+        // 5. 读校验和 + 状态（Python: rword(2)）
         let checksum = self.rword()?;
         let status2 = self.rword()?;
         debug!(
