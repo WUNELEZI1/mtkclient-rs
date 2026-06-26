@@ -329,7 +329,10 @@ fn force_install_via_api(device: &wdi_rs::Device, inf_dir: &std::path::Path) -> 
 }
 
 #[cfg(not(target_os = "windows"))]
-fn force_install_via_api(_device: &wdi_rs::Device, _inf_dir: &std::path::Path) -> Result<(), String> {
+fn force_install_via_api(
+    _device: &wdi_rs::Device,
+    _inf_dir: &std::path::Path,
+) -> Result<(), String> {
     Err("仅 Windows 支持".to_string())
 }
 
