@@ -40,7 +40,10 @@ impl<'a> HaccBackend for DAXFlash<'a> {
         }
         let resp = self.send_devctrl(addr, Some(&value.to_le_bytes()))?;
         if !resp.is_empty() {
-            debug!("[HACC] write 0x{:08X} -> {:08X}, resp {:02X?}", addr, value, resp);
+            debug!(
+                "[HACC] write 0x{:08X} -> {:08X}, resp {:02X?}",
+                addr, value, resp
+            );
         }
         Ok(())
     }
@@ -51,7 +54,11 @@ impl<'a> HaccBackend for DAXFlash<'a> {
         }
         let resp = self.send_devctrl(addr, None)?;
         if resp.len() < 4 {
-            return Err(format!("HACC read 0x{:08X} 返回数据太短: {}", addr, resp.len()));
+            return Err(format!(
+                "HACC read 0x{:08X} 返回数据太短: {}",
+                addr,
+                resp.len()
+            ));
         }
         Ok(u32::from_le_bytes(resp[0..4].try_into().unwrap()))
     }
@@ -133,12 +140,7 @@ const G_HACC_CFG_1: [u32; 8] = [
 fn generate_custom_seed_iv() -> [u8; 16] {
     let seed = u32::from_le_bytes(CUSTOM_SEED_PREFIX);
     let rot = seed.rotate_left(16);
-    let iv_parts: [u32; 4] = [
-        seed,
-        (!seed).wrapping_add(1),
-        rot,
-        (!rot).wrapping_add(1),
-    ];
+    let iv_parts: [u32; 4] = [seed, (!seed).wrapping_add(1), rot, (!rot).wrapping_add(1)];
     let mut iv = [0u8; 16];
     for (i, part) in iv_parts.iter().enumerate() {
         iv[i * 4..(i + 1) * 4].copy_from_slice(&part.to_le_bytes());
@@ -164,7 +166,9 @@ fn sw_key_default() -> [u8; 32] {
 
 fn extract_sw_key_from_preloader(preloader_data: &[u8]) -> Option<[u8; 32]> {
     let pattern = [0x4D, 0x4D, 0x4D, 0x01, 0x30];
-    let idx = preloader_data.windows(pattern.len()).position(|w| w == pattern)?;
+    let idx = preloader_data
+        .windows(pattern.len())
+        .position(|w| w == pattern)?;
     let start = idx + 0x0C;
     let end = start + 32;
     if end > preloader_data.len() {
@@ -194,7 +198,10 @@ fn sej_sec_cfg_sw_decrypt_with_key(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8
         .map_err(|e| format!("AES-256-CBC 解密初始化失败: {:?}", e))?;
     let mut buf = data.to_vec();
     if !buf.len().is_multiple_of(16) {
-        return Err(format!("sej_sec_cfg_sw 数据长度不是 16 的倍数: {}", buf.len()));
+        return Err(format!(
+            "sej_sec_cfg_sw 数据长度不是 16 的倍数: {}",
+            buf.len()
+        ));
     }
     cipher
         .decrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf)

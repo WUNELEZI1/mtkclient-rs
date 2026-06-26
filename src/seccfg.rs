@@ -1,12 +1,8 @@
 use crate::da_xflash::DAXFlash;
 use crate::sej::{sej_hacc_sign, with_backend};
 use crate::sej::{
-    sej_sec_cfg_hw_decrypt,
-    sej_sec_cfg_hw_encrypt,
-    sej_sec_cfg_hw_v3_decrypt,
-    sej_sec_cfg_hw_v3_encrypt,
-    sej_sec_cfg_sw_decrypt,
-    sej_sec_cfg_sw_encrypt,
+    sej_sec_cfg_hw_decrypt, sej_sec_cfg_hw_encrypt, sej_sec_cfg_hw_v3_decrypt,
+    sej_sec_cfg_hw_v3_encrypt, sej_sec_cfg_sw_decrypt, sej_sec_cfg_sw_encrypt,
 };
 use log::info;
 use sha2::{Digest, Sha256};
@@ -455,10 +451,7 @@ impl SecCfgV3 {
     }
 }
 
-fn build_v4_header(
-    v4: &SecCfgV4,
-    lockflag: &str,
-) -> Result<([u8; 28], u32, u32, u32), String> {
+fn build_v4_header(v4: &SecCfgV4, lockflag: &str) -> Result<([u8; 28], u32, u32, u32), String> {
     let (new_lock, new_critical) = match lockflag {
         "unlock" => {
             if v4.lock_state == 3 {
@@ -544,7 +537,8 @@ pub fn unlock_bootloader(da: &mut DAXFlash) -> Result<(), String> {
     let seccfg_data = da.readflash_data(seccfg_addr, seccfg_size)?;
     info!(
         "  读取 seccfg 分区: addr=0x{:X}, size={} 字节",
-        seccfg_addr, seccfg_data.len()
+        seccfg_addr,
+        seccfg_data.len()
     );
 
     let hw_code = da.preloader.get_hw_code().unwrap_or(0);

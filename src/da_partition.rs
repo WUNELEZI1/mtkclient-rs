@@ -34,14 +34,20 @@ impl<'a> GptInfo<'a> {
             .position(|w| w == b"EFI PART")
             .ok_or_else(|| "GPT 数据无效".to_string())?;
 
-        let revision = u32::from_le_bytes(data[base_offset + 8..base_offset + 12].try_into().unwrap());
-        let header_size = u32::from_le_bytes(data[base_offset + 12..base_offset + 16].try_into().unwrap());
-        let num_part_entries = u32::from_le_bytes(data[base_offset + 80..base_offset + 84].try_into().unwrap());
-        let part_entry_size = u32::from_le_bytes(data[base_offset + 84..base_offset + 88].try_into().unwrap());
+        let revision =
+            u32::from_le_bytes(data[base_offset + 8..base_offset + 12].try_into().unwrap());
+        let header_size =
+            u32::from_le_bytes(data[base_offset + 12..base_offset + 16].try_into().unwrap());
+        let num_part_entries =
+            u32::from_le_bytes(data[base_offset + 80..base_offset + 84].try_into().unwrap());
+        let part_entry_size =
+            u32::from_le_bytes(data[base_offset + 84..base_offset + 88].try_into().unwrap());
         let part_entry_start_lba =
             u64::from_le_bytes(data[base_offset + 72..base_offset + 80].try_into().unwrap());
-        let first_usable_lba = u64::from_le_bytes(data[base_offset + 32..base_offset + 40].try_into().unwrap());
-        let current_lba = u64::from_le_bytes(data[base_offset + 24..base_offset + 32].try_into().unwrap());
+        let first_usable_lba =
+            u64::from_le_bytes(data[base_offset + 32..base_offset + 40].try_into().unwrap());
+        let current_lba =
+            u64::from_le_bytes(data[base_offset + 24..base_offset + 32].try_into().unwrap());
 
         Ok(GptInfo {
             num_part_entries,
@@ -449,7 +455,10 @@ pub fn parse_gpt_from_data(data: &[u8]) -> Result<(), String> {
 
     let partitions = gpt_info.partitions();
     for entry in &partitions {
-        println!("{:<30} 0x{:014X} 0x{:014X}", entry.name, entry.start_addr, entry.size);
+        println!(
+            "{:<30} 0x{:014X} 0x{:014X}",
+            entry.name, entry.start_addr, entry.size
+        );
     }
 
     println!("\n共 {} 个分区", partitions.len());
@@ -509,7 +518,11 @@ pub fn generate_scatter_from_gpt(
     // 遍历 GPT 分区表生成条目
     for entry in gpt_info.iter_partitions() {
         // 生成 scatter 条目
-        scatter_lines.push(format!("{} 0x{:X}", entry.name.to_uppercase(), entry.start_addr));
+        scatter_lines.push(format!(
+            "{} 0x{:X}",
+            entry.name.to_uppercase(),
+            entry.start_addr
+        ));
         scatter_lines.push("{".to_string());
         scatter_lines.push("  is_upgradeable: 1".to_string());
         scatter_lines.push("  is_download: 1".to_string());
@@ -592,11 +605,7 @@ pub fn generate_scatter_shoujixia(
 
         // 判断 type、region、operation_type
         let (part_type, region, operation_type) = match entry.name.as_str() {
-            "preloader" | "pgpt" | "sgpt" => (
-                "SV5_BL_BIN",
-                "EMMC_BOOT1_BOOT2",
-                "BOOTLOADERS",
-            ),
+            "preloader" | "pgpt" | "sgpt" => ("SV5_BL_BIN", "EMMC_BOOT1_BOOT2", "BOOTLOADERS"),
             _ => ("NORMAL_ROM", "EMMC_USER", "UPDATE"),
         };
 

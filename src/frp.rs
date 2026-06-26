@@ -9,7 +9,10 @@ pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
     let frp_part = find_frp_partition(da)?;
     let (addr, size) = da.find_partition_addr(&frp_part)?;
 
-    info!("  找到 FRP 分区: {} @ 0x{:X}, 大小: 0x{:X}", frp_part, addr, size);
+    info!(
+        "  找到 FRP 分区: {} @ 0x{:X}, 大小: 0x{:X}",
+        frp_part, addr, size
+    );
 
     let data = da.readflash_data(addr, size)?;
     info!("  读取到 {} 字节", data.len());
@@ -22,7 +25,14 @@ pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
 }
 
 fn find_frp_partition(da: &mut DAXFlash) -> Result<String, String> {
-    let candidates = ["frp", "persistent", "config", "nvram", "protect1", "protect2"];
+    let candidates = [
+        "frp",
+        "persistent",
+        "config",
+        "nvram",
+        "protect1",
+        "protect2",
+    ];
     for name in &candidates {
         if da.find_partition_addr(name).is_ok() {
             return Ok(name.to_string());
@@ -49,7 +59,10 @@ fn patch_frp_data(data: &[u8]) -> Result<Vec<u8>, String> {
     }
 
     // 方法 2: 查找 "FactoryResetProtection" 字符串
-    if let Some(idx) = data.windows(22).position(|w| w == b"FactoryResetProtection") {
+    if let Some(idx) = data
+        .windows(22)
+        .position(|w| w == b"FactoryResetProtection")
+    {
         let flag_pos = idx + 22;
         if flag_pos < result.len() && result[flag_pos] != 0x00 {
             result[flag_pos] = 0x00;
@@ -69,8 +82,11 @@ fn patch_frp_data(data: &[u8]) -> Result<Vec<u8>, String> {
             for b in &mut result[start..end] {
                 *b = 0;
             }
-            info!("  清除 {} 相关数据 @ offset 0x{:X}", 
-                  String::from_utf8_lossy(pattern), start);
+            info!(
+                "  清除 {} 相关数据 @ offset 0x{:X}",
+                String::from_utf8_lossy(pattern),
+                start
+            );
         }
     }
 

@@ -33,10 +33,10 @@ impl Preloader {
     }
 
     /// Kamakiri2 单步：设置 BROM 内存访问指针
-    /// 
+    ///
     /// libusb 路径：USB control transfer exploit（标准 kamakiri2）
     /// 串口路径：NO-OP（跳过 setup steps）
-    /// 
+    ///
     /// 原因：刷机匣在串口模式下不执行 kamakiri2 setup steps，
     /// 直接使用 brom_register_access 完成内存读写。
     fn kamakiri2_step(&mut self, lc: &[u8], _ptr_da_bra: u32, addr: u32) -> Result<(), String> {
@@ -46,7 +46,7 @@ impl Preloader {
             d.extend(&addr.to_le_bytes());
             debug!("[STEP] payload({} bytes): {:02X?}", d.len(), d);
             debug!("[STEP]   linecode: {:02X?}", lc);
-            debug!("[STEP]   addr_le: {:02X?}", &addr.to_le_bytes());
+            debug!("[STEP]   addr_le: {:02X?}", addr.to_le_bytes());
             self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d)?;
             let _ = self.device.ctrl_transfer_in(0x80, 0x06, 0x02FF, 0, 9);
             std::thread::sleep(Duration::from_millis(50));
@@ -78,7 +78,7 @@ impl Preloader {
         len: u32,
     ) -> Result<Vec<u8>, String> {
         debug!("[da_read] addr=0x{:08X} len={}", addr, len);
-        
+
         // 串口路径：调用 da_setup（reset + watchdog），不执行 kamakiri2 steps
         if !self.device.is_libusb() {
             self.da_setup(lc, ptr_da_bra, watchdog)?;
@@ -86,7 +86,7 @@ impl Preloader {
                 let r = self.brom_register_access(0, addr, len, None, true)?;
                 Ok(r.unwrap_or_default())
             } else {
-                let bra_addr = addr.wrapping_sub(0x40);  // 对齐 Python：addr - 0x40
+                let bra_addr = addr.wrapping_sub(0x40); // 对齐 Python：addr - 0x40
                 debug!("[da_read] bra_addr=0x{:08X}", bra_addr);
                 let r = self.brom_register_access(0, bra_addr, len, None, true)?;
                 Ok(r.unwrap_or_default())
@@ -110,7 +110,10 @@ impl Preloader {
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(3))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
                 let bra_addr = addr.wrapping_sub(0x40);
-                debug!("[da_read] using bra_addr=0x{:08X} (libusb path, addr-0x40)", bra_addr);
+                debug!(
+                    "[da_read] using bra_addr=0x{:08X} (libusb path, addr-0x40)",
+                    bra_addr
+                );
                 std::thread::sleep(Duration::from_millis(50));
                 let r = self.brom_register_access(0, bra_addr, len, None, true)?;
                 Ok(r.unwrap_or_default())
@@ -144,7 +147,7 @@ impl Preloader {
                 self.brom_register_access(1, addr, data.len() as u32, Some(data), check_status)?;
                 Ok(())
             } else {
-                let bra_addr = addr.wrapping_sub(0x40);  // 对齐 Python：addr - 0x40
+                let bra_addr = addr.wrapping_sub(0x40); // 对齐 Python：addr - 0x40
                 debug!("[da_write] bra_addr=0x{:08X}", bra_addr);
                 self.brom_register_access(
                     1,
@@ -175,7 +178,10 @@ impl Preloader {
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(3))?;
                 self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
                 let bra_addr = addr.wrapping_sub(0x40);
-                debug!("[da_write] using bra_addr=0x{:08X} (libusb path, addr-0x40)", bra_addr);
+                debug!(
+                    "[da_write] using bra_addr=0x{:08X} (libusb path, addr-0x40)",
+                    bra_addr
+                );
                 std::thread::sleep(Duration::from_millis(50));
                 self.brom_register_access(
                     1,
@@ -204,7 +210,7 @@ impl Preloader {
     fn inject_payload(&mut self, payload: &[u8], expected_ack: u32) -> Result<(), String> {
         let chip = self.chip.ok_or_else(|| "未识别的处理器型号".to_string())?;
         let ptr_da_bra = self.ptr_da_bra();
-        let ptr_da = chip.brom_register_access.1;  // 对齐 Python: brom_register_access[0][1]
+        let ptr_da = chip.brom_register_access.1; // 对齐 Python: brom_register_access[0][1]
 
         debug!("[inject] payload_size={}", payload.len());
         debug!(
@@ -476,6 +482,11 @@ impl Preloader {
         if !self.device.do_handshake()? {
             return Err("绕过安全保护后重握手失败".into());
         }
+
+        // 尝试获取 ID，但不强制同步，因为某些 patcher 可能不响应 FE
+        debug!("尝试获取设备识别信息...");
+        let _ = self.get_me_id();
+        let _ = self.get_soc_id();
 
         info!("安全保护已成功绕过");
         Ok(())

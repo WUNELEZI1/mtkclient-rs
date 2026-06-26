@@ -94,7 +94,10 @@ pub fn try_reuse_da_session(vid: u16, pid: u16) -> bool {
     // PID 0x2000 是标准的 DA 模式 PID
     // PID 0x0005 是某些旧芯片或特定 DA 的 PID
     if pid != 0x2000 && pid != 0x0005 {
-        debug!("[session] 设备 PID=0x{:04X} 不属于 DA 模式，拒绝复用会话", pid);
+        debug!(
+            "[session] 设备 PID=0x{:04X} 不属于 DA 模式，拒绝复用会话",
+            pid
+        );
         return false;
     }
 

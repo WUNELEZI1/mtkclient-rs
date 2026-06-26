@@ -103,7 +103,7 @@ impl SerialPortTransport {
         let max_retries = if timeout_ms == u64::MAX || timeout_ms == 0 {
             usize::MAX
         } else {
-            ((timeout_ms + INTERVAL_MS - 1) / INTERVAL_MS) as usize
+            timeout_ms.div_ceil(INTERVAL_MS) as usize
         };
         let mut retry = 0usize;
 
@@ -124,7 +124,11 @@ impl SerialPortTransport {
             };
 
             if retry == 1 || retry % 25 == 1 {
-                debug!("available_ports 返回 {} 个端口 (retry {})", ports.len(), retry);
+                debug!(
+                    "available_ports 返回 {} 个端口 (retry {})",
+                    ports.len(),
+                    retry
+                );
                 for p in &ports {
                     debug!("  {} - {:?}", p.port_name, p.port_type);
                 }
@@ -139,8 +143,10 @@ impl SerialPortTransport {
                             debug!("端口 {} 注册表残留但设备已拔出，跳过", p.port_name);
                             continue;
                         }
-                        debug!("找到 MTK COM 口: {} (PID=0x{:04X}, retry {})",
-                              p.port_name, info.pid, retry);
+                        debug!(
+                            "找到 MTK COM 口: {} (PID=0x{:04X}, retry {})",
+                            p.port_name, info.pid, retry
+                        );
                         return Some(p.port_name.clone());
                     }
                 }
@@ -185,11 +191,11 @@ impl BromTransport for SerialPortTransport {
         // BROM 握手协议: 逐字节发送 [A0, 0A, 50, 05]，每字节期望取反回复
         // 参考 mtkclient Port.py 实现
         let startcmd = [0xA0u8, 0x0A, 0x50, 0x05];
-        for i in 0..4 {
-            self.write(&[startcmd[i]])?;
+        for (i, &cmd) in startcmd.iter().enumerate() {
+            self.write(&[cmd])?;
             let mut buf = [0u8; 1];
             self.read_exact(&mut buf)?;
-            let expected = !startcmd[i] & 0xFF;
+            let expected = !cmd;
             if buf[0] != expected {
                 return Err(format!(
                     "握手失败: 字节 {}: 期望 0x{:02X}, 收到 0x{:02X}",
@@ -300,10 +306,44 @@ impl Preloader {
     }
 
     /// 判断是否已经进入 BROM 模式
-    /// 
+    ///
     /// 条件：init() 成功完成（握手 + 看门狗 + 同步 + HW info）
     pub fn is_brom_ready(&self) -> bool {
         self.brom_initialized
+    }
+
+    /// BROM 同步序列 (FE, FF, FC)
+    /// 用于在握手或漏洞利用后让设备进入就绪状态
+    pub fn sync_brom(&mut self) -> Result<(), String> {
+        debug!("开始 BROM 同步序列...");
+
+        // 1. BROM sync: echo(0xFE) -> 读 FE
+        if !self.echo_1byte(0xFE)? {
+            return Err("BROM sync FE 失败".into());
+        }
+        debug!("BROM sync (0xFE) OK");
+
+        // 2. BROM FF: echo(0xFF) -> 读响应
+        self.device
+            .write(&[0xFF])
+            .map_err(|e| format!("BROM FF write: {}", e))?;
+        let mut ff_resp = [0u8; 1];
+        self.device
+            .read_exact(&mut ff_resp)
+            .map_err(|e| format!("BROM FF read: {}", e))?;
+        debug!("BROM FF 响应: 0x{:02X}", ff_resp[0]);
+
+        // 3. BROM FC: echo(0xFC) -> 读 8 字节 HW info
+        if !self.echo_1byte(0xFC)? {
+            return Err("BROM FC echo 不匹配".into());
+        }
+        let mut hw_info = [0u8; 8];
+        self.device
+            .read_exact(&mut hw_info)
+            .map_err(|e| format!("BROM read hw_info: {}", e))?;
+        debug!("BROM HW info (FC) OK: {:02X?}", hw_info);
+
+        Ok(())
     }
 
     /// 完整初始化：握手 + 关闭看门狗 + 读取设备信息
@@ -327,7 +367,7 @@ impl Preloader {
         self.device.set_timeout(Duration::from_secs(3));
 
         let wdt_addr = chip.watchdog;
-        let wdt_value: u32 = 0x22000064;  // 对齐 Python: wdt==0x10007000 时用 0x22000064
+        let wdt_value: u32 = 0x22000064; // 对齐 Python: wdt==0x10007000 时用 0x22000064
 
         debug!("[WD] 地址=0x{:08X}, value=0x{:08X}", wdt_addr, wdt_value);
 
@@ -369,50 +409,12 @@ impl Preloader {
         debug!("{}", "看门狗已关闭".green().bold());
 
         // 4. get_target_config — 对齐刷机匣第 101-108 行
-        if !self.echo_1byte(0xD8)? {
-            return Err("BROM init: echo 0xD8 不匹配".into());
-        }
-        let mut tc_buf = [0u8; 6];
-        self.device
-            .read_exact(&mut tc_buf)
-            .map_err(|e| format!("BROM init: read target_config: {}", e))?;
-        let target_cfg = u32::from_be_bytes([tc_buf[0], tc_buf[1], tc_buf[2], tc_buf[3]]);
-        let tc_status = u16::from_be_bytes([tc_buf[4], tc_buf[5]]);
-        debug!("BROM target_config: 0x{:08X}, status: 0x{:04X}", target_cfg, tc_status);
+        let _ = self.get_target_config();
 
-        // 5. BROM sync: echo(0xFE) → 读 FE — 对齐刷机匣第 141-145 行
-        if !self.echo_1byte(0xFE)? {
-            return Err("BROM sync FE 失败".into());
-        }
-        debug!("BROM 模式同步成功");
+        // 5-7. BROM sync (FE, FF, FC)
+        self.sync_brom()?;
 
-        // 6. 进入 ID 读取阶段: echo(0xFF) → 读响应 — 对齐刷机匣第 149-153 行
-        self.device
-            .write(&[0xFF])
-            .map_err(|e| format!("BROM FF write: {}", e))?;
-        let mut ff_resp = [0u8; 1];
-        self.device
-            .read_exact(&mut ff_resp)
-            .map_err(|e| format!("BROM FF read: {}", e))?;
-        debug!("BROM FF 响应: 0x{:02X}", ff_resp[0]);
-
-        // 7. 读 HW SubCode / HW Ver / SW Ver — 对齐刷机匣第 155-162 行
-        if !self.echo_1byte(0xFC)? {
-            return Err("BROM FC echo 不匹配".into());
-        }
-        let mut hw_info = [0u8; 8];
-        self.device
-            .read_exact(&mut hw_info)
-            .map_err(|e| format!("BROM read hw_info: {}", e))?;
-        let hw_subcode = u16::from_be_bytes([hw_info[0], hw_info[1]]);
-        let hw_ver = u16::from_be_bytes([hw_info[2], hw_info[3]]);
-        let sw_ver = u16::from_be_bytes([hw_info[4], hw_info[5]]);
-        debug!(
-            "BROM HW info: subcode=0x{:04X}, hw_ver=0x{:04X}, sw_ver=0x{:04X}",
-            hw_subcode, hw_ver, sw_ver
-        );
-
-        debug!("{}", "BROM 初始化完成".green().bold());
+        debug!("BROM 模式初始化成功");
         self.brom_initialized = true;
         Ok(true)
     }
@@ -516,7 +518,7 @@ impl Preloader {
     /// 发送 4 字节大端参数，校验回显后再读取 2 字节 status。
     /// 对齐刷机匣 watchdog 关闭流程：write 4B -> read 4B echo -> read 2B status。
     /// 调用方负责检查返回的 status 是否为 0x0001。
-#[allow(dead_code)] // 预留：部分 BROM 命令需要 4 字节参数 + 2 字节 status 响应模式
+    #[allow(dead_code)] // 预留：部分 BROM 命令需要 4 字节参数 + 2 字节 status 响应模式
     pub fn echo_4byte_then_status(&mut self, val: u32) -> Result<u16, String> {
         if !self.echo_4byte(val)? {
             return Err(format!("4-byte echo mismatch: 0x{:08X}", val));
@@ -669,7 +671,11 @@ impl Preloader {
         let data = dadata;
         let chunk_size: usize = 512; // 高带宽 USB 使用 512 字节块
         let mut pos = 0;
-        debug!("[UPLOAD] sending {} bytes in chunks of {}", data.len(), chunk_size);
+        debug!(
+            "[UPLOAD] sending {} bytes in chunks of {}",
+            data.len(),
+            chunk_size
+        );
         while pos < data.len() {
             let end = (pos + chunk_size).min(data.len());
             self.device
@@ -751,6 +757,50 @@ impl Preloader {
         }
     }
 
+    /// 获取 ME_ID (0xE1)
+    pub fn get_me_id(&mut self) -> Result<Vec<u8>, String> {
+        // 对齐 Python: echo(0xFE) -> echo(0xE1)
+        if !self.echo_1byte(0xFE)? {
+            return Err("get_me_id: sync FE 失败".into());
+        }
+        if !self.echo_1byte(0xE1)? {
+            return Err("get_me_id: echo 0xE1 失败".into());
+        }
+        // 读 4 字节长度 (BE)
+        let mut len_buf = [0u8; 4];
+        self.device.read_exact(&mut len_buf)?;
+        let length = u32::from_be_bytes(len_buf) as usize;
+        // 读 ME_ID 数据
+        let mut data = vec![0u8; length];
+        self.device.read_exact(&mut data)?;
+        // 读 2 字节状态 (BE)
+        let _status = self.rword()?;
+        debug!("ME_ID: {:02X?}", data);
+        Ok(data)
+    }
+
+    /// 获取 SOC_ID (0xE7)
+    pub fn get_soc_id(&mut self) -> Result<Vec<u8>, String> {
+        // 对齐 Python: echo(0xFE) -> echo(0xE7)
+        if !self.echo_1byte(0xFE)? {
+            return Err("get_soc_id: sync FE 失败".into());
+        }
+        if !self.echo_1byte(0xE7)? {
+            return Err("get_soc_id: echo 0xE7 失败".into());
+        }
+        // 读 4 字节长度 (BE)
+        let mut len_buf = [0u8; 4];
+        self.device.read_exact(&mut len_buf)?;
+        let length = u32::from_be_bytes(len_buf) as usize;
+        // 读 SOC_ID 数据
+        let mut data = vec![0u8; length];
+        self.device.read_exact(&mut data)?;
+        // 读 2 字节状态 (BE)
+        let _status = self.rword()?;
+        debug!("SOC_ID: {:02X?}", data);
+        Ok(data)
+    }
+
     /// BROM 寄存器访问（DA 注入核心操作）
     /// 对齐刷机匣串口协议：
     ///   cmd(D1) → mode(4B) → address(4B) → length_dwords(4B) → status(2B) → data → status(2B)
@@ -758,9 +808,9 @@ impl Preloader {
     /// length_dwords: DWORD 数（设备期望的单位）
     pub fn brom_register_access(
         &mut self,
-        mode: u32,           // 0=读，1=写
+        mode: u32, // 0=读，1=写
         address: u32,
-        length_bytes: u32,   // 字节数，对齐 Python brom_register_access
+        length_bytes: u32, // 字节数，对齐 Python brom_register_access
         data: Option<&[u8]>,
         check_status: bool,
     ) -> Result<Option<Vec<u8>>, String> {
@@ -852,7 +902,7 @@ impl Preloader {
             .read_exact(&mut st)
             .map_err(|e| format!("read32_brom status1: {}", e))?;
         debug!("read32_brom status1: {:02X?}", st);
-        
+
         // 读取数据
         let bytes = dwords * 4;
         let mut rdata = vec![0u8; bytes];
@@ -860,7 +910,7 @@ impl Preloader {
             .read_exact(&mut rdata)
             .map_err(|e| format!("read32_brom data ({} bytes): {}", bytes, e))?;
         debug!("read32_brom read data: {} bytes", rdata.len());
-        
+
         // 读状态 2 字节（大端）
         let mut st2 = [0u8; 2];
         self.device

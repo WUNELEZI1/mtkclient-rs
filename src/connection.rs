@@ -49,10 +49,7 @@ impl ConnectionManager {
     /// 1. COM 口优先，最多重试 3 次（每次 5 秒超时）
     /// 2. COM 口成功：握手 → 关看门狗 → 获取芯片信息 → 切 WinUSB
     /// 3. COM 口 3 次都失败：降级到 USB 直连（跳过 BROM 握手初始化）
-    pub fn smart_init(
-        &mut self,
-        context: &UsbContext,
-    ) -> Result<(Preloader, DeviceMode), String> {
+    pub fn smart_init(&mut self, context: &UsbContext) -> Result<(Preloader, DeviceMode), String> {
         info!("等待设备连接 (BROM: Vol+ + Vol- + Power)");
 
         // === STEP 0: 前置检测 — libusb 能否直接发现设备（WinUSB 已安装） ===
@@ -81,12 +78,17 @@ impl ConnectionManager {
         // === STEP 1: COM 口前置握手（最多重试 3 次） ===
         while com_retry_count < MAX_COM_RETRY {
             com_retry_count += 1;
-            info!("[COM] 尝试第 {}/{} 次连接...", com_retry_count, MAX_COM_RETRY);
+            info!(
+                "[COM] 尝试第 {}/{} 次连接...",
+                com_retry_count, MAX_COM_RETRY
+            );
 
             match SerialPortTransport::find_brom_port_with_timeout(COM_TIMEOUT_MS) {
                 Some(port_name) => {
-                    info!("[COM] 发现 BROM COM 口: {} (attempt {}/{})",
-                          port_name, com_retry_count, MAX_COM_RETRY);
+                    info!(
+                        "[COM] 发现 BROM COM 口: {} (attempt {}/{})",
+                        port_name, com_retry_count, MAX_COM_RETRY
+                    );
 
                     match self.serial_handshake_and_switch(&port_name, context) {
                         Ok(preloader) => {
@@ -97,8 +99,10 @@ impl ConnectionManager {
                             return Ok((preloader, DeviceMode::Brom));
                         }
                         Err(e) => {
-                            warn!("[COM] 第 {}/{} 次握手失败: {}",
-                                  com_retry_count, MAX_COM_RETRY, e);
+                            warn!(
+                                "[COM] 第 {}/{} 次握手失败: {}",
+                                com_retry_count, MAX_COM_RETRY, e
+                            );
                             if com_retry_count < MAX_COM_RETRY {
                                 info!("[COM] 等待 2 秒后重试...");
                                 std::thread::sleep(Duration::from_secs(2));
@@ -107,8 +111,10 @@ impl ConnectionManager {
                     }
                 }
                 None => {
-                    warn!("[COM] 第 {}/{} 次未找到 COM 口 (超时 {}ms)",
-                          com_retry_count, MAX_COM_RETRY, COM_TIMEOUT_MS);
+                    warn!(
+                        "[COM] 第 {}/{} 次未找到 COM 口 (超时 {}ms)",
+                        com_retry_count, MAX_COM_RETRY, COM_TIMEOUT_MS
+                    );
                     if com_retry_count < MAX_COM_RETRY {
                         info!("[COM] 等待 2 秒后重试...");
                         std::thread::sleep(Duration::from_secs(2));
@@ -118,7 +124,10 @@ impl ConnectionManager {
         }
 
         // === STEP 2: WinUSB 直连（降级路径） ===
-        warn!("[COM] 连续 {} 次失败，降级到 WinUSB 直连模式", MAX_COM_RETRY);
+        warn!(
+            "[COM] 连续 {} 次失败，降级到 WinUSB 直连模式",
+            MAX_COM_RETRY
+        );
         self.fallback_to_winusb(context)
     }
 
@@ -133,7 +142,10 @@ impl ConnectionManager {
     /// 2. 构造 Preloader 并执行完整 BROM 握手（handshake → 看门狗 → HW code → target_config）
     ///    —— 这一步是关键，之前直接跳过导致设备不认识后续 DA 加载并重启
     /// 3. 返回 (Preloader, DeviceMode::Brom)
-    fn fallback_to_winusb(&mut self, context: &UsbContext) -> Result<(Preloader, DeviceMode), String> {
+    fn fallback_to_winusb(
+        &mut self,
+        context: &UsbContext,
+    ) -> Result<(Preloader, DeviceMode), String> {
         info!("[USB] 尝试 WinUSB 直连...");
         info!("[USB] 等待 BROM 设备出现 (PID=0x0003, 无限等待)...");
 
@@ -154,7 +166,12 @@ impl ConnectionManager {
         {
             return Err("WinUSB BROM 握手未完成".to_string());
         }
-        info!("{}", "[USB] BROM 握手成功（看门狗已关，HW code 已获取）".green().bold());
+        info!(
+            "{}",
+            "[USB] BROM 握手成功（看门狗已关，HW code 已获取）"
+                .green()
+                .bold()
+        );
 
         self.mode = DeviceMode::Brom;
         self.stage = UsbStage::Brom;
@@ -181,7 +198,10 @@ impl ConnectionManager {
         let mut serial_preloader = Preloader::new(Box::new(transport));
 
         // 2. 完整 init：握手 + 关看门狗 + 获取 hw_code + 设置 chip
-        if !serial_preloader.init().map_err(|e| format!("串口 init 失败: {}", e))? {
+        if !serial_preloader
+            .init()
+            .map_err(|e| format!("串口 init 失败: {}", e))?
+        {
             return Err("串口握手失败".to_string());
         }
 
@@ -200,7 +220,10 @@ impl ConnectionManager {
 
         // 6. libusb1-sys 打开设备（轮询 10 秒）
         let usb_device = self.reconnect_loop(context, UsbStage::Brom)?;
-        info!("WinUSB 打开成功: VID={:04X} PID={:04X}", usb_device.vid, usb_device.pid);
+        info!(
+            "WinUSB 打开成功: VID={:04X} PID={:04X}",
+            usb_device.vid, usb_device.pid
+        );
 
         // 7. 构造 Preloader（chip 已从 COM 口获取，brom_initialized=true）
         let mut preloader = Preloader::new(Box::new(usb_device));
@@ -220,7 +243,10 @@ impl ConnectionManager {
         const INTERVAL_MS: u64 = 200;
         let mut retry = 0;
 
-        info!("[RECONNECT] scanning for stage={:?} (infinite wait)...", target_stage);
+        info!(
+            "[RECONNECT] scanning for stage={:?} (infinite wait)...",
+            target_stage
+        );
 
         let pids = match target_stage {
             UsbStage::Brom => vec![0x0003u16],
@@ -235,18 +261,27 @@ impl ConnectionManager {
             for &pid in &pids {
                 match usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, pid) {
                     Ok(device) => {
-                        info!("[RECONNECT] success on attempt {} (stage={:?}, PID=0x{:04X})",
-                              retry, device.stage, device.pid);
+                        info!(
+                            "[RECONNECT] success on attempt {} (stage={:?}, PID=0x{:04X})",
+                            retry, device.stage, device.pid
+                        );
                         return Ok(device);
                     }
                     Err(e) => {
-                        debug!("[RECONNECT] open_by_vid_pid failed for PID=0x{:04X}: {}", pid, e);
+                        debug!(
+                            "[RECONNECT] open_by_vid_pid failed for PID=0x{:04X}: {}",
+                            pid, e
+                        );
                     }
                 }
             }
 
             if retry % 25 == 1 {
-                debug!("[RECONNECT] retry {} (scanning {} PIDs)...", retry, pids.len());
+                debug!(
+                    "[RECONNECT] retry {} (scanning {} PIDs)...",
+                    retry,
+                    pids.len()
+                );
             }
             std::thread::sleep(Duration::from_millis(INTERVAL_MS));
         }
@@ -254,16 +289,16 @@ impl ConnectionManager {
 
     /// DA 加载后重连
     #[allow(dead_code)] // 预留：DA 加载后设备重枚举流程
-    pub fn reconnect_after_da(
-        &self,
-        context: &UsbContext,
-    ) -> Result<usb::UsbDevice, String> {
+    pub fn reconnect_after_da(&self, context: &UsbContext) -> Result<usb::UsbDevice, String> {
         info!("[DA] DA 加载完成，等待设备重枚举...");
         std::thread::sleep(Duration::from_millis(500));
 
         info!("[DA] 尝试 BROM PID (0x0003)...");
         if let Ok(device) = self.try_quick_connect(context, 0x0E8D, 0x0003, 5) {
-            info!("[DA] 连接成功: VID=0x{:04X} PID=0x{:04X}", device.vid, device.pid);
+            info!(
+                "[DA] 连接成功: VID=0x{:04X} PID=0x{:04X}",
+                device.vid, device.pid
+            );
             return Ok(device);
         }
 
@@ -273,10 +308,7 @@ impl ConnectionManager {
 
     /// Kamakiri exploit 后重连
     #[allow(dead_code)] // 预留：Kamakiri2 exploit 后设备重枚举流程
-    pub fn reconnect_after_kamakiri(
-        &self,
-        context: &UsbContext,
-    ) -> Result<usb::UsbDevice, String> {
+    pub fn reconnect_after_kamakiri(&self, context: &UsbContext) -> Result<usb::UsbDevice, String> {
         info!("[KAMAKIRI] payload 已发送，等待设备重枚举...");
         std::thread::sleep(Duration::from_millis(500));
         self.reconnect_loop(context, UsbStage::Brom)
@@ -358,9 +390,10 @@ impl ConnectionManager {
         // 构造 Preloader（DA 模式，不做 BROM 握手）
         let mut preloader = Preloader::new(Box::new(usb_device));
         preloader.is_preloader_mode = true; // 标记为 DA/Preloader 模式，跳过 BROM 流程
-        preloader.brom_initialized = true;  // 标记为已初始化（DA 模式不需要 BROM 握手）
+        preloader.brom_initialized = true; // 标记为已初始化（DA 模式不需要 BROM 握手）
 
         // 从 .state 恢复 chip 配置（如果 .state 中有 hw_code）
+        #[allow(clippy::collapsible_if)]
         if let Some(state) = crate::session::SessionState::load() {
             if let Some(chip) = crate::config::CHIP_CONFIGS
                 .iter()
