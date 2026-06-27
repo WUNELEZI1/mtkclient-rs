@@ -514,14 +514,14 @@ impl Preloader {
                         cmd, buf[0]
                     );
                     // 不匹配时清空输入缓冲，防止后续读取错位
+                    // 但不延迟，立即返回让调用者重试
                     self.flush_input();
                     Ok(false)
                 }
             }
             Err(e) => {
                 debug!("[ECHO_1] read error for 0x{:02X}: {}", cmd, e);
-                self.flush_input();
-                std::thread::sleep(Duration::from_millis(10));
+                // 不 flush_input，让调用者控制重试策略
                 Ok(false)
             }
         }
@@ -721,9 +721,9 @@ impl Preloader {
         let orig_timeout = self.device.get_timeout();
         self.device.set_timeout(Duration::from_millis(5000));
 
-        // 4c. 发送数据（512 字节块，不在这里发 ZLP）
+        // 4c. 发送数据（64 字节块，对齐 Python upload_data）
         let data = dadata;
-        let chunk_size: usize = 512;
+        let chunk_size: usize = 64;
         let mut pos = 0;
 
         while pos < data.len() {
@@ -740,8 +740,8 @@ impl Preloader {
             .write(&[])
             .map_err(|e| format!("upload_data ZLP: {}", e))?;
 
-        // 4e. 等待设备处理
-        std::thread::sleep(Duration::from_millis(10));
+        // 4e. 等待设备处理（对齐 Python: time.sleep(0.035)）
+        std::thread::sleep(Duration::from_millis(35));
 
         // 4f. 恢复超时
         self.device.set_timeout(orig_timeout);
@@ -760,18 +760,26 @@ impl Preloader {
     /// JUMP_DA: 跳转到 Download Agent
     /// Python: echo(JUMP_DA) → usbwrite(pack(">I", addr)) → rdword() → rword()
     pub fn jump_da(&mut self, addr: u32) -> Result<bool, String> {
-        // send_da 后 USB 端点可能 stall，需要重试
+        // send_da 后设备需要时间切换到 DA 模式
         let mut last_err = String::new();
-        for attempt in 1..=3 {
+        for attempt in 1..=5 {
+            // 等待设备从 send_da 状态恢复
+            if attempt == 1 {
+                std::thread::sleep(Duration::from_millis(100));
+            } else {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+
+            // 每次重试前清理 USB 端点
+            if self.device.is_libusb() {
+                let _ = self.device.clear_halt_in();
+                let _ = self.device.clear_halt_out();
+            }
+            self.flush_input();
+
             if !self.echo_1byte(0xD5)? {
                 last_err = "jump_da: echo 0xD5 不匹配".to_string();
                 debug!("[JUMP_DA] attempt {}: echo 0xD5 不匹配，重试", attempt);
-                self.flush_input();
-                if self.device.is_libusb() {
-                    let _ = self.device.clear_halt_in();
-                    let _ = self.device.clear_halt_out();
-                }
-                std::thread::sleep(Duration::from_millis(50));
                 continue;
             }
             // Python: usbwrite(pack(">I", addr)) — 大端

@@ -690,6 +690,24 @@ impl Preloader {
             }
         }
 
+        // 检查是否找到 MTK_BLOADER_INFO，如果没找到就继续读 0x1000 字节
+        // 因为 MTK_BLOADER_INFO 可能在 total_size 之外（实测在 0x4D43C）
+        if all_data.windows(16).position(|w| w == b"MTK_BLOADER_INFO").is_none() && all_data.len() < 0x4F000 {
+            debug!("[dump] 未找到 MTK_BLOADER_INFO，继续读取额外 0x1000 字节");
+            let extra_offset = 0x200000 + all_data.len() as u32;
+            let extra_size: usize = 0x1000;
+            let dwords = extra_size / 4;
+            match self.read32_brom(extra_offset, dwords) {
+                Ok(data) => {
+                    all_data.extend_from_slice(&data);
+                    debug!("[dump] 额外读取 {} 字节，总计 {}", data.len(), all_data.len());
+                }
+                Err(e) => {
+                    warn!("[dump] 额外读取失败: {}", e);
+                }
+            }
+        }
+
         debug!("[dump] 完整读取完成: {} 字节", all_data.len());
 
         // 搜索 MTK_BLOADER_INFO 提取文件名
