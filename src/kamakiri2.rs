@@ -58,8 +58,15 @@ impl Preloader {
     }
 
     fn da_setup(&mut self, lc: &[u8], ptr_da_bra: u32, watchdog: u32) -> Result<(), String> {
+        // 对齐 Python 的 try-except：da_setup 失败后清空缓冲区
         let _ = self.brom_register_access(0, 0, 1, None, true);
         let _ = self.read32_brom(watchdog + 0x50, 1);
+        
+        // 关键修复：da_setup 失败后，设备端可能残留部分响应数据
+        // Python 的 try-except 会直接跳到 kamakiri2 steps，但 Rust 会继续执行
+        // 这里调用 flush_input 清空缓冲区，对齐 Python 行为
+        self.flush_input();
+        
         // 串口路径：跳过 kamakiri2 steps（对齐刷机匣日志）
         if self.device.is_libusb() {
             self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(5))?;
