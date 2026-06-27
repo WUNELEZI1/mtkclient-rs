@@ -69,6 +69,15 @@ pub trait BromTransport {
     }
 }
 
+/// BROM 端口检测结果
+#[derive(Debug)]
+pub enum BromPortResult {
+    /// 找到串口驱动的设备，返回 COM 口名称
+    SerialPort(String),
+    /// 找到 WinUSB 驱动的设备（已安装 libwdi 驱动）
+    WinUsbDevice,
+}
+
 /// serialport 实现 BROM 传输
 pub struct SerialPortTransport {
     port: Box<dyn serialport::SerialPort>,
@@ -92,13 +101,19 @@ impl SerialPortTransport {
 
     /// 枚举所有 COM 口，找到 MediaTek BROM/Preloader 设备
     /// 无限轮询，每 200ms 扫描一次，直到找到为止
-    pub fn find_brom_port() -> Option<String> {
+    pub fn find_brom_port() -> Option<BromPortResult> {
         Self::find_brom_port_with_timeout(u64::MAX)
     }
 
     /// 枚举所有 COM 口，找到 MediaTek BROM/Preloader 设备
     /// 带超时的版本，超时返回 None
-    pub fn find_brom_port_with_timeout(timeout_ms: u64) -> Option<String> {
+    ///
+    /// 检测逻辑：
+    /// 1. 通过 VID/PID 过滤 MTK 设备 (0x0E8D:0x0003/0x2000)
+    /// 2. 通过 SetupAPI 查询设备描述和驱动制造商
+    /// 3. 设备描述包含 "MediaTek USB Port" 且驱动制造商包含 "libwdi" → WinUSB 驱动，返回 WinUsbDevice
+    /// 4. 设备描述包含 "MediaTek USB Port" 且驱动制造商包含 "MediaTek" → 串口驱动，返回 SerialPort
+    pub fn find_brom_port_with_timeout(timeout_ms: u64) -> Option<BromPortResult> {
         const INTERVAL_MS: u64 = 200;
         let max_retries = if timeout_ms == u64::MAX || timeout_ms == 0 {
             usize::MAX
@@ -143,11 +158,58 @@ impl SerialPortTransport {
                             debug!("端口 {} 注册表残留但设备已拔出，跳过", p.port_name);
                             continue;
                         }
-                        debug!(
-                            "找到 MTK COM 口: {} (PID=0x{:04X}, retry {})",
-                            p.port_name, info.pid, retry
-                        );
-                        return Some(p.port_name.clone());
+
+                        // 通过 SetupAPI 查询设备描述和驱动制造商
+                        if let Some(usb_info) = crate::driver::query_com_port_usb_info(&p.port_name) {
+                            debug!(
+                                "COM 口 {} 设备信息: desc='{}', mfg='{}'",
+                                p.port_name, usb_info.device_desc, usb_info.driver_mfg
+                            );
+
+                            let desc_lower = usb_info.device_desc.to_lowercase();
+                            let mfg_lower = usb_info.driver_mfg.to_lowercase();
+
+                            // 检查是否是 MediaTek USB Port 设备
+                            if desc_lower.contains("mediatek usb port") {
+                                // 检查驱动制造商
+                                if mfg_lower.contains("libwdi") {
+                                    // WinUSB 驱动，直接返回 WinUsbDevice（应该用 libusb 直接访问）
+                                    debug!(
+                                        "端口 {} 使用 WinUSB 驱动 (libwdi)，返回 WinUsbDevice",
+                                        p.port_name
+                                    );
+                                    return Some(BromPortResult::WinUsbDevice);
+                                } else if mfg_lower.contains("mediatek") {
+                                    // 原始串口驱动，使用
+                                    debug!(
+                                        "找到 MTK COM 口: {} (PID=0x{:04X}, 串口驱动, retry {})",
+                                        p.port_name, info.pid, retry
+                                    );
+                                    return Some(BromPortResult::SerialPort(p.port_name.clone()));
+                                } else {
+                                    // 未知驱动，记录但继续使用
+                                    debug!(
+                                        "端口 {} 使用未知驱动: {}，继续使用",
+                                        p.port_name, usb_info.driver_mfg
+                                    );
+                                    return Some(BromPortResult::SerialPort(p.port_name.clone()));
+                                }
+                            } else {
+                                // 不是 MediaTek USB Port，可能是其他设备，继续使用
+                                debug!(
+                                    "找到 MTK COM 口: {} (PID=0x{:04X}, retry {})",
+                                    p.port_name, info.pid, retry
+                                );
+                                return Some(BromPortResult::SerialPort(p.port_name.clone()));
+                            }
+                        } else {
+                            // 无法获取设备信息，回退到 VID/PID 匹配
+                            debug!(
+                                "找到 MTK COM 口: {} (PID=0x{:04X}, 无法获取设备信息, retry {})",
+                                p.port_name, info.pid, retry
+                            );
+                            return Some(BromPortResult::SerialPort(p.port_name.clone()));
+                        }
                     }
                 }
             }

@@ -243,6 +243,141 @@ pub fn check_brom_driver_type() -> Result<BromDriverType, String> {
 }
 
 // =============================================================================
+// COM 口 USB 设备信息查询
+// =============================================================================
+
+/// COM 口对应的 USB 设备信息
+#[derive(Debug, Clone)]
+pub struct ComPortUsbInfo {
+    /// 设备描述（如 "MediaTek USB Port"）
+    pub device_desc: String,
+    /// 驱动制造商（如 "libwdi" 或 "MediaTek Inc."）
+    pub driver_mfg: String,
+}
+
+/// 查询 COM 口对应的 USB 设备信息
+///
+/// 通过 SetupAPI 查询 COM 口对应的父 USB 设备的设备描述和驱动制造商。
+/// 用于精确判断驱动类型：
+/// - 设备描述包含 "MediaTek USB Port" + 驱动制造商包含 "libwdi" → WinUSB 驱动
+/// - 设备描述包含 "MediaTek USB Port" + 驱动制造商包含 "MediaTek" → 串口驱动
+#[cfg(target_os = "windows")]
+pub fn query_com_port_usb_info(com_port: &str) -> Option<ComPortUsbInfo> {
+    unsafe {
+        // 获取所有端口设备（Ports 类）
+        let ports_enum: Vec<u16> = "Ports\0".encode_utf16().collect();
+        let device_info_set = SetupDiGetClassDevsW(
+            std::ptr::null(),
+            ports_enum.as_ptr(),
+            std::ptr::null_mut(),
+            DIGCF_PRESENT | DIGCF_ALLCLASSES,
+        );
+
+        if device_info_set.is_null() {
+            return None;
+        }
+
+        let mut dev_info = SpDevinfoData {
+            cb_size: std::mem::size_of::<SpDevinfoData>() as u32,
+            class_guid: [0u8; 16],
+            dev_inst: 0,
+            reserved: 0,
+        };
+
+        let mut result = None;
+
+        for index in 0..256 {
+            if SetupDiEnumDeviceInfo(device_info_set, index, &mut dev_info) == 0 {
+                break;
+            }
+
+            // 获取端口名称
+            let mut port_name_buf = [0u16; 256];
+            let mut required_size: u32 = 0;
+            let mut reg_type: u32 = 0;
+
+            // SPDRP_PORTNAME = 0x0000001C
+            if SetupDiGetDeviceRegistryPropertyW(
+                device_info_set,
+                &dev_info,
+                0x0000001C,
+                &mut reg_type,
+                port_name_buf.as_mut_ptr() as *mut u8,
+                (port_name_buf.len() * 2) as u32,
+                &mut required_size,
+            ) != 0
+            {
+                let port_name = String::from_utf16_lossy(
+                    &port_name_buf[..(required_size as usize / 2)],
+                )
+                .trim_end_matches('\0')
+                .to_string();
+
+                if port_name == com_port {
+                    // 找到匹配的 COM 口，获取设备描述
+                    let mut desc_buf = [0u16; 256];
+                    if SetupDiGetDeviceRegistryPropertyW(
+                        device_info_set,
+                        &dev_info,
+                        SPDRP_DEVICEDESC,
+                        &mut reg_type,
+                        desc_buf.as_mut_ptr() as *mut u8,
+                        (desc_buf.len() * 2) as u32,
+                        &mut required_size,
+                    ) != 0
+                    {
+                        let device_desc = String::from_utf16_lossy(
+                            &desc_buf[..(required_size as usize / 2)],
+                        )
+                        .trim_end_matches('\0')
+                        .to_string();
+
+                        // 获取驱动制造商
+                        let mut mfg_buf = [0u16; 256];
+                        let driver_mfg = if SetupDiGetDeviceRegistryPropertyW(
+                            device_info_set,
+                            &dev_info,
+                            SPDRP_MFG,
+                            &mut reg_type,
+                            mfg_buf.as_mut_ptr() as *mut u8,
+                            (mfg_buf.len() * 2) as u32,
+                            &mut required_size,
+                        ) != 0
+                        {
+                            String::from_utf16_lossy(
+                                &mfg_buf[..(required_size as usize / 2)],
+                            )
+                            .trim_end_matches('\0')
+                            .to_string()
+                        } else {
+                            String::new()
+                        };
+
+                        result = Some(ComPortUsbInfo {
+                            device_desc,
+                            driver_mfg,
+                        });
+                    }
+                    break;
+                }
+            }
+        }
+
+        SetupDiDestroyDeviceInfoList(device_info_set);
+        result
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn query_com_port_usb_info(_com_port: &str) -> Option<ComPortUsbInfo> {
+    None
+}
+
+// SetupAPI 属性常量（补充）
+#[cfg(target_os = "windows")]
+const SPDRP_DEVICEDESC: u32 = 0x00000000;
+
+// =============================================================================
 // 驱动签名检测
 // =============================================================================
 
