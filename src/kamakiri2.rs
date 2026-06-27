@@ -59,18 +59,21 @@ impl Preloader {
 
     fn da_setup(&mut self, lc: &[u8], ptr_da_bra: u32, watchdog: u32) -> Result<(), String> {
         debug!("[da_setup] ENTER: ptr_da_bra=0x{:08X}, watchdog=0x{:08X}", ptr_da_bra, watchdog);
-        
+
+        // 新增：多次彻底清理
+        self.flush_input();
+        std::thread::sleep(Duration::from_millis(30));
+
         // 对齐 Python da_read_write：先尝试 brom_register_access(0, 1) 和 read32(watchdog+0x50)
         // Python 用 try-except 包裹，失败时忽略
         // 这些调用可能会"唤醒"设备的 BROM 协议处理或清除某些状态
         debug!("[da_setup] trying brom_register_access(0, 1) and read32(watchdog+0x50)");
         let _ = self.brom_register_access(0, 0, 1, None, false);
         let _ = self.read32_brom(watchdog.wrapping_add(0x50), 1);
-        
-        // 清空可能的残留数据
-        debug!("[da_setup] calling flush_input() to clear any residual data");
+
+        // 再次清理
         self.flush_input();
-        
+
         // libusb 路径：执行 kamakiri2 steps 设置指针
         if self.device.is_libusb() {
             debug!("[da_setup] executing 3 kamakiri2 steps");
@@ -109,6 +112,7 @@ impl Preloader {
         } else {
             // libusb 路径：da_setup 后根据地址范围执行不同数量的 kamakiri2 steps
             self.da_setup(lc, ptr_da_bra, watchdog)?;
+            self.flush_input(); // 加强清理
 
             if addr < 0x40 {
             // addr < 0x40: 4 additional steps
@@ -176,6 +180,7 @@ impl Preloader {
         } else {
             // libusb 路径：需要 setup 和 steps
             self.da_setup(lc, ptr_da_bra, watchdog)?;
+            self.flush_input(); // 加强清理
 
             if addr < 0x40 {
                 // addr < 0x40: 4 steps
@@ -305,6 +310,9 @@ impl Preloader {
         // 必须在返回前彻底清空输入缓冲区，否则后续 BROM 指令（如 0xD1）
         // 的 echo 会读到这些残留数据（例如读到 0xA1 而不是 0xD1）。
         self.flush_input();
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = self.device.clear_halt_in();
+        let _ = self.device.clear_halt_out();
 
         Ok(())
     }
