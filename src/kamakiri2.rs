@@ -626,8 +626,8 @@ impl Preloader {
         Ok(())
     }
 
-    /// 通过 read32_brom (0xD1) 从 RAM 读取 preloader
-    /// 对齐刷机匣流程：bypass_security 后用 0xD1 从 0x200000 读取
+    /// 通过 read32_brom (0xD1) 从 RAM 读取完整 preloader
+    /// 对齐刷机匣流程：bypass_security 后用 0xD1 从 0x200000 循环读取
     pub fn dump_preloader_payload(
         &mut self,
         _debug: bool,
@@ -638,38 +638,84 @@ impl Preloader {
         if quiet {
             crate::usb::set_quiet_usb_read(true);
         }
-        info!("正在通过 read32_brom (0xD1) 提取 Preloader...");
+        info!("正在通过 read32_brom (0xD1) 提取完整 Preloader...");
 
-        // 对齐刷机匣流程：从 0x200000 读取 0x4000 字节（64KB）
-        let start_addr: u32 = 0x200000;
-        let initial_size: usize = 0x4000; // 64KB
-        let dwords = initial_size / 4;
+        let mut all_data = Vec::new();
+        let mut offset: u32 = 0x200000;
+        let chunk_size: usize = 0x4000; // 64KB 块
 
-        debug!("[dump] read32_brom(addr=0x{:08X}, dwords=0x{:X})", start_addr, dwords);
-        let data = self.read32_brom(start_addr, dwords)
-            .map_err(|e| format!("read32_brom 失败: {}", e))?;
+        // 先读 64KB
+        debug!("[dump] 读取第一块: addr=0x{:08X}, size=0x{:X}", offset, chunk_size);
+        let dwords = chunk_size / 4;
+        let data = self.read32_brom(offset, dwords)
+            .map_err(|e| format!("read32_brom 第一块失败: {}", e))?;
+        all_data.extend_from_slice(&data);
+        debug!("[dump] 已读取 {} 字节", all_data.len());
 
-        debug!("[dump] 读取到 {} 字节", data.len());
+        // 从 preloader 头部读取完整大小（偏移 0x20 处有 4 字节 LE 长度）
+        // 参考刷机匣日志：preloader 头部包含完整大小信息
+        let total_size = if all_data.len() >= 0x24 {
+            let size_bytes: [u8; 4] = all_data[0x20..0x24].try_into().unwrap();
+            let size = u32::from_le_bytes(size_bytes) as usize;
+            // 验证大小合理性（至少 64KB，不超过 2MB）
+            if size >= 0x10000 && size <= 0x200000 {
+                debug!("[dump] Preloader 完整大小: {} 字节", size);
+                size
+            } else {
+                debug!("[dump] 头部大小不合理 (0x{:X})，使用默认值", size);
+                0x4D000 // 319488 字节，接近 319676
+            }
+        } else {
+            0x4D000
+        };
+
+        // 循环读取剩余部分
+        while all_data.len() < total_size {
+            let remaining = total_size - all_data.len();
+            let read_size = std::cmp::min(remaining, chunk_size);
+            offset += read_size as u32;
+
+            debug!("[dump] 继续读取: addr=0x{:08X}, size=0x{:X} (已读 {}/{})",
+                offset, read_size, all_data.len(), total_size);
+
+            let dwords = read_size / 4;
+            match self.read32_brom(offset, dwords) {
+                Ok(data) => {
+                    all_data.extend_from_slice(&data);
+                }
+                Err(e) => {
+                    warn!("[dump] 读取失败: {}，已读 {} 字节", e, all_data.len());
+                    break;
+                }
+            }
+        }
+
+        debug!("[dump] 完整读取完成: {} 字节", all_data.len());
 
         // 搜索 MTK_BLOADER_INFO 提取文件名
-        let filename = if let Some(info_idx) = data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
+        let filename = if let Some(info_idx) = all_data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
             let filename_start = info_idx + 0x1B;
-            let filename_end = std::cmp::min(filename_start + 0x30, data.len());
-            let filename_bytes = &data[filename_start..filename_end];
+            let filename_end = std::cmp::min(filename_start + 0x30, all_data.len());
+            let filename_bytes = &all_data[filename_start..filename_end];
             let filename_len = filename_bytes
                 .iter()
                 .position(|&b| b == 0)
                 .unwrap_or(filename_bytes.len());
-            String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string()
+            let name = String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string();
+            if name.is_empty() {
+                "preloader_dumped.bin".to_string()
+            } else {
+                format!("preloader_{}.bin", name)
+            }
         } else {
             "preloader_dumped.bin".to_string()
         };
 
-        std::fs::write(&filename, &data)
+        std::fs::write(&filename, &all_data)
             .map_err(|e| format!("保存失败: {}", e))?;
 
-        info!("Preloader dump 成功！已保存 {} ({} 字节)", filename, data.len());
-        Ok((data, filename))
+        info!("Preloader dump 成功！已保存 {} ({} 字节)", filename, all_data.len());
+        Ok((all_data, filename))
     }
 
     pub fn dump_brom(&mut self, debug: bool) -> Result<Vec<u8>, String> {
