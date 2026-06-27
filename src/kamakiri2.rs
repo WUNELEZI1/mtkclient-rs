@@ -693,10 +693,10 @@ impl Preloader {
         debug!("[dump] 完整读取完成: {} 字节", all_data.len());
 
         // 搜索 MTK_BLOADER_INFO 提取文件名
-        // 对齐 Python mtkclient：data[idx + 0x1B:idx + 0x1B + 0x30].rstrip(b"\x00")
+        // 实测偏移：MTK_BLOADER_INFO 在 0x10，文件名在 0x25，偏移差为 0x15
         let filename = if let Some(info_idx) = all_data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
             debug!("[dump] 找到 MTK_BLOADER_INFO 在偏移 0x{:X}", info_idx);
-            let filename_start = info_idx + 0x1B;
+            let filename_start = info_idx + 0x15;
             let filename_end = std::cmp::min(filename_start + 0x30, all_data.len());
             let filename_bytes = &all_data[filename_start..filename_end];
             
