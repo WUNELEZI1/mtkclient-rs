@@ -70,6 +70,7 @@ impl Preloader {
         debug!("[da_setup] trying brom_register_access(0, 1) and read32(watchdog+0x50)");
         let _ = self.brom_register_access(0, 0, 1, None, false);
         let _ = self.read32_brom(watchdog.wrapping_add(0x50), 1);
+        self.flush_input();   // 新增
 
         // 再次清理
         self.flush_input();

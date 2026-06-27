@@ -520,6 +520,8 @@ impl Preloader {
             }
             Err(e) => {
                 debug!("[ECHO_1] read error for 0x{:02X}: {}", cmd, e);
+                self.flush_input();
+                std::thread::sleep(Duration::from_millis(10));
                 Ok(false)
             }
         }
@@ -907,6 +909,11 @@ impl Preloader {
             // Read mode: 读取 length_bytes 字节
             let byte_count = length_bytes as usize;
             let mut buf = vec![0u8; byte_count];
+
+            // 新增：读数据前强制 flush + clear_halt
+            self.flush_input();
+            let _ = self.device.clear_halt_in();
+
             self.device
                 .read_exact(&mut buf)
                 .map_err(|e| format!("brom_reg read data: {}", e))?;
@@ -925,6 +932,10 @@ impl Preloader {
     /// 读 32 位值（BROM 模式）
     /// 使用 0xD1 协议（无 mode 参数）：cmd → addr → len(dwords) → status1 → data → status2
     pub fn read32_brom(&mut self, addr: u32, dwords: usize) -> Result<Vec<u8>, String> {
+        // 新增：读数据前强制 flush + clear_halt
+        self.flush_input();
+        std::thread::sleep(Duration::from_millis(20));
+
         // 在执行关键 BROM 命令前，给予设备微小的准备时间
         if self.device.is_libusb() {
             // 注意：不要在此处调用 clear_halt，因为在 libusb-win32 下它可能导致 5 秒以上的驱动超时
@@ -935,17 +946,17 @@ impl Preloader {
         // echo 0xD1 命令（1 字节，对齐 Python echo(Cmd.READ32.value)）
         debug!("[read32_brom] 发送命令 0xD1");
         if !self.echo_1byte(0xD1)? {
-            return Err("read32_brom: echo 0xD1 不匹配".into());
+            debug!("read32_brom: echo 0xD1 不匹配（继续尝试）");
         }
         // address (4 字节大端)
         debug!("[read32_brom] 发送地址 0x{:08X}", addr);
         if !self.echo_4byte(addr)? {
-            return Err("read32_brom: echo addr 不匹配".into());
+            debug!("read32_brom: echo addr 不匹配（继续尝试）");
         }
         // length in dwords (4 字节大端)
         debug!("[read32_brom] 发送长度 {} dwords", dwords);
         if !self.echo_4byte(dwords as u32)? {
-            return Err("read32_brom: echo len 不匹配".into());
+            debug!("read32_brom: echo len 不匹配（继续尝试）");
         }
         // 读状态 2 字节（大端）
         let mut st = [0u8; 2];
