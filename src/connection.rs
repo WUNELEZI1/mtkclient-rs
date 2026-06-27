@@ -44,17 +44,18 @@ impl ConnectionManager {
     /// 统一设备初始化入口
     ///
     /// 流程：
-    /// 0. 前置检测：libusb 枚举 USB 设备，如果已有 MediaTek 设备（WinUSB 已安装），
-    ///    直接走 STEP 2 WinUSB 模式，跳过 COM 扫描（节省 21 秒）
-    /// 1. COM 口优先，最多重试 3 次（每次 5 秒超时）
-    /// 2. COM 口成功：握手 → 关看门狗 → 获取芯片信息 → 切 WinUSB
-    /// 3. COM 口 3 次都失败：降级到 USB 直连（跳过 BROM 握手初始化）
+    /// 0. 前置检测：libusb 枚举 USB 设备，如果已有 BROM 设备（WinUSB 已安装，PID=0x0003），
+    ///    直接走 WinUSB 模式，跳过 COM 扫描（节省时间）
+    /// 1. 无限等待串口设备出现（MediaTek USB Port）
+    /// 2. 找到串口后，尝试打开并握手（最多 3 次）
+    ///    ├── 成功 → 关看门狗 → 获取芯片信息 → 安装 WinUSB → 切换 USB 模式 → 返回
+    ///    └── 3 次都失败 → 降级到 WinUSB 直连
     pub fn smart_init(&mut self, context: &UsbContext) -> Result<(Preloader, DeviceMode), String> {
         info!("等待设备连接 (BROM: Vol+ + Vol- + Power)");
 
-        // === STEP 0: 前置检测 — libusb 能否直接发现设备（WinUSB 已安装） ===
-        // 如果设备已经有 WinUSB 驱动，就不会产生 COM 口，
-        // 走 COM 扫描只会浪费 21 秒然后超时降级。
+        // === STEP 0: 前置检测 — libusb 能否直接发现 BROM 设备（WinUSB 已安装，PID=0x0003） ===
+        // 如果设备已经有 WinUSB 驱动且处于 BROM 模式，就不会产生 COM 口，
+        // 走 COM 扫描只会无限等待。
         if let Some((pid, dev_type)) = usb::check_mediatek_device_via_libusb() {
             info!(
                 "[USB] 前置检测命中：BROM 设备 PID=0x{:04X}, type={:?}，跳过 COM 扫描",
@@ -63,72 +64,43 @@ impl ConnectionManager {
             return self.fallback_to_winusb(context);
         }
 
-        // 进一步检测：是否存在任何 MediaTek 设备（即便不是 0003）
-        // 如果发现 2008 等 PID，说明设备已经在 USB 上，串口扫描必然超时，
-        // 此时直接进入 WinUSB 等待模式。
-        if usb::has_any_mediatek_device() {
-            info!("[USB] 检测到非 BROM 模式的 MediaTek 设备，跳过 COM 扫描直接进入 USB 等待");
-            return self.fallback_to_winusb(context);
-        }
-
-        const MAX_COM_RETRY: usize = 3;
-        const COM_TIMEOUT_MS: u64 = 5000;
-        let mut com_retry_count = 0;
-
-        // === STEP 1: COM 口前置握手（最多重试 3 次） ===
-        while com_retry_count < MAX_COM_RETRY {
-            com_retry_count += 1;
-            info!(
-                "[COM] 尝试第 {}/{} 次连接...",
-                com_retry_count, MAX_COM_RETRY
-            );
-
-            match SerialPortTransport::find_brom_port_with_timeout(COM_TIMEOUT_MS) {
+        // === STEP 1: 无限等待串口设备出现 ===
+        loop {
+            match SerialPortTransport::find_brom_port_with_timeout(5000) {
                 Some(port_name) => {
-                    info!(
-                        "[COM] 发现 BROM COM 口: {} (attempt {}/{})",
-                        port_name, com_retry_count, MAX_COM_RETRY
-                    );
+                    info!("[COM] 发现 BROM COM 口: {}", port_name);
 
-                    match self.serial_handshake_and_switch(&port_name, context) {
-                        Ok(preloader) => {
-                            info!("{}", "COM 口前置握手成功，已切换到 WinUSB".green().bold());
-                            self.mode = DeviceMode::Brom;
-                            self.stage = UsbStage::Brom;
-                            self.port_name = Some(port_name);
-                            return Ok((preloader, DeviceMode::Brom));
-                        }
-                        Err(e) => {
-                            warn!(
-                                "[COM] 第 {}/{} 次握手失败: {}",
-                                com_retry_count, MAX_COM_RETRY, e
-                            );
-                            if com_retry_count < MAX_COM_RETRY {
-                                info!("[COM] 等待 2 秒后重试...");
-                                std::thread::sleep(Duration::from_secs(2));
+                    // === STEP 2: 尝试打开串口（最多 3 次） ===
+                    for attempt in 1..=3 {
+                        info!("[COM] 尝试第 {}/3 次打开串口...", attempt);
+                        match self.serial_handshake_and_switch(&port_name, context) {
+                            Ok(preloader) => {
+                                info!("{}", "COM 口前置握手成功，已切换到 WinUSB".green().bold());
+                                self.mode = DeviceMode::Brom;
+                                self.stage = UsbStage::Brom;
+                                self.port_name = Some(port_name);
+                                return Ok((preloader, DeviceMode::Brom));
+                            }
+                            Err(e) => {
+                                warn!("[COM] 第 {}/3 次握手失败: {}", attempt, e);
+                                if attempt < 3 {
+                                    info!("[COM] 等待 2 秒后重试...");
+                                    std::thread::sleep(Duration::from_secs(2));
+                                }
                             }
                         }
                     }
+
+                    // 3 次都失败，降级到 WinUSB
+                    warn!("[COM] 连续 3 次失败，降级到 WinUSB 直连模式");
+                    return self.fallback_to_winusb(context);
                 }
                 None => {
-                    warn!(
-                        "[COM] 第 {}/{} 次未找到 COM 口 (超时 {}ms)",
-                        com_retry_count, MAX_COM_RETRY, COM_TIMEOUT_MS
-                    );
-                    if com_retry_count < MAX_COM_RETRY {
-                        info!("[COM] 等待 2 秒后重试...");
-                        std::thread::sleep(Duration::from_secs(2));
-                    }
+                    // 串口设备未出现，继续等待（无限循环）
+                    debug!("[COM] 未找到 COM 口，继续等待...");
                 }
             }
         }
-
-        // === STEP 2: WinUSB 直连（降级路径） ===
-        warn!(
-            "[COM] 连续 {} 次失败，降级到 WinUSB 直连模式",
-            MAX_COM_RETRY
-        );
-        self.fallback_to_winusb(context)
     }
 
     /// WinUSB 直连（降级路径：设备已装 WinUSB 驱动 / COM 口扫描失败）
