@@ -385,6 +385,9 @@ pub fn detect_brom_driver_from_usb_bus() -> UsbBusDetectionResult {
                                 // 串口驱动，需要查找对应的 COM 口
                                 if let Some(com_port) = find_com_port_for_brom_device() {
                                     result = UsbBusDetectionResult::SerialPort(com_port);
+                                } else if let Some(com_port) = scan_mtk_com_port() {
+                                    // 备选方案：通过 serialport 扫描
+                                    result = UsbBusDetectionResult::SerialPort(com_port);
                                 } else {
                                     // 找不到 COM 口，但设备存在
                                     result = UsbBusDetectionResult::SerialPort(String::new());
@@ -397,6 +400,9 @@ pub fn detect_brom_driver_from_usb_bus() -> UsbBusDetectionResult {
                             // 设备描述不是 "MediaTek USB Port"，可能是其他设备
                             // 尝试通过 COM 口匹配
                             if let Some(com_port) = find_com_port_for_brom_device() {
+                                result = UsbBusDetectionResult::SerialPort(com_port);
+                            } else if let Some(com_port) = scan_mtk_com_port() {
+                                // 备选方案：通过 serialport 扫描
                                 result = UsbBusDetectionResult::SerialPort(com_port);
                             } else {
                                 result = UsbBusDetectionResult::Unknown(device_desc);
@@ -509,6 +515,37 @@ fn find_com_port_for_brom_device() -> Option<String> {
 
 #[cfg(not(target_os = "windows"))]
 fn find_com_port_for_brom_device() -> Option<String> {
+    None
+}
+
+/// 备选方案：通过 serialport 扫描 MTK BROM 设备
+///
+/// 当 SetupAPI 无法获取 COM 口时，使用 serialport::available_ports() 动态扫描
+#[cfg(target_os = "windows")]
+fn scan_mtk_com_port() -> Option<String> {
+    match serialport::available_ports() {
+        Ok(ports) => {
+            for port in ports {
+                if let serialport::SerialPortType::UsbPort(ref info) = port.port_type {
+                    // BROM 模式: VID=0E8D PID=0003
+                    if info.vid == 0x0E8D && info.pid == 0x0003 {
+                        debug!("[USB_BUS] serialport 扫描找到 MTK BROM 设备: {}", port.port_name);
+                        return Some(port.port_name);
+                    }
+                }
+            }
+            debug!("[USB_BUS] serialport 扫描未找到 MTK BROM 设备");
+            None
+        }
+        Err(e) => {
+            debug!("[USB_BUS] serialport 扫描失败: {}", e);
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn scan_mtk_com_port() -> Option<String> {
     None
 }
 
