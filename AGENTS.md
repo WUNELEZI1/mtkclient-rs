@@ -1358,27 +1358,39 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
     - 验证：cargo build / cargo fmt / cargo clippy 全部通过，0 error / 0 warning
     - commit: 8751c41 refactor: 自动 dump 改回 dump_preloader_payload（payload 方式），绕过 0xD1 超时
 
-31. **smart_init 恢复串口优先逻辑**（2026-06-26）：
+31. **smart_init 强制串口优先逻辑**（2026-06-26）：
     - 问题：smart_init 检测到"非 BROM 模式的 MediaTek 设备"（如 PID=0x2008 Preloader 模式）时，直接跳过 COM 扫描进入 WinUSB 等待，但设备实际是串口模式
-    - 根因：`has_any_mediatek_device()` 检测过于宽泛，任何 MediaTek PID 都会跳过 COM 扫描
+    - 根因：
+      1. `has_any_mediatek_device()` 检测过于宽泛，任何 MediaTek PID 都会跳过 COM 扫描
+      2. STEP 0 前置检测（`check_mediatek_device_via_libusb`）在设备处于 Preloader 模式时误判，跳过串口握手
     - 修复：
-      - `src/connection.rs` — 移除 `has_any_mediatek_device()` 检测逻辑
+      - `src/connection.rs` — 移除 STEP 0 前置检测（`check_mediatek_device_via_libusb`）
+      - 移除 `has_any_mediatek_device()` 检测逻辑
       - 改为无限等待串口设备出现（`find_brom_port_with_timeout` 循环）
       - 找到串口后尝试打开并握手（最多 3 次）
       - 3 次都失败才降级到 WinUSB 直连
     - 新流程：
       ```
-      STEP 0: 前置检测 — libusb 发现 BROM 设备（PID=0x0003，WinUSB 已安装）
-        └── 命中 → 直接 WinUSB 模式
-      
       STEP 1: 无限等待串口设备出现（MediaTek USB Port）
         └── 找到 → 尝试打开串口（最多 3 次）
           ├── 成功 → 握手 → 关看门狗 → 获取芯片信息 → 安装 WinUSB → 切换 USB 模式 → 返回
           └── 3 次失败 → 降级到 WinUSB 直连
       ```
-    - 优势：串口优先，避免误判；无限等待串口，适应慢速设备
+    - 优势：强制串口优先，确保 BROM 握手完成，避免误判
     - 文件：`src/connection.rs`
-    - 验证：cargo build 通过，0 error / 0 warning
-    - commit: 待提交
+    - 验证：cargo build / cargo fmt / cargo clippy 全部通过，0 error / 0 warning
+    - commit: 693a664
+
+32. **Kamakiri2 强制 libusb 模式**（2026-06-26）：
+    - 问题：`inject_payload` 在串口模式下尝试使用 `brom_register_access` 路径，但实际 Kamakiri2 exploit 需要 `ctrl_transfer`（仅 libusb 支持）
+    - 根因：`inject_payload` 未强制检查设备类型，串口模式下 `is_libusb()` 返回 false，走错路径
+    - 修复：
+      - `src/kamakiri2.rs` — `inject_payload` 开头添加检查：`if !self.device.is_libusb()` 直接报错
+      - 错误信息：`"Kamakiri2 需要 libusb 设备（ctrl_transfer），当前为串口模式，请先切换到 WinUSB"`
+      - 移除串口模式的 fallback 逻辑（`else` 分支）
+    - 优势：明确错误提示，避免在串口模式下执行无效的 exploit
+    - 文件：`src/kamakiri2.rs`
+    - 验证：cargo build / cargo fmt / cargo clippy 全部通过，0 error / 0 warning
+    - commit: 693a664
 
 
