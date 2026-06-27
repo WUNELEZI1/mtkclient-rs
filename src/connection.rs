@@ -44,25 +44,12 @@ impl ConnectionManager {
     /// 统一设备初始化入口
     ///
     /// 流程：
-    /// 0. 前置检测：libusb 枚举 USB 设备，如果已有 BROM 设备（WinUSB 已安装，PID=0x0003），
-    ///    直接走 WinUSB 模式，跳过 COM 扫描（节省时间）
     /// 1. 无限等待串口设备出现（MediaTek USB Port）
     /// 2. 找到串口后，尝试打开并握手（最多 3 次）
-    ///    ├── 成功 → 关看门狗 → 获取芯片信息 → 安装 WinUSB → 切换 USB 模式 → 返回
+    ///    ├── 成功 → BROM 握手 → 关看门狗 → 获取芯片信息 → 安装 WinUSB → 切换 USB 模式 → 返回
     ///    └── 3 次都失败 → 降级到 WinUSB 直连
     pub fn smart_init(&mut self, context: &UsbContext) -> Result<(Preloader, DeviceMode), String> {
         info!("等待设备连接 (BROM: Vol+ + Vol- + Power)");
-
-        // === STEP 0: 前置检测 — libusb 能否直接发现 BROM 设备（WinUSB 已安装，PID=0x0003） ===
-        // 如果设备已经有 WinUSB 驱动且处于 BROM 模式，就不会产生 COM 口，
-        // 走 COM 扫描只会无限等待。
-        if let Some((pid, dev_type)) = usb::check_mediatek_device_via_libusb() {
-            info!(
-                "[USB] 前置检测命中：BROM 设备 PID=0x{:04X}, type={:?}，跳过 COM 扫描",
-                pid, dev_type
-            );
-            return self.fallback_to_winusb(context);
-        }
 
         // === STEP 1: 无限等待串口设备出现 ===
         loop {
