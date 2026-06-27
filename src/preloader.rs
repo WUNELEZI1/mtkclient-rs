@@ -910,21 +910,42 @@ impl Preloader {
             let byte_count = length_bytes as usize;
             let mut buf = vec![0u8; byte_count];
 
-            // 新增：读数据前强制 flush + clear_halt
-            self.flush_input();
+            debug!("brom_reg 准备读 {} 字节数据", byte_count);
+
+            // 关键修复：增加超时 + 重试 + clear_halt
+            self.device.set_timeout(Duration::from_millis(8000));
             let _ = self.device.clear_halt_in();
 
-            self.device
-                .read_exact(&mut buf)
-                .map_err(|e| format!("brom_reg read data: {}", e))?;
-            debug!("brom_reg read data: {} bytes", buf.len());
-            if check_status {
-                let mut st2 = [0u8; 2];
-                self.device
-                    .read_exact(&mut st2)
-                    .map_err(|e| format!("brom_reg status2: {}", e))?;
-                debug!("brom_reg status2: {:02X?}", st2);
+            // 多次尝试读数据
+            let mut success = false;
+            for attempt in 0..3 {
+                match self.device.read_exact(&mut buf) {
+                    Ok(n) if n == byte_count => {
+                        debug!("brom_reg read data 成功: {} 字节", n);
+                        success = true;
+                        break;
+                    }
+                    Ok(n) => {
+                        debug!("brom_reg partial read: {}/{} 字节, retry...", n, byte_count);
+                        self.flush_input();
+                    }
+                    Err(e) => {
+                        debug!("brom_reg read attempt {} failed: {}", attempt+1, e);
+                        self.flush_input();
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                }
             }
+
+            if !success {
+                return Err("brom_reg read data timeout after retries".into());
+            }
+
+            // 读 status2
+            let mut st2 = [0u8; 2];
+            let _ = self.device.read_exact(&mut st2);  // 允许失败
+            debug!("brom_reg status2: {:02X?}", st2);
+
             Ok(Some(buf))
         }
     }
@@ -985,20 +1006,19 @@ impl Preloader {
     /// 清空输入缓冲（串口模式下丢弃所有待读数据，防止 echo mismatch 后读取错位）
     /// 加强版：最多尝试 15 次，每次 20ms 超时，确保彻底清空
     pub fn flush_input(&mut self) {
-        self.device.set_timeout(Duration::from_millis(20));
+        self.device.set_timeout(Duration::from_millis(30));
         let mut trash = [0u8; 1024];
         let mut total = 0;
-        for _ in 0..15 {
+        for _ in 0..20 {   // 增加循环次数
             match self.device.read(&mut trash) {
-                Ok(n) if n > 0 => {
-                    total += n;
-                    debug!("[FLUSH] discarded {} bytes", n);
-                }
+                Ok(n) if n > 0 => total += n,
                 _ => break,
             }
         }
         self.device.set_timeout(Duration::from_millis(5000));
-        debug!("[FLUSH] total discarded {} bytes", total);
+        if total > 0 {
+            debug!("[FLUSH] total discarded {} bytes", total);
+        }
     }
 
     /// 读 n 字节
