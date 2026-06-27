@@ -111,7 +111,9 @@ impl Preloader {
                 Ok(r.unwrap_or_default())
             }
         } else {
-            // libusb 路径：da_setup 后根据地址范围执行不同数量的 kamakiri2 steps
+            // libusb 路径：da_setup 前清理 + da_setup 后清理
+            self.flush_input();
+            std::thread::sleep(Duration::from_millis(50));
             self.da_setup(lc, ptr_da_bra, watchdog)?;
             self.flush_input(); // 加强清理
 
@@ -179,7 +181,9 @@ impl Preloader {
                 Ok(())
             }
         } else {
-            // libusb 路径：需要 setup 和 steps
+            // libusb 路径：da_setup 前清理 + da_setup 后清理
+            self.flush_input();
+            std::thread::sleep(Duration::from_millis(50));
             self.da_setup(lc, ptr_da_bra, watchdog)?;
             self.flush_input(); // 加强清理
 
@@ -589,8 +593,14 @@ impl Preloader {
         debug!("[dump] inject_payload: size={}", payload.len());
         self.inject_payload(&payload, 0xC1C2C3C4)?;
 
-        // 🔥 直接读 4 字节长度（处理可能的 ack）
-        self.device.set_timeout(Duration::from_millis(5000));
+        // === dump payload 注入后彻底清理 + 长超时准备 ===
+        debug!("[dump] payload 注入成功，彻底清理 USB 缓冲");
+        self.flush_input();
+        std::thread::sleep(Duration::from_millis(150));
+        let _ = self.device.clear_halt_in();
+        let _ = self.device.clear_halt_out();
+
+        self.device.set_timeout(Duration::from_millis(12000));  // 给 dump payload 更长准备时间
         info!("等待 preloader 数据就绪...");
         let length = loop {
             let mut len_buf = [0u8; 4];
