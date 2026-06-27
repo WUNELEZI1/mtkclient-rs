@@ -1,4 +1,5 @@
-use crate::preloader::{BromPortResult, Preloader, SerialPortTransport};
+use crate::driver::{UsbBusDetectionResult, detect_brom_driver_from_usb_bus};
+use crate::preloader::{Preloader, SerialPortTransport};
 use crate::usb;
 use crate::usb::{UsbContext, UsbStage};
 use colored::Colorize;
@@ -44,7 +45,7 @@ impl ConnectionManager {
     /// 统一设备初始化入口
     ///
     /// 流程：
-    /// 1. 无限等待设备出现（MediaTek USB Port）
+    /// 1. 无限等待设备出现（通过 USB 总线检测）
     /// 2. 检测到 WinUSB 驱动（libwdi）→ 直接走 WinUSB 直连
     /// 3. 检测到串口驱动（MediaTek）→ 打开串口握手 → 切换到 WinUSB
     ///    ├── 成功 → BROM 握手 → 关看门狗 → 获取芯片信息 → 安装 WinUSB → 切换 USB 模式 → 返回
@@ -52,18 +53,27 @@ impl ConnectionManager {
     pub fn smart_init(&mut self, context: &UsbContext) -> Result<(Preloader, DeviceMode), String> {
         info!("等待设备连接 (BROM: Vol+ + Vol- + Power)");
 
-        // === STEP 1: 无限等待设备出现 ===
+        // === 无限等待设备出现 ===
         loop {
-            match SerialPortTransport::find_brom_port_with_timeout(5000) {
-                Some(BromPortResult::WinUsbDevice) => {
+            // 使用 USB 总线检测（只查询，不打开设备）
+            let detection_result = detect_brom_driver_from_usb_bus();
+
+            match detection_result {
+                UsbBusDetectionResult::WinUsbReady => {
                     // 检测到 WinUSB 驱动（libwdi），直接走 WinUSB 直连
                     info!("{}", "[USB] 检测到 WinUSB 驱动 (libwdi)，直接走 WinUSB 直连".green().bold());
                     return self.fallback_to_winusb(context);
                 }
-                Some(BromPortResult::SerialPort(port_name)) => {
+                UsbBusDetectionResult::SerialPort(port_name) => {
+                    if port_name.is_empty() {
+                        // 找不到 COM 口，降级到 WinUSB
+                        warn!("[COM] 找不到 BROM 设备对应的 COM 口，降级到 WinUSB 直连");
+                        return self.fallback_to_winusb(context);
+                    }
+
                     info!("[COM] 发现 BROM COM 口: {}", port_name);
 
-                    // === STEP 2: 尝试打开串口（最多 3 次） ===
+                    // === 尝试打开串口（最多 3 次） ===
                     for attempt in 1..=3 {
                         info!("[COM] 尝试第 {}/3 次打开串口...", attempt);
                         match self.serial_handshake_and_switch(&port_name, context) {
@@ -88,9 +98,15 @@ impl ConnectionManager {
                     warn!("[COM] 连续 3 次失败，降级到 WinUSB 直连模式");
                     return self.fallback_to_winusb(context);
                 }
-                None => {
+                UsbBusDetectionResult::Unknown(driver_mfg) => {
+                    // 未知驱动，尝试 WinUSB 直连
+                    warn!("[USB] 未知驱动: {}，尝试 WinUSB 直连", driver_mfg);
+                    return self.fallback_to_winusb(context);
+                }
+                UsbBusDetectionResult::NotFound => {
                     // 设备未出现，继续等待（无限循环）
-                    debug!("[COM] 未找到设备，继续等待...");
+                    debug!("[USB] 未找到 BROM 设备，继续等待...");
+                    std::thread::sleep(Duration::from_millis(200));
                 }
             }
         }
