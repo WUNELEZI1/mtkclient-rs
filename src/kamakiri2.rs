@@ -652,21 +652,21 @@ impl Preloader {
         all_data.extend_from_slice(&data);
         debug!("[dump] 已读取 {} 字节", all_data.len());
 
-        // 从 preloader 头部读取完整大小（偏移 0x20 处有 4 字节 LE 长度）
-        // 参考刷机匣日志：preloader 头部包含完整大小信息
-        let total_size = if all_data.len() >= 0x24 {
-            let size_bytes: [u8; 4] = all_data[0x20..0x24].try_into().unwrap();
+        // 从 preloader 头部读取完整大小（偏移 0x1C 处有 4 字节 LE 长度）
+        // 对齐 Python mtkclient：preloader 头部结构
+        let total_size = if all_data.len() >= 0x20 {
+            let size_bytes: [u8; 4] = all_data[0x1C..0x20].try_into().unwrap();
             let size = u32::from_le_bytes(size_bytes) as usize;
             // 验证大小合理性（至少 64KB，不超过 2MB）
             if size >= 0x10000 && size <= 0x200000 {
-                debug!("[dump] Preloader 完整大小: {} 字节", size);
+                debug!("[dump] Preloader 完整大小: {} 字节 (0x{:X})", size, size);
                 size
             } else {
                 debug!("[dump] 头部大小不合理 (0x{:X})，使用默认值", size);
-                0x4D000 // 319488 字节，接近 319676
+                0x4E000 // 319488 字节
             }
         } else {
-            0x4D000
+            0x4E000
         };
 
         // 循环读取剩余部分
@@ -693,21 +693,30 @@ impl Preloader {
         debug!("[dump] 完整读取完成: {} 字节", all_data.len());
 
         // 搜索 MTK_BLOADER_INFO 提取文件名
+        // 对齐 Python mtkclient：data[idx + 0x1B:idx + 0x1B + 0x30].rstrip(b"\x00")
         let filename = if let Some(info_idx) = all_data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
+            debug!("[dump] 找到 MTK_BLOADER_INFO 在偏移 0x{:X}", info_idx);
             let filename_start = info_idx + 0x1B;
             let filename_end = std::cmp::min(filename_start + 0x30, all_data.len());
             let filename_bytes = &all_data[filename_start..filename_end];
+            
+            // 去除末尾的 0 字节（对齐 Python 的 rstrip(b"\x00")）
             let filename_len = filename_bytes
                 .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(filename_bytes.len());
-            let name = String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string();
-            if name.is_empty() {
-                "preloader_dumped.bin".to_string()
-            } else {
+                .rposition(|&b| b != 0)
+                .map(|pos| pos + 1)
+                .unwrap_or(0);
+            
+            if filename_len > 0 {
+                let name = String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string();
+                debug!("[dump] 提取的文件名: {}", name);
                 format!("preloader_{}.bin", name)
+            } else {
+                debug!("[dump] 文件名为空，使用默认名");
+                "preloader_dumped.bin".to_string()
             }
         } else {
+            debug!("[dump] 未找到 MTK_BLOADER_INFO，使用默认文件名");
             "preloader_dumped.bin".to_string()
         };
 
