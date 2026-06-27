@@ -58,21 +58,28 @@ impl Preloader {
     }
 
     fn da_setup(&mut self, lc: &[u8], ptr_da_bra: u32, watchdog: u32) -> Result<(), String> {
-        // 对齐 Python 的 try-except：da_setup 失败后清空缓冲区
-        let _ = self.brom_register_access(0, 0, 1, None, true);
-        let _ = self.read32_brom(watchdog + 0x50, 1);
+        debug!("[da_setup] ENTER: ptr_da_bra=0x{:08X}, watchdog=0x{:08X}", ptr_da_bra, watchdog);
         
-        // 关键修复：da_setup 失败后，设备端可能残留部分响应数据
-        // Python 的 try-except 会直接跳到 kamakiri2 steps，但 Rust 会继续执行
-        // 这里调用 flush_input 清空缓冲区，对齐 Python 行为
+        // 对齐 Python da_read_write：先尝试 brom_register_access(0, 1) 和 read32(watchdog+0x50)
+        // Python 用 try-except 包裹，失败时忽略
+        // 这些调用可能会"唤醒"设备的 BROM 协议处理或清除某些状态
+        debug!("[da_setup] trying brom_register_access(0, 1) and read32(watchdog+0x50)");
+        let _ = self.brom_register_access(0, 0, 1, None, false);
+        let _ = self.read32_brom(watchdog.wrapping_add(0x50), 1);
+        
+        // 清空可能的残留数据
+        debug!("[da_setup] calling flush_input() to clear any residual data");
         self.flush_input();
         
-        // 串口路径：跳过 kamakiri2 steps（对齐刷机匣日志）
+        // libusb 路径：执行 kamakiri2 steps 设置指针
         if self.device.is_libusb() {
+            debug!("[da_setup] executing 3 kamakiri2 steps");
             self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(5))?;
             self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(6))?;
             self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_add(7))?;
+            debug!("[da_setup] 3 kamakiri2 steps completed");
         }
+        debug!("[da_setup] EXIT");
         Ok(())
     }
 
@@ -104,28 +111,28 @@ impl Preloader {
             self.da_setup(lc, ptr_da_bra, watchdog)?;
 
             if addr < 0x40 {
-                // addr < 0x40: 4 additional steps
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(3))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(5))?;
-                std::thread::sleep(Duration::from_millis(50));
-                let r = self.brom_register_access(0, addr, len, None, true)?;
-                Ok(r.unwrap_or_default())
-            } else {
-                // addr >= 0x40: 3 additional steps (-2, -3, -4), then use addr - 0x40
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(3))?;
-                self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
-                let bra_addr = addr.wrapping_sub(0x40);
-                debug!(
-                    "[da_read] using bra_addr=0x{:08X} (libusb path, addr-0x40)",
-                    bra_addr
-                );
-                std::thread::sleep(Duration::from_millis(50));
-                let r = self.brom_register_access(0, bra_addr, len, None, true)?;
-                Ok(r.unwrap_or_default())
-            }
+            // addr < 0x40: 4 additional steps
+            self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
+            self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(3))?;
+            self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
+            self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(5))?;
+            // 对齐 Python：steps 后直接调用 brom_register_access，没有 sleep
+            let r = self.brom_register_access(0, addr, len, None, true)?;
+            Ok(r.unwrap_or_default())
+        } else {
+            // addr >= 0x40: 3 additional steps (-2, -3, -4), then use addr - 0x40
+            self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(2))?;
+            self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(3))?;
+            self.kamakiri2_step(lc, ptr_da_bra, ptr_da_bra.wrapping_sub(4))?;
+            let bra_addr = addr.wrapping_sub(0x40);
+            debug!(
+                "[da_read] using bra_addr=0x{:08X} (libusb path, addr-0x40)",
+                bra_addr
+            );
+            // 对齐 Python：steps 后直接调用 brom_register_access，没有 sleep
+            let r = self.brom_register_access(0, bra_addr, len, None, true)?;
+            Ok(r.unwrap_or_default())
+        }
         }
     }
 
@@ -211,7 +218,10 @@ impl Preloader {
         watchdog: u32,
     ) -> Result<u32, String> {
         let send_ptr_addr = self.ptr_send_addr();
+        debug!("[read_payload_address] send_ptr_addr=0x{:08X}", send_ptr_addr);
+        debug!("[read_payload_address] calling da_read to read from device memory");
         let ptr_send_data = self.da_read(lc, ptr_da_bra, ptr_da, watchdog, send_ptr_addr, 4)?;
+        debug!("[read_payload_address] da_read returned: {:02X?}", ptr_send_data);
         Ok(unpack_u32(&ptr_send_data) + 8)
     }
 

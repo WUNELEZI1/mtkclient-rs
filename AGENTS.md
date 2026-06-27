@@ -1393,4 +1393,15 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
     - 验证：cargo build / cargo fmt / cargo clippy 全部通过，0 error / 0 warning
     - commit: 693a664
 
+33. **恢复 da_setup 中的 BROM 命令探测**（2026-06-27）：
+    - 问题：`da_read` 在调用 `brom_register_access(0xDA)` 时超时
+    - 根因：之前移除了 `da_setup` 中的 `brom_register_access(0, 1)` 和 `read32(watchdog+0x50)` 调用，导致设备 BROM 协议状态未正确初始化
+    - 修复：
+      - `src/kamakiri2.rs` — `da_setup` 恢复先尝试 `brom_register_access(0, 1)` 和 `read32(watchdog+0x50)` 调用
+      - 用 `let _ = ...` 忽略错误，对齐 Python `da_read_write` 的 `try-except` 逻辑
+      - 这些调用在 kamakiri2 steps 之前执行，可能"唤醒"设备的 BROM 协议处理或清除某些状态
+    - 对齐 Python mtkclient：`kamakiri2.py` 第 47-60 行的 `da_read_write` 函数
+    - 文件：`src/kamakiri2.rs`
+    - 验证：cargo build / cargo clippy 全部通过，0 error / 0 warning
+
 
