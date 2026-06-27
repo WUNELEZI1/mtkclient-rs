@@ -593,62 +593,55 @@ impl Preloader {
         debug!("[dump] inject_payload: size={}", payload.len());
         self.inject_payload(&payload, 0xC1C2C3C4)?;
 
-        // === dump payload 注入（关键加强版）===
-        debug!("[dump] payload 注入成功 → 极致 flush + clear_halt");
-        for i in 0..8 {
-            self.flush_input();
-            std::thread::sleep(Duration::from_millis(120));
-            if i % 3 == 0 {
-                let _ = self.device.clear_halt_in();
-                let _ = self.device.clear_halt_out();
-            }
-        }
+        // === payload 注入成功，清理 USB 端点状态（不清空数据缓冲区）===
+        info!("[dump] payload 注入成功，清理 USB 端点...");
+        
+        // 只清理端点状态，不清空缓冲区（设备正在发送数据）
+        let _ = self.device.clear_halt_in();
+        let _ = self.device.clear_halt_out();
+        
+        // 短暂等待设备准备数据
+        std::thread::sleep(Duration::from_millis(100));
 
-        self.device.set_timeout(Duration::from_millis(20000)); // 20秒给 preloader dump 准备
-        info!("等待 preloader dump payload 执行并发送数据 (20s)...");
+        self.device.set_timeout(Duration::from_millis(15000));
+        info!("等待 preloader 数据...");
 
-        // 直接读长度 + 数据（不再走 brom_register_access）
+        // 直接读取长度（4 字节小端）
         let mut len_buf = [0u8; 4];
-        self.device.read_exact(&mut len_buf)
-            .map_err(|e| format!("dump_preloader 读长度失败: {}", e))?;
+        self.device
+            .read_exact(&mut len_buf)
+            .map_err(|e| format!("读取 preloader 长度失败: {}", e))?;
 
         let length = u32::from_le_bytes(len_buf) as usize;
-        info!("Preloader 数据长度: 0x{:X} ({}) 字节", length, length);
-
-        if length == 0 || length > 0x100000 {
-            return Err("Preloader 长度异常".into());
+        if length == 0 || length > 0x200000 {
+            return Err(format!("Preloader 长度异常: 0x{:X}", length));
         }
 
-        let mut all_data = vec![0u8; length];
-        self.device.read_exact(&mut all_data)
-            .map_err(|e| format!("dump_preloader 读数据失败: {}", e))?;
+        info!("Preloader 长度: 0x{:X} ({} 字节)", length, length);
 
-        debug!("Preloader dump 完成 ({} 字节)", all_data.len());
+        // 读取 preloader 数据
+        let mut preloader_data = vec![0u8; length];
+        self.device
+            .read_exact(&mut preloader_data)
+            .map_err(|e| format!("读取 preloader 数据失败: {}", e))?;
 
-        debug!(
-            "dump_preloader_payload: read_exact completed, {} bytes",
-            all_data.len()
-        );
+        info!("Preloader 读取完成: {} 字节", preloader_data.len());
 
-        // 从 MTK_BLOADER_INFO 提取原始文件名
-        let preloader = all_data;
-        let filename =
-            if let Some(info_idx) = preloader.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
-                let filename_start = info_idx + 0x1B;
-                let filename_end = std::cmp::min(filename_start + 0x30, preloader.len());
-                let filename_bytes = &preloader[filename_start..filename_end];
-                let filename_len = filename_bytes
-                    .iter()
-                    .position(|&b| b == 0)
-                    .unwrap_or(filename_bytes.len());
-                String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string()
-            } else {
-                "preloader_dumped.bin".to_string()
-            };
+        // 从数据中提取文件名
+        let filename = if let Some(info_idx) = preloader_data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
+            let filename_start = info_idx + 0x1B;
+            let filename_end = std::cmp::min(filename_start + 0x30, preloader_data.len());
+            let filename_bytes = &preloader_data[filename_start..filename_end];
+            let filename_len = filename_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(filename_bytes.len());
+            String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string()
+        } else {
+            "preloader_dumped.bin".to_string()
+        };
 
-        debug!("dump_preloader_payload: done, filename={}", filename);
-
-        Ok((preloader, filename))
+        Ok((preloader_data, filename))
     }
 
     pub fn dump_brom(&mut self, debug: bool) -> Result<Vec<u8>, String> {
