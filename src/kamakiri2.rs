@@ -592,10 +592,20 @@ impl Preloader {
         self.inject_payload(&payload, 0xA1A2A3A4)?;
         debug!("patcher payload 注入完成");
 
-        // 根据 mtkclient-2.0.1\usb_debug.log (第647-648行):
-        // 在收到 a1a2a3a4 后，原版工具直接发送 D1 (READ32) 命令，
-        // 并没有执行 drain、handshake 或获取 ID 的操作。
-        // 额外的操作可能导致设备端 Patcher 状态异常或 USB 管道阻塞。
+        // 对齐刷机匣流程：Kamakiri2 成功后重新握手恢复 BROM 状态
+        // 参考日志：mainLogs_2026062719.log 第 482-505 行
+        // Payload 运行后设备状态改变，需要重新握手才能响应 0xD1 命令
+        info!("Kamakiri2 exploit 成功，开始重新握手恢复 BROM 状态...");
+
+        // 清理 USB管道残留数据
+        self.flush_input();
+        std::thread::sleep(Duration::from_millis(100));
+
+        // 执行 BROM 握手（A0→5F, 0A→F5, 50→AF, 05→FA）
+        if !self.device.do_handshake()? {
+            return Err("重新握手失败".into());
+        }
+        debug!("BROM 重新握手成功");
 
         info!("安全保护已成功绕过");
         Ok(())
