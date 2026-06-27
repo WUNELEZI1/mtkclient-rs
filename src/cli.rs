@@ -90,7 +90,8 @@ pub struct Cli {
           lock            - 锁定 Bootloader\n\
           reset           - 重置设备\n\
           print-scatter   - 打印 scatter 到屏幕并保存文件\n\
-          enable-adb-on-da - 在 DA 模式下开启 ADB"
+          enable-adb-on-da - 在 DA 模式下开启 ADB\n\
+          check-driversign - 检查 BROM 设备使用的 INF 文件名"
     )]
     pub command: Option<String>,
 

@@ -1421,7 +1421,8 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
     - 修复：
       - `src/usb.rs` — `read_exact` 增加 `transferred=0` 时 sleep 10ms 重试逻辑，对齐 Python `usbread`
       - `src/preloader.rs` — `flush_input` 缓冲区改为 1024 字节，超时改为 30ms，恢复 5000ms
-      - `src/kamakiri2.rs` — `dump_preloader_payload` 注入后立即 `flush_input` + `clear_halt_in`，读到 ack 时 flush 后继续，长度范围放宽到 `0x1000..=0x100000`
+      - `src/kamakiri2.rs` — `dump_preloader_payload` 注入后直接读取长度（不再 flush/clear_halt_in），读到 ack 时继续读取真正的长度，长度范围放宽到 `0x1000..=0x100000`
+    - 关键：`inject_payload` 已经读取了 ack，不应该再 flush，否则会导致数据丢失
     - 文件：`src/usb.rs`, `src/preloader.rs`, `src/kamakiri2.rs`
     - 验证：cargo build / cargo clippy 全部通过，0 error / 0 warning
 

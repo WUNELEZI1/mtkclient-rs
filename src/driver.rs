@@ -27,7 +27,7 @@ const MTK_BROM_PID: u16 = 0x0003;
 const INF_NAME: &str = "mtk_brom_winusb.inf";
 
 // =============================================================================
-// Windows API FFI: UpdateDriverForPlugAndPlayDevicesW
+// Windows API FFI: SetupAPI + UpdateDriverForPlugAndPlayDevicesW
 // =============================================================================
 
 #[cfg(target_os = "windows")]
@@ -37,6 +37,25 @@ struct Hwnd__ {
 }
 #[cfg(target_os = "windows")]
 type Hwnd = *mut Hwnd__;
+
+/// SetupAPI 设备信息集句柄（不透明）
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct Hdevinfo__ {
+    _unused: [u8; 0],
+}
+#[cfg(target_os = "windows")]
+type Hdevinfo = *mut Hdevinfo__;
+
+/// SetupAPI 设备信息结构
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct SpDevinfoData {
+    cb_size: u32,
+    class_guid: [u8; 16],
+    dev_inst: u32,
+    reserved: usize,
+}
 
 #[cfg(target_os = "windows")]
 #[link(name = "setupapi")]
@@ -52,12 +71,274 @@ unsafe extern "system" {
         installFlags: u32,
         bRebootRequired: *mut i32,
     ) -> i32;
+
+    /// `SetupDiGetClassDevsW` - 获取设备信息集
+    fn SetupDiGetClassDevsW(
+        class_guid: *const u8,
+        enumerator: *const u16,
+        hwnd_parent: Hwnd,
+        flags: u32,
+    ) -> Hdevinfo;
+
+    /// `SetupDiEnumDeviceInfo` - 枚举设备信息集中的设备
+    fn SetupDiEnumDeviceInfo(
+        device_info_set: Hdevinfo,
+        member_index: u32,
+        device_info_data: *mut SpDevinfoData,
+    ) -> i32;
+
+    /// `SetupDiGetDeviceRegistryPropertyW` - 获取设备注册表属性
+    fn SetupDiGetDeviceRegistryPropertyW(
+        device_info_set: Hdevinfo,
+        device_info_data: *const SpDevinfoData,
+        property: u32,
+        property_reg_data_type: *mut u32,
+        property_buffer: *mut u8,
+        property_buffer_size: u32,
+        required_size: *mut u32,
+    ) -> i32;
+
+    /// `SetupDiDestroyDeviceInfoList` - 释放设备信息集
+    fn SetupDiDestroyDeviceInfoList(device_info_set: Hdevinfo) -> i32;
 }
 
 #[cfg(target_os = "windows")]
 const INSTALLFLAG_FORCE: u32 = 0x00000001;
 #[cfg(target_os = "windows")]
 const INSTALLFLAG_NONINTERACTIVE: u32 = 0x00000004;
+
+// SetupAPI 常量
+#[cfg(target_os = "windows")]
+const DIGCF_PRESENT: u32 = 0x00000002;
+#[cfg(target_os = "windows")]
+const DIGCF_ALLCLASSES: u32 = 0x00000004;
+#[cfg(target_os = "windows")]
+const SPDRP_DRIVER: u32 = 0x0000000C;
+#[cfg(target_os = "windows")]
+const REG_SZ: u32 = 1;
+
+// SetupAPI 属性常量
+#[cfg(target_os = "windows")]
+const SPDRP_HARDWAREID: u32 = 0x00000001;
+#[cfg(target_os = "windows")]
+const SPDRP_MFG: u32 = 0x0000000B;
+#[cfg(target_os = "windows")]
+const SPDRP_DEVTYPE: u32 = 0x0000001F;
+
+/// 通过 SetupAPI 精确检测 BROM 设备当前使用的驱动类型
+///
+/// 原理：查询设备的 `SPDRP_MFG`（制造商）注册表属性，该值来自 INF 文件的 Provider 字段。
+/// - WinUSB (libwdi): 返回 "libwdi"
+/// - 原始串口驱动:   返回 "MediaTek Inc."
+///
+/// 优势：不需要尝试打开设备，直接通过驱动元数据判断，避免 COM 端口占用问题。
+#[cfg(target_os = "windows")]
+pub fn check_brom_driver_type() -> Result<BromDriverType, String> {
+    unsafe {
+        let usb_enum: Vec<u16> = "USB\0".encode_utf16().collect();
+
+        // 获取所有已安装的 USB 设备信息集
+        let device_info_set = SetupDiGetClassDevsW(
+            std::ptr::null(),       // ClassGuid = NULL (all classes)
+            usb_enum.as_ptr(),      // Enumerator = "USB"
+            std::ptr::null_mut(),   // hwndParent = NULL
+            DIGCF_PRESENT | DIGCF_ALLCLASSES,
+        );
+
+        if device_info_set.is_null() {
+            return Err("SetupDiGetClassDevsW 失败".to_string());
+        }
+
+        let target_hardware_id = format!(
+            "USB\\VID_{:04X}&PID_{:04X}",
+            MTK_VID, MTK_BROM_PID
+        )
+        .to_uppercase();
+
+        let mut dev_info = SpDevinfoData {
+            cb_size: std::mem::size_of::<SpDevinfoData>() as u32,
+            class_guid: [0u8; 16],
+            dev_inst: 0,
+            reserved: 0,
+        };
+
+        let mut result = Err("未找到 BROM 设备".to_string());
+
+        for index in 0..256 {
+            // 枚举设备
+            if SetupDiEnumDeviceInfo(device_info_set, index, &mut dev_info) == 0 {
+                break; // 没有更多设备
+            }
+
+            // 获取硬件 ID
+            let mut hw_id_buf = [0u16; 256];
+            let mut required_size: u32 = 0;
+            let mut reg_type: u32 = 0;
+
+            if SetupDiGetDeviceRegistryPropertyW(
+                device_info_set,
+                &dev_info,
+                SPDRP_HARDWAREID,
+                &mut reg_type,
+                hw_id_buf.as_mut_ptr() as *mut u8,
+                (hw_id_buf.len() * 2) as u32,
+                &mut required_size,
+            ) != 0
+            {
+                let hw_id = String::from_utf16_lossy(
+                    &hw_id_buf[..(required_size as usize / 2)],
+                )
+                .to_uppercase();
+
+                if hw_id.contains(&target_hardware_id) {
+                    // 找到目标设备，读取制造商信息
+                    let mut mfg_buf = [0u16; 256];
+                    if SetupDiGetDeviceRegistryPropertyW(
+                        device_info_set,
+                        &dev_info,
+                        SPDRP_MFG,
+                        &mut reg_type,
+                        mfg_buf.as_mut_ptr() as *mut u8,
+                        (mfg_buf.len() * 2) as u32,
+                        &mut required_size,
+                    ) != 0
+                    {
+                        let mfg = String::from_utf16_lossy(
+                            &mfg_buf[..(required_size as usize / 2)],
+                        );
+
+                        // 根据制造商名称判断驱动类型
+                        if mfg.to_lowercase().contains("libwdi") {
+                            result = Ok(BromDriverType::WinUsb);
+                        } else if mfg.to_lowercase().contains("mediatek") {
+                            result = Ok(BromDriverType::Serial);
+                        } else {
+                            result = Ok(BromDriverType::Unknown(mfg));
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        SetupDiDestroyDeviceInfoList(device_info_set);
+        result
+    }
+}
+
+/// BROM 设备驱动类型
+#[derive(Debug, Clone, PartialEq)]
+pub enum BromDriverType {
+    /// WinUSB 驱动（libwdi 安装）
+    WinUsb,
+    /// 原始串口驱动（MediaTek Inc.）
+    Serial,
+    /// 未知驱动（包含制造商名称）
+    Unknown(String),
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn check_brom_driver_type() -> Result<BromDriverType, String> {
+    Err("仅 Windows 支持".to_string())
+}
+
+// =============================================================================
+// 驱动签名检测
+// =============================================================================
+
+/// 获取 BROM 设备当前使用的 INF 文件名
+///
+/// 通过 SetupAPI 查询设备的 SPDRP_DRIVER 属性，返回 INF 文件名（如 "oem12.inf"）。
+#[cfg(target_os = "windows")]
+pub fn get_brom_inf_name() -> Result<String, String> {
+    unsafe {
+        let usb_enum: Vec<u16> = "USB\0".encode_utf16().collect();
+
+        let device_info_set = SetupDiGetClassDevsW(
+            std::ptr::null(),
+            usb_enum.as_ptr(),
+            std::ptr::null_mut(),
+            DIGCF_PRESENT | DIGCF_ALLCLASSES,
+        );
+
+        if device_info_set.is_null() {
+            return Err("SetupDiGetClassDevsW 失败".to_string());
+        }
+
+        let target_hardware_id = format!(
+            "USB\\VID_{:04X}&PID_{:04X}",
+            MTK_VID, MTK_BROM_PID
+        )
+        .to_uppercase();
+
+        let mut dev_info = SpDevinfoData {
+            cb_size: std::mem::size_of::<SpDevinfoData>() as u32,
+            class_guid: [0u8; 16],
+            dev_inst: 0,
+            reserved: 0,
+        };
+
+        let mut result = Err("未找到 BROM 设备".to_string());
+
+        for index in 0..256 {
+            if SetupDiEnumDeviceInfo(device_info_set, index, &mut dev_info) == 0 {
+                break;
+            }
+
+            let mut hw_id_buf = [0u16; 256];
+            let mut required_size: u32 = 0;
+            let mut reg_type: u32 = 0;
+
+            if SetupDiGetDeviceRegistryPropertyW(
+                device_info_set,
+                &dev_info,
+                SPDRP_HARDWAREID,
+                &mut reg_type,
+                hw_id_buf.as_mut_ptr() as *mut u8,
+                (hw_id_buf.len() * 2) as u32,
+                &mut required_size,
+            ) != 0
+            {
+                let hw_id = String::from_utf16_lossy(
+                    &hw_id_buf[..(required_size as usize / 2)],
+                )
+                .to_uppercase();
+
+                if hw_id.contains(&target_hardware_id) {
+                    // 找到目标设备，获取 SPDRP_DRIVER（INF 文件名）
+                    let mut driver_buf = [0u16; 256];
+                    if SetupDiGetDeviceRegistryPropertyW(
+                        device_info_set,
+                        &dev_info,
+                        SPDRP_DRIVER,
+                        &mut reg_type,
+                        driver_buf.as_mut_ptr() as *mut u8,
+                        (driver_buf.len() * 2) as u32,
+                        &mut required_size,
+                    ) != 0
+                    {
+                        let driver_name = String::from_utf16_lossy(
+                            &driver_buf[..(required_size as usize / 2)],
+                        );
+                        let driver_name = driver_name.trim_end_matches('\0').to_string();
+                        if !driver_name.is_empty() {
+                            result = Ok(driver_name);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        SetupDiDestroyDeviceInfoList(device_info_set);
+        result
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn get_brom_inf_name() -> Result<String, String> {
+    Err("仅 Windows 支持".to_string())
+}
 
 // =============================================================================
 // 管理员权限
