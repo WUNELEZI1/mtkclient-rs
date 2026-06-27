@@ -218,16 +218,18 @@ impl Preloader {
             ptr_da_bra, ptr_da
         );
 
-        // linecode：libusb 通过 ctrl_transfer 动态获取（7 字节），补齐 1 字节零到 8 字节
-        let linecode = if self.device.is_libusb() {
-            info!("[EXPLOIT] using libusb backend — Kamakiri2 via ctrl_transfer");
-            let mut linecode = self.device.ctrl_transfer_in(0xA1, 0x21, 0, 0, 7)?;
-            linecode.push(0);
-            linecode
-        } else {
-            info!("[EXPLOIT] using serial backend — Kamakiri2 via brom_register_access");
-            vec![0u8; 8]
-        };
+        // Kamakiri2 必须走 libusb（ctrl_transfer），串口不支持
+        if !self.device.is_libusb() {
+            return Err(
+                "Kamakiri2 需要 libusb 设备（ctrl_transfer），当前为串口模式，请先切换到 WinUSB"
+                    .into(),
+            );
+        }
+        info!("[EXPLOIT] using libusb backend — Kamakiri2 via ctrl_transfer");
+        // linecode：通过 ctrl_transfer 动态获取（7 字节），补齐 1 字节零到 8 字节
+        let mut linecode = self.device.ctrl_transfer_in(0xA1, 0x21, 0, 0, 7)?;
+        linecode.push(0);
+        let linecode = linecode;
         let lc = linecode;
         debug!("[inject] linecode={:02X?}", lc);
 
