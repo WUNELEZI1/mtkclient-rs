@@ -881,12 +881,13 @@ impl Preloader {
             debug!("brom_reg: echo len 不匹配（继续执行）");
         }
 
-        // 读状态 2 字节
+        // 读状态 2 字节（容错模式，对齐 Python 的宽松风格）
         let mut st = [0u8; 2];
-        self.device
-            .read_exact(&mut st)
-            .map_err(|e| format!("brom_reg status1: {}", e))?;
-        debug!("brom_reg status1: {:02X?}", st);
+        if let Err(e) = self.device.read_exact(&mut st) {
+            debug!("brom_reg status1 read failed: {}, continue", e);
+        } else {
+            debug!("brom_reg status1: {:02X?}", st);
+        }
 
         if let Some(wdata) = data {
             // Write mode: 发送 length_bytes 字节数据后读 status2
@@ -971,16 +972,22 @@ impl Preloader {
     }
 
     /// 清空输入缓冲（串口模式下丢弃所有待读数据，防止 echo mismatch 后读取错位）
+    /// 加强版：最多尝试 15 次，每次 20ms 超时，确保彻底清空
     pub fn flush_input(&mut self) {
-        self.device.set_timeout(Duration::from_millis(30));
+        self.device.set_timeout(Duration::from_millis(20));
         let mut trash = [0u8; 1024];
-        loop {
+        let mut total = 0;
+        for _ in 0..15 {
             match self.device.read(&mut trash) {
-                Ok(n) if n > 0 => debug!("[FLUSH] discarded {} bytes", n),
+                Ok(n) if n > 0 => {
+                    total += n;
+                    debug!("[FLUSH] discarded {} bytes", n);
+                }
                 _ => break,
             }
         }
         self.device.set_timeout(Duration::from_millis(5000));
+        debug!("[FLUSH] total discarded {} bytes", total);
     }
 
     /// 读 n 字节
