@@ -802,20 +802,21 @@ impl Preloader {
         check_status: bool,
     ) -> Result<Option<Vec<u8>>, String> {
         // 命令字节 0xDA：使用 echo 协议（对齐 Python Cmd.brom_register_access.value）
+        // 注意：Python 不检查 echo 返回值，这里也只记录警告不返回错误
         if !self.echo_1byte(0xDA)? {
-            return Err("brom_reg: echo 0xDA 不匹配".into());
+            debug!("brom_reg: echo 0xDA 不匹配（继续执行）");
         }
         // mode: 0=read, 1=write（4 字节大端，对齐 Python echo(pack(">I", mode))）
         if !self.echo_4byte(mode)? {
-            return Err("brom_reg: echo mode 不匹配".into());
+            debug!("brom_reg: echo mode 不匹配（继续执行）");
         }
         // 地址（大端）
         if !self.echo_4byte(address)? {
-            return Err("brom_reg: echo addr 不匹配".into());
+            debug!("brom_reg: echo addr 不匹配（继续执行）");
         }
         // 长度（大端，字节数，对齐 Python）
         if !self.echo_4byte(length_bytes)? {
-            return Err("brom_reg: echo len 不匹配".into());
+            debug!("brom_reg: echo len 不匹配（继续执行）");
         }
 
         // 读状态 2 字节
