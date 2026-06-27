@@ -665,17 +665,13 @@ impl Preloader {
             
             debug!("[dump] 0x14=0x{:X}, 0x18=0x{:X}, 0x1C=0x{:X}", size_14, size_18, size_1c);
             
-            // 优先使用 0x18 处的值，如果合理的话
-            let size = if size_18 >= 0x10000 && size_18 <= 0x200000 {
-                debug!("[dump] 使用 0x18 处的大小: {} 字节 (0x{:X})", size_18, size_18);
-                size_18 as usize
-            } else if size_1c >= 0x10000 && size_1c <= 0x200000 {
-                // 0x1C 处可能是数据大小，需要加上头部大小
+            // 0x1C 处是数据大小，完整大小需要加上头部大小 0x1000
+            let size = if size_1c >= 0x10000 && size_1c <= 0x200000 {
                 let full_size = (size_1c + 0x1000) as usize;
-                debug!("[dump] 使用 0x1C+0x1000: {} 字节 (0x{:X})", full_size, full_size);
+                debug!("[dump] 使用 0x1C+0x1000 作为完整大小: {} 字节 (0x{:X})", full_size, full_size);
                 full_size
             } else {
-                debug!("[dump] 头部大小不合理，使用默认值");
+                debug!("[dump] 头部大小不合理 (0x1C=0x{:X})，使用默认值", size_1c);
                 0x4E000
             };
             size
@@ -707,9 +703,10 @@ impl Preloader {
         debug!("[dump] 完整读取完成: {} 字节", all_data.len());
 
         // 搜索 MTK_BLOADER_INFO 提取文件名
+        // 实测偏移：MTK_BLOADER_INFO 在 0x10，文件名在 0x24，偏移差为 0x14
         let filename = if let Some(info_idx) = all_data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
             debug!("[dump] 找到 MTK_BLOADER_INFO 在偏移 0x{:X}", info_idx);
-            let filename_start = info_idx + 0x15;
+            let filename_start = info_idx + 0x14;
             let filename_end = std::cmp::min(filename_start + 0x30, all_data.len());
             let filename_bytes = &all_data[filename_start..filename_end];
             
