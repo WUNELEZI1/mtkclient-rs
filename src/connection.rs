@@ -1,4 +1,4 @@
-use crate::preloader::{Preloader, SerialPortTransport};
+use crate::preloader::{BromPortResult, Preloader, SerialPortTransport};
 use crate::usb;
 use crate::usb::{UsbContext, UsbStage};
 use colored::Colorize;
@@ -44,17 +44,23 @@ impl ConnectionManager {
     /// 统一设备初始化入口
     ///
     /// 流程：
-    /// 1. 无限等待串口设备出现（MediaTek USB Port）
-    /// 2. 找到串口后，尝试打开并握手（最多 3 次）
+    /// 1. 无限等待设备出现（MediaTek USB Port）
+    /// 2. 检测到 WinUSB 驱动（libwdi）→ 直接走 WinUSB 直连
+    /// 3. 检测到串口驱动（MediaTek）→ 打开串口握手 → 切换到 WinUSB
     ///    ├── 成功 → BROM 握手 → 关看门狗 → 获取芯片信息 → 安装 WinUSB → 切换 USB 模式 → 返回
     ///    └── 3 次都失败 → 降级到 WinUSB 直连
     pub fn smart_init(&mut self, context: &UsbContext) -> Result<(Preloader, DeviceMode), String> {
         info!("等待设备连接 (BROM: Vol+ + Vol- + Power)");
 
-        // === STEP 1: 无限等待串口设备出现 ===
+        // === STEP 1: 无限等待设备出现 ===
         loop {
             match SerialPortTransport::find_brom_port_with_timeout(5000) {
-                Some(port_name) => {
+                Some(BromPortResult::WinUsbDevice) => {
+                    // 检测到 WinUSB 驱动（libwdi），直接走 WinUSB 直连
+                    info!("{}", "[USB] 检测到 WinUSB 驱动 (libwdi)，直接走 WinUSB 直连".green().bold());
+                    return self.fallback_to_winusb(context);
+                }
+                Some(BromPortResult::SerialPort(port_name)) => {
                     info!("[COM] 发现 BROM COM 口: {}", port_name);
 
                     // === STEP 2: 尝试打开串口（最多 3 次） ===
@@ -83,8 +89,8 @@ impl ConnectionManager {
                     return self.fallback_to_winusb(context);
                 }
                 None => {
-                    // 串口设备未出现，继续等待（无限循环）
-                    debug!("[COM] 未找到 COM 口，继续等待...");
+                    // 设备未出现，继续等待（无限循环）
+                    debug!("[COM] 未找到设备，继续等待...");
                 }
             }
         }

@@ -1439,4 +1439,38 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
     - 文件：`src/driver.rs`
     - 验证：cargo build / cargo clippy 全部通过，0 error / 0 warning
 
+37. **改进 COM 口端口检测逻辑**（2026-06-27）：
+    - 问题：原有的 `find_brom_port_with_timeout` 仅通过 VID/PID 判断，无法区分 WinUSB 驱动和串口驱动
+    - 修复：
+      - `src/driver.rs` — 新增 `query_com_port_usb_info()` 函数，通过 SetupAPI 查询 COM 口对应的 USB 设备信息
+      - 新增 `ComPortUsbInfo` 结构体：包含 `device_desc`（设备描述）和 `driver_mfg`（驱动制造商）
+      - 使用 `SPDRP_PORTNAME`（0x1C）匹配 COM 口名称，读取 `SPDRP_DEVICEDESC`（0x00）和 `SPDRP_MFG`（0x0B）
+      - `src/preloader.rs` — 修改 `find_brom_port_with_timeout()`，增加设备描述判断逻辑
+    - 检测逻辑：
+      1. 通过 VID/PID 过滤 MTK 设备 (0x0E8D:0x0003/0x2000)
+      2. 通过 SetupAPI 查询设备描述和驱动制造商
+      3. 设备描述包含 "MediaTek USB Port" 且驱动制造商包含 "libwdi" → WinUSB 驱动，跳过（应该用 libusb 直接访问）
+      4. 设备描述包含 "MediaTek USB Port" 且驱动制造商包含 "MediaTek" → 串口驱动，使用
+      5. 无法获取设备信息时回退到 VID/PID 匹配
+    - 优势：精确区分 WinUSB 驱动和串口驱动，避免错误地尝试打开 WinUSB 设备作为串口
+    - 文件：`src/driver.rs`, `src/preloader.rs`
+    - 验证：cargo build / cargo clippy 全部通过，0 error / 0 warning
+
+38. **端口检测返回驱动类型枚举**（2026-06-27）：
+    - 问题：`find_brom_port_with_timeout` 返回 `Option<String>`，无法区分 WinUSB 驱动和串口驱动，导致已安装 WinUSB 的设备仍需等待 5 秒超时
+    - 修复：
+      - `src/preloader.rs` — 新增 `BromPortResult` 枚举：`SerialPort(String)` 和 `WinUsbDevice`
+      - `src/preloader.rs` — `find_brom_port_with_timeout()` 返回类型改为 `Option<BromPortResult>`
+      - 当检测到 "MediaTek USB Port" + "libwdi" 时，返回 `Some(BromPortResult::WinUsbDevice)`
+      - 当检测到 "MediaTek USB Port" + "MediaTek" 时，返回 `Some(BromPortResult::SerialPort(port_name))`
+      - `src/connection.rs` — `smart_init()` 使用模式匹配处理两种结果
+      - `BromPortResult::WinUsbDevice` → 直接调用 `fallback_to_winusb()`，跳过串口握手
+      - `BromPortResult::SerialPort(port_name)` → 走正常的串口握手流程
+    - 优势：
+      - 已安装 WinUSB 驱动的设备立即进入 WinUSB 直连模式，无需等待超时
+      - 串口驱动设备正常走握手流程
+      - 精确匹配用户需求：设备描述包含 "MediaTek USB Port" + 驱动提供商判断
+    - 文件：`src/preloader.rs`, `src/connection.rs`
+    - 验证：cargo build / cargo clippy 全部通过，0 error / 0 warning
+
 
