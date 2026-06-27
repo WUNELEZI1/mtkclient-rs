@@ -1404,4 +1404,25 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
     - 文件：`src/kamakiri2.rs`
     - 验证：cargo build / cargo clippy 全部通过，0 error / 0 warning
 
+34. **SetupAPI 精确驱动检测**（2026-06-27）：
+    - 问题：`check_winusb_installed()` 通过 libusb 尝试打开设备来判断驱动类型，但 COM 端口被占用时 libusb 无法打开，导致误判
+    - 根因：依赖"能否打开设备"来判断驱动类型不可靠，COM 驱动和 WinUSB 驱动都可能阻止 libusb 打开
+    - 修复：
+      - `src/driver.rs` — 新增 `check_brom_driver_type()` 函数，通过 SetupAPI 查询设备的 `SPDRP_MFG`（制造商）注册表属性
+      - 新增 `BromDriverType` 枚举：`WinUsb`（libwdi）、`Serial`（MediaTek Inc.）、`Unknown(String)`
+      - 新增 SetupAPI FFI 绑定：`SetupDiGetClassDevsW`、`SetupDiEnumDeviceInfo`、`SetupDiGetDeviceRegistryPropertyW`、`SetupDiDestroyDeviceInfoList`
+      - 原理：WinUSB 驱动的 INF Provider 为 "libwdi"，原始串口驱动的 INF Provider 为 "MediaTek Inc."，通过制造商名称即可精确区分
+      - 优势：不需要尝试打开设备，直接通过驱动元数据判断，避免 COM 端口占用问题
+    - 文件：`src/driver.rs`
+    - 验证：cargo build / cargo clippy 全部通过，0 error / 0 warning
+
+35. **优化 dump_preloader_payload 读取逻辑**（2026-06-27）：
+    - 问题：`dump_preloader_payload` 在 payload 注入后直接读取长度，可能读到残留的 ack 数据
+    - 修复：
+      - `src/usb.rs` — `read_exact` 增加 `transferred=0` 时 sleep 10ms 重试逻辑，对齐 Python `usbread`
+      - `src/preloader.rs` — `flush_input` 缓冲区改为 1024 字节，超时改为 30ms，恢复 5000ms
+      - `src/kamakiri2.rs` — `dump_preloader_payload` 注入后立即 `flush_input` + `clear_halt_in`，读到 ack 时 flush 后继续，长度范围放宽到 `0x1000..=0x100000`
+    - 文件：`src/usb.rs`, `src/preloader.rs`, `src/kamakiri2.rs`
+    - 验证：cargo build / cargo clippy 全部通过，0 error / 0 warning
+
 

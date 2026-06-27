@@ -910,20 +910,15 @@ impl Preloader {
 
     /// 清空输入缓冲（串口模式下丢弃所有待读数据，防止 echo mismatch 后读取错位）
     pub fn flush_input(&mut self) {
-        let mut buf = [0u8; 512];
-        let orig_timeout = self.device.get_timeout();
-        // 使用极短超时进行非阻塞排空
-        self.device.set_timeout(Duration::from_millis(10));
+        self.device.set_timeout(Duration::from_millis(30));
+        let mut trash = [0u8; 1024];
         loop {
-            match self.device.read(&mut buf) {
-                Ok(n) if n > 0 => {
-                    debug!("[flush] drained {} bytes", n);
-                    continue;
-                }
-                _ => break, // 读到 0 或超时/错误就停止
+            match self.device.read(&mut trash) {
+                Ok(n) if n > 0 => debug!("[FLUSH] discarded {} bytes", n),
+                _ => break,
             }
         }
-        self.device.set_timeout(orig_timeout);
+        self.device.set_timeout(Duration::from_millis(5000));
     }
 
     /// 读 n 字节
