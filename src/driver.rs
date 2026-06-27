@@ -16,7 +16,7 @@
 //! - 然后用 raw FFI 调 UpdateDriverForPlugAndPlayDevicesW + INSTALLFLAG_FORCE
 //!   强制安装已准备好的 INF。Zadig 就是这个套路。
 
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -240,6 +240,276 @@ pub enum BromDriverType {
 #[cfg(not(target_os = "windows"))]
 pub fn check_brom_driver_type() -> Result<BromDriverType, String> {
     Err("仅 Windows 支持".to_string())
+}
+
+// =============================================================================
+// USB 总线驱动检测（只查询，不打开设备）
+// =============================================================================
+
+/// USB 总线检测结果
+#[derive(Debug, Clone)]
+pub enum UsbBusDetectionResult {
+    /// 未找到设备
+    NotFound,
+    /// WinUSB 驱动（libwdi），可以直接用 libusb 访问
+    WinUsbReady,
+    /// 串口驱动（MediaTek），需要先打开串口握手再切换 WinUSB
+    SerialPort(String), // COM 口名称
+    /// 未知驱动
+    Unknown(String), // 驱动制造商
+}
+
+/// 从 USB 总线检测 BROM 设备驱动类型（只查询，不打开设备）
+///
+/// 检测逻辑：
+/// 1. 枚举 USB 设备总线，查找 VID=0x0E8D, PID=0x0003 的设备
+/// 2. 查询设备描述，检查是否包含 "MediaTek USB Port"
+/// 3. 查询驱动提供商：
+///    - 包含 "libwdi" → WinUSB 驱动，返回 `WinUsbReady`
+///    - 包含 "MediaTek" → 串口驱动，返回 `SerialPort(com_port)`
+/// 4. 如果设备描述不是 "MediaTek USB Port"，尝试通过 COM 口匹配
+///
+/// 优势：只查询不打开，避免 COM 口占用问题，快速判断驱动类型
+#[cfg(target_os = "windows")]
+pub fn detect_brom_driver_from_usb_bus() -> UsbBusDetectionResult {
+    unsafe {
+        // 枚举 USB 设备总线
+        let usb_enum: Vec<u16> = "USB\0".encode_utf16().collect();
+        let device_info_set = SetupDiGetClassDevsW(
+            std::ptr::null(),
+            usb_enum.as_ptr(),
+            std::ptr::null_mut(),
+            DIGCF_PRESENT | DIGCF_ALLCLASSES,
+        );
+
+        if device_info_set.is_null() {
+            return UsbBusDetectionResult::NotFound;
+        }
+
+        let target_hardware_id = format!(
+            "USB\\VID_{:04X}&PID_{:04X}",
+            MTK_VID, MTK_BROM_PID
+        )
+        .to_uppercase();
+
+        let mut dev_info = SpDevinfoData {
+            cb_size: std::mem::size_of::<SpDevinfoData>() as u32,
+            class_guid: [0u8; 16],
+            dev_inst: 0,
+            reserved: 0,
+        };
+
+        let mut result = UsbBusDetectionResult::NotFound;
+
+        for index in 0..256 {
+            if SetupDiEnumDeviceInfo(device_info_set, index, &mut dev_info) == 0 {
+                break;
+            }
+
+            // 获取硬件 ID
+            let mut hw_id_buf = [0u16; 256];
+            let mut required_size: u32 = 0;
+            let mut reg_type: u32 = 0;
+
+            if SetupDiGetDeviceRegistryPropertyW(
+                device_info_set,
+                &dev_info,
+                SPDRP_HARDWAREID,
+                &mut reg_type,
+                hw_id_buf.as_mut_ptr() as *mut u8,
+                (hw_id_buf.len() * 2) as u32,
+                &mut required_size,
+            ) != 0
+            {
+                let hw_id = String::from_utf16_lossy(
+                    &hw_id_buf[..(required_size as usize / 2)],
+                )
+                .to_uppercase();
+
+                if hw_id.contains(&target_hardware_id) {
+                    // 找到目标设备，获取设备描述
+                    let mut desc_buf = [0u16; 256];
+                    if SetupDiGetDeviceRegistryPropertyW(
+                        device_info_set,
+                        &dev_info,
+                        SPDRP_DEVICEDESC,
+                        &mut reg_type,
+                        desc_buf.as_mut_ptr() as *mut u8,
+                        (desc_buf.len() * 2) as u32,
+                        &mut required_size,
+                    ) != 0
+                    {
+                        let device_desc = String::from_utf16_lossy(
+                            &desc_buf[..(required_size as usize / 2)],
+                        )
+                        .trim_end_matches('\0')
+                        .to_string();
+
+                        let desc_lower = device_desc.to_lowercase();
+
+                        // 获取驱动制造商
+                        let mut mfg_buf = [0u16; 256];
+                        let driver_mfg = if SetupDiGetDeviceRegistryPropertyW(
+                            device_info_set,
+                            &dev_info,
+                            SPDRP_MFG,
+                            &mut reg_type,
+                            mfg_buf.as_mut_ptr() as *mut u8,
+                            (mfg_buf.len() * 2) as u32,
+                            &mut required_size,
+                        ) != 0
+                        {
+                            String::from_utf16_lossy(
+                                &mfg_buf[..(required_size as usize / 2)],
+                            )
+                            .trim_end_matches('\0')
+                            .to_string()
+                        } else {
+                            String::new()
+                        };
+
+                        let mfg_lower = driver_mfg.to_lowercase();
+
+                        debug!(
+                            "[USB_BUS] 找到 BROM 设备: desc='{}', mfg='{}'",
+                            device_desc, driver_mfg
+                        );
+
+                        // 检查设备描述是否包含 "MediaTek USB Port"
+                        if desc_lower.contains("mediatek usb port") {
+                            // 检查驱动制造商
+                            if mfg_lower.contains("libwdi") {
+                                // WinUSB 驱动，可以直接用 libusb
+                                result = UsbBusDetectionResult::WinUsbReady;
+                            } else if mfg_lower.contains("mediatek") {
+                                // 串口驱动，需要查找对应的 COM 口
+                                if let Some(com_port) = find_com_port_for_brom_device() {
+                                    result = UsbBusDetectionResult::SerialPort(com_port);
+                                } else {
+                                    // 找不到 COM 口，但设备存在
+                                    result = UsbBusDetectionResult::SerialPort(String::new());
+                                }
+                            } else {
+                                // 未知驱动
+                                result = UsbBusDetectionResult::Unknown(driver_mfg);
+                            }
+                        } else {
+                            // 设备描述不是 "MediaTek USB Port"，可能是其他设备
+                            // 尝试通过 COM 口匹配
+                            if let Some(com_port) = find_com_port_for_brom_device() {
+                                result = UsbBusDetectionResult::SerialPort(com_port);
+                            } else {
+                                result = UsbBusDetectionResult::Unknown(device_desc);
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        SetupDiDestroyDeviceInfoList(device_info_set);
+        result
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn detect_brom_driver_from_usb_bus() -> UsbBusDetectionResult {
+    UsbBusDetectionResult::NotFound
+}
+
+/// 查找 BROM 设备对应的 COM 口
+///
+/// 通过 SetupAPI 枚举所有端口设备，找到 VID=0x0E8D, PID=0x0003 设备对应的 COM 口
+#[cfg(target_os = "windows")]
+fn find_com_port_for_brom_device() -> Option<String> {
+    unsafe {
+        // 枚举所有端口设备
+        let ports_enum: Vec<u16> = "Ports\0".encode_utf16().collect();
+        let device_info_set = SetupDiGetClassDevsW(
+            std::ptr::null(),
+            ports_enum.as_ptr(),
+            std::ptr::null_mut(),
+            DIGCF_PRESENT | DIGCF_ALLCLASSES,
+        );
+
+        if device_info_set.is_null() {
+            return None;
+        }
+
+        let mut dev_info = SpDevinfoData {
+            cb_size: std::mem::size_of::<SpDevinfoData>() as u32,
+            class_guid: [0u8; 16],
+            dev_inst: 0,
+            reserved: 0,
+        };
+
+        let mut result = None;
+
+        for index in 0..256 {
+            if SetupDiEnumDeviceInfo(device_info_set, index, &mut dev_info) == 0 {
+                break;
+            }
+
+            // 获取端口名称
+            let mut port_name_buf = [0u16; 256];
+            let mut required_size: u32 = 0;
+            let mut reg_type: u32 = 0;
+
+            if SetupDiGetDeviceRegistryPropertyW(
+                device_info_set,
+                &dev_info,
+                0x0000001C, // SPDRP_PORTNAME
+                &mut reg_type,
+                port_name_buf.as_mut_ptr() as *mut u8,
+                (port_name_buf.len() * 2) as u32,
+                &mut required_size,
+            ) != 0
+            {
+                let port_name = String::from_utf16_lossy(
+                    &port_name_buf[..(required_size as usize / 2)],
+                )
+                .trim_end_matches('\0')
+                .to_string();
+
+                // 获取设备描述
+                let mut desc_buf = [0u16; 256];
+                if SetupDiGetDeviceRegistryPropertyW(
+                    device_info_set,
+                    &dev_info,
+                    SPDRP_DEVICEDESC,
+                    &mut reg_type,
+                    desc_buf.as_mut_ptr() as *mut u8,
+                    (desc_buf.len() * 2) as u32,
+                    &mut required_size,
+                ) != 0
+                {
+                    let device_desc = String::from_utf16_lossy(
+                        &desc_buf[..(required_size as usize / 2)],
+                    )
+                    .trim_end_matches('\0')
+                    .to_string();
+
+                    let desc_lower = device_desc.to_lowercase();
+
+                    // 检查是否是 MediaTek USB Port
+                    if desc_lower.contains("mediatek usb port") {
+                        debug!("[USB_BUS] 找到 COM 口: {} (desc='{}')", port_name, device_desc);
+                        result = Some(port_name);
+                        break;
+                    }
+                }
+            }
+        }
+
+        SetupDiDestroyDeviceInfoList(device_info_set);
+        result
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn find_com_port_for_brom_device() -> Option<String> {
+    None
 }
 
 // =============================================================================
