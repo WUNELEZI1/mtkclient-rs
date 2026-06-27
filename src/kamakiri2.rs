@@ -47,7 +47,8 @@ impl Preloader {
             debug!("[STEP] payload({} bytes): {:02X?}", d.len(), d);
             debug!("[STEP]   linecode: {:02X?}", lc);
             debug!("[STEP]   addr_le: {:02X?}", addr.to_le_bytes());
-            self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d)?;
+            // 忽略错误，对齐 Python 的 try-except（允许 step 失败）
+            let _ = self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d);
             let _ = self.device.ctrl_transfer_in(0x80, 0x06, 0x02FF, 0, 9);
             std::thread::sleep(Duration::from_millis(50));
         } else {
