@@ -236,11 +236,19 @@ impl Preloader {
     }
 
     fn inject_payload(&mut self, payload: &[u8], expected_ack: u32) -> Result<(), String> {
+        self.inject_payload_with_options(payload, expected_ack, false)
+    }
+
+    fn inject_payload_skip_ptr_read(&mut self, payload: &[u8], expected_ack: u32) -> Result<(), String> {
+        self.inject_payload_with_options(payload, expected_ack, true)
+    }
+
+    fn inject_payload_with_options(&mut self, payload: &[u8], expected_ack: u32, skip_ptr_read: bool) -> Result<(), String> {
         let chip = self.chip.ok_or_else(|| "未识别的处理器型号".to_string())?;
         let ptr_da_bra = self.ptr_da_bra();
         let ptr_da = chip.brom_register_access.1; // 对齐 Python: brom_register_access[0][1]
 
-        debug!("[inject] payload_size={}", payload.len());
+        debug!("[inject] payload_size={}, skip_ptr_read={}", payload.len(), skip_ptr_read);
         debug!(
             "[inject] ptr_da_bra=0x{:08X} ptr_da=0x{:08X}",
             ptr_da_bra, ptr_da
@@ -261,8 +269,17 @@ impl Preloader {
         let lc = linecode;
         debug!("[inject] linecode={:02X?}", lc);
 
-        let ptr_send = self.read_payload_address(&lc, ptr_da_bra, ptr_da, chip.watchdog)?;
-        debug!("[inject] ptr_send=0x{:08X}", ptr_send);
+        let ptr_send = if skip_ptr_read {
+            // dump payload 场景：直接使用 ptr_send_addr，不调用 da_read
+            let ptr_send = self.ptr_send_addr();
+            debug!("[inject] skip_ptr_read=true, using ptr_send=0x{:08X}", ptr_send);
+            ptr_send
+        } else {
+            // 正常场景：通过 da_read 读取 ptr_send
+            let ptr_send = self.read_payload_address(&lc, ptr_da_bra, ptr_da, chip.watchdog)?;
+            debug!("[inject] ptr_send=0x{:08X}", ptr_send);
+            ptr_send
+        };
 
         debug!("[inject] da_write #1: payload to brom_payload_addr");
         self.da_write(
@@ -589,9 +606,9 @@ impl Preloader {
             payload.push(0);
         }
 
-        // exploit 路径：inject_payload 通过 brom_register_access 注入
-        debug!("[dump] inject_payload: size={}", payload.len());
-        self.inject_payload(&payload, 0xC1C2C3C4)?;
+        // exploit 路径：跳过 da_read，直接使用 ptr_send_addr 注入
+        debug!("[dump] inject_payload_skip_ptr_read: size={}", payload.len());
+        self.inject_payload_skip_ptr_read(&payload, 0xC1C2C3C4)?;
 
         // === 关键：跳过 read_payload_address 和 da_read，直接清理后读数据 ===
         info!("[dump] payload 注入成功 → 跳过 da_read，直接清理并读数据");
