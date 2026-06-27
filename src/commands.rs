@@ -28,12 +28,45 @@ pub fn print_help() {
     println!("  frp               FRP OEM 解锁");
     println!("  print-scatter     打印 scatter 到屏幕并保存文件");
     println!("  enable-adb-on-da  在 DA 模式下开启 ADB");
+    println!("  check-driversign  检查 BROM 设备使用的 INF 文件名");
     println!();
     println!("选项:");
     println!("  --preloader <文件>  指定 preloader 文件");
     println!("  --verify            写入后校验");
     println!("  --log <级别>        日志级别：1=INFO，2=DEBUG，3=TRACE");
     println!("  --patch-da          是否 patch DA（默认开启）");
+}
+
+/// 检查 BROM 设备使用的 INF 文件名（不需要设备连接）
+pub fn cmd_check_driversign() -> Result<(), Box<dyn std::error::Error>> {
+    info!("检查 BROM 设备驱动签名...");
+
+    match crate::driver::get_brom_inf_name() {
+        Ok(inf_name) => {
+            info!("BROM 设备使用的 INF 文件: {}", inf_name);
+            if inf_name.to_lowercase().contains("libwdi") || inf_name.to_lowercase().contains("winusb") {
+                info!("检测到 WinUSB 驱动（libwdi 安装）");
+            } else if inf_name.to_lowercase().contains("mediatek") || inf_name.to_lowercase().contains("usbser") {
+                info!("检测到原始串口驱动（MediaTek Inc.）");
+            } else {
+                info!("检测到未知驱动: {}", inf_name);
+            }
+        }
+        Err(e) => {
+            warn!("获取 INF 文件名失败: {}", e);
+            // 回退到驱动类型检测
+            match crate::driver::check_brom_driver_type() {
+                Ok(driver_type) => {
+                    info!("驱动类型: {:?}", driver_type);
+                }
+                Err(e2) => {
+                    error!("驱动检测失败: {}", e2);
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// 单命令执行入口

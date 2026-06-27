@@ -580,12 +580,7 @@ impl Preloader {
         debug!("[dump] inject_payload: size={}", payload.len());
         self.inject_payload(&payload, 0xC1C2C3C4)?;
 
-        // 🔥 清空残留 + 重置端点
-        self.flush_input();
-        std::thread::sleep(Duration::from_millis(50));
-        self.device.clear_halt_in().ok();
-
-        // 🔥 读 4 字节长度（处理残留 ack）
+        // 🔥 直接读 4 字节长度（处理可能的 ack）
         self.device.set_timeout(Duration::from_millis(5000));
         info!("等待 preloader 数据就绪...");
         let length = loop {
@@ -596,9 +591,8 @@ impl Preloader {
             let val = u32::from_le_bytes(len_buf);
 
             if val == 0xC1C2C3C4 {
-                // 读到 ack，继续
-                debug!("[dump] 收到 ack 0xC1C2C3C4，flush 后继续...");
-                self.flush_input();
+                // 读到 ack，继续读取真正的长度
+                debug!("[dump] 收到 ack 0xC1C2C3C4，继续读取长度...");
                 continue;
             }
 
@@ -607,11 +601,10 @@ impl Preloader {
                 break val as usize;
             }
 
-            debug!("[dump] 异常长度 0x{:08X}，flush 后重试", val);
-            self.flush_input();
+            debug!("[dump] 异常长度 0x{:08X}，继续读取...", val);
         };
 
-        // 🔥 读 Preloader 数据
+        // 🔥 直接读 Preloader 数据
         self.device.set_timeout(Duration::from_millis(12000));
         let mut data = vec![0u8; length];
         let transferred = self
