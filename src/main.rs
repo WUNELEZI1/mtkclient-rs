@@ -230,27 +230,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         da.preloader
             .bypass_security(&usb_context)
             .map_err(|e| format!("bypass_security 失败: {}", e))?;
-        let data = da
+        let (data, filename) = da
             .preloader
-            .dump_preloader_from_ram(false)
-            .map_err(|e| format!("dump_preloader_ram 失败: {}", e))?;
+            .dump_preloader_payload(false, false, &usb_context)
+            .map_err(|e| format!("dump_preloader_payload 失败: {}", e))?;
         if !data.is_empty() {
-            let filename =
-                if let Some(info_idx) = data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
-                    let filename_start = info_idx + 0x1B;
-                    let filename_end = std::cmp::min(filename_start + 0x30, data.len());
-                    let filename_bytes = &data[filename_start..filename_end];
-                    let filename_len = filename_bytes
-                        .iter()
-                        .position(|&b| b == 0)
-                        .unwrap_or(filename_bytes.len());
-                    String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string()
-                } else {
-                    "preloader_dumped.bin".to_string()
-                };
-            if !filename.is_empty() {
-                info!("Preloader 已提取: {} ({} 字节)", filename, data.len());
-            }
+            info!("Preloader 已提取: {} ({} 字节)", filename, data.len());
         }
     }
 
