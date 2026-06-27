@@ -760,35 +760,68 @@ impl Preloader {
     /// JUMP_DA: 跳转到 Download Agent
     /// Python: echo(JUMP_DA) → usbwrite(pack(">I", addr)) → rdword() → rword()
     pub fn jump_da(&mut self, addr: u32) -> Result<bool, String> {
-        if !self.echo_1byte(0xD5)? {
-            return Err("jump_da: echo 0xD5 不匹配".into());
+        // send_da 后 USB 端点可能 stall，需要重试
+        let mut last_err = String::new();
+        for attempt in 1..=3 {
+            if !self.echo_1byte(0xD5)? {
+                last_err = "jump_da: echo 0xD5 不匹配".to_string();
+                debug!("[JUMP_DA] attempt {}: echo 0xD5 不匹配，重试", attempt);
+                self.flush_input();
+                if self.device.is_libusb() {
+                    let _ = self.device.clear_halt_in();
+                    let _ = self.device.clear_halt_out();
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+            // Python: usbwrite(pack(">I", addr)) — 大端
+            if let Err(e) = self.device.write(&addr.to_be_bytes()) {
+                last_err = format!("jump_da write addr: {}", e);
+                debug!("[JUMP_DA] attempt {}: write addr 失败: {}，重试", attempt, e);
+                self.flush_input();
+                if self.device.is_libusb() {
+                    let _ = self.device.clear_halt_in();
+                    let _ = self.device.clear_halt_out();
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+            // Python: rdword() — 大端回读
+            let mut echo = [0u8; 4];
+            match self.device.read_exact(&mut echo) {
+                Ok(_) => {
+                    let resaddr = u32::from_be_bytes(echo);
+                    if resaddr != addr {
+                        return Err(format!(
+                            "jump_da addr mismatch: expected {:08X}, got {:08X}",
+                            addr, resaddr
+                        ));
+                    }
+                    // Python: rword() — 大端状态
+                    let mut st = [0u8; 2];
+                    self.device
+                        .read_exact(&mut st)
+                        .map_err(|e| format!("jump_da status: {}", e))?;
+                    let status = u16::from_be_bytes(st);
+                    // Python v2.1.4.1: time.sleep(0.1) after rword() — fix rare timing issue
+                    std::thread::sleep(Duration::from_millis(100));
+                    debug!("jump_da status: {:04X}", status);
+                    return Ok(status == 0);
+                }
+                Err(e) => {
+                    last_err = format!("jump_da echo: {}", e);
+                    debug!("[JUMP_DA] attempt {}: read echo 失败: {}，重试", attempt, e);
+                    self.flush_input();
+                    if self.device.is_libusb() {
+                        let _ = self.device.clear_halt_in();
+                        let _ = self.device.clear_halt_out();
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+            }
         }
-        // Python: usbwrite(pack(">I", addr)) — 大端
-        self.device
-            .write(&addr.to_be_bytes())
-            .map_err(|e| format!("jump_da write addr: {}", e))?;
-        // Python: rdword() — 大端回读
-        let mut echo = [0u8; 4];
-        self.device
-            .read_exact(&mut echo)
-            .map_err(|e| format!("jump_da echo: {}", e))?;
-        let resaddr = u32::from_be_bytes(echo);
-        if resaddr != addr {
-            return Err(format!(
-                "jump_da addr mismatch: expected {:08X}, got {:08X}",
-                addr, resaddr
-            ));
-        }
-        // Python: rword() — 大端状态
-        let mut st = [0u8; 2];
-        self.device
-            .read_exact(&mut st)
-            .map_err(|e| format!("jump_da status: {}", e))?;
-        let status = u16::from_be_bytes(st);
-        // Python v2.1.4.1: time.sleep(0.1) after rword() — fix rare timing issue
-        std::thread::sleep(Duration::from_millis(100));
-        debug!("jump_da status: {:04X}", status);
-        Ok(status == 0)
+        Err(last_err)
     }
 
     /// JUMP_BL: 跳转到 Bootloader
