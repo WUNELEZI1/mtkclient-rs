@@ -652,29 +652,19 @@ impl Preloader {
         all_data.extend_from_slice(&data);
         debug!("[dump] 已读取 {} 字节", all_data.len());
 
-        // 从 preloader 头部读取完整大小
-        // 实测：0x1C 处是 0x4D000，但实际大小是 0x4E000（差 0x1000）
-        // 尝试从 0x18 读取（可能是完整大小字段）
-        let total_size = if all_data.len() >= 0x20 {
-            // 先输出头部信息用于调试
-            debug!("[dump] 头部 hex: {:02X?}", &all_data[0..0x40]);
-            
-            let size_1c = u32::from_le_bytes(all_data[0x1C..0x20].try_into().unwrap());
-            let size_18 = u32::from_le_bytes(all_data[0x18..0x1C].try_into().unwrap());
-            let size_14 = u32::from_le_bytes(all_data[0x14..0x18].try_into().unwrap());
-            
-            debug!("[dump] 0x14=0x{:X}, 0x18=0x{:X}, 0x1C=0x{:X}", size_14, size_18, size_1c);
-            
-            // 0x1C 处是数据大小，完整大小需要加上头部大小 0x1000
-            let size = if size_1c >= 0x10000 && size_1c <= 0x200000 {
-                let full_size = (size_1c + 0x1000) as usize;
-                debug!("[dump] 使用 0x1C+0x1000 作为完整大小: {} 字节 (0x{:X})", full_size, full_size);
-                full_size
+        // 从 preloader 头部偏移 0x20 读取完整大小（LE u32）
+        // 实测：0x20 处是 0x4E0BC = 319676 字节，正好是文件大小
+        let total_size = if all_data.len() >= 0x24 {
+            let size_bytes: [u8; 4] = all_data[0x20..0x24].try_into().unwrap();
+            let size = u32::from_le_bytes(size_bytes) as usize;
+            // 验证大小合理性（至少 64KB，不超过 2MB）
+            if (0x10000..=0x200000).contains(&size) {
+                debug!("[dump] Preloader 完整大小: {} 字节 (0x{:X})", size, size);
+                size
             } else {
-                debug!("[dump] 头部大小不合理 (0x1C=0x{:X})，使用默认值", size_1c);
+                debug!("[dump] 头部大小不合理 (0x{:X})，使用默认值 0x4E000", size);
                 0x4E000
-            };
-            size
+            }
         } else {
             0x4E000
         };
@@ -703,10 +693,11 @@ impl Preloader {
         debug!("[dump] 完整读取完成: {} 字节", all_data.len());
 
         // 搜索 MTK_BLOADER_INFO 提取文件名
-        // 实测偏移：MTK_BLOADER_INFO 在 0x10，文件名在 0x24，偏移差为 0x14
+        // 实测：MTK_BLOADER_INFO_v40 在偏移 0x4D43C，文件名在其后 0x20 处
         let filename = if let Some(info_idx) = all_data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
             debug!("[dump] 找到 MTK_BLOADER_INFO 在偏移 0x{:X}", info_idx);
-            let filename_start = info_idx + 0x14;
+            // 文件名在 MTK_BLOADER_INFO + 0x20 处
+            let filename_start = info_idx + 0x20;
             let filename_end = std::cmp::min(filename_start + 0x30, all_data.len());
             let filename_bytes = &all_data[filename_start..filename_end];
             
@@ -724,7 +715,12 @@ impl Preloader {
             if filename_len > 0 {
                 let name = String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string();
                 debug!("[dump] 提取的文件名: {}", name);
-                format!("preloader_{}.bin", name)
+                // 文件名已包含 preloader_ 前缀，直接使用
+                if name.starts_with("preloader_") {
+                    name
+                } else {
+                    format!("preloader_{}.bin", name)
+                }
             } else {
                 debug!("[dump] 文件名为空，使用默认名");
                 "preloader_dumped.bin".to_string()

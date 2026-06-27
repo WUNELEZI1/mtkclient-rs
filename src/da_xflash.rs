@@ -736,6 +736,15 @@ impl<'a> DAXFlash<'a> {
 
         debug!("成功上传 stage 1，跳转中...");
 
+        // send_da 后 USB 端点可能处于 stall 状态，需要 clear_halt
+        // 并给设备时间处理 DA 数据
+        if self.preloader.device.is_libusb() {
+            debug!("[JUMP_DA] clear_halt before jump_da");
+            let _ = self.preloader.device.clear_halt_in();
+            let _ = self.preloader.device.clear_halt_out();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+
         self.preloader.jump_da(da1_address)?;
 
         // Give device time to start DA execution
