@@ -650,24 +650,29 @@ impl Preloader {
         let data = self.read32_brom(offset, dwords)
             .map_err(|e| format!("read32_brom 第一块失败: {}", e))?;
         all_data.extend_from_slice(&data);
-        debug!("[dump] 已读取 {} 字节", all_data.len());
+        info!("[dump] 第一块已读取 {} 字节 (期望 0x{:X}={})", all_data.len(), 0x4E0BC, 0x4E0BC);
 
         // 从 preloader 头部偏移 0x20 读取完整大小（LE u32）
         // 实测：0x20 处是 0x4E0BC = 319676 字节，正好是文件大小
         let total_size = if all_data.len() >= 0x24 {
             let size_bytes: [u8; 4] = all_data[0x20..0x24].try_into().unwrap();
             let size = u32::from_le_bytes(size_bytes) as usize;
+            info!("[dump] 头部 0x20 处 LE u32: 0x{:08X} = {} 字节", size, size);
+            info!("[dump] 头部 0x40 hex: {:02X?}", &all_data[..std::cmp::min(0x40, all_data.len())]);
+
             // 验证大小合理性（至少 64KB，不超过 2MB）
             if (0x10000..=0x200000).contains(&size) {
-                debug!("[dump] Preloader 完整大小: {} 字节 (0x{:X})", size, size);
+                info!("[dump] Preloader 完整大小: {} 字节 (0x{:X})", size, size);
                 size
             } else {
-                debug!("[dump] 头部大小不合理 (0x{:X})，使用默认值 0x4E000", size);
+                info!("[dump] 头部大小不合理 (0x{:X})，使用默认值 0x4E000", size);
                 0x4E000
             }
         } else {
             0x4E000
         };
+
+        info!("[dump] 使用 total_size = {} 字节 (0x{:X})", total_size, total_size);
 
         // 循环读取剩余部分
         while all_data.len() < total_size {

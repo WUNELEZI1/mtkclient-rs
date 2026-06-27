@@ -709,7 +709,7 @@ impl Preloader {
         }
 
         // 4. 上传数据
-        debug!("[UPLOAD] sending {} bytes in chunks of 512", dadata.len());
+        debug!("[UPLOAD] sending {} bytes in chunks of 64", dadata.len());
 
         // 4a. 清除端点状态（对应 pyUSB 自动处理的 clear_halt）
         if self.device.is_libusb() {
@@ -725,13 +725,34 @@ impl Preloader {
         let data = dadata;
         let chunk_size: usize = 64;
         let mut pos = 0;
+        let mut chunk_count = 0;
 
         while pos < data.len() {
             let end = (pos + chunk_size).min(data.len());
-            self.device
-                .write(&data[pos..end])
-                .map_err(|e| format!("upload_data write (pos={}): {}", pos, e))?;
+            // 重试机制：设备可能在处理时短暂 stall
+            let mut attempt = 0;
+            loop {
+                attempt += 1;
+                match self.device.write(&data[pos..end]) {
+                    Ok(_) => break,
+                    Err(e) => {
+                        if attempt >= 3 {
+                            return Err(format!("upload_data write (pos={}): {}", pos, e));
+                        }
+                        debug!("[UPLOAD] write fail at pos={} (attempt {}): {}, retrying", pos, attempt, e);
+                        if self.device.is_libusb() {
+                            let _ = self.device.clear_halt_out();
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                }
+            }
             pos = end;
+            chunk_count += 1;
+            // 每 256 块让设备喘口气（防止 buffer 满）
+            if chunk_count % 256 == 0 {
+                std::thread::sleep(Duration::from_millis(2));
+            }
         }
 
         // 4d. 所有数据发完后，发一次 ZLP（pyUSB 自动做，libusb 需要手动）
