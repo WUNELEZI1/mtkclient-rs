@@ -626,8 +626,11 @@ impl Preloader {
         Ok(())
     }
 
-    /// 通过 read32_brom (0xD1) 从 RAM 读取完整 preloader
-    /// 对齐刷机匣流程：bypass_security 后用 0xD1 从 0x200000 循环读取
+    /// 通过 generic_preloader_dump_payload 提取完整 preloader
+    /// 对齐 mtkclient pltools.run_dump_preloader:
+    /// 1. 注入 generic_preloader_dump_payload.bin (ack=0xC1C2C3C4)
+    /// 2. 设备在 0x200000-0x210000 搜索 preloader 头部 (4D 4D 4D 01 38)
+    /// 3. 设备发回 4 字节 length (LE) + length 字节 preloader 数据
     pub fn dump_preloader_payload(
         &mut self,
         _debug: bool,
@@ -638,114 +641,82 @@ impl Preloader {
         if quiet {
             crate::usb::set_quiet_usb_read(true);
         }
-        info!("正在通过 read32_brom (0xD1) 提取完整 Preloader...");
 
-        let mut all_data = Vec::new();
-        let mut offset: u32 = 0x200000;
-        let chunk_size: usize = 0x4000; // 64KB 块
+        // 1. 加载并注入 generic_preloader_dump_payload
+        let payload_path = exe_relative_path("payloads/generic_preloader_dump_payload.bin");
+        let payload = std::fs::read(&payload_path)
+            .map_err(|e| format!("读取 generic_preloader_dump_payload.bin 失败: {}", e))?;
+        info!(
+            "正在通过 generic_preloader_dump_payload 提取 Preloader ({} 字节)...",
+            payload.len()
+        );
 
-        // 先读 64KB
-        debug!("[dump] 读取第一块: addr=0x{:08X}, size=0x{:X}", offset, chunk_size);
-        let dwords = chunk_size / 4;
-        let data = self.read32_brom(offset, dwords)
-            .map_err(|e| format!("read32_brom 第一块失败: {}", e))?;
-        all_data.extend_from_slice(&data);
-        info!("[dump] 第一块已读取 {} 字节 (期望 0x{:X}={})", all_data.len(), 0x4E0BC, 0x4E0BC);
+        // 2. 注入 payload（inject_payload 内部会验证 ack=0xC1C2C3C4）
+        self.run_payload_from_data(&payload, 0xC1C2C3C4)?;
 
-        // 从 preloader 头部偏移 0x20 读取完整大小（LE u32）
-        // 实测：0x20 处是 0x4E0BC = 319676 字节，正好是文件大小
-        let total_size = if all_data.len() >= 0x24 {
-            let size_bytes: [u8; 4] = all_data[0x20..0x24].try_into().unwrap();
-            let size = u32::from_le_bytes(size_bytes) as usize;
-            info!("[dump] 头部 0x20 处 LE u32: 0x{:08X} = {} 字节", size, size);
-            info!("[dump] 头部 0x40 hex: {:02X?}", &all_data[..std::cmp::min(0x40, all_data.len())]);
+        // 3. 读 4 字节 length (LE)
+        info!("等待设备发送 preloader 长度...");
+        let mut len_buf = [0u8; 4];
+        // 设置较长超时
+        let orig_timeout = self.device.get_timeout();
+        self.device.set_timeout(Duration::from_secs(20));
+        self.device
+            .read_exact(&mut len_buf)
+            .map_err(|e| format!("读取 preloader 长度失败: {}", e))?;
+        self.device.set_timeout(orig_timeout);
 
-            // 验证大小合理性（至少 64KB，不超过 2MB）
-            if (0x10000..=0x200000).contains(&size) {
-                info!("[dump] Preloader 完整大小: {} 字节 (0x{:X})", size, size);
-                size
-            } else {
-                info!("[dump] 头部大小不合理 (0x{:X})，使用默认值 0x4E000", size);
-                0x4E000
-            }
-        } else {
-            0x4E000
-        };
+        let length = u32::from_le_bytes(len_buf) as usize;
+        info!("Preloader 长度: {} 字节 (0x{:X})", length, length);
 
-        info!("[dump] 使用 total_size = {} 字节 (0x{:X})", total_size, total_size);
-
-        // 循环读取剩余部分
-        while all_data.len() < total_size {
-            let remaining = total_size - all_data.len();
-            let read_size = std::cmp::min(remaining, chunk_size);
-            offset += read_size as u32;
-
-            debug!("[dump] 继续读取: addr=0x{:08X}, size=0x{:X} (已读 {}/{})",
-                offset, read_size, all_data.len(), total_size);
-
-            let dwords = read_size / 4;
-            match self.read32_brom(offset, dwords) {
-                Ok(data) => {
-                    all_data.extend_from_slice(&data);
-                }
-                Err(e) => {
-                    warn!("[dump] 读取失败: {}，已读 {} 字节", e, all_data.len());
-                    break;
-                }
-            }
+        if length == 0 {
+            return Err("设备未找到 preloader（0x200000 范围无 MTK header）".into());
+        }
+        if length > 0x200000 {
+            return Err(format!("preloader 长度异常: 0x{:X}", length));
         }
 
-        // 检查是否找到 MTK_BLOADER_INFO，如果没找到就继续读 0x1000 字节
-        // 因为 MTK_BLOADER_INFO 可能在 total_size 之外（实测在 0x4D43C）
-        if all_data.windows(16).position(|w| w == b"MTK_BLOADER_INFO").is_none() && all_data.len() < 0x4F000 {
-            debug!("[dump] 未找到 MTK_BLOADER_INFO，继续读取额外 0x1000 字节");
-            let extra_offset = 0x200000 + all_data.len() as u32;
-            let extra_size: usize = 0x1000;
-            let dwords = extra_size / 4;
-            match self.read32_brom(extra_offset, dwords) {
-                Ok(data) => {
-                    all_data.extend_from_slice(&data);
-                    debug!("[dump] 额外读取 {} 字节，总计 {}", data.len(), all_data.len());
-                }
-                Err(e) => {
-                    warn!("[dump] 额外读取失败: {}", e);
-                }
-            }
+        // 4. 读 length 字节数据
+        info!("正在读取 preloader 数据 ({} 字节)...", length);
+        let mut all_data = Vec::with_capacity(length);
+        let mut remaining = length;
+        const CHUNK: usize = 0x4000; // 16KB 块
+        while remaining > 0 {
+            let chunk_size = std::cmp::min(remaining, CHUNK);
+            let mut buf = vec![0u8; chunk_size];
+            self.device
+                .read_exact(&mut buf)
+                .map_err(|e| format!("读取 preloader 数据失败 (剩余={}): {}", remaining, e))?;
+            all_data.extend_from_slice(&buf);
+            remaining -= chunk_size;
+            let progress = (all_data.len() as f64 / length as f64) * 100.0;
+            eprint!("\r  进度: {:.1}% ({}/{})", progress, all_data.len(), length);
         }
+        debug!("\n");
 
-        debug!("[dump] 完整读取完成: {} 字节", all_data.len());
+        info!("已读取 {} 字节 preloader 数据", all_data.len());
 
-        // 搜索 MTK_BLOADER_INFO 提取文件名
-        // 实测：MTK_BLOADER_INFO_v40 在偏移 0x4D43C，文件名在其后 0x20 处
+        // 5. 提取文件名（从 MTK_BLOADER_INFO 头部）
+        // MTK 头部格式:
+        //   0x00: 4D 4D 4D 01
+        //   0x04: hdr_size
+        //   0x20: file_size (LE u32)
+        //   ... 0x4D43C 附近: MTK_BLOADER_INFO_v40 字符串
+        //   MTK_BLOADER_INFO + 0x20: preloader_<name>.bin 字符串
         let filename = if let Some(info_idx) = all_data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
             debug!("[dump] 找到 MTK_BLOADER_INFO 在偏移 0x{:X}", info_idx);
-            // 文件名在 MTK_BLOADER_INFO + 0x20 处
             let filename_start = info_idx + 0x20;
-            let filename_end = std::cmp::min(filename_start + 0x30, all_data.len());
+            let filename_end = std::cmp::min(filename_start + 0x40, all_data.len());
             let filename_bytes = &all_data[filename_start..filename_end];
-            
-            debug!("[dump] filename_start=0x{:X}, filename_bytes={:02X?}", filename_start, filename_bytes);
-            
-            // 去除末尾的 0 字节（对齐 Python 的 rstrip(b"\x00")）
             let filename_len = filename_bytes
                 .iter()
                 .rposition(|&b| b != 0)
                 .map(|pos| pos + 1)
                 .unwrap_or(0);
-            
-            debug!("[dump] filename_len={}", filename_len);
-            
             if filename_len > 0 {
                 let name = String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string();
                 debug!("[dump] 提取的文件名: {}", name);
-                // 文件名已包含 preloader_ 前缀，直接使用
-                if name.starts_with("preloader_") {
-                    name
-                } else {
-                    format!("preloader_{}.bin", name)
-                }
+                name
             } else {
-                debug!("[dump] 文件名为空，使用默认名");
                 "preloader_dumped.bin".to_string()
             }
         } else {
