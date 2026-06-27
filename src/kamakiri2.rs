@@ -308,21 +308,25 @@ impl Preloader {
             d3.extend(&chip.brom_payload_addr.to_le_bytes());
             let _ = self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d3)?;
 
-            // 发送 payload 后立即读 ack，不要 flush 太早
-            debug!("[inject] 发送 payload 完成，等待 ack...");
+            // 发送 payload 后立即读 ack
+            std::thread::sleep(Duration::from_millis(350)); // 关键延迟
+
             let mut ack_buf = [0u8; 4];
-            self.device.set_timeout(Duration::from_millis(8000));
-            match self.device.read_exact(&mut ack_buf) {
-                Ok(_) if ack_buf == [0xC1, 0xC2, 0xC3, 0xC4] => {
-                    debug!("[inject] ack 成功: 0xC1C2C3C4");
-                }
-                Ok(_) => return Err(format!("ack 不匹配: {:02X?}", ack_buf)),
-                Err(e) => return Err(format!("读 ack 失败: {}", e)),
+            self.device.set_timeout(Duration::from_millis(5000));
+
+            if let Err(e) = self.device.read_exact(&mut ack_buf) {
+                return Err(format!("读 ack 失败: {}", e));
             }
 
-            // 只做最小清理
-            self.flush_input();
-            std::thread::sleep(Duration::from_millis(300));
+            if ack_buf != [0xC1, 0xC2, 0xC3, 0xC4] {
+                return Err(format!("ack 不匹配: {:02X?}", ack_buf));
+            }
+
+            debug!("[inject] ack 成功");
+
+            // 最小清理
+            self.flush_input(); // 只 flush 一次
+            std::thread::sleep(Duration::from_millis(200));
             let _ = self.device.clear_halt_in();
 
             return Ok(());
@@ -669,30 +673,16 @@ impl Preloader {
         debug!("[dump] inject_payload_skip_all_da: size={}", payload.len());
         self.inject_payload_skip_all_da(&payload, 0xC1C2C3C4)?;
 
-        // === 关键：跳过 read_payload_address 和 da_read，直接清理后读数据 ===
-        info!("[dump] payload 注入成功 → 跳过 da_read，直接清理并读数据");
+        info!("等待 preloader 数据...");
 
-        for _ in 0..25 {
-            self.flush_input();
-            std::thread::sleep(Duration::from_millis(80));
-        }
-        let _ = self.device.clear_halt_in();
-        let _ = self.device.clear_halt_out();
-
-        self.device.set_timeout(Duration::from_millis(30000));
-
-        info!("等待 preloader 数据返回 (长度 + 数据)...");
+        self.device.set_timeout(Duration::from_millis(15000));
 
         let mut len_buf = [0u8; 4];
         self.device.read_exact(&mut len_buf)
             .map_err(|e| format!("读长度失败: {}", e))?;
 
         let length = u32::from_le_bytes(len_buf) as usize;
-        info!("Preloader 长度: 0x{:X} ({} 字节)", length, length);
-
-        if length == 0 || length > 0x300000 {
-            return Err("长度异常".into());
-        }
+        info!("Preloader 长度: {} 字节", length);
 
         let mut preloader = vec![0u8; length];
         self.device.read_exact(&mut preloader)
