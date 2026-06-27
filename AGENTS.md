@@ -3,9 +3,10 @@
 > 最近更新：2026-06-24
 > 完整历史：Temp_Agent_Archive.md
 
-## 最近更新 (2026-06-26)
-- **彻底对齐 mtkclient 指令流**：移除 `bypass_security` 后的 `drain` 和 `do_handshake` 逻辑。最新日志分析显示，在 `A1A2A3A4` Ack 之后执行任何非 BROM 命令（如 Handshake 或 Drain）都会导致设备端的 Patcher 状态异常，进而引发后续 `0xD1` 命令的 `LIBUSB_ERROR_TIMEOUT (-7)`。
-- **优化稳定序列策略**：将 `bypass_security` 后的 "稳定序列" 改为 "零干扰序列"，即注入 Ack 后直接进入 `read32_brom`。
+## 最近更新 (2026-06-27)
+- **bypass_security 后添加 BROM 重新握手**：Kamakiri2 exploit 成功后，设备 BROM 协议栈状态改变，不再响应 0xD1 命令。对齐刷机匣流程：在 payload 注入成功后执行 BROM 重新握手（A0→5F, 0A→F5, 50→AF, 05→FA），恢复设备 BROM 状态，使后续 read32_brom (0xD1) 命令能正常工作。
+- **dump_preloader_payload 循环读取完整 Preloader**：之前只读 64KB，但完整 preloader 是 319KB。从头部偏移 0x20 读取完整大小，循环读取直到完整大小。从 MTK_BLOADER_INFO 提取文件名（如 preloader_k69v1_64_k419.bin）。
+- **COM 口检测优化**：通过 SetupAPI 查询设备描述和驱动制造商精确区分 WinUSB 和串口驱动。新增 serialport 扫描作为 COM 口检测备选方案。BromPortResult 枚举区分 SerialPort 和 WinUsbDevice。
 
 ## 当前状态
 - 功能状态表：
@@ -22,7 +23,8 @@
   - `0xD1` 读写
   - 大端 echo
   - watchdog 双 status
-  - **Payload 后同步**：注入 Ack (`A1 A2 A3 A4`) 后**严禁**执行 `do_handshake` 或 `drain`，必须立即发送后续指令（如 `0xD1`）。
+  - **Kamakiri2 后重新握手**：Payload 注入成功后必须执行 BROM 握手（A0→5F, 0A→F5, 50→AF, 05→FA）恢复设备状态，否则 0xD1 命令超时。
+  - **Preloader 完整读取**：从 0x200000 开始，先读 64KB，从偏移 0x20 读取完整大小（4 字节 LE），循环读取直到完整大小。
 - XFlash：
   - `CMD_READ_DATA` + `send_param`
   - `send_ack` / `ack`
@@ -1472,5 +1474,53 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
       - 精确匹配用户需求：设备描述包含 "MediaTek USB Port" + 驱动提供商判断
     - 文件：`src/preloader.rs`, `src/connection.rs`
     - 验证：cargo build / cargo clippy 全部通过，0 error / 0 warning
+
+39. **bypass_security 后添加 BROM 重新握手**（2026-06-27）：
+    - 问题：Kamakiri2 exploit 成功后，设备 BROM 协议栈状态改变，不再响应 0xD1 命令
+    - 根因：Payload 注入后设备状态改变，需要重新握手才能响应 0xD1 命令
+    - 修复：
+      - `src/kamakiri2.rs` — `bypass_security()` 在 `inject_payload` 成功后添加：
+        1. `flush_input()` 清理 USB 管道残留数据
+        2. 等待 100ms
+        3. 执行 BROM 握手（A0→5F, 0A→F5, 50→AF, 05→FA）
+    - 对齐刷机匣流程：参考日志 mainLogs_2026062719.log 第 482-505 行
+    - 关键发现：
+      - Kamakiri2 exploit 后设备 BROM 协议栈状态改变
+      - 必须执行重新握手恢复 BROM 状态
+      - 0xD1 命令才能正常工作
+    - 文件：`src/kamakiri2.rs`
+    - 验证：cargo build / cargo clippy 全部通过，0 error / 0 warning
+    - commit: 3dbb8dd
+
+40. **dump_preloader_payload 循环读取完整 Preloader**（2026-06-27）：
+    - 问题：之前只读 64KB（0x4000 dwords），但完整 preloader 是 319676 字节（312KB）
+    - 根因：`dump_preloader_payload` 只调用一次 `read32_brom`，读取大小硬编码为 0x4000
+    - 修复：
+      - `src/kamakiri2.rs` — `dump_preloader_payload()` 改为循环读取：
+        1. 先读 64KB（0x4000 字节）
+        2. 从头部偏移 0x20 读取完整大小（4 字节 LE）
+        3. 验证大小合理性（64KB~2MB）
+        4. 循环读取直到完整大小，每次 64KB
+        5. 从 MTK_BLOADER_INFO 提取文件名（如 preloader_k69v1_64_k419.bin）
+    - 关键修复：
+      - `offset += read_size` 而非 `offset += all_data.len()`，确保地址正确递增
+      - 地址序列：0x200000 → 0x204000 → 0x208000...
+    - 对齐刷机匣流程：参考日志 mainLogs_2026062719.log，用 0xD1 多次读取
+    - 文件：`src/kamakiri2.rs`
+    - 验证：cargo build / cargo clippy 全部通过，0 error / 0 warning
+    - commit: 96869d2
+
+41. **COM 口检测优化**（2026-06-27）：
+    - 问题：`find_com_port_for_brom_device` 通过 SetupAPI 的 `SPDRP_PORTNAME` 获取 COM 口时可能返回空值
+    - 修复：
+      - `src/driver.rs` — 新增 `scan_mtk_com_port()` 函数，当 SetupAPI 无法获取 COM 口时，通过 `serialport::available_ports()` 动态扫描 MTK BROM 设备（VID=0x0E8D, PID=0x0003）
+      - `src/driver.rs` — 修改 `detect_brom_driver_from_usb_bus()` 函数，当 `find_com_port_for_brom_device` 返回 None 时，调用 `scan_mtk_com_port` 作为备选
+    - 优势：
+      - 当 SPDRP_PORTNAME 没有返回值时，自动使用 serialport 扫描
+      - 通过 VID/PID 精确匹配 MTK BROM 设备
+      - 避免 COM 口检测失败导致程序无法继续
+    - 文件：`src/driver.rs`
+    - 验证：cargo build / cargo clippy 全部通过，0 error / 0 warning
+    - commit: 425eb5e
 
 
