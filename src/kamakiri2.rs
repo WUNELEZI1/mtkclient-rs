@@ -307,6 +307,25 @@ impl Preloader {
             let mut d3 = lc.to_vec();
             d3.extend(&chip.brom_payload_addr.to_le_bytes());
             let _ = self.device.ctrl_transfer_out(0x21, 0x20, 0, 0, &d3)?;
+
+            // 发送 payload 后立即读 ack，不要 flush 太早
+            debug!("[inject] 发送 payload 完成，等待 ack...");
+            let mut ack_buf = [0u8; 4];
+            self.device.set_timeout(Duration::from_millis(8000));
+            match self.device.read_exact(&mut ack_buf) {
+                Ok(_) if ack_buf == [0xC1, 0xC2, 0xC3, 0xC4] => {
+                    debug!("[inject] ack 成功: 0xC1C2C3C4");
+                }
+                Ok(_) => return Err(format!("ack 不匹配: {:02X?}", ack_buf)),
+                Err(e) => return Err(format!("读 ack 失败: {}", e)),
+            }
+
+            // 只做最小清理
+            self.flush_input();
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = self.device.clear_halt_in();
+
+            return Ok(());
         } else {
             let ptr_send = if skip_ptr_read {
                 // dump payload 场景：直接使用 ptr_send_addr，不调用 da_read
