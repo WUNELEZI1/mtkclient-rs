@@ -913,24 +913,20 @@ impl Preloader {
             debug!("brom_reg 准备读 {} 字节数据", byte_count);
 
             // 关键修复：增加超时 + 重试 + clear_halt
-            self.device.set_timeout(Duration::from_millis(8000));
+            self.device.set_timeout(Duration::from_millis(10000));
             let _ = self.device.clear_halt_in();
 
             // 多次尝试读数据
             let mut success = false;
-            for attempt in 0..3 {
+            for attempt in 0..4 {
                 match self.device.read_exact(&mut buf) {
                     Ok(n) if n == byte_count => {
                         debug!("brom_reg read data 成功: {} 字节", n);
                         success = true;
                         break;
                     }
-                    Ok(n) => {
-                        debug!("brom_reg partial read: {}/{} 字节, retry...", n, byte_count);
-                        self.flush_input();
-                    }
-                    Err(e) => {
-                        debug!("brom_reg read attempt {} failed: {}", attempt+1, e);
+                    _ => {
+                        debug!("brom_reg read attempt {} failed, flush...", attempt+1);
                         self.flush_input();
                         std::thread::sleep(Duration::from_millis(100));
                     }
