@@ -593,54 +593,37 @@ impl Preloader {
         debug!("[dump] inject_payload: size={}", payload.len());
         self.inject_payload(&payload, 0xC1C2C3C4)?;
 
-        // === 关键加强：dump payload 注入后极致清理 + 超长等待 ===
-        debug!("[dump] payload 注入成功，进行极致清理...");
-        for _ in 0..5 {
+        // === dump payload 注入（关键加强版）===
+        debug!("[dump] payload 注入成功 → 极致 flush + clear_halt");
+        for i in 0..8 {
             self.flush_input();
-            std::thread::sleep(Duration::from_millis(80));
-        }
-        let _ = self.device.clear_halt_in();
-        let _ = self.device.clear_halt_out();
-
-        self.device.set_timeout(Duration::from_millis(15000));  // 给 preloader dump 足够时间
-        info!("等待 preloader 数据就绪 (15s timeout)...");
-        let length = loop {
-            let mut len_buf = [0u8; 4];
-            self.device
-                .read_exact(&mut len_buf)
-                .map_err(|e| format!("read length: {}", e))?;
-            let val = u32::from_le_bytes(len_buf);
-
-            if val == 0xC1C2C3C4 {
-                // 读到 ack，继续读取真正的长度
-                debug!("[dump] 收到 ack 0xC1C2C3C4，继续读取长度...");
-                continue;
+            std::thread::sleep(Duration::from_millis(120));
+            if i % 3 == 0 {
+                let _ = self.device.clear_halt_in();
+                let _ = self.device.clear_halt_out();
             }
-
-            if (0x1000..=0x100000).contains(&val) {
-                debug!("Preloader length: 0x{:X} ({} bytes)", val, val);
-                break val as usize;
-            }
-
-            debug!("[dump] 异常长度 0x{:08X}，继续读取...", val);
-        };
-
-        // 🔥 直接读 Preloader 数据
-        self.device.set_timeout(Duration::from_millis(12000));
-        let mut data = vec![0u8; length];
-        let transferred = self
-            .device
-            .read_exact(&mut data)
-            .map_err(|e| format!("read preloader data: {}", e))?;
-
-        if transferred < length {
-            debug!(
-                "preloader 数据不完整: 期望 {} 字节，实际 {} 字节",
-                length, transferred
-            );
         }
-        let mut all_data = data;
-        all_data.truncate(transferred);
+
+        self.device.set_timeout(Duration::from_millis(20000)); // 20秒给 preloader dump 准备
+        info!("等待 preloader dump payload 执行并发送数据 (20s)...");
+
+        // 直接读长度 + 数据（不再走 brom_register_access）
+        let mut len_buf = [0u8; 4];
+        self.device.read_exact(&mut len_buf)
+            .map_err(|e| format!("dump_preloader 读长度失败: {}", e))?;
+
+        let length = u32::from_le_bytes(len_buf) as usize;
+        info!("Preloader 数据长度: 0x{:X} ({}) 字节", length, length);
+
+        if length == 0 || length > 0x100000 {
+            return Err("Preloader 长度异常".into());
+        }
+
+        let mut all_data = vec![0u8; length];
+        self.device.read_exact(&mut all_data)
+            .map_err(|e| format!("dump_preloader 读数据失败: {}", e))?;
+
+        debug!("Preloader dump 完成 ({} 字节)", all_data.len());
 
         debug!(
             "dump_preloader_payload: read_exact completed, {} bytes",
