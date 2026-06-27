@@ -577,9 +577,14 @@ impl Preloader {
     pub fn bypass_security(&mut self, _context: &UsbContext) -> Result<(), String> {
         info!("正在绕过安全保护...");
 
-        let payload_path = exe_relative_path("payloads/generic_patcher_payload.bin");
+        let chip = self.chip.ok_or_else(|| "未识别的处理器型号".to_string())?;
+
+        // 使用芯片专属 payload（如 mt6768_payload.bin）
+        let payload_path = exe_relative_path(&format!("payloads/{}", chip.loader));
         let payload =
             std::fs::read(&payload_path).map_err(|e| format!("读取 patcher payload: {}", e))?;
+
+        info!("使用芯片专属 payload: {} ({} 字节)", chip.loader, payload.len());
 
         // 注入 patcher payload
         // 串口：通过 brom_register_access 完成（对齐刷机匣行为）
