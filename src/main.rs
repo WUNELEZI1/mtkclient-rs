@@ -159,11 +159,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // 不需要设备连接的命令
-    if cmd == "check-driversign" {
-        return commands::cmd_check_driversign();
-    }
-
     let usb_context = UsbContext::new().inspect_err(|e| {
         error!("{}", e);
     })?;
