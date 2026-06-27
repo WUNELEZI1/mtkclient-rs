@@ -616,9 +616,8 @@ impl Preloader {
         Ok(())
     }
 
-    /// 通过 Kamakiri2 payload 流式 dump preloader（对齐 Python pltools.run_dump_preloader）
-    /// 使用 exploit 路径（inject_payload = brom_register_access），
-    /// BROM 阶段的正确方式
+    /// 通过 read32_brom (0xD1) 从 RAM 读取 preloader
+    /// 对齐刷机匣流程：bypass_security 后用 0xD1 从 0x200000 读取
     pub fn dump_preloader_payload(
         &mut self,
         _debug: bool,
@@ -629,76 +628,38 @@ impl Preloader {
         if quiet {
             crate::usb::set_quiet_usb_read(true);
         }
-        info!("正在提取Preloader...");
+        info!("正在通过 read32_brom (0xD1) 提取 Preloader...");
 
-        let payload_path = exe_relative_path("payloads/generic_preloader_dump_payload.bin");
-        let mut payload =
-            std::fs::read(&payload_path).map_err(|e| format!("dump payload: {}", e))?;
+        // 对齐刷机匣流程：从 0x200000 读取 0x4000 字节（64KB）
+        let start_addr: u32 = 0x200000;
+        let initial_size: usize = 0x4000; // 64KB
+        let dwords = initial_size / 4;
 
-        let chip = self.chip.ok_or_else(|| "未识别的处理器型号".to_string())?;
+        debug!("[dump] read32_brom(addr=0x{:08X}, dwords=0x{:X})", start_addr, dwords);
+        let data = self.read32_brom(start_addr, dwords)
+            .map_err(|e| format!("read32_brom 失败: {}", e))?;
 
-        // fix_payload: 替换 watchdog/uart 地址 + 4字节对齐（da=False，不追加签名空间）
-        // 对齐 Python fix_payload(payload, False) for exploit path
-        let payload_len = payload.len();
-        if payload_len >= 8 {
-            let wd_offset = payload_len - 4;
-            let ua_offset = payload_len - 8;
-            let wd = u32::from_le_bytes([
-                payload[wd_offset],
-                payload[wd_offset + 1],
-                payload[wd_offset + 2],
-                payload[wd_offset + 3],
-            ]);
-            let ua = u32::from_le_bytes([
-                payload[ua_offset],
-                payload[ua_offset + 1],
-                payload[ua_offset + 2],
-                payload[ua_offset + 3],
-            ]);
-            if wd == 0x10007000 {
-                debug!(
-                    "[dump] fix_payload: watchdog 0x10007000 -> 0x{:08X}",
-                    chip.watchdog
-                );
-                let wd_bytes = chip.watchdog.to_le_bytes();
-                payload[wd_offset..wd_offset + 4].copy_from_slice(&wd_bytes);
-            }
-            if ua == 0x11002000 {
-                debug!("[dump] fix_payload: uart 0x11002000 -> 0x{:08X}", chip.uart);
-                let ua_bytes = chip.uart.to_le_bytes();
-                payload[ua_offset..ua_offset + 4].copy_from_slice(&ua_bytes);
-            }
-        }
-        // 4 字节对齐
-        while payload.len() % 4 != 0 {
-            payload.push(0);
-        }
+        debug!("[dump] 读取到 {} 字节", data.len());
 
-        // exploit 路径：完全跳过 da_read 和 da_write，使用纯 ctrl_transfer 路径
-        debug!("[dump] inject_payload_skip_all_da: size={}", payload.len());
-        self.inject_payload_skip_all_da(&payload, 0xC1C2C3C4)?;
+        // 搜索 MTK_BLOADER_INFO 提取文件名
+        let filename = if let Some(info_idx) = data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
+            let filename_start = info_idx + 0x1B;
+            let filename_end = std::cmp::min(filename_start + 0x30, data.len());
+            let filename_bytes = &data[filename_start..filename_end];
+            let filename_len = filename_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(filename_bytes.len());
+            String::from_utf8_lossy(&filename_bytes[..filename_len]).to_string()
+        } else {
+            "preloader_dumped.bin".to_string()
+        };
 
-        info!("等待 preloader 数据...");
-
-        self.device.set_timeout(Duration::from_millis(15000));
-
-        let mut len_buf = [0u8; 4];
-        self.device.read_exact(&mut len_buf)
-            .map_err(|e| format!("读长度失败: {}", e))?;
-
-        let length = u32::from_le_bytes(len_buf) as usize;
-        info!("Preloader 长度: {} 字节", length);
-
-        let mut preloader = vec![0u8; length];
-        self.device.read_exact(&mut preloader)
-            .map_err(|e| format!("读数据失败: {}", e))?;
-
-        let filename = "preloader_dumped.bin";
-        std::fs::write(filename, &preloader)
+        std::fs::write(&filename, &data)
             .map_err(|e| format!("保存失败: {}", e))?;
 
-        info!("Preloader dump 成功！已保存 {}", filename);
-        Ok((preloader, filename.to_string()))
+        info!("Preloader dump 成功！已保存 {} ({} 字节)", filename, data.len());
+        Ok((data, filename))
     }
 
     pub fn dump_brom(&mut self, debug: bool) -> Result<Vec<u8>, String> {
