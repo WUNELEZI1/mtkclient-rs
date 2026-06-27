@@ -593,15 +593,17 @@ impl Preloader {
         debug!("[dump] inject_payload: size={}", payload.len());
         self.inject_payload(&payload, 0xC1C2C3C4)?;
 
-        // === dump payload 注入后彻底清理 + 长超时准备 ===
-        debug!("[dump] payload 注入成功，彻底清理 USB 缓冲");
-        self.flush_input();
-        std::thread::sleep(Duration::from_millis(150));
+        // === 关键加强：dump payload 注入后极致清理 + 超长等待 ===
+        debug!("[dump] payload 注入成功，进行极致清理...");
+        for _ in 0..5 {
+            self.flush_input();
+            std::thread::sleep(Duration::from_millis(80));
+        }
         let _ = self.device.clear_halt_in();
         let _ = self.device.clear_halt_out();
 
-        self.device.set_timeout(Duration::from_millis(12000));  // 给 dump payload 更长准备时间
-        info!("等待 preloader 数据就绪...");
+        self.device.set_timeout(Duration::from_millis(15000));  // 给 preloader dump 足够时间
+        info!("等待 preloader 数据就绪 (15s timeout)...");
         let length = loop {
             let mut len_buf = [0u8; 4];
             self.device
