@@ -720,13 +720,14 @@ impl UsbDevice {
         );
         let mut total = 0usize;
         while total < buf.len() {
+            let remaining = buf.len() - total;
             unsafe {
                 let mut transferred: i32 = 0;
                 let ret = libusb1_sys::libusb_bulk_transfer(
                     self.handle,
                     self.ep_in,
                     buf[total..].as_mut_ptr(),
-                    (buf.len() - total) as i32,
+                    remaining as i32,
                     &mut transferred,
                     self.timeout.as_millis() as u32,
                 );
@@ -734,22 +735,23 @@ impl UsbDevice {
                     "[USB READ EXACT] bulk_transfer returned: ret={}, transferred={}",
                     ret, transferred
                 );
-                if ret != 0 && ret != LIBUSB_ERROR_TIMEOUT {
-                    return Err(format!("read_exact err {}", ret));
+                if ret == LIBUSB_ERROR_TIMEOUT {
+                    if total > 0 {
+                        debug!(
+                            "[USB READ EXACT] partial read: {}/{} bytes before timeout",
+                            total,
+                            buf.len()
+                        );
+                        break;
+                    }
+                    return Err("read_exact timeout".into());
+                }
+                if ret != 0 {
+                    return Err(format!("read_exact bulk err: {}", ret));
                 }
                 if transferred == 0 {
-                    if ret == LIBUSB_ERROR_TIMEOUT {
-                        if total > 0 {
-                            debug!(
-                                "[USB READ EXACT] partial read: {}/{} bytes before timeout",
-                                total,
-                                buf.len()
-                            );
-                            break;
-                        }
-                        return Err("read_exact timeout".to_string());
-                    }
-                    break;
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
                 }
                 total += transferred as usize;
             }

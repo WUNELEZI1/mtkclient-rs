@@ -580,42 +580,40 @@ impl Preloader {
         debug!("[dump] inject_payload: size={}", payload.len());
         self.inject_payload(&payload, 0xC1C2C3C4)?;
 
-        // 循环等待 preloader 就绪（对齐 Python usbread 阻塞读）
-        // payload 执行后，设备返回 ack (0xC1C2C3C4) 后再返回 preloader 数据
+        // 🔥 清空残留 + 重置端点
+        self.flush_input();
+        std::thread::sleep(Duration::from_millis(50));
+        self.device.clear_halt_in().ok();
+
+        // 🔥 读 4 字节长度（处理残留 ack）
         self.device.set_timeout(Duration::from_millis(5000));
         info!("等待 preloader 数据就绪...");
         let length = loop {
-            // 读 4 字节
             let mut len_buf = [0u8; 4];
             self.device
                 .read_exact(&mut len_buf)
                 .map_err(|e| format!("read length: {}", e))?;
-            let len_val = u32::from_le_bytes(len_buf);
+            let val = u32::from_le_bytes(len_buf);
 
-            if len_val == 0xC1C2C3C4 {
-                // 这是 payload 的 ack，继续等待
-                debug!("[dump] 收到 ack 0xC1C2C3C4，等待 payload 执行完成...");
-                std::thread::sleep(Duration::from_millis(500));
+            if val == 0xC1C2C3C4 {
+                // 读到 ack，继续
+                debug!("[dump] 收到 ack 0xC1C2C3C4，flush 后继续...");
+                self.flush_input();
                 continue;
             }
 
-            let length = len_val as usize;
-
-            if (0x10000..=0x100000).contains(&length) {
-                debug!("Preloader length: 0x{:X} ({} bytes)", length, length);
-                break length;
+            if (0x1000..=0x100000).contains(&val) {
+                debug!("Preloader length: 0x{:X} ({} bytes)", val, val);
+                break val as usize;
             }
 
-            // 既不是 ack 也不是合理长度，可能是干扰数据
-            debug!("[dump] 收到异常值 0x{:08X}，等待重试...", len_val);
-            std::thread::sleep(Duration::from_millis(500));
+            debug!("[dump] 异常长度 0x{:08X}，flush 后重试", val);
+            self.flush_input();
         };
 
+        // 🔥 读 Preloader 数据
+        self.device.set_timeout(Duration::from_millis(12000));
         let mut data = vec![0u8; length];
-        self.device.set_timeout(Duration::from_millis(10000));
-
-        // 使用 read_exact：单次 libusb_bulk_transfer，不重试循环
-        // 对齐 Python usbread(length) — 精确读 length 字节，读完就停
         let transferred = self
             .device
             .read_exact(&mut data)
@@ -652,9 +650,6 @@ impl Preloader {
             };
 
         debug!("dump_preloader_payload: done, filename={}", filename);
-
-        // dump 后复位 bulk IN 端点，否则后续 echo 会超时（已知问题，会话11修复）
-        self.device.clear_halt_in().ok();
 
         Ok((preloader, filename))
     }
