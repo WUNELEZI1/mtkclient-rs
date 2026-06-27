@@ -1426,16 +1426,17 @@ Rust 用了 `device.write()`（只发不读），设备发了回显但 Rust 没�
     - 文件：`src/usb.rs`, `src/preloader.rs`, `src/kamakiri2.rs`
     - 验证：cargo build / cargo clippy 全部通过，0 error / 0 warning
 
-36. **添加 check-driversign 命令**（2026-06-27）：
-    - 需求：检查当前 BROM 设备使用的 INF 文件名，用于诊断驱动安装状态
+36. **驱动检测辅助函数**（2026-06-27）：
+    - 需求：检查当前 BROM 设备使用的驱动类型和 INF 文件名，用于诊断驱动安装状态
     - 实现：
       - `src/driver.rs` — 新增 `get_brom_inf_name()` 函数，通过 SetupAPI 查询设备的 `SPDRP_DRIVER` 属性
-      - `src/commands.rs` — 新增 `cmd_check_driversign()` 命令处理函数
-      - `src/cli.rs` — 在帮助文本中添加 `check-driversign` 命令说明
-      - `src/main.rs` — 在命令路由中添加 `check-driversign` 处理（不需要设备连接）
-    - 原理：`SPDRP_DRIVER` 属性返回当前使用的 INF 文件名（如 "oem12.inf"），可以直接判断驱动类型
+      - `src/driver.rs` — 已有 `check_brom_driver_type()` 函数，通过 `SPDRP_MFG` 属性判断驱动类型
+    - 原理：
+      - `SPDRP_DRIVER` 属性返回当前使用的 INF 文件名（如 "oem12.inf"）
+      - `SPDRP_MFG` 属性返回驱动制造商名称（"libwdi" 或 "MediaTek Inc."）
     - 优势：不需要尝试打开设备，直接通过驱动元数据判断，避免 COM 端口占用问题
-    - 文件：`src/driver.rs`, `src/commands.rs`, `src/cli.rs`, `src/main.rs`
+    - 用途：作为辅助函数在驱动检测和安装流程中使用，不暴露为独立命令
+    - 文件：`src/driver.rs`
     - 验证：cargo build / cargo clippy 全部通过，0 error / 0 warning
 
 
