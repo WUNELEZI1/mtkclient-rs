@@ -78,7 +78,7 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 读取分区数据到文件
-    pub fn read_partition(&mut self, partition: &str, output_file: &str) -> Result<(), String> {
+    pub fn 读取分区(&mut self, 分区名: &str, 输出文件: &str) -> Result<(), String> {
         if self.last_gpt_data.is_none() {
             self.read_gpt()?;
         }
@@ -90,36 +90,54 @@ impl<'a> DAXFlash<'a> {
         let gpt_info = GptInfo::parse(gpt_data)?;
 
         let entry = gpt_info
-            .find_partition(partition)
-            .ok_or_else(|| format!("未找到分区: {}", partition))?;
+            .find_partition(分区名)
+            .ok_or_else(|| format!("未找到分区: {}", 分区名))?;
 
         info!(
             "找到分区 {}，起始地址: 0x{:X}，大小: {} 字节",
-            partition, entry.start_addr, entry.size
+            分区名, entry.start_addr, entry.size
         );
 
         let data = self.readflash_data(entry.start_addr, entry.size)?;
         info!("  读取到 {} 字节", data.len());
 
-        let mut file = File::create(output_file).map_err(|e| format!("创建文件失败: {}", e))?;
+        let mut file = File::create(输出文件).map_err(|e| format!("创建文件失败: {}", e))?;
         file.write_all(&data)
             .map_err(|e| format!("写入文件失败: {}", e))?;
 
-        info!("  已保存到: {}", output_file);
+        info!("  已保存到: {}", 输出文件);
         Ok(())
     }
 
     /// 写入文件到分区（带校验）
-    pub fn write_partition_with_verify(
-        &mut self,
-        partition: &str,
-        input_file: &str,
+    pub fn 写入分区带校验(
+        &mut self, 分区名: &str, 输入文件: &str
     ) -> Result<(), String> {
-        // 先写入，然后读取校验
-        self.write_partition(partition, input_file)?;
-        // 校验逻辑（可选实现）
-        info!("  写入完成（未启用详细校验）");
-        Ok(())
+        // 先写入
+        self.写入分区(分区名, 输入文件)?;
+
+        // 读取回来校验
+        info!("  开始校验写入数据...");
+        let 原始数据 = std::fs::read(输入文件).map_err(|e| format!("读取原始文件失败: {}", e))?;
+
+        // 读取刚写入的数据
+        let gpt_data = self
+            .last_gpt_data
+            .as_ref()
+            .ok_or_else(|| "无 GPT 数据".to_string())?;
+        let gpt_info = GptInfo::parse(gpt_data)?;
+        let entry = gpt_info
+            .find_partition(分区名)
+            .ok_or_else(|| format!("未找到分区: {}", 分区名))?;
+
+        let 验证数据 = self.readflash_data(entry.start_addr, 原始数据.len() as u64)?;
+
+        if 原始数据 == 验证数据 {
+            info!("  校验通过 ✓");
+            Ok(())
+        } else {
+            Err("校验失败：写入数据与原始数据不匹配".to_string())
+        }
     }
 
     /// 按原始地址写入一段数据，供分区写入、seccfg/frp 等场景复用。
@@ -164,8 +182,8 @@ impl<'a> DAXFlash<'a> {
     /// 写入文件到分区
     /// 对齐 Python writeflash (xflash_lib.py:writeflash)
     /// 协议: cmd_write_data → 循环分包写入 [0x0(4B)][checksum(4B)][data] → CC_OPTIONAL_DOWNLOAD_ACT → status
-    pub fn write_partition(&mut self, partition: &str, input_file: &str) -> Result<(), String> {
-        info!("写入文件 {} 到分区 {}...", input_file, partition);
+    pub fn 写入分区(&mut self, 分区名: &str, 输入文件: &str) -> Result<(), String> {
+        info!("写入文件 {} 到分区 {}...", 输入文件, 分区名);
 
         // 如果无 GPT 缓存，自动读取 GPT 数据
         if self.last_gpt_data.is_none() {
@@ -173,33 +191,33 @@ impl<'a> DAXFlash<'a> {
         }
 
         // 读取文件
-        let file_data = std::fs::read(input_file).map_err(|e| format!("无法读取文件: {}", e))?;
-        let file_size = file_data.len();
+        let 文件数据 = std::fs::read(输入文件).map_err(|e| format!("无法读取文件: {}", e))?;
+        let 文件大小 = 文件数据.len();
 
         // 找到分区地址和大小
-        let (addr, size) = self.find_partition_addr(partition)?;
+        let (地址, 分区大小) = self.find_partition_addr(分区名)?;
 
-        let mut data = file_data;
+        let mut 数据 = 文件数据;
         // 对齐到 512 字节（Python: 如果长度不是 512 的倍数，补零）
-        let fill: usize = if size % 512 != 0 {
-            (512 - (size % 512)) as usize
+        let 填充: usize = if 分区大小 % 512 != 0 {
+            (512 - (分区大小 % 512)) as usize
         } else {
             0
         };
-        if fill > 0 {
-            data.resize(data.len() + fill, 0);
+        if 填充 > 0 {
+            数据.resize(数据.len() + 填充, 0);
         }
-        self.write_flash_data(addr, &data, 1, 8)?;
+        self.write_flash_data(地址, &数据, 1, 8)?;
 
-        info!("  写入完成: {} 字节写入分区 {}", file_size, partition);
+        info!("  写入完成: {} 字节写入分区 {}", 文件大小, 分区名);
         Ok(())
     }
 
     /// 擦除分区
     /// 对齐 Python formatflash (xflash_lib.py:formatflash)
     /// 协议: FORMAT 命令 → send_param → 等待 STATUS_COMPLETE (0x40040005)
-    pub fn erase_partition(&mut self, partition: &str) -> Result<(), String> {
-        info!("擦除分区 {}...", partition);
+    pub fn 擦除分区(&mut self, 分区名: &str) -> Result<(), String> {
+        info!("擦除分区 {}...", 分区名);
 
         // 如果无 GPT 缓存，自动读取 GPT 数据
         if self.last_gpt_data.is_none() {
@@ -207,7 +225,7 @@ impl<'a> DAXFlash<'a> {
         }
 
         // 找到分区地址和大小
-        let (addr, size) = self.find_partition_addr(partition)?;
+        let (地址, 大小) = self.find_partition_addr(分区名)?;
 
         // 发送 FORMAT 命令
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
@@ -223,8 +241,8 @@ impl<'a> DAXFlash<'a> {
         let mut param = Vec::with_capacity(56);
         param.extend_from_slice(&1u32.to_le_bytes()); // storage = EMMC
         param.extend_from_slice(&8u32.to_le_bytes()); // parttype = USER
-        param.extend_from_slice(&addr.to_le_bytes());
-        param.extend_from_slice(&size.to_le_bytes());
+        param.extend_from_slice(&地址.to_le_bytes());
+        param.extend_from_slice(&大小.to_le_bytes());
         // NandExtension 全零（对齐 Python xflash_flash_param.py）
         param.extend_from_slice(&[0u8; 32]);
 
@@ -249,10 +267,7 @@ impl<'a> DAXFlash<'a> {
             return Err(format!("擦除失败: status=0x{:08X}", status));
         }
 
-        info!(
-            "  擦除完成: 分区 {} (0x{:X} @ 0x{:X})",
-            partition, size, addr
-        );
+        info!("  擦除完成: 分区 {} (0x{:X} @ 0x{:X})", 分区名, 大小, 地址);
         Ok(())
     }
 

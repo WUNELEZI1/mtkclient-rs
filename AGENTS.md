@@ -1,7 +1,42 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
-> 最近更新：2026-06-28
+> 最近更新：2026-06-28 v4
 > 完整历史：Temp_Agent_Archive.md
+
+## 最近更新 (2026-06-28 v4)
+- **删除 libusb-filter 相关代码**：彻底移除过时的 libusb-win32 filter 方案
+  - 删除 `src/connection/filter.rs` 文件
+  - 从 `src/connection/mod.rs` 移除 `pub mod filter;`
+  - 从 `src/main.rs` 移除 filter 相关注释
+  - 原因：项目已迁移到 WinUSB 驱动方案（通过 wdi-rs），libusb-filter 不再需要
+- **完善 read/write 命令实现**：参考 mtkclient 的 xflash_lib.py 实现
+  - `读取分区()`：支持自动读取 GPT → 查找分区地址 → readflash_data → 保存文件
+  - `写入分区()`：支持自动读取 GPT → 查找分区地址 → 512 字节对齐 → write_flash_data
+  - `写入分区带校验()`：写入后读取回来校验，确保数据一致性
+  - `擦除分区()`：使用 FORMAT 命令，支持 STATUS_COMPLETE/STATUS_CONTINUE 状态处理
+- **中文命名优化**：函数名、变量名、注释全部使用中文
+  - 函数名：`读取分区`、`写入分区`、`擦除分区`、`写入分区带校验`
+  - 变量名：`分区名`、`输入文件`、`输出文件`、`文件数据`、`文件大小`、`地址`、`分区大小`、`填充`、`原始数据`、`验证数据`
+  - 注释：所有文档注释和行内注释使用中文
+- **编译验证**：cargo build / clippy / fmt 全部通过，0 错误 0 警告
+
+## 最近更新 (2026-06-28 v3)
+- **模块化重构完成 (v0.1.7)**：将所有大文件拆分为模块化结构，所有文件 <500 行
+  - 提交基线：`30b6bca` (master)
+  - 已推送到远程仓库
+  - 拆分清单：
+    - `commands.rs` → `commands/` (mod.rs, gpt.rs, io.rs, dump.rs)
+    - `da_extension.rs` → `da_xflash_extension/` (mod.rs, patches.rs, generate.rs, cmd.rs)
+    - `da_xflash.rs` → `da_xflash/` (mod.rs, da_load.rs, diag.rs, io.rs, protocol.rs, emi.rs)
+    - `preloader.rs` → `preloader/` (mod.rs, core.rs, brom_init.rs, brom_io.rs, brom_register_access.rs, transport.rs)
+    - `kamakiri2.rs` → `kamakiri2/` (mod.rs, bypass.rs, da_io.rs, dump.rs, inject.rs, kamakiri2_common.rs, payload.rs, step.rs)
+    - `seccfg.rs` → `security/seccfg/` (mod.rs, build.rs, cmd.rs, v3.rs, v4.rs)
+    - `usb.rs` → `usb/` (mod.rs, context.rs, device.rs, device_handshake.rs, device_io.rs, log.rs, diag.rs)
+    - `connection.rs` → `connection/` (mod.rs, manager.rs, session.rs, filter.rs, driver/)
+    - `da_partition.rs` → `da_partition/` (mod.rs, gpt.rs, io.rs, scatter.rs)
+    - `da_xflash_setup.rs` → `da_xflash_setup/` (mod.rs, env.rs, header.rs, upload.rs)
+- **代码清理**：废弃文件移动到 archive 目录，根目录保持整洁
+- **编译验证**：cargo build / clippy / fmt 全部通过，0 错误 0 警告
 
 ## 最近更新 (2026-06-28 v2)
 - **代码清理与整理**：将废弃文件移动到 archive 目录，保持根目录整洁
