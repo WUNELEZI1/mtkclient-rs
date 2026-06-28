@@ -5,11 +5,9 @@
 //! # 系统架构
 //! - `driver` - Windows WinUSB 驱动安装/切换
 //! - `manager` - 设备连接管理器（串口握手/WinUSB直连/自动降级）
-//! - `filter` - USB 设备过滤与检测
 //! - `session` - DA 会话状态管理
 
 pub mod driver;
-pub mod filter;
 pub mod manager;
 pub mod session;
 

@@ -168,7 +168,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     // COM 口前置握手 + libusb 后续通信
-    // 注意：filter 卸载和重新安装在 smart_init 内部处理
     let mut conn_mgr = ConnectionManager::new();
 
     // === DA 会话复用检查 ===
