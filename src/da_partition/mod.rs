@@ -1,0 +1,20 @@
+//! 分区/GPT 处理模块
+//!
+//! 子模块：
+//! - `gpt`     — `PartitionEntry` / `GptInfo` 数据结构与解析
+//! - `io`      — `DAXFlash` 上的分区读写擦操作（read_gpt / write_partition / erase_partition）
+//! - `scatter` — 从 GPT 数据生成 scatter 文件（MTK SP Flash / 刷机匣 YAML）
+
+pub mod gpt;
+pub mod io;
+pub mod scatter;
+
+pub use gpt::GptInfo;
+#[allow(unused_imports)]
+pub use scatter::{
+    generate_scatter_from_gpt, generate_scatter_header, generate_scatter_shoujixia,
+    parse_gpt_from_data,
+};
+// 注意：read_gpt / read_partition / write_partition / write_partition_with_verify /
+// erase_partition 是 DAXFlash 的方法（在 io.rs 的 impl 块中定义），
+// 调用方式：crate::da_partition::io::DAXFlash::read_gpt(&mut da)

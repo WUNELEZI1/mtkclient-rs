@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use colored::Colorize;
-use log::{debug, error, info, warn};
+use log::{error, info, trace, warn};
 use usb::UsbContext;
 
 #[cfg(target_os = "windows")]
@@ -15,19 +15,15 @@ mod cli;
 mod commands;
 mod config;
 mod connection;
-mod da_extension;
 mod da_partition;
 mod da_xflash;
-mod driver;
-mod frp;
+mod da_xflash_extension;
+mod da_xflash_setup;
 mod kamakiri2;
 mod paths;
 mod preloader;
-mod seccfg;
-mod sej;
-mod session;
+mod security;
 mod usb;
-mod vbmeta;
 
 use connection::ConnectionManager;
 
@@ -37,6 +33,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SetConsoleCP(65001);
         SetConsoleOutputCP(65001);
     }
+
+    // 输出版本号（每次代码更新 cargo.toml version +0.0.1）
+    println!(
+        "{} {}",
+        "mtkclient-rs".cyan().bold(),
+        format!("v{}", env!("CARGO_PKG_VERSION")).yellow().bold()
+    );
+    println!();
 
     let raw_args: Vec<String> = std::env::args().collect();
     let is_help = raw_args.iter().any(|a| a == "-h" || a == "--help");
@@ -52,12 +56,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     {
         if !cli.no_elevate
-            && !driver::is_admin()
+            && !connection::driver::is_admin()
             && std::env::var_os("MTKCLIENT_ELEVATED").is_none()
         {
             // 提示用户（UAC 弹窗会覆盖这个）
             eprintln!("[MAIN] 需要管理员权限以安装 WinUSB 驱动，正在请求提权...");
-            if let Err(e) = driver::restart_as_admin() {
+            if let Err(e) = connection::driver::restart_as_admin() {
                 eprintln!("[MAIN] 提权失败: {}", e);
                 eprintln!(
                     "[MAIN] 请右键以管理员身份运行本程序，或加 --no-elevate 跳过（将无法切换 WinUSB）"
@@ -179,10 +183,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some((current_vid, current_pid, _dev_type)) = usb::get_first_mediatek_vid_pid() {
             if current_pid == 0x0003 {
                 // 核心修复：如果当前设备是 BROM (0003)，说明设备已重启，必须重置 DA 会话
-                debug!("[session] 检测到 BROM 设备，强制重置旧的 DA 会话状态");
-                crate::session::reset_session();
+                trace!("[session] 检测到 BROM 设备，强制重置旧的 DA 会话状态");
+                crate::connection::reset_session();
                 false
-            } else if crate::session::try_reuse_da_session(current_vid, current_pid) {
+            } else if crate::connection::try_reuse_da_session(current_vid, current_pid) {
                 info!(
                     "{}",
                     "[DA_SESSION] 检测到现有 DA 会话，尝试复用..."
@@ -202,7 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(pair) => pair,
             Err(e) => {
                 warn!("[DA_SESSION] DA 会话复用失败: {}，回退到正常流程", e);
-                crate::session::reset_session();
+                crate::connection::reset_session();
                 conn_mgr.smart_init(&usb_context)?
             }
         }
@@ -212,57 +216,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("{}", "连接成功 (BROM 模式)".green().bold());
 
-    let final_preloader_path = if let Some(ref path) = app_config.preloader_path {
-        info!("使用指定的 preloader 文件: {}", path);
-        path.clone()
+    // preloader_path 决定后续策略：
+    //   - Some(path)：使用用户指定的文件作为 EMI 数据源，跳过 dump + bypass
+    //   - None：强制从设备 dump preloader 一次（覆盖同名文件），然后按需 bypass
+    //
+    // 注意：dump + load + bypass + upload_da 全部下放到 commands::handle_command 统一处理，
+    // 避免在 main.rs 与 handle_command 双重执行（之前会 dump 两次）。
+    let final_preloader_path = app_config.preloader_path.clone().unwrap_or_default();
+    if !final_preloader_path.is_empty() {
+        info!("使用指定的 preloader 文件: {}", final_preloader_path);
     } else {
-        String::new()
-    };
+        info!(
+            "{}",
+            "未指定 --preloader，将强制从设备 dump 并覆盖同名文件".yellow()
+        );
+    }
 
     let mut da = da_xflash::DAXFlash::new(&mut preloader);
     da.patch_da = cli.patch_da;
 
-    if final_preloader_path.is_empty() {
-        match da.preloader.get_target_config() {
-            Ok(cfg) => info!("{}", cfg.format_info()),
-            Err(e) => warn!("获取 target config 失败: {}", e),
-        }
-        da.preloader
-            .bypass_security(&usb_context)
-            .map_err(|e| format!("bypass_security 失败: {}", e))?;
-        let (data, filename) = da
-            .preloader
-            .dump_preloader_payload(false, false, &usb_context)
-            .map_err(|e| format!("dump_preloader_payload 失败: {}", e))?;
-        if !data.is_empty() {
-            info!("Preloader 已提取: {} ({} 字节)", filename, data.len());
-        }
-    }
-
-    info!("加载 EMI 数据: {}", final_preloader_path);
-    if let Err(e) = da.load_preloader_emi(&final_preloader_path) {
-        info!("Warning: EMI 加载失败: {}", e);
-    }
-
-    da.upload_da()
-        .map_err(|e| format!("DA 加载失败: {}", e))
-        .and_then(|ok| {
-            if ok {
-                Ok(())
-            } else {
-                Err("DA 加载失败".to_string())
-            }
-        })?;
-
-    if cli.log_level >= 3 {
-        if let Some(data) = da.get_emi_data() {
-            let _ = std::fs::write("emi_debug.bin", data);
-        }
-        if let Some(data) = da.get_extensions_data() {
-            let _ = std::fs::write("extensions_debug.bin", &data);
-        }
-    }
-
+    // dump + load + bypass + upload_da 全部由 handle_command 内部完成
+    // 这里不再调用 dump_preloader_payload / load_preloader_emi / upload_da
     commands::handle_command(
         &mut da,
         &app_config,
