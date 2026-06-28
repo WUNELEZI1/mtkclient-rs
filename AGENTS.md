@@ -1,7 +1,35 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
-> 最近更新：2026-06-24
+> 最近更新：2026-06-28
 > 完整历史：Temp_Agent_Archive.md
+
+## 最近更新 (2026-06-28 v2)
+- **代码清理与整理**：将废弃文件移动到 archive 目录，保持根目录整洁
+  - 移动 `build.log`、`clippy.log`、`系统架构设计.md` 到 archive
+  - 修复 `da_xflash_extension/mod.rs` 中 `da_x.bin` 路径引用（指向 archive/mtkclient-2.0.1）
+  - 修复 `kamakiri2/bypass.rs` 和 `kamakiri2/dump.rs` 中的导入错误（统一使用 `获取可执行文件相对路径`）
+  - 修复 `kamakiri2/payload.rs` 中的语法错误（第 19 行括号不匹配）
+- **编译验证**：cargo build / clippy / fmt 全部通过，0 错误 0 警告
+
+## 最近更新 (2026-06-28)
+- **mtkclient 风格 dumppreloader 命令实现**：对齐 mtkclient 的 pltools.py:154-160 和 kamakiri2.py:238-246 实现。
+  - 加载 `generic_preloader_dump_payload.bin`（592 字节）
+  - 注入 payload（使用 `inject_payload_use_chip_send_ptr`，不执行任何 BROM 命令）
+  - 直接读取 4 字节长度头（小端 u32）
+  - 读取 Preloader 数据（16KB 块循环读取）
+  - 搜索 `MTK_BLOADER_INFO` 提取文件名（偏移 0x1B，长度 0x40）
+  - **关键点**：不需要 `read32_brom`、不需要重新握手、不需要 0xD1 命令、不需要 `da_setup`，完全通过 USB 读取 payload 返回的数据
+- **代码模块化拆分**：将大文件拆分为模块化结构，确保单个文件 <500 行
+  - `commands.rs` → `commands/` 目录（mod.rs, gpt.rs, io.rs, dump.rs）
+  - `da_extension.rs` → `da_xflash_extension/` 目录（mod.rs, patches.rs, generate.rs, cmd.rs）
+  - `da_xflash.rs` → `da_xflash/` 目录（mod.rs, da_load.rs, diag.rs, io.rs）
+  - `preloader.rs` → `preloader/` 目录（mod.rs, core.rs, brom_init.rs, brom_io.rs, brom_register_access.rs, transport.rs）
+  - `kamakiri2.rs` → `kamakiri2/` 目录（mod.rs, bypass.rs, da_io.rs, dump.rs, inject.rs, kamakiri2_common.rs, payload.rs, step.rs）
+  - `seccfg.rs` → `seccfg/` 目录（mod.rs, build.rs, cmd.rs, v3.rs, v4.rs）
+  - `usb.rs` → `usb/` 目录（mod.rs, context.rs, device.rs, device_handshake.rs, device_io.rs, log.rs）
+  - `connection.rs` → `connection/` 目录（mod.rs, manager.rs, driver/）
+  - `da_partition.rs` → `da_partition/` 目录（mod.rs, gpt.rs, io.rs, scatter.rs）
+  - `da_xflash_setup.rs` → `da_xflash_setup/` 目录（mod.rs, env.rs, header.rs, upload.rs）
 
 ## 最近更新 (2026-06-27)
 - **bypass_security 后添加 BROM 重新握手**：Kamakiri2 exploit 成功后，设备 BROM 协议栈状态改变，不再响应 0xD1 命令。对齐刷机匣流程：在 payload 注入成功后执行 BROM 重新握手（A0→5F, 0A→F5, 50→AF, 05→FA），恢复设备 BROM 状态，使后续 read32_brom (0xD1) 命令能正常工作。
