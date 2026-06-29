@@ -76,19 +76,19 @@ pub struct Cli {
     #[arg(
         help = "要执行的命令",
         long_help = "可用命令:\n\
-          printgpt        - 打印 GPT 分区表\n\
+          printgpt        - 打印 GPT 分区表 + EMMC 信息 + 生成 scatter\n\
           dump-preloader  - 从 RAM 提取 Preloader\n\
-          dumpbrom        - 提取 BROM 到文件\n\
           r <分区> <文件> - 读取分区到文件\n\
           r gpt <目录>    - 保存 GPT 原始数据到目录\n\
           rl <目录>       - 读取全部分区到目录\n\
+          wl <目录>       - 从目录恢复全部分区\n\
           w <分区> <文件> - 写入文件到分区\n\
-          e <分区>       - 擦除分区\n\
-          vbmeta <模式>  - 修补 vbmeta 分区\n\
+          e <分区>        - 擦除分区\n\
+          vbmeta <模式>   - 修补 vbmeta 分区 (0/1/2/3)\n\
           frp             - FRP OEM 解锁\n\
           unlock          - 解锁 Bootloader\n\
           lock            - 锁定 Bootloader\n\
-          reset           - 重置设备\n\
+          reset           - 重启设备\n\
           print-scatter   - 打印 scatter 到屏幕并保存文件\n\
           enable-adb-on-da - 在 DA 模式下开启 ADB"
     )]

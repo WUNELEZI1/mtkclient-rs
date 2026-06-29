@@ -1,7 +1,75 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
-> 最近更新：2026-06-28 v4
+> 最近更新：2026-06-30 v6
 > 完整历史：Temp_Agent_Archive.md
+
+## 最近更新 (2026-06-30 v6) — 功能对齐 + 警告清零
+- **v0.1.8：编译 0 错误 0 警告（cargo build / cargo clippy --all-targets）**
+  - 在 `cargo.toml` 中新增 `[lints.rust] non_snake_case = "allow"`，消除 23 个中文标识符警告
+  - 修复 `DA扩展/诊断.rs` 的 `single_match` clippy 警告（`match { Ok(..) => .., _ => {} }` → `if let Ok(..)`）
+  - 修复 `DA扩展/内存初始化.rs` 测试用例的 `useless_vec` + `bool_comparison` clippy 警告
+  - 验证：cargo build 0 错误 0 警告；cargo clippy --all-targets 0 警告
+- **删除 dumpbrom 命令**：
+  - 从 `src/命令/模块.rs` 删除 dumpbrom 路由
+  - 从 `src/命令/转储.rs` 删除 `cmd_dumpbrom`
+  - 从 `src/cli.rs` 长帮助和命令列表中删除 dumpbrom
+- **完善 printgpt 输出 EMMC 完整信息**（`src/命令/分区表.rs::print_emmc_info`）：
+  - 存储类型（EMMC / UFS / SD / NAND / NAND_PARALLEL / UFS_CARD / Unknown）
+  - 用户区大小（HEX + GB + MB）
+  - Boot1 / Boot2 / RPMB 大小
+  - 块大小
+  - CID 寄存器（ASCII + HEX）
+  - 失败时降级到 `get_emmc_info_simple`（仅 Boot1/Boot2 简化模式）
+- **完善 vbmeta patch 1/2/3 模式**（`src/安全/VBMETA.rs::patch_vbmeta_data`）：
+  - mode 0 = 验证启用 + 校验启用（默认）
+  - mode 1 = 验证禁用 + 校验启用
+  - mode 2 = 验证启用 + 校验禁用
+  - mode 3 = 验证禁用 + 校验禁用（完全禁用）
+  - 自动尝试 `vbmeta_a` / `vbmeta_b` / `vbmeta` 三个候选分区，全部修补
+  - 验证 AVB0 magic 签名防止误改其他数据
+- **支持导出 gpt 与 scatter**（`src/命令/分区表.rs`）：
+  - `printgpt` 默认生成 `scatter.txt`（SP Flash Tool 格式）+ `scatter_shoujixia.txt`（刷机匣 YAML 格式）
+  - 新增 `print-scatter` 命令：打印到屏幕 + 保存为 `MT6768_Android_scatter.txt` + 刷机匣格式
+  - `read gpt <dir>` 命令：保存 `gpt.bin` 原始 GPT 数据到指定目录
+  - `read_gpt` 内部会先写 `gpt_full.bin` + `gpt.bin` 备份
+- **patch_da 选项控制**：
+  - `cli.patch_da` 默认 true（与 mtkclient 行为一致）
+  - `DAXFlash::patch_da` 字段控制 `generate_da_extensions` 是否在 upload_da 后扩展 DA
+  - 设为 false 时跳过 DA extensions 注入，使用裸 DA（适用于部分芯片兼容）
+- **reset 命令**（`src/命令/输入输出.rs::cmd_reset`）：
+  - 优先走 DA `reset_device`（XFlash CMD_RESET = 0x010007 + param storage=1, value=0x64）
+  - 失败时 fallback 到 BROM `jump_bl()` 关闭设备
+  - 两种路径都会调用 `crate::连接管理::reset_session()` 清理 DA 会话缓存
+- **完整命令路由**（`src/命令/模块.rs::execute_single_command`）：
+  - printgpt / dumppreloader / r / read / r gpt / rl / readall / wl / writeall
+  - w / write / e / erase / vbmeta <0|1|2|3> / frp / unlock / lock / reset
+  - print-scatter / enable-adb-on-da
+- **日志级别界限**（env_logger + `log` crate）：
+  - `--quiet` → `LevelFilter::Error`（只输出 ERROR）
+  - 默认（log_level=1）→ `LevelFilter::Info`（关键流程节点）
+  - `--log 2` → `LevelFilter::Debug`（协议步骤、状态码、详细数据）
+  - `--log 3` → `LevelFilter::Trace`（原始 hex dump、USB 字节级追踪）
+  - `--usb-log` 独立控制 `usb_debug.log` 文件输出（与 `--debugmode` 无关）
+  - `--quiet-dump` 抑制 USB 读取日志和进度条
+- **新增 wl / writeall 命令**（`src/命令/分区表.rs::cmd_write_all`）：
+  - 从目录中读取 `<分区名>.img` 文件并写回对应分区
+  - 文件不存在时跳过（不报错），适合增量刷入
+  - 支持 `--verify` 写入后回读校验
+- **SecCfg unlock / lock**（`src/安全/安全配置/命令.rs`）：
+  - 自动识别 V4 / V3 格式（V4 magic 0x4D4D4D4D + 28 字节头 + SHA256/AES 哈希；V3 info_header "AND_SECCFG_v"）
+  - V4 走 SEJ HACC 重新签名；V3 走 SW/V2/V3/V4 四种 hwtype 加密
+  - 严格只改 lock_state（不破坏 critical_lock_state / dm_verity，对齐 C# 版正确行为）
+- **FRP 解锁**（`src/安全/FRP.rs`）：四阶段 patcher，兼容 frp / persistent / config / nvram / protect1 / protect2
+
+## 最近更新 (2026-06-28 v5)
+- **彻底清除 libusb-filter 残留代码**：
+  - 删除 `binaries/libusb/` 目录（libusb0.sys, libusb0.lib, libusb0.dll, install-filter.exe 等）
+  - 删除 `binaries/driver/libusb_GUI.exe`
+  - 删除 `LibUsb-win32/` 目录（MediaTek_USB_Port.inf, libusb0 驱动文件等）
+  - 修改 `build.rs`：移除 libusb0.lib 链接器配置
+  - 修改 `src/preloader/brom_init.rs`：移除 libusb-win32 注释引用
+  - 更新 `AGENTS.md`：移除过时的 libusb-filter 文档引用
+  - 原因：项目已完全迁移到 WinUSB 驱动方案（通过 wdi-rs），libusb-filter 相关文件和引用已无用途
 
 ## 最近更新 (2026-06-28 v4)
 - **删除 libusb-filter 相关代码**：彻底移除过时的 libusb-win32 filter 方案
@@ -106,8 +174,7 @@ src/da_xflash.rs   - DA/XFlash 上传、扩展、读写、erase、reset
 src/sej.rs         - HACC/SEJ 寄存器后端与签名接口
 src/seccfg.rs      - SecCfgV3/V4 解析、锁解、离线处理
 src/da_partition.rs - GPT 读取、分区解析、地址查找
-src/driver.rs      - libusb-filter 检测与安装、install-filter 状态检查、COM 占用检测
-src/filter.rs      - （已合并到 driver.rs，install-filter.exe 包装与设备 filter 检测）
+src/driver.rs      - WinUSB 驱动安装/切换（通过 wdi-rs）
 src/frp.rs         - FRP OEM unlocking 预留入口
 src/usb.rs         - USB 底层通信
 src/config.rs      - 芯片配置与寄存器常量
@@ -124,7 +191,7 @@ src/paths.rs       - 路径辅助
 - 不要把 `cargo run` 当作默认验证手段，设备未连接时会卡住。
 - `Temp_Agent_Archive.md` 保存完整历史，当前文件只保留可恢复的摘要。
 - BROM 串口和 USB 两条路径都还在，`smart_init` 会根据状态选择。
-- `driver.rs` 现在走 `install-filter.exe` + `serialport` watchdog，不再依赖 `zadig_rust.dll` / `devcon.exe`。
+- `driver.rs` 现在走 wdi-rs + WinUSB 驱动方案，不再依赖 libusb-filter 或 install-filter.exe。
 - `readflash_data` 允许大块读取，但 ACK 语义要保持每块一确认。
 - `reset_device` 已优先走 DA 重启，BROM `jump_bl` 只作为 fallback。
 - `seccfg` 逻辑已拆到 `src/seccfg.rs`，离线锁解命令改从新模块取实现。
