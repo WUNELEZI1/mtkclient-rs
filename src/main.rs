@@ -3,7 +3,6 @@
 use clap::Parser;
 use colored::Colorize;
 use log::{error, info, trace, warn};
-use usb::UsbContext;
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" {
@@ -12,20 +11,31 @@ unsafe extern "system" {
 }
 
 mod cli;
-mod commands;
+#[path = "命令/模块.rs"]
+mod 命令;
 mod config;
-mod connection;
-mod da_partition;
-mod da_xflash;
-mod da_xflash_extension;
-mod da_xflash_setup;
-mod kamakiri2;
+#[path = "连接管理/模块.rs"]
+mod 连接管理;
+#[path = "DA分区/模块.rs"]
+mod DA分区;
+#[path = "DA扩展/模块.rs"]
+mod DA扩展;
+#[path = "DA扩展命令/模块.rs"]
+mod DA扩展命令;
+#[path = "DA加载/模块.rs"]
+mod DA加载;
+#[path = "漏洞利用/模块.rs"]
+mod 漏洞利用;
 mod paths;
-mod preloader;
-mod security;
-mod usb;
+#[path = "预加载器/模块.rs"]
+mod 预加载器;
+#[path = "安全/模块.rs"]
+mod 安全;
+#[path = "USB通信/模块.rs"]
+mod USB通信;
 
-use connection::ConnectionManager;
+use 连接管理::ConnectionManager;
+use USB通信::USB上下文;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
@@ -45,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let raw_args: Vec<String> = std::env::args().collect();
     let is_help = raw_args.iter().any(|a| a == "-h" || a == "--help");
     if is_help {
-        commands::print_help();
+        命令::print_help();
         return Ok(());
     }
 
@@ -56,12 +66,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     {
         if !cli.no_elevate
-            && !connection::driver::is_admin()
+            && !连接管理::driver::is_admin()
             && std::env::var_os("MTKCLIENT_ELEVATED").is_none()
         {
             // 提示用户（UAC 弹窗会覆盖这个）
             eprintln!("[MAIN] 需要管理员权限以安装 WinUSB 驱动，正在请求提权...");
-            if let Err(e) = connection::driver::restart_as_admin() {
+            if let Err(e) = 连接管理::driver::restart_as_admin() {
                 eprintln!("[MAIN] 提权失败: {}", e);
                 eprintln!(
                     "[MAIN] 请右键以管理员身份运行本程序，或加 --no-elevate 跳过（将无法切换 WinUSB）"
@@ -74,11 +84,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_config = config::AppConfig::from_cli(&cli);
 
-    usb::set_usb_log_enabled(cli.usb_log);
+    USB通信::设置USB日志开关(cli.usb_log);
 
     // --quiet-dump: 抑制 USB 读取日志和进度条
     if cli.quiet_dump {
-        usb::set_quiet_usb_read(true);
+        USB通信::设置USB读取静默(true);
     }
 
     let log_level = if cli.quiet {
@@ -159,11 +169,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cmd = app_config.command.as_deref().unwrap_or("");
 
     if cmd.is_empty() {
-        commands::print_help();
+        命令::print_help();
         return Ok(());
     }
 
-    let usb_context = UsbContext::new().inspect_err(|e| {
+    let usb_context = USB上下文::新建().inspect_err(|e| {
         error!("{}", e);
     })?;
 
@@ -179,13 +189,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   3. 如果复用条件满足 → connect_to_da_mode（直接连接 PID=0x2000）
     //   4. 否则 → 走正常的 smart_init 流程
     let da_session_reused =
-        if let Some((current_vid, current_pid, _dev_type)) = usb::get_first_mediatek_vid_pid() {
+        if let Some((current_vid, current_pid, _dev_type)) = USB通信::获取第一个联发科VIDPID() {
             if current_pid == 0x0003 {
                 // 核心修复：如果当前设备是 BROM (0003)，说明设备已重启，必须重置 DA 会话
                 trace!("[session] 检测到 BROM 设备，强制重置旧的 DA 会话状态");
-                crate::connection::reset_session();
+                crate::连接管理::reset_session();
                 false
-            } else if crate::connection::try_reuse_da_session(current_vid, current_pid) {
+            } else if crate::连接管理::try_reuse_da_session(current_vid, current_pid) {
                 info!(
                     "{}",
                     "[DA_SESSION] 检测到现有 DA 会话，尝试复用..."
@@ -205,7 +215,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(pair) => pair,
             Err(e) => {
                 warn!("[DA_SESSION] DA 会话复用失败: {}，回退到正常流程", e);
-                crate::connection::reset_session();
+                crate::连接管理::reset_session();
                 conn_mgr.smart_init(&usb_context)?
             }
         }
@@ -219,7 +229,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   - Some(path)：使用用户指定的文件作为 EMI 数据源，跳过 dump + bypass
     //   - None：强制从设备 dump preloader 一次（覆盖同名文件），然后按需 bypass
     //
-    // 注意：dump + load + bypass + upload_da 全部下放到 commands::handle_command 统一处理，
+    // 注意：dump + load + bypass + upload_da 全部下放到 命令::handle_command 统一处理，
     // 避免在 main.rs 与 handle_command 双重执行（之前会 dump 两次）。
     let final_preloader_path = app_config.preloader_path.clone().unwrap_or_default();
     if !final_preloader_path.is_empty() {
@@ -231,12 +241,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let mut da = da_xflash::DAXFlash::new(&mut preloader);
+    let mut da = DA扩展::DAXFlash::new(&mut preloader);
     da.patch_da = cli.patch_da;
 
     // dump + load + bypass + upload_da 全部由 handle_command 内部完成
     // 这里不再调用 dump_preloader_payload / load_preloader_emi / upload_da
-    commands::handle_command(
+    命令::handle_command(
         &mut da,
         &app_config,
         cli.log_level,

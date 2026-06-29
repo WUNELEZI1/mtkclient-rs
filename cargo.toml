@@ -1,7 +1,15 @@
 [package]
 name = "mtkclient-rs"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
+
+# 项目强制要求：中文函数名、变量名、文件名、注释。
+# Rust 默认对标识符执行 snake_case 检查会触发大量 non_snake_case 警告，
+# 但中文标识符（包括 PID/VID/USB/EMMC/EMI/GPT/DA/IO/SLA/DAA/SBC/BROM 等
+# 复合缩略词）都是项目约定必须保留的术语。
+# 在 crate 级别统一抑制该 lint，确保编译 0 警告。
+[lints.rust]
+non_snake_case = "allow"
 
 [dependencies]
 # 日志

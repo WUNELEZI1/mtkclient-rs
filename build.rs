@@ -19,13 +19,6 @@ fn main() {
         fs::copy(&libusb_src, &dest).ok();
     }
 
-    // 告诉链接器去哪里找 libusb0.lib
-    let libusb_lib_dir = PathBuf::from(&manifest_dir).join("binaries").join("libusb");
-    println!(
-        "cargo:rustc-link-search=native={}",
-        libusb_lib_dir.display()
-    );
-
     // 抑制 wdi-rs (libwdi) 的 linker 警告
     // LNK4098: LIBCMT 与其他库冲突（libwdi 静态库用 /MT 编译）
     // LNK4099: 静态库未附带 PDB 调试符号文件
