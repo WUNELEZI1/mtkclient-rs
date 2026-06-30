@@ -11,7 +11,6 @@ use log::trace;
 use std::time::Duration;
 
 const DA_UPLOAD_TIMEOUT_MS: u64 = 10000;
-const DA_UPLOAD_CHUNK: usize = 512; // 对齐 Python mtkclient 的 max_packet_size
 const DA_UPLOAD_RETRY: u32 = 3;
 const DA_UPLOAD_RETRY_DELAY_MS: u64 = 1;
 const JUMP_DA_MAX_ATTEMPT: u32 = 5;
@@ -62,10 +61,12 @@ impl Preloader {
         }
 
         // 4. 上传数据
+        // 动态 chunk：使用端点最大包大小（对齐 Python usblib.write 的 pktsize=EP_OUT.wMaxPacketSize）
+        let chunk_size = self.device.获取输出端点最大包大小() as usize;
         trace!(
-            "[UPLOAD] sending {} bytes in chunks of {}",
+            "[UPLOAD] sending {} bytes, dynamic chunk={} (wMaxPacketSize)",
             dadata.len(),
-            DA_UPLOAD_CHUNK
+            chunk_size
         );
 
         // 4a. 设置超时
@@ -73,10 +74,10 @@ impl Preloader {
         self.device
             .set_timeout(Duration::from_millis(DA_UPLOAD_TIMEOUT_MS));
 
-        // 4b. 发送数据（512 字节块，对齐 Python mtkclient upload_data）
+        // 4b. 发送数据（动态 chunk，末尾自动适配）
         let mut pos = 0;
         while pos < dadata.len() {
-            let end = (pos + DA_UPLOAD_CHUNK).min(dadata.len());
+            let end = (pos + chunk_size).min(dadata.len());
             let mut attempt = 0;
             loop {
                 attempt += 1;

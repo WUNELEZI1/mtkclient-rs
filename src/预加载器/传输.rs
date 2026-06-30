@@ -50,6 +50,11 @@ pub trait BromTransport {
         None
     }
 
+    /// 获取 EP_OUT 最大包大小（对齐 Python usblib.write 的 pktsize）
+    fn 获取输出端点最大包大小(&self) -> u16 {
+        512 // 默认回退值，USB 实现会覆盖为真实值
+    }
+
     // USB 专属方法 — 默认返回错误，仅 UsbDevice 实现
     fn ctrl_transfer_out(
         &mut self,
@@ -309,6 +314,10 @@ impl BromTransport for USB设备 {
 
     fn get_pid(&self) -> Option<u16> {
         Some(self.pid)
+    }
+
+    fn 获取输出端点最大包大小(&self) -> u16 {
+        USB设备::获取输出端点最大包大小(self)
     }
 
     fn ctrl_transfer_out(
