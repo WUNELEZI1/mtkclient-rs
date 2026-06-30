@@ -16,7 +16,7 @@ use crate::DA扩展::DAXFlash;
 /// 读取分区数据到文件
 pub fn cmd_read(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 2 {
-        return Err("用法: mtkclient 读分区 <分区> <文件>".into());
+        return Err("用法: mtkclient r <part> <file>".into());
     }
     da.读取分区(&args[0], &args[1])
         .map_err(|e| format!("读取失败: {}", e))?;
@@ -31,7 +31,7 @@ pub fn cmd_write(
     verify: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 2 {
-        return Err("用法: mtkclient 写分区 <分区> <文件>".into());
+        return Err("用法: mtkclient w <part> <file>".into());
     }
     let result = if verify {
         da.写入分区带校验(&args[0], &args[1])
@@ -46,7 +46,7 @@ pub fn cmd_write(
 /// 擦除分区
 pub fn cmd_erase(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
-        return Err("用法: mtkclient 擦分区 <分区>".into());
+        return Err("用法: mtkclient e <part>".into());
     }
     da.擦除分区(&args[0])
         .map_err(|e| format!("擦除失败: {}", e))?;
@@ -57,7 +57,7 @@ pub fn cmd_erase(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::
 /// 修补 vbmeta
 pub fn cmd_vbmeta(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
-        return Err("用法: mtkclient 禁用avb <模式> (0/1/2/3)".into());
+        return Err("用法: mtkclient vbmeta <mode> (0/1/2/3)".into());
     }
     let mode = args[0].parse::<u32>().map_err(|_| "无效模式")?;
     da.patch_vbmeta(mode)
