@@ -195,12 +195,12 @@ impl<'a> DAXFlash<'a> {
         let 文件大小 = 文件数据.len();
 
         // 找到分区地址和大小
-        let (地址, 分区大小) = self.find_partition_addr(分区名)?;
+        let (地址, _分区大小) = self.find_partition_addr(分区名)?;
 
         let mut 数据 = 文件数据;
         // 对齐到 512 字节（Python: 如果长度不是 512 的倍数，补零）
-        let 填充: usize = if 分区大小 % 512 != 0 {
-            (512 - (分区大小 % 512)) as usize
+        let 填充 = if 数据.len() % 512 != 0 {
+            512 - (数据.len() % 512)
         } else {
             0
         };
