@@ -79,12 +79,12 @@ impl<'a> DAXFlash<'a> {
             let _ = self.preloader.device.clear_halt_in();
             let _ = self.preloader.device.clear_halt_out();
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(20));
 
         self.preloader.jump_da(da1_address)?;
 
         // Give device time to start DA execution
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(50));
 
         // Python: sync = self.usbread(1) 等待 0xC0
         let orig_timeout = self.preloader.device.get_timeout();

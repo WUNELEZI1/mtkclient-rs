@@ -129,7 +129,7 @@ impl<'a> DAXFlash<'a> {
     fn load_da_extensions_after_boot(&mut self) {
         // Python 第 1251 行：boot_to 成功后立刻发送 CUSTOM_ACK
         // 给 extensions 一点初始化时间
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(50));
         if let Ok(ack) = self.send_devctrl(DA_EXTENSIONS_DEVCTRL_ACK, None) {
             // Python 第 1252 行：send_devctrl 后还要读一次 status
             let status = self.status();
