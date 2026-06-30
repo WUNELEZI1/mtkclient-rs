@@ -11,6 +11,7 @@
 //! STEP 2: WinUSB 直连（降级路径，跳过握手）
 //! ```
 
+use crate::config::工作模式;
 use crate::连接管理::driver::{UsbBusDetectionResult, detect_brom_driver_from_usb_bus};
 use crate::预加载器::{Preloader, SerialPortTransport};
 use crate::USB通信;
@@ -53,7 +54,16 @@ impl ConnectionManager {
     }
 
     /// 统一设备初始化入口
-    pub fn smart_init(&mut self, context: &USB上下文) -> Result<(Preloader, DeviceMode), String> {
+    pub fn smart_init(
+        &mut self,
+        context: &USB上下文,
+        工作模式: 工作模式,
+    ) -> Result<(Preloader, DeviceMode), String> {
+        match 工作模式 {
+            工作模式::Preloader => return self.smart_init_preloader(context),
+            _ => {}
+        }
+
         info!("等待设备连接 (BROM: Vol+ + Vol- + Power)");
 
         // 无限等待设备出现
@@ -414,6 +424,88 @@ impl ConnectionManager {
     #[allow(dead_code)] // 预留：调试/日志输出当前使用的串口名
     pub fn port_name(&self) -> Option<&str> {
         self.port_name.as_deref()
+    }
+
+    /// Preloader 模式初始化：等待 Preloader VCOM (PID=0x2000)，握手后直接返回
+    fn smart_init_preloader(
+        &mut self,
+        context: &USB上下文,
+    ) -> Result<(Preloader, DeviceMode), String> {
+        info!("等待 Preloader VCOM 设备连接 (PID=0x2000)，无需按任何按键...");
+
+        loop {
+            // 1. 枚举 COM 口，找 PID=0x2000 的 Preloader VCOM
+            if let Ok(ports) = serialport::available_ports() {
+                for p in &ports {
+                    if let serialport::SerialPortType::UsbPort(ref info) = p.port_type {
+                        if info.vid == 0x0E8D && info.pid == 0x2000 {
+                            info!(
+                                "[PRELOADER] 发现 Preloader COM 口: {} (VID={:04X} PID={:04X})",
+                                p.port_name, info.vid, info.pid
+                            );
+                            match self.preloader_serial_handshake(&p.port_name) {
+                                Ok(preloader) => {
+                                    self.mode = DeviceMode::Preloader;
+                                    self.stage = USB阶段::Preloader;
+                                    self.port_name = Some(p.port_name.clone());
+                                    return Ok((preloader, DeviceMode::Preloader));
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "[PRELOADER] {} 握手失败: {}",
+                                        p.port_name, e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. 串口没找到，尝试 WinUSB（PID=0x2000）
+            match USB通信::USB设备::按VID_PID打开(context, 0x0E8D, 0x2000) {
+                Ok(usb_device) => {
+                    info!(
+                        "[PRELOADER] WinUSB 设备已连接: VID={:04X} PID={:04X}",
+                        usb_device.vid, usb_device.pid
+                    );
+                    let mut preloader = Preloader::new(Box::new(usb_device));
+                    match preloader.init_preloader() {
+                        Ok(true) => {
+                            self.mode = DeviceMode::Preloader;
+                            self.stage = USB阶段::Preloader;
+                            return Ok((preloader, DeviceMode::Preloader));
+                        }
+                        Ok(false) => {
+                            warn!("[PRELOADER] init 未成功，继续等待...");
+                        }
+                        Err(e) => {
+                            warn!("[PRELOADER] init 失败: {}，继续等待...", e);
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+
+            std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
+        }
+    }
+
+    /// Preloader 串口握手：打开 COM 口 → init_preloader
+    fn preloader_serial_handshake(&self, port_name: &str) -> Result<Preloader, String> {
+        let transport = SerialPortTransport::new(port_name, 115200)?;
+        let mut preloader = Preloader::new(Box::new(transport));
+        if !preloader
+            .init_preloader()
+            .map_err(|e| format!("串口 init_preloader 失败: {}", e))?
+        {
+            return Err("串口 Preloader 握手失败".to_string());
+        }
+        info!(
+            "{}",
+            format!("[PRELOADER] {} 握手成功", port_name).green().bold()
+        );
+        Ok(preloader)
     }
 
     /// DA 会话复用入口：直接连接到已处于 DA 模式的设备（PID=0x2000）

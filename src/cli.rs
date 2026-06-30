@@ -74,6 +74,13 @@ pub struct Cli {
     pub no_elevate: bool,
 
     #[arg(
+        long = "工作模式",
+        default_value = "brom",
+        help = "工作模式：brom（默认，完整BROM流程）、preloader（Preloader VCOM模式，跳过bypass）、auto（自动检测，预留）"
+    )]
+    pub 工作模式: String,
+
+    #[arg(
         help = "要执行的命令",
         long_help = "可用命令:\n\
           输出分区表        - 打印 GPT 分区表 + EMMC 信息 + 生成 scatter\n\

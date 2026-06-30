@@ -142,10 +142,21 @@ pub fn handle_command(
         }
     };
 
-    let effective_file = auto_dumped_file.as_deref().unwrap_or(preloader_file);
-    info!("加载 EMI 数据: {}", effective_file);
-    if let Err(e) = da.load_preloader_emi(effective_file) {
-        return Err(format!("EMI 加载失败: {}", e).into());
+    // Preloader 模式下 DRAM 已由 preloader 初始化，EMI 数据可选
+    if !preloader_file.is_empty() {
+        info!("加载 EMI 数据: {}", preloader_file);
+        if let Err(e) = da.load_preloader_emi(preloader_file) {
+            return Err(format!("EMI 加载失败: {}", e).into());
+        }
+    } else if let Some(ref f) = auto_dumped_file {
+        info!("加载 EMI 数据: {}", f);
+        if let Err(e) = da.load_preloader_emi(f) {
+            return Err(format!("EMI 加载失败: {}", e).into());
+        }
+    } else if da.preloader.is_preloader_mode {
+        info!("Preloader 模式：跳过 EMI 加载（DRAM 已由 preloader 初始化）");
+    } else {
+        return Err("未找到 preloader 文件，且自动提取失败".into());
     }
 
     if da.daext {
