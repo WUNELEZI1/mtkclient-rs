@@ -14,6 +14,7 @@ use std::time::SystemTime;
 
 use crate::DA分区::generate_scatter_from_gpt;
 use crate::DA扩展::DAXFlash;
+use crate::config::AppConfig;
 
 /// 打印 GPT 分区表
 pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
@@ -247,35 +248,72 @@ pub fn cmd_read_gpt(
     Ok(())
 }
 
-/// 读取全部分区到目录
-pub fn cmd_read_all(da: &mut DAXFlash, dir: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// 读取全部分区到目录（支持 --skip 跳过指定分区）
+pub fn cmd_read_all(da: &mut DAXFlash, dir: &str, app_config: &AppConfig) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {}", e))?;
 
     if da.get_last_gpt_data().is_err() {
         da.read_gpt().map_err(|e| format!("GPT 读取失败: {}", e))?;
     }
 
+    // 解析 --skip 分区列表
+    let skip_set: std::collections::HashSet<String> = match &app_config.skip_partitions {
+        Some(skip_str) => {
+            let set: std::collections::HashSet<String> = skip_str
+                .split(',')
+                .map(|s| s.trim().to_lowercase())
+                .collect();
+            if !set.is_empty() {
+                info!("跳过分区: {}", skip_str);
+            }
+            set
+        }
+        None => std::collections::HashSet::new(),
+    };
+
     let gpt_data = da.get_last_gpt_data()?.clone();
     let gpt_info = crate::DA分区::GptInfo::parse(&gpt_data)?;
 
+    let mut read_count = 0usize;
+    let mut skip_count = 0usize;
+
     for entry in gpt_info.iter_partitions() {
+        // 跳过指定分区（大小写不敏感比较）
+        if skip_set.contains(&entry.name.to_lowercase()) {
+            info!("  [SKIP] {} (0x{:X})", entry.name, entry.size);
+            skip_count += 1;
+            continue;
+        }
+
         let output = format!("{}/{}.img", dir, entry.name);
         info!(
-            "  读取分区 {} (0x{:X} @ 0x{:X})",
-            entry.name, entry.size, entry.start_addr
+            "  [{}/{}] 读取 {} (0x{:X} @ 0x{:X})",
+            read_count + 1,
+            gpt_info.partitions().len() - skip_count,
+            entry.name,
+            entry.size,
+            entry.start_addr
         );
         let data = da
             .readflash_data(entry.start_addr, entry.size)
             .map_err(|e| format!("读取 {} 失败: {}", entry.name, e))?;
         std::fs::write(&output, &data).map_err(|e| format!("写入失败: {}", e))?;
         info!("{}", format!("  {} -> {}", entry.name, output).green());
+        read_count += 1;
     }
 
-    info!("{}", format!("全部分区已读取到: {}", dir).green());
+    info!(
+        "{}",
+        format!(
+            "分区读取完成: {} 成功, {} 跳过, 目录={}",
+            read_count, skip_count, dir
+        )
+        .green()
+    );
     Ok(())
 }
 
-/// 从目录中读取所有 <分区名>.img 文件并写回对应分区
+/// 从目录中读取所有 <分区名>.img 或 <分区名>.bin 文件并写回对应分区
 pub fn cmd_write_all(
     da: &mut DAXFlash,
     dir: &str,
@@ -294,16 +332,26 @@ pub fn cmd_write_all(
     let mut 跳过计数 = 0usize;
 
     for entry in gpt_info.iter_partitions() {
-        let input = format!("{}/{}.img", dir, entry.name);
-        if !std::path::Path::new(&input).exists() {
-            trace!("  跳过 {} (文件不存在: {})", entry.name, input);
+        // 优先找 .img，其次找 .bin
+        let img_path = format!("{}/{}.img", dir, entry.name);
+        let bin_path = format!("{}/{}.bin", dir, entry.name);
+        let input = if std::path::Path::new(&img_path).exists() {
+            img_path
+        } else if std::path::Path::new(&bin_path).exists() {
+            bin_path
+        } else {
+            trace!("  跳过 {} (文件不存在)", entry.name);
             跳过计数 += 1;
             continue;
-        }
+        };
 
         info!(
-            "  写入分区 {} <- {} (0x{:X} 字节)",
-            entry.name, input, entry.size
+            "  [{}/{}] 写入 {} <- {} (0x{:X} 字节)",
+            写入计数 + 1,
+            gpt_info.partitions().len(),
+            entry.name,
+            input,
+            entry.size
         );
         if let Err(e) = da.写入分区(&entry.name, &input) {
             warn!("  写入 {} 失败: {}", entry.name, e);
@@ -325,7 +373,7 @@ pub fn cmd_write_all(
     info!(
         "{}",
         format!(
-            "全部分区写入完成: {} 成功, {} 跳过, 目录={}",
+            "分区写入完成: {} 成功, {} 跳过, 目录={}",
             写入计数, 跳过计数, dir
         )
         .green()

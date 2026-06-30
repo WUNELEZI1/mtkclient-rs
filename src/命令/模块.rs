@@ -28,30 +28,33 @@ pub fn print_help() {
     println!("  mtkclient-rs.exe <命令> [参数]");
     println!();
     println!("命令:");
-    println!("  输出分区表          打印 GPT 分区表 + EMMC 信息 + 生成 scatter");
-    println!("  提取preloader       提取 Preloader (Exploit)");
-    println!("  读分区 <分区> <文件>  读取分区到文件");
-    println!("  读分区 分区表 <目录>   保存 GPT 原始数据到目录");
-    println!("  读取全分区 <目录>   读取全部分区到目录");
-    println!("  写入全分区 <目录>   从目录恢复全部分区");
-    println!("  写分区 <分区> <文件>  写入文件到分区");
-    println!("  擦分区 <分区>       擦除分区");
-    println!("  禁用avb <模式>      修补 vbmeta (0/1/2/3)");
-    println!("  重启                重启设备");
-    println!("  解锁bl              解锁 Bootloader");
-    println!("  回锁bl              锁定 Bootloader");
-    println!("  oem解锁             FRP OEM 解锁");
-    println!("  输出scatter         打印 scatter 到屏幕并保存文件");
-    println!("  开启USB调试         在 DA 模式下开启 ADB");
+    println!("  printgpt            打印 GPT 分区表 + EMMC 信息 + 生成 scatter");
+    println!("  dump                从 RAM 提取 Preloader (Exploit)");
+    println!("  r <part> <file>     读取分区到文件");
+    println!("  r gpt <dir>          保存 GPT 原始数据到目录");
+    println!("  rl <dir>             读取全部分区到目录 (支持 --skip)");
+    println!("  w <part> <file>     写入文件到分区");
+    println!("  wl <dir>             从目录恢复全部分区 (.bin/.img)");
+    println!("  e <part>             擦除分区");
+    println!("  vbmeta <mode>        修补 vbmeta (0/1/2/3)");
+    println!("  reset                重启设备");
+    println!("  unlock               解锁 Bootloader");
+    println!("  lock                 锁定 Bootloader");
+    println!("  frp                  FRP OEM 解锁");
+    println!("  scatter              打印 scatter 到屏幕并保存文件");
+    println!("  adb                  在 DA 模式下开启 ADB");
     println!();
     println!("选项:");
-    println!("  --preloader <文件>  指定 preloader 文件");
-    println!("  --是否校验          写入后校验");
-    println!("  --日志 <级别>       日志级别：1=INFO，2=DEBUG，3=TRACE");
-    println!("  --修补da <bool>     是否 patch DA（默认 true）");
-    println!("  --静默输出          静默模式（只输出错误和最终结果）");
-    println!("  --静默dump          静默 dump 模式（不打印进度条）");
-    println!("  --USB日志           启用 USB 通信追踪日志（输出到 usb_debug.log）");
+    println!("  --preloader <file>  指定 preloader 文件");
+    println!("  --verify            写入后校验");
+    println!("  --log <level>       日志级别：1=INFO，2=DEBUG，3=TRACE");
+    println!("  --patch-da          是否 patch DA（默认 true）");
+    println!("  --mode <mode>       工作模式：brom（默认）/ preloader / auto");
+    println!("  --da-x-speed <1-3>  DA 加载速度级别");
+    println!("  --skip <parts>      rl 跳过的分区（逗号分隔）");
+    println!("  --quiet             静默模式");
+    println!("  --quiet-dump        静默 dump（不打印进度条）");
+    println!("  --usb-log           启用 USB 通信追踪日志");
 }
 
 /// 单命令执行入口
@@ -69,12 +72,11 @@ pub fn handle_command(
     if is_brom {
         let cmd = app_config.command.as_deref().unwrap_or("");
         match cmd {
-            "提取preloader" => {
-                // 独立命令：使用 generic_preloader_dump_payload（破坏性操作，执行后设备需重新上电）
+            "dump" => {
                 转储::cmd_dumppreloader(da, _context)?;
                 return Ok(());
             }
-            "重启" => {
+            "reset" => {
                 输入输出::cmd_reset(da)?;
                 return Ok(());
             }
@@ -109,7 +111,6 @@ pub fn handle_command(
         }
 
         // 2. 如果没有指定 preloader 文件，通过非破坏性 read32 从 RAM 提取
-        // 必须在 bypass_security 之后执行，因为 read32_brom (0xD1) 需要 memread auth 被绕过
         if preloader_file.is_empty() {
             info!("未指定 --preloader，自动从 RAM 提取 preloader...");
             match da.preloader.dump_preloader_via_brom_read() {
@@ -123,7 +124,7 @@ pub fn handle_command(
                 }
                 Err(e) => {
                     return Err(format!(
-                        "自动提取 preloader 失败: {}。请手动运行 '提取preloader' 命令获取文件，\n\
+                        "自动提取 preloader 失败: {}。请手动运行 'dump' 命令获取文件，\n\
                          然后使用 --preloader <文件> 参数。",
                         e
                     )
@@ -178,13 +179,13 @@ pub fn handle_command(
     let args = &app_config.cmd_args;
     let verify = app_config.verify;
 
-    if cmd == "开启USB调试" {
+    if cmd == "adb" {
         da.enable_adb_and_reboot()?;
         info!("{}", "ADB 已启用，设备正在重启进入系统".green());
         return Ok(());
     }
 
-    execute_single_command(da, cmd, args, verify, log_level)?;
+    execute_single_command(da, cmd, args, verify, log_level, app_config)?;
 
     Ok(())
 }
@@ -196,34 +197,35 @@ pub fn execute_single_command(
     args: &[String],
     verify: bool,
     log_level: u8,
+    app_config: &AppConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        "输出分区表" => 分区表::cmd_printgpt(da, log_level),
-        "读分区" => {
-            if args.first().map(|s| s.as_str()) == Some("分区表") {
-                let dir = args.get(1).ok_or("用法: mtkclient 读分区 分区表 <目录>")?;
+        "printgpt" => 分区表::cmd_printgpt(da, log_level),
+        "r" => {
+            if args.first().map(|s| s.as_str()) == Some("gpt") {
+                let dir = args.get(1).ok_or("用法: mtkclient r gpt <dir>")?;
                 分区表::cmd_read_gpt(da, dir, log_level)?;
             } else {
                 输入输出::cmd_read(da, args)?;
             }
         }
-        "读取全分区" => {
-            let dir = args.first().ok_or("用法: mtkclient 读取全分区 <目录>")?;
-            分区表::cmd_read_all(da, dir)?;
+        "rl" => {
+            let dir = args.first().ok_or("用法: mtkclient rl <dir>")?;
+            分区表::cmd_read_all(da, dir, app_config)?;
         }
-        "写入全分区" => {
-            let dir = args.first().ok_or("用法: mtkclient 写入全分区 <目录>")?;
+        "wl" => {
+            let dir = args.first().ok_or("用法: mtkclient wl <dir>")?;
             分区表::cmd_write_all(da, dir, verify)?;
         }
-        "写分区" => 输入输出::cmd_write(da, args, verify)?,
-        "擦分区" => 输入输出::cmd_erase(da, args)?,
-        "禁用avb" => 输入输出::cmd_vbmeta(da, args)?,
-        "oem解锁" => crate::安全::frp::frp_unlock(da)?,
-        "重启" => 输入输出::cmd_reset(da)?,
-        "解锁bl" => 输入输出::cmd_unlock(da)?,
-        "回锁bl" => 输入输出::cmd_lock(da)?,
-        "输出scatter" => 分区表::cmd_print_scatter(da, log_level)?,
-        "开启USB调试" => {
+        "w" => 输入输出::cmd_write(da, args, verify)?,
+        "e" => 输入输出::cmd_erase(da, args)?,
+        "vbmeta" => 输入输出::cmd_vbmeta(da, args)?,
+        "frp" => crate::安全::frp::frp_unlock(da)?,
+        "reset" => 输入输出::cmd_reset(da)?,
+        "unlock" => 输入输出::cmd_unlock(da)?,
+        "lock" => 输入输出::cmd_lock(da)?,
+        "scatter" => 分区表::cmd_print_scatter(da, log_level)?,
+        "adb" => {
             da.enable_adb_and_reboot()?;
             info!("{}", "ADB 已启用，设备正在重启进入系统".green());
         }
