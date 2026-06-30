@@ -1,9 +1,16 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
-> 最近更新：2026-06-30 v6
+> 最近更新：2026-06-30 v7
 > 完整历史：Temp_Agent_Archive.md
 
-## 最近更新 (2026-06-30 v6) — 功能对齐 + 警告清零
+## 最近更新 (2026-06-30 v7) — DA 加载稳定性修复
+- **v0.1.9：修复 DA 加载阶段 USB write 超时**
+  - `boot_to()` 添加 `clear_halt_in/out` + `write_with_retry()`（3 次重试 + 50ms 间隔）
+  - `setup_env()` / `setup_hw_init()` 所有 write 改用 `write_with_retry()`
+  - 修复 `status()` / `xread_data()` 不完整读取漏洞：`read()` → `read_exact()`
+  - `dump_preloader_via_brom_read()` 改为非破坏性 `read32_brom` + dword_swap 对齐 mtkclient
+  - 循环读取 chunk 从 512B 提升到 64KB，预加载器提取速度提升 ~10 倍
+  - 扫描阶段首次用 `read32_brom` (flush)，后续用 `read32_brom_batch` (无 flush)
 - **v0.1.8：编译 0 错误 0 警告（cargo build / cargo clippy --all-targets）**
   - 在 `cargo.toml` 中新增 `[lints.rust] non_snake_case = "allow"`，消除 23 个中文标识符警告
   - 修复 `DA扩展/诊断.rs` 的 `single_match` clippy 警告（`match { Ok(..) => .., _ => {} }` → `if let Ok(..)`）

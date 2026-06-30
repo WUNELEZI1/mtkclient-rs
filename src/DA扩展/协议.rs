@@ -104,7 +104,7 @@ impl<'a> DAXFlash<'a> {
         }
         if length > 0 {
             let mut tmp = vec![0u8; length as usize];
-            self.preloader.device.read(&mut tmp)?;
+            self.preloader.device.read_exact(&mut tmp)?;
             if length == 4 {
                 let val = u32::from_le_bytes(tmp[..4].try_into().unwrap());
                 // Python 特殊情况：如果 status == 0xFEEEEEEF，返回 0
@@ -130,7 +130,7 @@ impl<'a> DAXFlash<'a> {
         }
         if length > 0 {
             let mut data = vec![0u8; length as usize];
-            self.preloader.device.read(&mut data)?;
+            self.preloader.device.read_exact(&mut data)?;
             Ok(data)
         } else {
             Ok(vec![])

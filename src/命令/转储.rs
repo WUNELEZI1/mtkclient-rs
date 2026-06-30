@@ -22,7 +22,7 @@ pub fn cmd_dumppreloader(
     // 因为 dump_preloader_payload 内部会注入 payload，bypass 会改变 BROM 状态
     let (data, filename) = da
         .preloader
-        .dump_preloader_payload(false, false, context)
+        .dump_preloader_payload(context)
         .map_err(|e| format!("Exploit 提取失败: {}", e))?;
 
     if !data.is_empty() {

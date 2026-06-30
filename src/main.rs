@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Err(e) = 连接管理::driver::restart_as_admin() {
                 eprintln!("[MAIN] 提权失败: {}", e);
                 eprintln!(
-                    "[MAIN] 请右键以管理员身份运行本程序，或加 --no-elevate 跳过（将无法切换 WinUSB）"
+                    "[MAIN] 请右键以管理员身份运行本程序，或加 --检测管理员权限 跳过（将无法切换 WinUSB）"
                 );
                 return Err(e.into());
             }

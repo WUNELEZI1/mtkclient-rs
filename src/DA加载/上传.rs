@@ -9,20 +9,29 @@ use std::io::Read;
 use std::time::Duration;
 
 use crate::DA扩展::DAXFlash;
+use crate::paths::获取可执行文件相对路径;
 
 use super::header::parse_da_header;
 
 const CMD_SYNC_SIGNAL: u32 = 0x434E5953;
 const DA_HW_CODE_MT6768: u16 = 0x6768;
+const DEFAULT_DA_FILE: &str = "MTK_DA_V5.bin";
 
 impl<'a> DAXFlash<'a> {
+    fn open_da_file() -> Result<(File, String), String> {
+        let path = 获取可执行文件相对路径(DEFAULT_DA_FILE);
+        let path_str = path.to_string_lossy().to_string();
+        let file = File::open(&path)
+            .map_err(|e| format!("无法打开 DA 文件 '{}': {}", path_str, e))?;
+        Ok((file, path_str))
+    }
+
     /// 上传第一阶段 DA
     /// 对照 Python xflash_lib.py:upload_da1
     pub fn upload_da1(&mut self) -> Result<bool, String> {
         trace!("上传 XFlash 阶段 1...");
 
-        let mut file =
-            File::open("MTK_DA_V5.bin").map_err(|e| format!("无法打开 DA 文件: {}", e))?;
+        let (mut file, _path) = Self::open_da_file()?;
         let mut da_data = Vec::new();
         file.read_to_end(&mut da_data)
             .map_err(|e| format!("读取 DA 文件失败: {}", e))?;
@@ -115,8 +124,7 @@ impl<'a> DAXFlash<'a> {
     pub fn upload_da2(&mut self) -> Result<bool, String> {
         trace!("上传 XFlash 阶段 2...");
 
-        let mut file =
-            File::open("MTK_DA_V5.bin").map_err(|e| format!("无法打开 DA 文件: {}", e))?;
+        let (mut file, _path) = Self::open_da_file()?;
         let mut da_data = Vec::new();
         file.read_to_end(&mut da_data)
             .map_err(|e| format!("读取 DA 文件失败: {}", e))?;

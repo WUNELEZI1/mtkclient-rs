@@ -22,6 +22,32 @@ const CMD_BOOT_TO: u32 = 0x010008;
 const CMD_SYNC_SIGNAL: u32 = 0x434E5953;
 
 impl<'a> DAXFlash<'a> {
+    /// 带重试的 USB 写入：clear_halt + 重试 3 次
+    fn write_with_retry(&mut self, data: &[u8], label: &str) -> Result<(), String> {
+        const MAX_RETRY: u32 = 3;
+        const RETRY_DELAY_MS: u64 = 50;
+        for attempt in 1..=MAX_RETRY {
+            match self.preloader.device.write(data) {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    trace!(
+                        "[RETRY] {} write fail (attempt {}/{}): {}",
+                        label, attempt, MAX_RETRY, e
+                    );
+                    if attempt < MAX_RETRY {
+                        if self.preloader.device.is_libusb() {
+                            let _ = self.preloader.device.clear_halt_out();
+                        }
+                        sleep(Duration::from_millis(RETRY_DELAY_MS));
+                    } else {
+                        return Err(format!("{} write 失败 (3次重试后): {}", label, e));
+                    }
+                }
+            }
+        }
+        unreachable!()
+    }
+
     /// 设置环境
     /// Python: xsend(CMD_SETUP_ENVIRONMENT) → send_param(20字节) → status()
     pub fn setup_env(&mut self) -> Result<bool, String> {
@@ -29,10 +55,8 @@ impl<'a> DAXFlash<'a> {
 
         // xsend(CMD_SETUP_ENVIRONMENT)
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
-        self.preloader.device.write(&pkt)?;
-        self.preloader
-            .device
-            .write(&CMD_SETUP_ENVIRONMENT.to_le_bytes())?;
+        self.write_with_retry(&pkt, "setup_env xsend")?;
+        self.write_with_retry(&CMD_SETUP_ENVIRONMENT.to_le_bytes(), "setup_env CMD")?;
 
         // send_param(20字节): da_log_level, log_channel, system_os, ufs_provision, 0x0
         let param: [u8; 20] = [
@@ -43,8 +67,8 @@ impl<'a> DAXFlash<'a> {
             0x00, 0x00, 0x00, 0x00, // 0x0
         ];
         let param_pkt = pack3(CMD_MAGIC, 0x01, 20);
-        self.preloader.device.write(&param_pkt)?;
-        self.preloader.device.write(&param)?;
+        self.write_with_retry(&param_pkt, "setup_env param_hdr")?;
+        self.write_with_retry(&param, "setup_env param")?;
 
         // status
         let st = self.status()?;
@@ -63,16 +87,14 @@ impl<'a> DAXFlash<'a> {
 
         // xsend(CMD_SETUP_HW_INIT_PARAMS)
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
-        self.preloader.device.write(&pkt)?;
-        self.preloader
-            .device
-            .write(&CMD_SETUP_HW_INIT_PARAMS.to_le_bytes())?;
+        self.write_with_retry(&pkt, "setup_hw_init xsend")?;
+        self.write_with_retry(&CMD_SETUP_HW_INIT_PARAMS.to_le_bytes(), "setup_hw_init CMD")?;
 
         // send_param(pack("<I", 0x0)): 4字节参数 = 0x0
         let param = 0x0u32.to_le_bytes();
         let param_pkt = pack3(CMD_MAGIC, 0x01, 4);
-        self.preloader.device.write(&param_pkt)?;
-        self.preloader.device.write(&param)?;
+        self.write_with_retry(&param_pkt, "setup_hw_init param_hdr")?;
+        self.write_with_retry(&param, "setup_hw_init param")?;
 
         // status
         let st = self.status()?;
@@ -166,10 +188,22 @@ impl<'a> DAXFlash<'a> {
             trace!("Boot 到地址: 0x{:08X}, 大小: {} 字节", addr, da.len());
         }
 
+        // 写入前清理 USB 端点状态
+        if self.preloader.device.is_libusb() {
+            let _ = self.preloader.device.clear_halt_in();
+            let _ = self.preloader.device.clear_halt_out();
+        }
+
+        // 设置足够的写入超时
+        let orig_timeout = self.preloader.device.get_timeout();
+        self.preloader
+            .device
+            .set_timeout(Duration::from_millis(5000));
+
         // Python: self.xsend(self.Cmd.BOOT_TO)
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
-        self.preloader.device.write(&pkt)?;
-        self.preloader.device.write(&CMD_BOOT_TO.to_le_bytes())?;
+        self.write_with_retry(&pkt, "boot_to xsend BOOT_TO")?;
+        self.write_with_retry(&CMD_BOOT_TO.to_le_bytes(), "boot_to CMD_BOOT_TO")?;
 
         // Python: self.status()
         let st = self.status()?;
@@ -184,12 +218,12 @@ impl<'a> DAXFlash<'a> {
         param.extend_from_slice(&(addr as u64).to_le_bytes());
         param.extend_from_slice(&param_len.to_le_bytes());
         let pkt1 = pack3(CMD_MAGIC, 0x01, param.len() as u32);
-        self.preloader.device.write(&pkt1)?;
-        self.preloader.device.write(&param)?;
+        self.write_with_retry(&pkt1, "boot_to param header")?;
+        self.write_with_retry(&param, "boot_to param data")?;
 
         // Python: self.send_data(da) — 发送 12 字节头 + 分块 64 字节数据
         let pkt2 = pack3(CMD_MAGIC, 0x01, da.len() as u32);
-        self.preloader.device.write(&pkt2)?;
+        self.write_with_retry(&pkt2, "boot_to data header")?;
 
         let maxinsize = 64;
         let mut remaining = da.len();
@@ -222,6 +256,9 @@ impl<'a> DAXFlash<'a> {
                 sleep(Duration::from_millis(10));
             }
         }
+
+        // 恢复超时
+        self.preloader.device.set_timeout(orig_timeout);
 
         if !send_failed {
             // Python send_data: 数据发送完成后直接读 status，不发送 ZLP

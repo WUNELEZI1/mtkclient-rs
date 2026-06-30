@@ -30,7 +30,8 @@ pub fn 设置USB日志开关(enabled: bool) {
     if enabled {
         match OpenOptions::new()
             .create(true)
-            .append(true)
+            .write(true)
+            .truncate(true)
             .open(USB日志文件名)
         {
             Ok(file) => {

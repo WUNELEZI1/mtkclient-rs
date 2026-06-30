@@ -341,6 +341,17 @@ impl Preloader {
             std::thread::sleep(Duration::from_millis(READ32_LIBUSB_DELAY_MS));
         }
 
+        self.read32_brom_inner(addr, dwords)
+    }
+
+    /// 批量版 read32_brom，跳过 flush_input 和延迟。
+    /// 用于已确认设备状态正常的连续循环读取（如 dump_preloader）。
+    pub fn read32_brom_batch(&mut self, addr: u32, dwords: usize) -> Result<Vec<u8>, String> {
+        self.read32_brom_inner(addr, dwords)
+    }
+
+    /// read32_brom 的核心实现，不含 flush/delay 前置步骤
+    fn read32_brom_inner(&mut self, addr: u32, dwords: usize) -> Result<Vec<u8>, String> {
         trace!("[read32_brom] 发送命令 0xD1");
         if !self.echo_1byte(0xD1)? {
             trace!("read32_brom: echo 0xD1 不匹配（继续尝试）");
