@@ -23,7 +23,7 @@ const CMD_SYNC_SIGNAL: u32 = 0x434E5953;
 
 impl<'a> DAXFlash<'a> {
     /// 带重试的 USB 写入：clear_halt + 重试 3 次
-    fn write_with_retry(&mut self, data: &[u8], label: &str) -> Result<(), String> {
+    pub(crate) fn write_with_retry(&mut self, data: &[u8], label: &str) -> Result<(), String> {
         const MAX_RETRY: u32 = 3;
         const RETRY_DELAY_MS: u64 = 50;
         for attempt in 1..=MAX_RETRY {

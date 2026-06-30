@@ -80,8 +80,16 @@ impl<'a> GptInfo<'a> {
 
         let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
         let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
-        let start_addr = first_lba * 512;
-        let size = (last_lba - first_lba + 1) * 512;
+        let start_addr = first_lba
+            .checked_mul(512)
+            .ok_or("GPT start_addr overflow")?;
+        let sector_count = last_lba
+            .checked_sub(first_lba)
+            .and_then(|d| d.checked_add(1))
+            .ok_or("GPT invalid partition: last_lba < first_lba")?;
+        let size = sector_count
+            .checked_mul(512)
+            .ok_or("GPT size overflow")?;
 
         Ok(PartitionEntry {
             name,
