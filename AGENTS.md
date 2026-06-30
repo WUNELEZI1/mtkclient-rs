@@ -1,9 +1,17 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
-> 最近更新：2026-06-30 v7
+> 最近更新：2026-06-30 v8
 > 完整历史：Temp_Agent_Archive.md
 
-## 最近更新 (2026-06-30 v8) — 读取稳定性 + GPT 安全修复
+## 最近更新 (2026-06-30 v8) — 读取稳定性 + GPT 安全修复 + Sleep 优化
+- **v0.1.11：优化 sleep 延迟和重试间隔**
+  - `DA_POST_UPLOAD_DELAY_MS`: 35ms → 20ms
+  - `JUMP_DA_FIRST_DELAY_MS`: 100ms → 50ms, `RETRY`: 200ms → 100ms, `QUIET`: 50ms → 30ms
+  - `JUMP_BL_POST_DELAY_MS`: 100ms → 50ms
+  - `write_with_retry` 间隔: 50ms → 20ms
+  - `jump_da` 前等待: 50ms → 20ms, DA 同步前: 100ms → 50ms
+  - `send_emi` 后: 10ms → 5ms, `boot_to` 每 8KB: 10ms → 5ms
+  - `DA扩展` 初始化: 100ms → 50ms
 - **v0.1.10：修复 readflash / GPT / xread 读取漏洞**
   - `readflash_data()` / `ack_silent()`：全部 write 改用 `write_with_retry()`
   - `xread()`：`read()` → `read_exact()`（遗漏修复）

@@ -25,7 +25,7 @@ impl<'a> DAXFlash<'a> {
     /// 带重试的 USB 写入：clear_halt + 重试 3 次
     pub(crate) fn write_with_retry(&mut self, data: &[u8], label: &str) -> Result<(), String> {
         const MAX_RETRY: u32 = 3;
-        const RETRY_DELAY_MS: u64 = 50;
+        const RETRY_DELAY_MS: u64 = 20;
         for attempt in 1..=MAX_RETRY {
             match self.preloader.device.write(data) {
                 Ok(_) => return Ok(()),
@@ -133,8 +133,8 @@ impl<'a> DAXFlash<'a> {
             return Err(format!("INIT_EXT_RAM status error: 0x{:08X}", st));
         }
 
-        // 3. sleep(0.01) - Python sleeps AFTER status check
-        sleep(Duration::from_millis(10));
+        // 3. sleep(0.005) - Python sleeps AFTER status check
+        sleep(Duration::from_millis(5));
 
         // 4. xsend(len(emi)) - Python sends header + length value
         let pkt2 = pack3(CMD_MAGIC, 0x01, 4);
@@ -253,7 +253,7 @@ impl<'a> DAXFlash<'a> {
 
             if pos % 0x2000 == 0 && !send_failed {
                 self.preloader.device.write(&[]).ok();
-                sleep(Duration::from_millis(10));
+                sleep(Duration::from_millis(5));
             }
         }
 
