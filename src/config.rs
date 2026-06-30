@@ -102,6 +102,7 @@ pub struct AppConfig {
     pub loader_path: Option<String>,
     pub 工作模式: 工作模式,
     pub da_x_speed: u8,
+    pub skip_partitions: Option<String>,
     pub parttype: Option<String>,
     pub offset: Option<u64>,
     pub length: Option<u64>,
@@ -120,7 +121,7 @@ impl AppConfig {
             _ => log::LevelFilter::Info,
         };
 
-        let 工作模式 = 工作模式::from_str(&cli.工作模式)
+        let 工作模式 = 工作模式::from_str(&cli.mode)
             .unwrap_or(工作模式::Brom);
 
         AppConfig {
@@ -130,6 +131,7 @@ impl AppConfig {
             loader_path: cli.loader_path.clone(),
             工作模式,
             da_x_speed: cli.da_x_speed,
+            skip_partitions: cli.skip_partitions.clone(),
             parttype: cli.parttype.clone(),
             offset: cli.offset,
             length: cli.length,
