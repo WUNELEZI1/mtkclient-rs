@@ -10,9 +10,9 @@ use super::核心::Preloader;
 use log::trace;
 use std::time::Duration;
 
-const DA_UPLOAD_TIMEOUT_MS: u64 = 5000;
+const DA_UPLOAD_TIMEOUT_MS: u64 = 10000;
 const DA_UPLOAD_CHUNK: usize = 64;
-const DA_UPLOAD_RETRY: u32 = 3;
+const DA_UPLOAD_RETRY: u32 = 5;
 const DA_UPLOAD_RETRY_DELAY_MS: u64 = 10;
 const DA_UPLOAD_BURST_DELAY_MS: u64 = 2;
 const DA_UPLOAD_BURST_BLOCKS: u32 = 256;
