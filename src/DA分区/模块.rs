@@ -15,8 +15,7 @@ pub mod 分区表;
 pub use GPT::GptInfo;
 #[allow(unused_imports)]
 pub use 分区表::{
-    generate_scatter_from_gpt, generate_scatter_header, generate_scatter_shoujixia,
-    parse_gpt_from_data,
+    generate_scatter_from_gpt, generate_scatter_header, parse_gpt_from_data,
 };
 // 注意：read_gpt / read_partition / write_partition / write_partition_with_verify /
 // erase_partition 是 DAXFlash 的方法（在 输入输出.rs 的 impl 块中定义），

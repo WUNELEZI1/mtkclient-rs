@@ -50,6 +50,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "mtkclient-rs".cyan().bold(),
         format!("v{}", env!("CARGO_PKG_VERSION")).yellow().bold()
     );
+    println!(
+        "{}",
+        "Copyright (c) wunelezi & trae | Licensed under GPL-3.0"
+            .dimmed()
+    );
     println!();
 
     let raw_args: Vec<String> = std::env::args().collect();
