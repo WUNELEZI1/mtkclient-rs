@@ -81,6 +81,13 @@ pub struct Cli {
     pub 工作模式: String,
 
     #[arg(
+        long = "da_x_speed",
+        default_value_t = 1,
+        help = "DA 加载速度级别：1=默认（完整协议）、2=快速（跳过可选查询）、3=极速（几乎裸奔）"
+    )]
+    pub da_x_speed: u8,
+
+    #[arg(
         help = "要执行的命令",
         long_help = "可用命令:\n\
           输出分区表        - 打印 GPT 分区表 + EMMC 信息 + 生成 scatter\n\

@@ -38,30 +38,44 @@ impl<'a> DAXFlash<'a> {
             return Err("Stage1 上传失败".to_string());
         }
 
-        match self.get_expire_date() {
-            Ok(d) if !d.is_empty() => trace!("  过期日期: {:02X?}", d),
-            Err(e) => warn!("get_expire_date 失败 (可能不支持): {}", e),
-            _ => {}
-        }
-
-        if let Err(e) = self.set_reset_key(0x68) {
-            warn!("set_reset_key 失败 (可能不支持): {}", e);
-        }
-
-        if let Err(e) = self.set_checksum_level(0x0) {
-            warn!("set_checksum_level 失败 (可能不支持): {}", e);
-        }
-
-        let conn_agent = match self.get_connection_agent() {
-            Ok(agent) => agent,
-            Err(e) => {
-                warn!("get_connection_agent 失败: {}", e);
-                "brom".to_string()
+        // --- 速度级别 1 = 完整协议，2/3 = 跳过可选查询 ---
+        if self.da_x_speed == 1 {
+            match self.get_expire_date() {
+                Ok(d) if !d.is_empty() => trace!("  过期日期: {:02X?}", d),
+                Err(e) => warn!("get_expire_date 失败 (可能不支持): {}", e),
+                _ => {}
             }
-        };
-        trace!("  连接代理: {}", conn_agent);
 
-        if conn_agent == "brom" {
+            if let Err(e) = self.set_reset_key(0x68) {
+                warn!("set_reset_key 失败 (可能不支持): {}", e);
+            }
+
+            if let Err(e) = self.set_checksum_level(0x0) {
+                warn!("set_checksum_level 失败 (可能不支持): {}", e);
+            }
+        } else {
+            trace!("[SPEED{}] 跳过 get_expire_date / set_reset_key / set_checksum_level", self.da_x_speed);
+        }
+
+        // 连接代理判断（级别3直接根据已知模式推断）
+        let is_brom_conn = if self.da_x_speed >= 3 {
+            // 极速模式：跳过 get_connection_agent，直接根据模式推断
+            let brom = !self.preloader.is_preloader_mode;
+            trace!("[SPEED3] 跳过 get_connection_agent，推断 conn_agent={}", if brom { "brom" } else { "preloader" });
+            brom
+        } else {
+            let conn_agent = match self.get_connection_agent() {
+                Ok(agent) => agent,
+                Err(e) => {
+                    warn!("get_connection_agent 失败: {}", e);
+                    "brom".to_string()
+                }
+            };
+            trace!("  连接代理: {}", conn_agent);
+            conn_agent == "brom"
+        };
+
+        if is_brom_conn {
             if let Some(emi_data) = self.emi.clone() {
                 trace!("发送 EMI 数据...");
                 self.send_emi(&emi_data)?;
@@ -74,18 +88,24 @@ impl<'a> DAXFlash<'a> {
             return Err("Stage2 上传失败".to_string());
         }
 
-        match self.get_sla_status() {
-            Ok(sla) => {
-                if sla != 0 {
-                    trace!("  DA SLA 已启用: 0x{:08X}", sla);
-                } else {
-                    trace!("  DA SLA 未启用");
+        if self.da_x_speed == 1 {
+            match self.get_sla_status() {
+                Ok(sla) => {
+                    if sla != 0 {
+                        trace!("  DA SLA 已启用: 0x{:08X}", sla);
+                    } else {
+                        trace!("  DA SLA 未启用");
+                    }
                 }
+                Err(e) => warn!("get_sla_status 失败: {}", e),
             }
-            Err(e) => warn!("get_sla_status 失败: {}", e),
+        } else {
+            trace!("[SPEED{}] 跳过 get_sla_status", self.da_x_speed);
         }
 
-        if let Err(e) = self.reinit() {
+        if self.da_x_speed >= 3 {
+            trace!("[SPEED3] 跳过 reinit");
+        } else if let Err(e) = self.reinit() {
             warn!("reinit 失败: {}", e);
         }
 

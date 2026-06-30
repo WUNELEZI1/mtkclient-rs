@@ -259,6 +259,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut da = DA扩展::DAXFlash::new(&mut preloader);
     da.patch_da = cli.patch_da;
+    da.da_x_speed = app_config.da_x_speed;
 
     // dump + load + bypass + upload_da 全部由 handle_command 内部完成
     // 这里不再调用 dump_preloader_payload / load_preloader_emi / upload_da
