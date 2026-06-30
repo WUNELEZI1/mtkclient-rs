@@ -12,19 +12,26 @@ use colored::Colorize;
 use log::{error, info, trace, warn};
 use std::time::SystemTime;
 
-use crate::DA分区::{generate_scatter_from_gpt, generate_scatter_shoujixia};
+use crate::DA分区::generate_scatter_from_gpt;
 use crate::DA扩展::DAXFlash;
 
 /// 打印 GPT 分区表
 pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
     match da.read_gpt() {
         Ok(_) => {
+            let mut boot1_size: u64 = 0;
+            let mut boot2_size: u64 = 0;
+
             // 输出完整 EMMC 信息
             if let Ok(emmc_info) = da.get_emmc_info() {
+                boot1_size = emmc_info.boot1_size;
+                boot2_size = emmc_info.boot2_size;
                 print_emmc_info(&emmc_info);
             } else {
                 // 失败时降级到读 boot1/boot2
                 if let Ok(simple_info) = da.get_emmc_info_simple() {
+                    boot1_size = simple_info.boot1_size;
+                    boot2_size = simple_info.boot2_size;
                     println!();
                     println!("{}", " EMMC 信息 (简化) ".on_yellow().black());
                     println!(
@@ -41,7 +48,7 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
             }
 
             if let Ok(data) = da.get_last_gpt_data() {
-                print_gpt_table(data);
+                print_gpt_table(data, boot1_size, boot2_size);
             }
 
             info!("{}", "GPT 读取成功".green());
@@ -59,13 +66,6 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
                 match generate_scatter_from_gpt(data, "scatter.txt") {
                     Ok(parts) => info!("  scatter.txt 已生成 ({} 分区)", parts.len()),
                     Err(e) => info!("  Warning: scatter 生成失败: {}", e),
-                }
-                // 同时输出刷机匣格式 scatter
-                let shoujixia_file = "scatter_shoujixia.txt";
-                if let Err(e) = generate_scatter_shoujixia(data, shoujixia_file, "MT6768") {
-                    info!("  Warning: 刷机匣格式 scatter 生成失败: {}", e);
-                } else {
-                    info!("  {} 已生成", shoujixia_file);
                 }
             }
         }
@@ -145,8 +145,8 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-/// 打印 GPT 表格到控制台
-fn print_gpt_table(data: &[u8]) {
+/// 打印 GPT 表格到控制台（含 EMMC_BOOT_1/2 显示）
+fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64) {
     let gpt_info = match crate::DA分区::GptInfo::parse(data) {
         Ok(info) => info,
         Err(_) => return,
@@ -177,11 +177,37 @@ fn print_gpt_table(data: &[u8]) {
     );
     println!("{}", "─".repeat(76).dimmed());
 
-    let partitions = gpt_info.partitions();
-    for (count, entry) in partitions.iter().enumerate() {
+    // 在 GPT 分区之前列出 EMMC_BOOT_1 和 EMMC_BOOT_2
+    let mut row = 0usize;
+    if boot1_size > 0 {
+        row += 1;
         println!(
             "{:<4} {:<20} {:>18} {:>18} {:>10}",
-            format!("#{}", count + 1).dimmed(),
+            format!("#{}", row).dimmed(),
+            "EMMC_BOOT_1".green(),
+            format!("0x{:014X}", 0u64).yellow(),
+            format!("0x{:014X}", boot1_size).yellow(),
+            format_size(boot1_size),
+        );
+    }
+    if boot2_size > 0 {
+        row += 1;
+        println!(
+            "{:<4} {:<20} {:>18} {:>18} {:>10}",
+            format!("#{}", row).dimmed(),
+            "EMMC_BOOT_2".green(),
+            format!("0x{:014X}", 0u64).yellow(),
+            format!("0x{:014X}", boot2_size).yellow(),
+            format_size(boot2_size),
+        );
+    }
+
+    let partitions = gpt_info.partitions();
+    for entry in partitions.iter() {
+        row += 1;
+        println!(
+            "{:<4} {:<20} {:>18} {:>18} {:>10}",
+            format!("#{}", row).dimmed(),
             entry.name.green(),
             format!("0x{:014X}", entry.start_addr).yellow(),
             format!("0x{:014X}", entry.size).yellow(),
@@ -190,7 +216,7 @@ fn print_gpt_table(data: &[u8]) {
     }
 
     println!("{}", "─".repeat(76).dimmed());
-    println!("  共 {} 个分区", format!("{}", partitions.len()).green());
+    println!("  共 {} 个分区", format!("{}", row).green());
     println!();
 }
 
@@ -215,7 +241,7 @@ pub fn cmd_read_gpt(
     );
 
     if log_level >= 2 {
-        print_gpt_table(gpt_data);
+        print_gpt_table(gpt_data, 0, 0);
     }
 
     Ok(())
@@ -352,16 +378,6 @@ pub fn cmd_print_scatter(
     generate_scatter_from_gpt(gpt_data, scatter_file)
         .map_err(|e| format!("scatter 生成失败: {}", e))?;
     info!("{}", format!("Scatter 已保存: {}", scatter_file).green());
-
-    let shoujixia_file = "scatter_shoujixia.txt";
-    if let Err(e) = generate_scatter_shoujixia(gpt_data, shoujixia_file, "MT6768") {
-        info!("Warning: 刷机匣格式 scatter 生成失败: {}", e);
-    } else {
-        info!(
-            "{}",
-            format!("刷机匣格式 scatter 已保存: {}", shoujixia_file).green()
-        );
-    }
 
     if log_level >= 3 {
         let debug_file = format!(

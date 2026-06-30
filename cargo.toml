@@ -1,6 +1,8 @@
 [package]
 name = "mtkclient-rs"
-version = "0.1.12"
+version = "0.1.13"
+authors = ["wunelezi <wunelezi@example.com>", "trae <trae@example.com>"]
+license = "GPL-3.0"
 edition = "2024"
 
 # 项目强制要求：中文函数名、变量名、文件名、注释。

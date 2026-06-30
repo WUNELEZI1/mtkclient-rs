@@ -11,12 +11,9 @@ use log::trace;
 use std::time::Duration;
 
 const DA_UPLOAD_TIMEOUT_MS: u64 = 10000;
-const DA_UPLOAD_CHUNK: usize = 64;
-const DA_UPLOAD_RETRY: u32 = 5;
-const DA_UPLOAD_RETRY_DELAY_MS: u64 = 10;
-const DA_UPLOAD_BURST_DELAY_MS: u64 = 2;
-const DA_UPLOAD_BURST_BLOCKS: u32 = 256;
-const DA_POST_UPLOAD_DELAY_MS: u64 = 20;
+const DA_UPLOAD_CHUNK: usize = 512; // 对齐 Python mtkclient 的 max_packet_size
+const DA_UPLOAD_RETRY: u32 = 3;
+const DA_UPLOAD_RETRY_DELAY_MS: u64 = 1;
 const JUMP_DA_MAX_ATTEMPT: u32 = 5;
 const JUMP_DA_FIRST_DELAY_MS: u64 = 50;
 const JUMP_DA_RETRY_DELAY_MS: u64 = 100;
@@ -71,24 +68,15 @@ impl Preloader {
             DA_UPLOAD_CHUNK
         );
 
-        // 4a. 清除端点状态（对应 pyUSB 自动处理的 clear_halt）
-        if self.device.is_libusb() {
-            trace!("[UPLOAD] clear_halt_out before upload");
-            let _ = self.device.clear_halt_out();
-        }
-
-        // 4b. 设置超时
+        // 4a. 设置超时
         let orig_timeout = self.device.get_timeout();
         self.device
             .set_timeout(Duration::from_millis(DA_UPLOAD_TIMEOUT_MS));
 
-        // 4c. 发送数据（64 字节块，对齐 Python upload_data）
+        // 4b. 发送数据（512 字节块，对齐 Python mtkclient upload_data）
         let mut pos = 0;
-        let mut chunk_count = 0;
-
         while pos < dadata.len() {
             let end = (pos + DA_UPLOAD_CHUNK).min(dadata.len());
-            // 重试机制：设备可能在处理时短暂 stall
             let mut attempt = 0;
             loop {
                 attempt += 1;
@@ -96,36 +84,27 @@ impl Preloader {
                     Ok(_) => break,
                     Err(e) => {
                         if attempt >= DA_UPLOAD_RETRY {
+                            self.device.set_timeout(orig_timeout);
                             return Err(format!("upload_data write (pos={}): {}", pos, e));
                         }
                         trace!(
                             "[UPLOAD] write fail at pos={} (attempt {}): {}, retrying",
                             pos, attempt, e
                         );
-                        if self.device.is_libusb() {
-                            let _ = self.device.clear_halt_out();
-                        }
                         std::thread::sleep(Duration::from_millis(DA_UPLOAD_RETRY_DELAY_MS));
                     }
                 }
             }
             pos = end;
-            chunk_count += 1;
-            if chunk_count % DA_UPLOAD_BURST_BLOCKS == 0 {
-                std::thread::sleep(Duration::from_millis(DA_UPLOAD_BURST_DELAY_MS));
-            }
         }
 
-        // 4d. ZLP
+        // 4c. ZLP
         trace!("[UPLOAD] sending ZLP");
         self.device
             .write(&[])
             .map_err(|e| format!("upload_data ZLP: {}", e))?;
 
-        // 4e. 等待设备处理（对齐 Python: time.sleep(0.035)）
-        std::thread::sleep(Duration::from_millis(DA_POST_UPLOAD_DELAY_MS));
-
-        // 4f. 恢复超时
+        // 4d. 恢复超时
         self.device.set_timeout(orig_timeout);
 
         // 5. 读校验和 + 状态
