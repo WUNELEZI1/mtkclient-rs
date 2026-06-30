@@ -76,6 +76,7 @@ pub struct DAXFlash<'a> {
     pub daext: bool,
     pub(crate) last_gpt_data: Option<Vec<u8>>,
     pub patch_da: bool,
+    pub da_x_speed: u8,
 }
 
 impl<'a> DAXFlash<'a> {
@@ -89,6 +90,7 @@ impl<'a> DAXFlash<'a> {
             daext: false,
             last_gpt_data: None,
             patch_da: true,
+            da_x_speed: 1,
         }
     }
 }
