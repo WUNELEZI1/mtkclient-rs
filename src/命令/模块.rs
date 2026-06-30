@@ -28,30 +28,30 @@ pub fn print_help() {
     println!("  mtkclient-rs.exe <命令> [参数]");
     println!();
     println!("命令:");
-    println!("  printgpt          打印 GPT 分区表 + EMMC 信息 + 生成 scatter");
-    println!("  dumppreloader     提取 Preloader (Exploit)");
-    println!("  r <分区> <文件>   读取分区到文件");
-    println!("  r gpt <目录>      保存 GPT 原始数据到目录");
-    println!("  rl <目录>         读取全部分区到目录");
-    println!("  wl <目录>         从目录恢复全部分区");
-    println!("  w <分区> <文件>   写入文件到分区");
-    println!("  e <分区>          擦除分区");
-    println!("  vbmeta <模式>     修补 vbmeta (0/1/2/3)");
-    println!("  reset             重启设备");
-    println!("  unlock            解锁 Bootloader");
-    println!("  lock              锁定 Bootloader");
-    println!("  frp               FRP OEM 解锁");
-    println!("  print-scatter     打印 scatter 到屏幕并保存文件");
-    println!("  enable-adb-on-da  在 DA 模式下开启 ADB");
+    println!("  输出分区表          打印 GPT 分区表 + EMMC 信息 + 生成 scatter");
+    println!("  提取preloader       提取 Preloader (Exploit)");
+    println!("  读分区 <分区> <文件>  读取分区到文件");
+    println!("  读分区 分区表 <目录>   保存 GPT 原始数据到目录");
+    println!("  读取全分区 <目录>   读取全部分区到目录");
+    println!("  写入全分区 <目录>   从目录恢复全部分区");
+    println!("  写分区 <分区> <文件>  写入文件到分区");
+    println!("  擦分区 <分区>       擦除分区");
+    println!("  禁用avb <模式>      修补 vbmeta (0/1/2/3)");
+    println!("  重启                重启设备");
+    println!("  解锁bl              解锁 Bootloader");
+    println!("  回锁bl              锁定 Bootloader");
+    println!("  oem解锁             FRP OEM 解锁");
+    println!("  输出scatter         打印 scatter 到屏幕并保存文件");
+    println!("  开启USB调试         在 DA 模式下开启 ADB");
     println!();
     println!("选项:");
     println!("  --preloader <文件>  指定 preloader 文件");
-    println!("  --verify            写入后校验");
-    println!("  --log <级别>        日志级别：1=INFO，2=DEBUG，3=TRACE");
-    println!("  --patch-da <bool>   是否 patch DA（默认 true）");
-    println!("  --quiet             静默模式（只输出错误和最终结果）");
-    println!("  --quiet-dump        静默 dump 模式（不打印进度条）");
-    println!("  --usb-log           启用 USB 通信追踪日志（输出到 usb_debug.log）");
+    println!("  --是否校验          写入后校验");
+    println!("  --日志 <级别>       日志级别：1=INFO，2=DEBUG，3=TRACE");
+    println!("  --修补da <bool>     是否 patch DA（默认 true）");
+    println!("  --静默输出          静默模式（只输出错误和最终结果）");
+    println!("  --静默dump          静默 dump 模式（不打印进度条）");
+    println!("  --USB日志           启用 USB 通信追踪日志（输出到 usb_debug.log）");
 }
 
 /// 单命令执行入口
@@ -69,67 +69,66 @@ pub fn handle_command(
     if is_brom {
         let cmd = app_config.command.as_deref().unwrap_or("");
         match cmd {
-            "dumppreloader" => {
+            "提取preloader" => {
+                // 独立命令：使用 generic_preloader_dump_payload（破坏性操作，执行后设备需重新上电）
                 转储::cmd_dumppreloader(da, _context)?;
                 return Ok(());
             }
-            "reset" => {
+            "重启" => {
                 输入输出::cmd_reset(da)?;
                 return Ok(());
             }
             _ => {}
         }
 
-        if preloader_file.is_empty() {
-            // 关键顺序：先 dump_preloader_payload，再 bypass_security
-            // 原因：
-            // 1. mtkclient 的 run_dump_preloader 不调用 bypass_security，直接注入
-            //    generic_preloader_dump_payload.bin，说明 dump_payload 内部已处理 bypass
-            // 2. 如果先 bypass_security 注入 patcher，patcher 会改变 BROM 状态（ptr_send 位置含义变化、
-            //    BROM 控制流被劫持），导致后续 dump_payload 注入后无法收到 ack（5秒超时）
-            // 3. dump_payload 执行后设备状态恢复，可以正常进行 bypass_security 注入 patcher
-            //
-            // 注意：是否需要 bypass 由 needs_bypass 决定，但 dump_preloader 必须在 bypass 之前
-            let (data, filename) = da
-                .preloader
-                .dump_preloader_payload(false, false, _context)
-                .map_err(|e| format!("dump_preloader_payload 失败: {}", e))?;
-
-            if !data.is_empty() {
-                auto_dumped_file = Some(filename);
-                info!(
-                    "Preloader 已提取: {} ({} 字节)",
-                    auto_dumped_file.as_ref().unwrap(),
-                    data.len()
-                );
+        // 1. 获取 target config 判断是否需要 bypass
+        let needs_bypass = match da.preloader.get_target_config() {
+            Ok(cfg) => {
+                info!("{}", cfg.format_info());
+                if cfg.needs_bypass() {
+                    info!("设备有安全保护，执行 Kamakiri2 bypass...");
+                    true
+                } else {
+                    info!(
+                        "设备无安全保护（SBC/SLA/DAA/MemRead 全关），跳过 Kamakiri2，直接进入 DA 模式"
+                    );
+                    false
+                }
             }
+            Err(e) => {
+                warn!("获取 target config 失败: {}", e);
+                warn!("假设 bypass 已处理，直接继续...");
+                false
+            }
+        };
 
-            // dump_preloader_payload 完成后，再判断是否需要 bypass_security 注入 patcher
-            // 后续 upload_da 需要 patcher 来 bypass security
-            let needs_bypass = match da.preloader.get_target_config() {
-                Ok(cfg) => {
-                    info!("{}", cfg.format_info());
-                    if cfg.sbc || cfg.sla || cfg.daa {
-                        info!("设备有安全保护，执行 Kamakiri2 bypass...");
-                        true
-                    } else {
-                        info!(
-                            "设备无安全保护（SBC/SLA/DAA 全关），跳过 Kamakiri2，直接进入 DA 模式"
-                        );
-                        false
-                    }
+        if needs_bypass {
+            da.preloader
+                .bypass_security(_context)
+                .map_err(|e| format!("bypass_security 失败: {}", e))?;
+        }
+
+        // 2. 如果没有指定 preloader 文件，通过非破坏性 read32 从 RAM 提取
+        // 必须在 bypass_security 之后执行，因为 read32_brom (0xD1) 需要 memread auth 被绕过
+        if preloader_file.is_empty() {
+            info!("未指定 --preloader，自动从 RAM 提取 preloader...");
+            match da.preloader.dump_preloader_via_brom_read() {
+                Ok((data, filename)) => {
+                    auto_dumped_file = Some(filename);
+                    info!(
+                        "Preloader 已自动提取: {} ({} 字节)",
+                        auto_dumped_file.as_ref().unwrap(),
+                        data.len()
+                    );
                 }
                 Err(e) => {
-                    warn!("获取 target config 失败: {}", e);
-                    // 无法获取 config 时，保守执行 bypass
-                    true
+                    return Err(format!(
+                        "自动提取 preloader 失败: {}。请手动运行 '提取preloader' 命令获取文件，\n\
+                         然后使用 --preloader <文件> 参数。",
+                        e
+                    )
+                    .into());
                 }
-            };
-
-            if needs_bypass {
-                da.preloader
-                    .bypass_security(_context)
-                    .map_err(|e| format!("bypass_security 失败: {}", e))?;
             }
         }
     }
@@ -146,11 +145,9 @@ pub fn handle_command(
     let effective_file = auto_dumped_file.as_deref().unwrap_or(preloader_file);
     info!("加载 EMI 数据: {}", effective_file);
     if let Err(e) = da.load_preloader_emi(effective_file) {
-        // EMI 加载失败 = 致命错误（无 EMI 数据后续 upload_da 会失败），直接返回
         return Err(format!("EMI 加载失败: {}", e).into());
     }
 
-    // DA 已加载则跳过完整 upload_da，只做 reinit 复用会话
     if da.daext {
         info!("DA 已加载，复用会话");
         da.reinit().map_err(|e| format!("DA reinit 失败: {}", e))?;
@@ -170,7 +167,7 @@ pub fn handle_command(
     let args = &app_config.cmd_args;
     let verify = app_config.verify;
 
-    if cmd == "enable-adb-on-da" {
+    if cmd == "开启USB调试" {
         da.enable_adb_and_reboot()?;
         info!("{}", "ADB 已启用，设备正在重启进入系统".green());
         return Ok(());
@@ -190,32 +187,32 @@ pub fn execute_single_command(
     log_level: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        "printgpt" => 分区表::cmd_printgpt(da, log_level),
-        "r" | "read" => {
-            if args.first().map(|s| s.as_str()) == Some("gpt") {
-                let dir = args.get(1).ok_or("用法: mtkclient r gpt <目录>")?;
+        "输出分区表" => 分区表::cmd_printgpt(da, log_level),
+        "读分区" => {
+            if args.first().map(|s| s.as_str()) == Some("分区表") {
+                let dir = args.get(1).ok_or("用法: mtkclient 读分区 分区表 <目录>")?;
                 分区表::cmd_read_gpt(da, dir, log_level)?;
             } else {
                 输入输出::cmd_read(da, args)?;
             }
         }
-        "rl" | "readall" => {
-            let dir = args.first().ok_or("用法: mtkclient rl <目录>")?;
+        "读取全分区" => {
+            let dir = args.first().ok_or("用法: mtkclient 读取全分区 <目录>")?;
             分区表::cmd_read_all(da, dir)?;
         }
-        "wl" | "writeall" => {
-            let dir = args.first().ok_or("用法: mtkclient wl <目录>")?;
+        "写入全分区" => {
+            let dir = args.first().ok_or("用法: mtkclient 写入全分区 <目录>")?;
             分区表::cmd_write_all(da, dir, verify)?;
         }
-        "w" | "write" => 输入输出::cmd_write(da, args, verify)?,
-        "e" | "erase" => 输入输出::cmd_erase(da, args)?,
-        "vbmeta" => 输入输出::cmd_vbmeta(da, args)?,
-        "frp" => crate::安全::frp::frp_unlock(da)?,
-        "reset" => 输入输出::cmd_reset(da)?,
-        "unlock" => 输入输出::cmd_unlock(da)?,
-        "lock" => 输入输出::cmd_lock(da)?,
-        "print-scatter" => 分区表::cmd_print_scatter(da, log_level)?,
-        "enable-adb-on-da" => {
+        "写分区" => 输入输出::cmd_write(da, args, verify)?,
+        "擦分区" => 输入输出::cmd_erase(da, args)?,
+        "禁用avb" => 输入输出::cmd_vbmeta(da, args)?,
+        "oem解锁" => crate::安全::frp::frp_unlock(da)?,
+        "重启" => 输入输出::cmd_reset(da)?,
+        "解锁bl" => 输入输出::cmd_unlock(da)?,
+        "回锁bl" => 输入输出::cmd_lock(da)?,
+        "输出scatter" => 分区表::cmd_print_scatter(da, log_level)?,
+        "开启USB调试" => {
             da.enable_adb_and_reboot()?;
             info!("{}", "ADB 已启用，设备正在重启进入系统".green());
         }

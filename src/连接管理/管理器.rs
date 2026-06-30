@@ -72,7 +72,40 @@ impl ConnectionManager {
                 }
                 UsbBusDetectionResult::SerialPort(port_name) => {
                     if port_name.is_empty() {
-                        warn!("[COM] 找不到 BROM 设备对应的 COM 口，降级到 WinUSB 直连");
+                        // 设备在 USB 总线上且使用串口驱动，但通过注册表匹配不到 COM 口名
+                        // 解决方案：枚举所有 COM 口，逐个尝试 BROM 握手
+                        warn!("[COM] 注册表匹配不到 COM 口，枚举所有 COM 口逐个尝试握手...");
+
+                        let all_ports = crate::连接管理::driver::detect::enumerate_all_com_ports();
+                        if all_ports.is_empty() {
+                            warn!("[COM] 系统中没有任何 COM 口，降级到 WinUSB 直连");
+                            return self.fallback_to_winusb(context);
+                        }
+
+                        info!("[COM] 系统中有 {} 个 COM 口: {:?}", all_ports.len(), all_ports);
+
+                        for port in &all_ports {
+                            info!("[COM] 尝试 {} ...", port);
+                            match self.serial_handshake_and_switch(port, context) {
+                                Ok(preloader) => {
+                                    info!(
+                                        "{}",
+                                        format!("[COM] {} 串口握手+WinUSB切换成功", port)
+                                            .green()
+                                            .bold()
+                                    );
+                                    self.mode = DeviceMode::Brom;
+                                    self.stage = USB阶段::Brom;
+                                    self.port_name = Some(port.clone());
+                                    return Ok((preloader, DeviceMode::Brom));
+                                }
+                                Err(e) => {
+                                    trace!("[COM] {} 不是 BROM 设备: {}", port, e);
+                                }
+                            }
+                        }
+
+                        warn!("[COM] 所有 COM 口均握手失败，降级到 WinUSB 直连");
                         return self.fallback_to_winusb(context);
                     }
 
@@ -120,7 +153,37 @@ impl ConnectionManager {
                     return self.fallback_to_winusb(context);
                 }
                 UsbBusDetectionResult::NotFound => {
-                    trace!("[USB] 未找到 BROM 设备，继续等待...");
+                    trace!("[USB] 未找到 BROM 设备，尝试枚举 COM 口...");
+
+                    // libusb 可能看不到使用串口驱动的设备，直接枚举 COM 口尝试
+                    let all_ports = crate::连接管理::driver::detect::enumerate_all_com_ports();
+                    if !all_ports.is_empty() {
+                        info!("[COM] 系统中有 {} 个 COM 口: {:?}", all_ports.len(), all_ports);
+
+                        for port in &all_ports {
+                            info!("[COM] 尝试 {} ...", port);
+                            match self.serial_handshake_and_switch(port, context) {
+                                Ok(preloader) => {
+                                    info!(
+                                        "{}",
+                                        format!("[COM] {} 串口握手+WinUSB切换成功", port)
+                                            .green()
+                                            .bold()
+                                    );
+                                    self.mode = DeviceMode::Brom;
+                                    self.stage = USB阶段::Brom;
+                                    self.port_name = Some(port.clone());
+                                    return Ok((preloader, DeviceMode::Brom));
+                                }
+                                Err(e) => {
+                                    trace!("[COM] {} 不是 BROM 设备: {}", port, e);
+                                }
+                            }
+                        }
+
+                        warn!("[COM] 所有 COM 口均握手失败，继续等待设备...");
+                    }
+
                     std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
                 }
             }
@@ -217,6 +280,7 @@ impl ConnectionManager {
         target_stage: USB阶段,
     ) -> Result<USB通信::USB设备, String> {
         let mut retry = 0;
+        let mut context_refreshed = false;
 
         info!(
             "[RECONNECT] scanning for stage={:?} (infinite wait)...",
@@ -249,6 +313,22 @@ impl ConnectionManager {
                         );
                     }
                 }
+            }
+
+            // 驱动切换后旧的 libusb context 可能无法枚举新设备
+            // 每 50 次重试（约 10 秒）尝试用新 context 打开
+            if retry % 50 == 0 && !context_refreshed {
+                trace!("[RECONNECT] 尝试刷新 libusb context...");
+                if let Ok(new_ctx) = USB上下文::新建() {
+                    let ctx_ref: &'static USB上下文 = Box::leak(Box::new(new_ctx));
+                    for &pid in &pids {
+                        if let Ok(device) = USB通信::USB设备::按VID_PID打开(ctx_ref, 0x0E8D, pid) {
+                            info!("[RECONNECT] 使用新 context 成功连接 (attempt {})", retry);
+                            return Ok(device);
+                        }
+                    }
+                }
+                context_refreshed = true;
             }
 
             if retry % RECONNECT_LOG_INTERVAL == 1 {

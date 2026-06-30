@@ -257,9 +257,10 @@ impl TargetConfig {
         }
     }
 
-    #[allow(dead_code)] // 预留：bypass 流程修复时判断是否需要安全绕过
+    /// 判断是否需要执行 Kamakiri2 bypass
+    /// 除了 SBC/SLA/DAA 外，Mem Read Auth 也会阻止 BROM 0xD1 读命令
     pub fn needs_bypass(&self) -> bool {
-        self.sbc || self.sla || self.daa
+        self.sbc || self.sla || self.daa || self.memread
     }
 
     pub fn format_info(&self) -> String {
