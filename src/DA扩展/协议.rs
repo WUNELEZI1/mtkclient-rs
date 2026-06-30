@@ -82,7 +82,7 @@ impl<'a> DAXFlash<'a> {
         // 读取数据
         if length > 0 {
             let mut data = vec![0; length as usize];
-            self.preloader.device.read(&mut data)?;
+            self.preloader.device.read_exact(&mut data)?;
 
             // 如果数据是 4 字节，返回 u32 值
             if length == 4 {

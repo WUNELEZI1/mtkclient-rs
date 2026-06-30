@@ -32,8 +32,8 @@ impl<'a> DAXFlash<'a> {
 
         // 2. cmd_read_data: xsend(CMD_READ_DATA) → status → send_param → status
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
-        self.preloader.device.write(&pkt)?;
-        self.preloader.device.write(&CMD_READ_DATA.to_le_bytes())?;
+        self.write_with_retry(&pkt, "readflash xsend")?;
+        self.write_with_retry(&CMD_READ_DATA.to_le_bytes(), "readflash CMD")?;
 
         let st = self.status()?;
         if st != 0 {
@@ -49,8 +49,8 @@ impl<'a> DAXFlash<'a> {
         param.extend_from_slice(&size.to_le_bytes());
         param.extend_from_slice(&[0u8; 32]); // NandExtension 全零
         let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
-        self.preloader.device.write(&param_pkt)?;
-        self.preloader.device.write(&param)?;
+        self.write_with_retry(&param_pkt, "readflash param_hdr")?;
+        self.write_with_retry(&param, "readflash param")?;
 
         let st2 = self.status()?;
         if st2 != 0 {
@@ -122,14 +122,8 @@ impl<'a> DAXFlash<'a> {
     /// 静默 ACK（仅发不读），用于 readflash_data 循环中不偷吃下一个包
     fn ack_silent(&mut self) -> Result<(), String> {
         let hdr = pack3(CMD_MAGIC, 0x01, 4);
-        self.preloader
-            .device
-            .write(&hdr)
-            .map_err(|e| format!("ack_silent write hdr: {}", e))?;
-        self.preloader
-            .device
-            .write(&0u32.to_le_bytes())
-            .map_err(|e| format!("ack_silent write data: {}", e))?;
+        self.write_with_retry(&hdr, "ack_silent hdr")?;
+        self.write_with_retry(&0u32.to_le_bytes(), "ack_silent data")?;
         Ok(())
     }
 }

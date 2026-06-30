@@ -3,7 +3,11 @@
 > 最近更新：2026-06-30 v7
 > 完整历史：Temp_Agent_Archive.md
 
-## 最近更新 (2026-06-30 v7) — DA 加载稳定性修复
+## 最近更新 (2026-06-30 v8) — 读取稳定性 + GPT 安全修复
+- **v0.1.10：修复 readflash / GPT / xread 读取漏洞**
+  - `readflash_data()` / `ack_silent()`：全部 write 改用 `write_with_retry()`
+  - `xread()`：`read()` → `read_exact()`（遗漏修复）
+  - `GPT.rs`：`first_lba * 512` 等改用 `checked_mul/checked_sub`，防止数据损坏时 panic
 - **v0.1.9：修复 DA 加载阶段 USB write 超时**
   - `boot_to()` 添加 `clear_halt_in/out` + `write_with_retry()`（3 次重试 + 50ms 间隔）
   - `setup_env()` / `setup_hw_init()` 所有 write 改用 `write_with_retry()`
