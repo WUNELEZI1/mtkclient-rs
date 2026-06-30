@@ -13,8 +13,6 @@ use log::trace;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-const 读取重试延迟毫秒: u64 = 10;
-
 impl USB设备 {
     pub fn 写入(&mut self, data: &[u8]) -> Result<usize, String> {
         if data.is_empty() {
@@ -140,25 +138,17 @@ impl USB设备 {
                 }
 
                 if 已传输 == 0 {
-                    // ZLP 或设备忙，对齐 PyUSB 行为：自动忽略 ZLP 继续等待数据
+                    // ZLP 或设备忙，对齐 Python mtkclient：立即重试（无 sleep）
+                    // Python usbread 在 timeout 时只是 timeout += 1; pass
                     if 返回码 == 0 {
                         // ZLP (zero-length packet): ret=0, transferred=0
                         if !静默 {
                             trace!("[USB READ] ZLP received, retrying");
                         }
                     }
-                    if 现在 < 截止时间 {
-                        if !静默 {
-                            trace!("[USB READ] transferred=0, retrying in 10ms");
-                        }
-                        std::thread::sleep(Duration::from_millis(读取重试延迟毫秒));
-                        continue;
-                    } else {
-                        if !静默 {
-                            trace!("[USB READ] transferred=0 at deadline, breaking");
-                        }
-                        break;
-                    }
+                    // 让出 CPU 时间片，但不睡眠（对齐 Python 的 pass）
+                    std::hint::spin_loop();
+                    continue;
                 }
             }
         }
@@ -217,7 +207,8 @@ impl USB设备 {
                     return Err(format!("read_exact bulk err: {}", 返回码));
                 }
                 if 已传输 == 0 {
-                    std::thread::sleep(Duration::from_millis(读取重试延迟毫秒));
+                    // 对齐 Python：无 sleep 立即重试
+                    std::hint::spin_loop();
                     continue;
                 }
                 总计 += 已传输 as usize;

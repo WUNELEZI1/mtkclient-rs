@@ -259,6 +259,11 @@ impl USB设备 {
         self.输出端点最大包大小
     }
 
+    /// 获取 EP_IN 的最大包大小
+    pub fn 获取输入端点最大包大小(&self) -> u16 {
+        self.输入端点最大包大小
+    }
+
     pub fn 设置超时(&mut self, duration: Duration) {
         self.超时 = duration;
     }

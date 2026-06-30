@@ -221,11 +221,12 @@ impl<'a> DAXFlash<'a> {
         self.write_with_retry(&pkt1, "boot_to param header")?;
         self.write_with_retry(&param, "boot_to param data")?;
 
-        // Python: self.send_data(da) — 发送 12 字节头 + 分块 64 字节数据
+        // Python: self.send_data(da) — 发送 12 字节头 + 分块数据
+        // 动态 chunk：使用端点最大包大小（对齐 Python usblib.write 的 pktsize）
         let pkt2 = pack3(CMD_MAGIC, 0x01, da.len() as u32);
         self.write_with_retry(&pkt2, "boot_to data header")?;
 
-        let maxinsize = 64;
+        let maxinsize = self.preloader.device.获取输出端点最大包大小() as usize;
         let mut remaining = da.len();
         let mut pos = 0;
         let mut send_failed = false;
