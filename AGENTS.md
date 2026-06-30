@@ -1,9 +1,13 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
-> 最近更新：2026-06-30 v8
+> 最近更新：2026-06-30 v9
 > 完整历史：Temp_Agent_Archive.md
 
-## 最近更新 (2026-06-30 v8) — 读取稳定性 + GPT 安全修复 + Sleep 优化
+## 最近更新 (2026-06-30 v9) — 输出优化 + send_da 超时修复
+- **v0.1.12：GPT 表格优化 + send_da 超时修复**
+  - GPT 表格新增人类可读大小列（GB/MB/KB）
+  - `DA_UPLOAD_TIMEOUT_MS`: 5000ms → 10000ms，`RETRY`: 3 → 5
+  - `读分区 分区表 <目录>` 已支持（现有功能）
 - **v0.1.11：优化 sleep 延迟和重试间隔**
   - `DA_POST_UPLOAD_DELAY_MS`: 35ms → 20ms
   - `JUMP_DA_FIRST_DELAY_MS`: 100ms → 50ms, `RETRY`: 200ms → 100ms, `QUIET`: 50ms → 30ms

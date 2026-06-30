@@ -129,6 +129,22 @@ fn print_emmc_info(info: &crate::DA扩展::EmmcInfo) {
     }
 }
 
+/// 格式化字节数为人类可读字符串
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{} MB", bytes / MB)
+    } else if bytes >= KB {
+        format!("{} KB", bytes / KB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
 /// 打印 GPT 表格到控制台
 fn print_gpt_table(data: &[u8]) {
     let gpt_info = match crate::DA分区::GptInfo::parse(data) {
@@ -152,26 +168,28 @@ fn print_gpt_table(data: &[u8]) {
 
     println!();
     println!(
-        "{:<4} {:<20} {:<20} {:<20}",
+        "{:<4} {:<20} {:>18} {:>18} {:>10}",
         "序号".cyan(),
         "分区名称".cyan(),
         "起始地址".cyan(),
-        "大小".cyan()
+        "大小".cyan(),
+        "大小(H)".cyan()
     );
-    println!("{}", "─".repeat(66).dimmed());
+    println!("{}", "─".repeat(76).dimmed());
 
     let partitions = gpt_info.partitions();
     for (count, entry) in partitions.iter().enumerate() {
         println!(
-            "{:<4} {:<20} {:<20} {:<20}",
+            "{:<4} {:<20} {:>18} {:>18} {:>10}",
             format!("#{}", count + 1).dimmed(),
             entry.name.green(),
             format!("0x{:014X}", entry.start_addr).yellow(),
             format!("0x{:014X}", entry.size).yellow(),
+            format_size(entry.size),
         );
     }
 
-    println!("{}", "─".repeat(66).dimmed());
+    println!("{}", "─".repeat(76).dimmed());
     println!("  共 {} 个分区", format!("{}", partitions.len()).green());
     println!();
 }
