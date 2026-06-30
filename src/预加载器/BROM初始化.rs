@@ -66,7 +66,7 @@ impl Preloader {
         Ok(())
     }
 
-    /// 完整初始化：握手 + 关闭看门狗 + 读取设备信息
+    /// 完整初始化：握手 + 关闭看门狗 + 读取设备信息（BROM 模式）
     pub fn init(&mut self) -> Result<bool, String> {
         // 1. 握手
         if !self.device.do_handshake()? {
@@ -129,6 +129,27 @@ impl Preloader {
 
         trace!("BROM 模式初始化成功");
         self.brom_initialized = true;
+        Ok(true)
+    }
+
+    /// Preloader 模式初始化：握手 + 获取 HW code（不关看门狗，不 sync_brom）
+    pub fn init_preloader(&mut self) -> Result<bool, String> {
+        // 1. 握手
+        if !self.device.do_handshake()? {
+            return Ok(false);
+        }
+
+        // 2. 获取 HW code 来匹配芯片配置
+        let hw = self.get_hw_code()?;
+        let chip = CHIP_CONFIGS
+            .iter()
+            .find(|c| c.hw_code == hw)
+            .ok_or_else(|| format!("未知芯片: HW code 0x{:04X}", hw))?;
+        self.chip = Some(*chip);
+
+        trace!("Preloader 模式初始化成功, chip={}", chip.name);
+        self.brom_initialized = true;
+        self.is_preloader_mode = true;
         Ok(true)
     }
 

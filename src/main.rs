@@ -185,6 +185,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // COM 口前置握手 + libusb 后续通信
     let mut conn_mgr = ConnectionManager::new();
 
+    // 工作模式：brom / preloader / auto
+    let 工作模式 = app_config.工作模式;
+    info!("[MAIN] 工作模式: {:?}", 工作模式);
+
     // === DA 会话复用检查 ===
     // 如果 .state 存在且设备已经处于 DA 模式（PID=0x2000），
     // 可以跳过 BROM→DA 流程，直接连接 DA 模式设备。
@@ -221,14 +225,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 warn!("[DA_SESSION] DA 会话复用失败: {}，回退到正常流程", e);
                 crate::连接管理::reset_session();
-                conn_mgr.smart_init(&usb_context)?
+                conn_mgr.smart_init(&usb_context, 工作模式)?
             }
         }
     } else {
-        conn_mgr.smart_init(&usb_context)?
+        conn_mgr.smart_init(&usb_context, 工作模式)?
     };
 
-    info!("{}", "连接成功 (BROM 模式)".green().bold());
+    match 工作模式 {
+        crate::config::工作模式::Preloader => {
+            info!("{}", "连接成功 (Preloader 模式)".green().bold());
+        }
+        _ => {
+            info!("{}", "连接成功 (BROM 模式)".green().bold());
+        }
+    }
 
     // preloader_path 决定后续策略：
     //   - Some(path)：使用用户指定的文件作为 EMI 数据源，跳过 dump + bypass

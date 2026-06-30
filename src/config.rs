@@ -71,6 +71,28 @@ pub const SUPPORTED_DEVICES: &[DeviceConfig] = &[
     },
 ];
 
+/// 用户指定的工作模式
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum 工作模式 {
+    /// BROM 模式：完整流程（握手 → 关看门狗 → bypass → send_da）
+    Brom,
+    /// Preloader 模式：跳过 bypass，直接 send_da
+    Preloader,
+    /// 自动检测（预留）
+    Auto,
+}
+
+impl 工作模式 {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "brom" => Some(工作模式::Brom),
+            "preloader" => Some(工作模式::Preloader),
+            "auto" => Some(工作模式::Auto),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // 预留：CLI/设备配置映射字段，部分在当前命令集下不会全部读取
 pub struct AppConfig {
@@ -78,6 +100,7 @@ pub struct AppConfig {
     pub da2_path: Option<String>,
     pub preloader_path: Option<String>,
     pub loader_path: Option<String>,
+    pub 工作模式: 工作模式,
     pub parttype: Option<String>,
     pub offset: Option<u64>,
     pub length: Option<u64>,
@@ -96,11 +119,15 @@ impl AppConfig {
             _ => log::LevelFilter::Info,
         };
 
+        let 工作模式 = 工作模式::from_str(&cli.工作模式)
+            .unwrap_or(工作模式::Brom);
+
         AppConfig {
             log_level,
             da2_path: cli.da2_path.clone(),
             preloader_path: cli.preloader_path.clone(),
             loader_path: cli.loader_path.clone(),
+            工作模式,
             parttype: cli.parttype.clone(),
             offset: cli.offset,
             length: cli.length,
