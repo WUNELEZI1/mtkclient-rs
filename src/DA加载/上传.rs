@@ -85,12 +85,13 @@ impl<'a> DAXFlash<'a> {
 
         // send_da 后 USB 端点可能处于 stall 状态，需要 clear_halt
         // 并给设备时间处理 DA 数据
+        // 对齐 Python mtkclient: time.sleep(0.2) — 200ms 给设备处理 DA
         if self.preloader.device.is_libusb() {
             trace!("[JUMP_DA] clear_halt before jump_da");
             let _ = self.preloader.device.clear_halt_in();
             let _ = self.preloader.device.clear_halt_out();
         }
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(200));
 
         self.preloader.jump_da(da1_address)?;
 
