@@ -61,12 +61,11 @@ impl Preloader {
         }
 
         // 4. 上传数据
-        // 动态 chunk：使用端点最大包大小（对齐 Python usblib.write 的 pktsize=EP_OUT.wMaxPacketSize）
-        let chunk_size = self.device.获取输出端点最大包大小() as usize;
+        // 对齐 Python mtk_preloader.py: 固定 64 字节 chunk（某些设备固件对大 chunk 处理有 bug）
+        const CHUNK_SIZE: usize = 64;
         trace!(
-            "[UPLOAD] sending {} bytes, dynamic chunk={} (wMaxPacketSize)",
-            dadata.len(),
-            chunk_size
+            "[UPLOAD] sending {} bytes, chunk={} (Python 对齐)",
+            dadata.len(), CHUNK_SIZE
         );
 
         // 4a. 设置超时
@@ -74,10 +73,10 @@ impl Preloader {
         self.device
             .set_timeout(Duration::from_millis(DA_UPLOAD_TIMEOUT_MS));
 
-        // 4b. 发送数据（动态 chunk，末尾自动适配）
+        // 4b. 发送数据（64 字节 chunk，末尾自动适配）
         let mut pos = 0;
         while pos < dadata.len() {
-            let end = (pos + chunk_size).min(dadata.len());
+            let end = (pos + CHUNK_SIZE).min(dadata.len());
             let mut attempt = 0;
             loop {
                 attempt += 1;
