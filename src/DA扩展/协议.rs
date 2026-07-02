@@ -182,12 +182,12 @@ impl<'a> DAXFlash<'a> {
     pub(crate) fn xflash_sync(&mut self) -> Result<bool, String> {
         trace!("执行 XFlash 同步命令...");
 
-        // Python: self.sync() → self.xsend(self.Cmd.SYNC_SIGNAL)
+        // Python: self.sync() 发送 ACK (0)，不是 SYNC_SIGNAL
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
         self.preloader.device.write(&pkt)?;
         self.preloader
             .device
-            .write(&CMD_SYNC_SIGNAL.to_le_bytes())?;
+            .write(&0u32.to_le_bytes())?;
 
         Ok(true)
     }
