@@ -14,13 +14,13 @@ use log::trace;
 use std::time::Duration;
 
 const WATCHDOG_TIMEOUT_SECS: u64 = 3;
-const ECHO_TIMEOUT_MS: u64 = 1000;
+const ECHO_TIMEOUT_MS: u64 = 200;
 const BROM_READ_TIMEOUT_MS: u64 = 10000;
 const BROM_READ_RETRY_ATTEMPTS: usize = 4;
 const BROM_READ_RETRY_DELAY_MS: u64 = 100;
 const READ32_PRE_DELAY_MS: u64 = 5;
 const READ32_LIBUSB_DELAY_MS: u64 = 5;
-const FLUSH_INPUT_TIMEOUT_MS: u64 = 30;
+const FLUSH_INPUT_TIMEOUT_MS: u64 = 200;
 const FLUSH_INPUT_CHUNK: usize = 1024;
 const FLUSH_INPUT_MAX_ITER: usize = 20;
 const POST_FLUSH_TIMEOUT_MS: u64 = 5000;
