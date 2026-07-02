@@ -109,7 +109,10 @@ impl Preloader {
             .write(&[])
             .map_err(|e| format!("upload_data ZLP: {}", e))?;
 
-        // 4d. 恢复超时
+        // 4d. 对齐 Python: ZLP 后 35ms 延迟，给设备处理数据
+        std::thread::sleep(Duration::from_millis(35));
+
+        // 4e. 恢复超时
         self.device.set_timeout(orig_timeout);
 
         // 5. 读校验和 + 状态
