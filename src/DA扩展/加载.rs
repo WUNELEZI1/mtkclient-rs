@@ -195,20 +195,17 @@ impl<'a> DAXFlash<'a> {
     /// 与 Python xflash_lib.py 第 1240 行附近的手动清理一致：
     /// reinit() 后设备可能发送残留数据，如果不清空，会污染 BOOT_TO 响应。
     fn drain_usb_input(&mut self) {
-        let mut drain_buf = [0u8; 64];
+        let mut drain_buf = [0u8; 512];
+        let orig_timeout = self.preloader.device.get_timeout();
+        self.preloader.device.set_timeout(Duration::from_millis(50));
         loop {
-            let orig_timeout = self.preloader.device.get_timeout();
-            self.preloader.device.set_timeout(Duration::from_millis(50));
             match self.preloader.device.read(&mut drain_buf) {
-                Ok(0) | Err(_) => {
-                    self.preloader.device.set_timeout(orig_timeout);
-                    break;
-                }
+                Ok(0) | Err(_) => break,
                 Ok(n) => {
                     trace!("[DRAIN] discarded {} bytes", n);
                 }
             }
-            self.preloader.device.set_timeout(orig_timeout);
         }
+        self.preloader.device.set_timeout(orig_timeout);
     }
 }

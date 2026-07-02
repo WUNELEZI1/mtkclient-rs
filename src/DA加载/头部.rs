@@ -8,7 +8,7 @@ use log::{info, warn};
 
 /// DA 文件 region 结构
 #[derive(Debug, Clone)]
-pub(crate) struct DaRegion {
+pub struct DaRegion {
     pub(crate) buf_offset: u32, // 在文件中的偏移
     pub(crate) len: u32,        // 大小
     pub(crate) start_addr: u32, // 加载地址

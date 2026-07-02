@@ -153,12 +153,15 @@ impl<'a> DAXFlash<'a> {
         let write_packet_size = self.get_packet_length()?;
         let mut pos = 0;
         let total = data.len();
+        // 预分配最大 param buffer，循环内复用避免重复分配
+        let max_param_len = 8 + write_packet_size;
+        let mut param = Vec::with_capacity(max_param_len);
         while pos < total {
             let dsize = std::cmp::min(write_packet_size, total - pos);
             let chunk = &data[pos..pos + dsize];
             let checksum: u16 = chunk.iter().map(|&b| b as u16).sum::<u16>();
 
-            let mut param = Vec::with_capacity(8 + dsize);
+            param.clear();
             param.extend_from_slice(&0u32.to_le_bytes());
             param.extend_from_slice(&(checksum as u32).to_le_bytes());
             param.extend_from_slice(chunk);

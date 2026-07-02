@@ -58,7 +58,8 @@ impl<'a> DAXFlash<'a> {
         }
 
         // 3. 数据读取循环 — 对齐 Python xflash_lib.py:879-891 (filename="" 分支)
-        let mut buffer = Vec::new();
+        // 预分配 buffer，避免循环内多次重新分配（对大分区如 super 显著提升性能）
+        let mut buffer = Vec::with_capacity(size as usize);
         let mut remaining = size as usize;
 
         while remaining > 0 {

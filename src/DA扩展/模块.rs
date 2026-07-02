@@ -77,6 +77,8 @@ pub struct DAXFlash<'a> {
     pub(crate) last_gpt_data: Option<Vec<u8>>,
     pub patch_da: bool,
     pub da_x_speed: u8,
+    /// 缓存 DA 文件数据，避免 upload_da1/da2 重复读取
+    pub(crate) da_file_data: Option<Vec<u8>>,
 }
 
 impl<'a> DAXFlash<'a> {
@@ -91,6 +93,7 @@ impl<'a> DAXFlash<'a> {
             last_gpt_data: None,
             patch_da: true,
             da_x_speed: 1,
+            da_file_data: None,
         }
     }
 }
