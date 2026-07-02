@@ -154,6 +154,8 @@ impl Preloader {
     }
 
     /// BROM echo 协议：完全对齐 Python Port.echo() (Port.py:210-229)
+    /// 设备在上传 DA 后可能输出调试信息，echo 读取时会遇到残留数据。
+    /// 这里容忍最多 32 字节的残留数据，继续读取直到找到真正的 echo。
     pub fn echo_1byte(&mut self, cmd: u8) -> Result<bool, String> {
         self.device
             .set_timeout(Duration::from_millis(ECHO_TIMEOUT_MS));
@@ -161,24 +163,30 @@ impl Preloader {
             .write(&[cmd])
             .map_err(|e| format!("echo write: {}", e))?;
         let mut buf = [0u8; 1];
-        match self.device.read_exact(&mut buf) {
-            Ok(_) => {
-                if buf[0] == cmd {
-                    Ok(true)
-                } else {
-                    trace!(
-                        "[ECHO_1] mismatch: expected 0x{:02X}, got 0x{:02X}",
-                        cmd, buf[0]
-                    );
-                    self.flush_input();
-                    Ok(false)
+        for i in 0..32 {
+            match self.device.read_exact(&mut buf) {
+                Ok(_) => {
+                    if buf[0] == cmd {
+                        if i > 0 {
+                            trace!("[ECHO_1] skipped {} residual bytes, echo 0x{:02X} matched", i, cmd);
+                        }
+                        return Ok(true);
+                    } else {
+                        trace!(
+                            "[ECHO_1] skip residual 0x{:02X} (attempt {}), waiting for 0x{:02X}",
+                            buf[0], i + 1, cmd
+                        );
+                    }
+                }
+                Err(e) => {
+                    trace!("[ECHO_1] read error for 0x{:02X} after {} attempts: {}", cmd, i, e);
+                    return Ok(false);
                 }
             }
-            Err(e) => {
-                trace!("[ECHO_1] read error for 0x{:02X}: {}", cmd, e);
-                Ok(false)
-            }
         }
+        trace!("[ECHO_1] mismatch: expected 0x{:02X}, too much residual data after 32 reads", cmd);
+        self.flush_input();
+        Ok(false)
     }
 
     /// 发送 1 字节命令（4 字节小端），读回 4 字节回显（用于 brom_register_access / read32_brom）
