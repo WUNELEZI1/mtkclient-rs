@@ -26,16 +26,27 @@ impl<'a> DAXFlash<'a> {
         Ok((file, path_str))
     }
 
+    /// 获取或缓存 DA 文件数据
+    fn load_da_file(&mut self) -> Result<Vec<u8>, String> {
+        if let Some(ref data) = self.da_file_data {
+            trace!("[DA_CACHE] 复用缓存的 DA 文件数据 ({} 字节)", data.len());
+            return Ok(data.clone());
+        }
+        let (mut file, _path) = Self::open_da_file()?;
+        let mut da_data = Vec::new();
+        file.read_to_end(&mut da_data)
+            .map_err(|e| format!("读取 DA 文件失败: {}", e))?;
+        trace!("[DA_CACHE] 读取 DA 文件并缓存 ({} 字节)", da_data.len());
+        self.da_file_data = Some(da_data.clone());
+        Ok(da_data)
+    }
+
     /// 上传第一阶段 DA
     /// 对照 Python xflash_lib.py:upload_da1
     pub fn upload_da1(&mut self) -> Result<bool, String> {
         trace!("上传 XFlash 阶段 1...");
 
-        let (mut file, _path) = Self::open_da_file()?;
-        let mut da_data = Vec::new();
-        file.read_to_end(&mut da_data)
-            .map_err(|e| format!("读取 DA 文件失败: {}", e))?;
-
+        let da_data = self.load_da_file()?;
         let (_magic, regions, _is_v6) = parse_da_header(&da_data, DA_HW_CODE_MT6768)?;
 
         if regions.len() < 2 {
@@ -124,11 +135,7 @@ impl<'a> DAXFlash<'a> {
     pub fn upload_da2(&mut self) -> Result<bool, String> {
         trace!("上传 XFlash 阶段 2...");
 
-        let (mut file, _path) = Self::open_da_file()?;
-        let mut da_data = Vec::new();
-        file.read_to_end(&mut da_data)
-            .map_err(|e| format!("读取 DA 文件失败: {}", e))?;
-
+        let da_data = self.load_da_file()?;
         let (_magic, regions, _is_v6) = parse_da_header(&da_data, DA_HW_CODE_MT6768)?;
 
         if regions.len() < 3 {
