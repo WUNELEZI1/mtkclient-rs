@@ -11,8 +11,8 @@ use log::trace;
 use std::time::Duration;
 
 const DA_UPLOAD_TIMEOUT_MS: u64 = 10000;
-const DA_UPLOAD_RETRY: u32 = 3;
-const DA_UPLOAD_RETRY_DELAY_MS: u64 = 1;
+const DA_UPLOAD_RETRY: u32 = 5;
+const DA_UPLOAD_RETRY_DELAY_MS: u64 = 100;
 const JUMP_DA_MAX_ATTEMPT: u32 = 5;
 const JUMP_DA_FIRST_DELAY_MS: u64 = 200;
 const JUMP_DA_RETRY_DELAY_MS: u64 = 100;
@@ -74,6 +74,9 @@ impl Preloader {
             .set_timeout(Duration::from_millis(DA_UPLOAD_TIMEOUT_MS));
 
         // 4b. 发送数据（64 字节 chunk，末尾自动适配）
+        // Python 的 EP_OUT.write 经过 pyusb 多层调用，速度慢，给了设备喘息时间
+        // Rust 直接调 libusb 同步写，速度太快会导致设备 USB 缓冲区满 → NAK → timeout
+        // 每 64 字节 chunk 间加 1ms 延迟，模拟 Python 的自然间隔
         let mut pos = 0;
         while pos < dadata.len() {
             let end = (pos + CHUNK_SIZE).min(dadata.len());
@@ -96,6 +99,8 @@ impl Preloader {
                 }
             }
             pos = end;
+            // 每 chunk 间 1ms 延迟，防止 USB 缓冲区溢出
+            std::thread::sleep(Duration::from_millis(1));
         }
 
         // 4c. ZLP
