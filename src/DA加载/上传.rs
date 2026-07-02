@@ -76,7 +76,7 @@ impl<'a> DAXFlash<'a> {
 
         if !self
             .preloader
-            .send_da(da1_address, da1_len - 0x100, 0x100, &da1_patched)?
+            .send_da(da1_address, da1_len, 0x100, &da1_patched)?
         {
             return Err("发送 DA 失败".to_string());
         }
