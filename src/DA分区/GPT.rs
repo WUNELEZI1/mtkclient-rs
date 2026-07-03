@@ -68,18 +68,27 @@ impl<'a> GptInfo<'a> {
         }
         let entry = &self.data[entry_offset..entry_offset + self.part_entry_size as usize];
 
-        // 解析分区名 (前 72 字节, UTF-16LE, 以 0 结尾)
+        // GPT 分区项结构 (128 字节):
+        // offset  0: type GUID (16 字节)
+        // offset 16: unique GUID (16 字节)
+        // offset 32: first_lba (8 字节, u64 LE)
+        // offset 40: last_lba (8 字节, u64 LE)
+        // offset 48: flags (8 字节)
+        // offset 56: name (72 字节, UTF-16LE)
+        let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
+        let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
+
+        // 解析分区名 (offset 56, 72 字节, UTF-16LE, 以 0 结尾)
+        let name_offset = 56;
+        let name_len = 72;
         let mut name_bytes = [0u8; 72];
-        name_bytes.copy_from_slice(&entry[0..72]);
+        name_bytes.copy_from_slice(&entry[name_offset..name_offset + name_len]);
         let name_u16: Vec<u16> = name_bytes
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .take_while(|&c| c != 0)
             .collect();
         let name = String::from_utf16_lossy(&name_u16);
-
-        let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
-        let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
         let start_addr = first_lba
             .checked_mul(512)
             .ok_or("GPT start_addr overflow")?;
