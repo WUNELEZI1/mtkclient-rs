@@ -108,8 +108,12 @@ impl<'a> DAXFlash<'a> {
             remaining = remaining.saturating_sub(data.len());
 
             // 发送 ACK（只发不读）
+            // 最后一个包之后设备不再接收写入，所以跳过
+            if remaining == 0 || slength == 0 {
+                trace!("[readflash_data] 最后一包，跳过 ACK");
+                break;
+            }
             // 关键：不在此处读 status！下一个数据包的包头就是 DA 对 ACK 的响应
-            // 如果读 status，会偷吃下一个数据包
             if let Err(e) = self.ack_silent() {
                 trace!("[readflash_data] send_ack failed: {}", e);
                 break;
