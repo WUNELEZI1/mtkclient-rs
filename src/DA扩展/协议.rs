@@ -12,6 +12,7 @@
 //! 不依赖任何上层 DAXFlash 业务逻辑，方便单测与回溯。
 
 use log::{trace, warn};
+use std::time::Duration;
 
 use crate::DA扩展::DAXFlash;
 
@@ -67,6 +68,18 @@ impl<'a> DAXFlash<'a> {
     /// 流程：读取 12 字节头（magic + type + length）→ 验证 magic → 读取数据
     /// 返回：读取到的数据长度（如果是 4 字节则返回 u32 值）
     pub(crate) fn xread(&mut self) -> Result<u32, String> {
+        // 设备处理 setup_hw_init 后可能需要数百毫秒才返回响应
+        let orig_timeout = self.preloader.device.get_timeout();
+        self.preloader
+            .device
+            .set_timeout(Duration::from_millis(1000));
+
+        let result = self.xread_inner();
+        self.preloader.device.set_timeout(orig_timeout);
+        result
+    }
+
+    fn xread_inner(&mut self) -> Result<u32, String> {
         // 读取 12 字节的 XFlash 头
         let mut header = [0; 12];
         self.preloader.device.read_exact(&mut header)?;
