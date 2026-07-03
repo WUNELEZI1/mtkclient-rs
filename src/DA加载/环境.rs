@@ -24,8 +24,8 @@ const CMD_SYNC_SIGNAL: u32 = 0x434E5953;
 impl<'a> DAXFlash<'a> {
     /// 带重试的 USB 写入：clear_halt + 重试 3 次
     pub(crate) fn write_with_retry(&mut self, data: &[u8], label: &str) -> Result<(), String> {
-        const MAX_RETRY: u32 = 3;
-        const RETRY_DELAY_MS: u64 = 20;
+        const MAX_RETRY: u32 = 5;
+        const RETRY_DELAY_MS: u64 = 100;
         for attempt in 1..=MAX_RETRY {
             match self.preloader.device.write(data) {
                 Ok(_) => return Ok(()),
@@ -35,12 +35,9 @@ impl<'a> DAXFlash<'a> {
                         label, attempt, MAX_RETRY, e
                     );
                     if attempt < MAX_RETRY {
-                        if self.preloader.device.is_libusb() {
-                            let _ = self.preloader.device.clear_halt_out();
-                        }
                         sleep(Duration::from_millis(RETRY_DELAY_MS));
                     } else {
-                        return Err(format!("{} write 失败 (3次重试后): {}", label, e));
+                        return Err(format!("{} write 失败 ({}次重试后): {}", label, MAX_RETRY, e));
                     }
                 }
             }
