@@ -83,16 +83,12 @@ impl<'a> DAXFlash<'a> {
 
         trace!("成功上传 stage 1，跳转中...");
 
-        // 对齐 Python mtkclient: time.sleep(0.2) — 给设备处理 DA
-        // 注意：Python 没有 clear_halt，这里也不做
-        std::thread::sleep(Duration::from_millis(200));
-
+        // 对齐 Python: 给设备时间处理 DA，但用轮询代替固定 200ms
+        // 设备 ready 后会响应 USB 读取，用短超时轮询检测
+        self.preloader.flush_input_poll(Duration::from_millis(5), 40)?;
         self.preloader.jump_da(da1_address)?;
 
-        // Give device time to start DA execution
-        std::thread::sleep(Duration::from_millis(50));
-
-        // Python: sync = self.usbread(1) 等待 0xC0
+        // Python: sync = self.usbread(1) 等待 0xC0 — 已有 5s 超时
         let orig_timeout = self.preloader.device.get_timeout();
         self.preloader
             .device
@@ -115,9 +111,9 @@ impl<'a> DAXFlash<'a> {
         // Python: self.setup_hw_init()
         self.setup_hw_init()?;
 
-        // Python: 设备需要约 365ms 才返回 xread 响应
-        // Python 因 pyusb 开销自然等待，Rust 需要显式延迟
-        std::thread::sleep(Duration::from_millis(500));
+        // 设备需要时间返回 xread 响应，用轮询代替固定 500ms
+        // 先 flush_input 轮询等设备 ready，再 xread
+        self.preloader.flush_input_poll(Duration::from_millis(10), 200)?;
 
         // Python: res = self.xread(); if res == pack("<I", self.Cmd.SYNC_SIGNAL)
         let resp = self.xread()?;
