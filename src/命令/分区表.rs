@@ -76,74 +76,110 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
 
 /// 打印完整 EMMC 信息
 fn print_emmc_info(info: &crate::DA扩展::EmmcInfo) {
+    fn fmt_bytes(b: u64) -> String {
+        if b >= 1_000_000_000 {
+            format!("{} GB", b / 1_000_000_000)
+        } else if b >= 1_000_000 {
+            format!("{} MB", b / 1_000_000)
+        } else if b >= 1_000 {
+            format!("{} KB", b / 1_000)
+        } else {
+            format!("{} B", b)
+        }
+    }
+
     println!();
     println!("{}", " EMMC 信息 ".on_green().black());
     println!(
-        "  存储类型:         {}",
+        "  存储类型:     {}",
         info.emmc_type.green()
     );
     if info.user_size > 0 {
         println!(
-            "  用户区大小:       {}  {} GB",
-            format!("0x{:X}", info.user_size).green(),
-            format!("({} GB / {} MB)", info.user_size_gb(), info.user_size_mb()).dimmed()
+            "  用户区:       {}  ({} / {})",
+            format!("{:>12}", info.user_size).green(),
+            format!("{} GB", info.user_size / 1_000_000_000),
+            format!("{} MB", info.user_size / 1_000_000)
         );
     }
     if info.boot1_size > 0 {
         println!(
-            "  Boot1 大小:       {}  {} MB",
-            format!("0x{:06X}", info.boot1_size).green(),
-            format!("({} MB)", info.boot1_size_mb()).dimmed()
+            "  Boot1:        {}  ({})",
+            format!("{:>12}", info.boot1_size).green(),
+            fmt_bytes(info.boot1_size)
         );
     }
     if info.boot2_size > 0 {
         println!(
-            "  Boot2 大小:       {}  {} MB",
-            format!("0x{:06X}", info.boot2_size).green(),
-            format!("({} MB)", info.boot2_size_mb()).dimmed()
+            "  Boot2:        {}  ({})",
+            format!("{:>12}", info.boot2_size).green(),
+            fmt_bytes(info.boot2_size)
         );
     }
     if info.rpmb_size > 0 {
         println!(
-            "  RPMB 大小:        {}  {} KB",
-            format!("0x{:06X}", info.rpmb_size).green(),
-            format!("({} KB)", info.rpmb_size / 1024).dimmed()
+            "  RPMB:         {}  ({})",
+            format!("{:>12}", info.rpmb_size).green(),
+            fmt_bytes(info.rpmb_size)
         );
     }
     if info.block_size > 0 {
         println!(
-            "  块大小:           {}",
-            format!("0x{:X} ({} 字节)", info.block_size, info.block_size).green()
+            "  块大小:       {}  ({} 字节)",
+            format!("0x{:X}", info.block_size).green(),
+            info.block_size
         );
     }
     if !info.cid.is_empty() {
-        // CID 段去除末尾 0 字节再展示
         let trimmed: Vec<u8> = info.cid.iter().copied().filter(|&b| b != 0).collect();
         if !trimmed.is_empty() {
             let cid_str: String = trimmed
                 .iter()
                 .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
                 .collect();
-            println!("  CID:              {}", cid_str.green());
-            println!("  CID (HEX):        {}", format!("{:02X?}", info.cid).dimmed());
+            println!("  CID:          {}", cid_str.green());
         }
     }
 }
 
-/// 格式化字节数为人类可读字符串
+/// 格式化字节数为人类可读字符串 (KB/MB/GB, 保留1位小数)
 fn format_size(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = 1024 * KB;
-    const GB: u64 = 1024 * MB;
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{} MB", bytes / MB)
-    } else if bytes >= KB {
-        format!("{} KB", bytes / KB)
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * KB;
+    const GB: f64 = 1024.0 * MB;
+    if bytes >= (1024 * 1024 * 1024) {
+        format!("{:.1} GB", bytes as f64 / GB)
+    } else if bytes >= (1024 * 1024) {
+        format!("{:.1} MB", bytes as f64 / MB)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / KB)
     } else {
         format!("{} B", bytes)
     }
+}
+
+fn separator_line() -> String {
+    format!(
+        "{}  {}  {}  {}  {}",
+        "─".repeat(4),
+        "─".repeat(22),
+        "─".repeat(14),
+        "─".repeat(12),
+        "─".repeat(16)
+    )
+}
+
+/// 格式化字节数为带千分位的字符串
+fn format_bytes_comma(bytes: u64) -> String {
+    let s = bytes.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result
 }
 
 /// 打印 GPT 表格到控制台（含 EMMC_BOOT_1/2 显示）
@@ -153,71 +189,62 @@ fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64) {
         Err(_) => return,
     };
 
-    let revision = gpt_info.revision;
-    let num_part_entries = gpt_info.num_part_entries;
-    let part_entry_size = gpt_info.part_entry_size;
-
-    println!();
-    println!("{}", " GPT 分区表 ".on_green().black());
-    println!("  修订版本:     {}", format!("0x{:08X}", revision).green());
-    println!("  头部大小:     {} 字节", gpt_info.header_size);
-    println!(
-        "  分区数量:     {}",
-        format!("{}", num_part_entries).green()
-    );
-    println!("  分区项大小:   {} 字节", part_entry_size);
+    let partitions = gpt_info.partitions();
 
     println!();
     println!(
-        "{:<4} {:<20} {:>18} {:>18} {:>10}",
-        "序号".cyan(),
-        "分区名称".cyan(),
-        "起始地址".cyan(),
-        "大小".cyan(),
-        "大小(H)".cyan()
+        " {}",
+        format!(" GPT 分区表 ({} 个分区) ", partitions.len()).on_green().black()
     );
-    println!("{}", "─".repeat(76).dimmed());
 
-    // 在 GPT 分区之前列出 EMMC_BOOT_1 和 EMMC_BOOT_2
+    // 表头
+    println!(
+        " {:<4}  {:<22} {:>14}  {:>12}  {:>16}",
+        "#", "名称", "起始地址", "大小", "字节数"
+    );
+    println!("{}", separator_line());
+
     let mut row = 0usize;
+
+    // EMMC Boot 区域
     if boot1_size > 0 {
         row += 1;
         println!(
-            "{:<4} {:<20} {:>18} {:>18} {:>10}",
-            format!("#{}", row).dimmed(),
-            "EMMC_BOOT_1".green(),
-            format!("0x{:014X}", 0u64).yellow(),
-            format!("0x{:014X}", boot1_size).yellow(),
-            format_size(boot1_size),
+            " {:>3}  {:<22} {:>14}  {:>12}  {:>16}",
+            row,
+            "eMMC_Boot1".dimmed(),
+            format!("0x{:08X}", 0u64).dimmed(),
+            format_size(boot1_size).dimmed(),
+            format_bytes_comma(boot1_size).dimmed()
         );
     }
     if boot2_size > 0 {
         row += 1;
         println!(
-            "{:<4} {:<20} {:>18} {:>18} {:>10}",
-            format!("#{}", row).dimmed(),
-            "EMMC_BOOT_2".green(),
-            format!("0x{:014X}", 0u64).yellow(),
-            format!("0x{:014X}", boot2_size).yellow(),
-            format_size(boot2_size),
+            " {:>3}  {:<22} {:>14}  {:>12}  {:>16}",
+            row,
+            "eMMC_Boot2".dimmed(),
+            format!("0x{:08X}", 0u64).dimmed(),
+            format_size(boot2_size).dimmed(),
+            format_bytes_comma(boot2_size).dimmed()
         );
     }
 
-    let partitions = gpt_info.partitions();
-    for entry in partitions.iter() {
+    // GPT 分区
+    for entry in &partitions {
         row += 1;
         println!(
-            "{:<4} {:<20} {:>18} {:>18} {:>10}",
-            format!("#{}", row).dimmed(),
-            entry.name.green(),
-            format!("0x{:014X}", entry.start_addr).yellow(),
-            format!("0x{:014X}", entry.size).yellow(),
+            " {:>3}  {:<22} {:>14}  {:>12}  {:>16}",
+            row,
+            entry.name,
+            format!("0x{:08X}", entry.start_addr),
             format_size(entry.size),
+            format_bytes_comma(entry.size)
         );
     }
 
-    println!("{}", "─".repeat(76).dimmed());
-    println!("  共 {} 个分区", format!("{}", row).green());
+    println!("{}", separator_line());
+    println!("  共 {} 个分区", row);
     println!();
 }
 
