@@ -103,13 +103,19 @@ impl<'a> DAXFlash<'a> {
                 break;
             }
 
-            // 追加数据（包括心跳包的 4 字节零值）
+            // 心跳包处理（对齐 Python readflash: slength==4 且值为 0 → 跳过）
+            if slength == 4 && data.iter().all(|&b| b == 0) {
+                trace!("[readflash_data] 心跳包，跳过");
+                continue;
+            }
+
+            // 追加数据
             buffer.extend_from_slice(&data);
             remaining = remaining.saturating_sub(data.len());
 
             // 发送 ACK（只发不读）
             // 最后一个包之后设备不再接收写入，所以跳过
-            if remaining == 0 || slength == 0 {
+            if remaining == 0 {
                 trace!("[readflash_data] 最后一包，跳过 ACK");
                 break;
             }
