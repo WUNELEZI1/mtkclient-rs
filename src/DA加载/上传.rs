@@ -115,6 +115,10 @@ impl<'a> DAXFlash<'a> {
         // Python: self.setup_hw_init()
         self.setup_hw_init()?;
 
+        // Python: 设备需要约 365ms 才返回 xread 响应
+        // Python 因 pyusb 开销自然等待，Rust 需要显式延迟
+        std::thread::sleep(Duration::from_millis(500));
+
         // Python: res = self.xread(); if res == pack("<I", self.Cmd.SYNC_SIGNAL)
         let resp = self.xread()?;
         if resp != CMD_SYNC_SIGNAL {
