@@ -335,6 +335,29 @@ impl Preloader {
         }
     }
 
+    /// 轮询式 flush：用短超时反复读取，直到 USB 缓冲区为空（设备 ready）
+    /// 比固定 sleep 更快 — 设备准备好了就立刻返回
+    pub fn flush_input_poll(&mut self, interval: Duration, max_iters: u32) -> Result<(), String> {
+        self.device.set_timeout(interval);
+        let mut trash = [0u8; FLUSH_INPUT_CHUNK];
+        let mut total = 0;
+        for i in 0..max_iters {
+            match self.device.read(&mut trash) {
+                Ok(n) if n > 0 => total += n,
+                _ => {
+                    // 缓冲区空了，设备 ready
+                    break;
+                }
+            }
+            if i == max_iters - 1 {
+                trace!("[FLUSH_POLL] 轮询 {} 次, 丢弃 {} bytes", max_iters, total);
+            }
+        }
+        self.device
+            .set_timeout(Duration::from_millis(POST_FLUSH_TIMEOUT_MS));
+        Ok(())
+    }
+
     /// 读 n 字节
     pub fn rbyte(&mut self, n: usize) -> Result<Vec<u8>, String> {
         let mut buf = vec![0u8; n];

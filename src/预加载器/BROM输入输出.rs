@@ -10,9 +10,9 @@ use super::核心::Preloader;
 use log::{trace, info};
 use std::time::{Duration, Instant};
 
-const DA_UPLOAD_TIMEOUT_MS: u64 = 10000;
+const DA_UPLOAD_TIMEOUT_MS: u64 = 2000;
 const DA_UPLOAD_RETRY: u32 = 5;
-const DA_UPLOAD_RETRY_DELAY_MS: u64 = 100;
+const DA_UPLOAD_RETRY_DELAY_MS: u64 = 50;
 const JUMP_DA_MAX_ATTEMPT: u32 = 5;
 const JUMP_DA_FIRST_DELAY_MS: u64 = 200;
 const JUMP_DA_RETRY_DELAY_MS: u64 = 100;
@@ -133,18 +133,8 @@ impl Preloader {
     pub fn jump_da(&mut self, addr: u32) -> Result<bool, String> {
         let mut last_err = String::new();
         for attempt in 1..=JUMP_DA_MAX_ATTEMPT {
-            if attempt == 1 {
-                std::thread::sleep(Duration::from_millis(JUMP_DA_FIRST_DELAY_MS));
-            } else {
-                std::thread::sleep(Duration::from_millis(JUMP_DA_RETRY_DELAY_MS));
-            }
-
-            // 每次重试前清理 USB 端点
-            if self.device.is_libusb() {
-                let _ = self.device.clear_halt_in();
-                let _ = self.device.clear_halt_out();
-            }
-            self.flush_input();
+            // 用轮询代替固定延迟：flush 设备输出直到缓冲区空
+            self.flush_input_poll(Duration::from_millis(5), 40).ok();
 
             if !self.echo_1byte(0xD5)? {
                 last_err = "jump_da: echo 0xD5 不匹配".to_string();
@@ -159,11 +149,6 @@ impl Preloader {
                     attempt, e
                 );
                 self.flush_input();
-                if self.device.is_libusb() {
-                    let _ = self.device.clear_halt_in();
-                    let _ = self.device.clear_halt_out();
-                }
-                std::thread::sleep(Duration::from_millis(JUMP_DA_RETRY_QUIET_MS));
                 continue;
             }
             // Python: rdword() — 大端回读
@@ -182,23 +167,13 @@ impl Preloader {
                         .read_exact(&mut st)
                         .map_err(|e| format!("jump_da status: {}", e))?;
                     let status = u16::from_be_bytes(st);
-                    // Python v2.1.4.1: time.sleep(0.1) after rword() — fix rare timing issue
-                    std::thread::sleep(Duration::from_millis(JUMP_BL_POST_DELAY_MS));
-                    trace!("jump_da status: {:04X}", status);
-                    if status == 0 {
-                        info!("jump_da 成功: addr=0x{:08X}, attempt={}", addr, attempt);
-                    }
+                    info!("jump_da 成功: addr=0x{:08X}, attempt={}", addr, attempt);
                     return Ok(status == 0);
                 }
                 Err(e) => {
                     last_err = format!("jump_da echo: {}", e);
                     trace!("[JUMP_DA] attempt {}: read echo 失败: {}，重试", attempt, e);
                     self.flush_input();
-                    if self.device.is_libusb() {
-                        let _ = self.device.clear_halt_in();
-                        let _ = self.device.clear_halt_out();
-                    }
-                    std::thread::sleep(Duration::from_millis(JUMP_DA_RETRY_QUIET_MS));
                     continue;
                 }
             }
