@@ -1,6 +1,6 @@
 [package]
 name = "mtkclient-rs"
-version = "0.1.13"
+version = "0.2.0"
 authors = ["wunelezi <wunelezi@example.com>", "trae <trae@example.com>"]
 license = "GPL-3.0"
 edition = "2024"

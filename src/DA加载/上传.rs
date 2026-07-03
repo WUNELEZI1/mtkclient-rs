@@ -59,9 +59,9 @@ impl<'a> DAXFlash<'a> {
         let da1_address = stage1.start_addr;
         let _da1_sig_len = stage1.sig_len;
 
-        trace!(
-            "  偏移: 0x{:08X}, 大小: 0x{:08X}, 地址: 0x{:08X}",
-            da1_buf_offset, da1_len, da1_address
+        info!(
+            "upload_da1: DA 文件大小={} bytes (0x{:X}), DA1 地址=0x{:08X}, DA1 大小={} bytes (0x{:X})",
+            da_data.len(), da_data.len(), da1_address, da1_len, da1_len
         );
 
         let da1_start = da1_buf_offset as usize;
