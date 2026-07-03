@@ -7,8 +7,8 @@
 //! - `get_soc_id` — 读取 SOC_ID
 
 use super::核心::Preloader;
-use log::trace;
-use std::time::Duration;
+use log::{trace, info};
+use std::time::{Duration, Instant};
 
 const DA_UPLOAD_TIMEOUT_MS: u64 = 10000;
 const DA_UPLOAD_RETRY: u32 = 5;
@@ -61,6 +61,7 @@ impl Preloader {
         }
 
         // 4. 上传数据
+        let upload_start = Instant::now();
         // 对齐 Python mtk_preloader.py: 固定 64 字节 chunk（某些设备固件对大 chunk 处理有 bug）
         const CHUNK_SIZE: usize = 64;
         trace!(
@@ -116,6 +117,12 @@ impl Preloader {
         trace!(
             "SEND_DA checksum: {:04X}, status2: {:04X}",
             checksum, status2
+        );
+        let upload_elapsed = upload_start.elapsed();
+        info!(
+            "SEND_DA 上传完成: {} bytes, 耗时 {:.1}ms",
+            dadata.len(),
+            upload_elapsed.as_secs_f64() * 1000.0
         );
 
         Ok(true)
@@ -178,6 +185,9 @@ impl Preloader {
                     // Python v2.1.4.1: time.sleep(0.1) after rword() — fix rare timing issue
                     std::thread::sleep(Duration::from_millis(JUMP_BL_POST_DELAY_MS));
                     trace!("jump_da status: {:04X}", status);
+                    if status == 0 {
+                        info!("jump_da 成功: addr=0x{:08X}, attempt={}", addr, attempt);
+                    }
                     return Ok(status == 0);
                 }
                 Err(e) => {

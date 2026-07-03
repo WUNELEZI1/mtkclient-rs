@@ -1,7 +1,42 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
-> 最近更新：2026-06-30 v9
+> 最近更新：2026-07-04 v10
 > 完整历史：Temp_Agent_Archive.md
+
+## 最近更新 (2026-07-04 v10) — DA 加载协议修复 + 性能优化 + 命令重构
+
+### 关键 bug 修复
+- **send_da size 参数修复**：`upload_da1` 传给 `send_da` 的 size 不应减 sig_len（`da1_len - 0x100` → `da1_len`），对齐 Python mtkclient
+- **xflash_sync 信号修复**：`sync()` 应发送 `SYNC_SIGNAL`（0x434E5953），不是 ACK（0）
+- **512 字节对齐修复**：`写入分区` 的对齐检查使用数据长度而非分区大小
+- **echo_1byte 残留数据容忍**：DA 上传后设备可能输出调试信息，echo 读取跳过最多 32 字节残留
+- **错误提示命令名更新**：所有错误提示使用英文命令名
+
+### 性能优化
+- DA 文件缓存：`upload_da1/da2` 只读取一次 DA 文件
+- `readflash_data` buffer 预分配 `Vec::with_capacity`
+- `write_flash_data` 循环内 Vec 复用（`clear()` 代替重新创建）
+- `drain_usb_input`：buffer 64B→512B，超时设置移到循环外
+- `read32_brom` 首地址扫描延迟 20ms+10ms → 5ms+5ms
+- `send_da` 使用 64 字节 chunk 对齐 Python（之前用 512 字节端点包大小）
+- `send_da` ZLP 后加 35ms 延迟对齐 Python
+
+### 新功能
+- **--da-x-speed 1/2/3**：DA 加载速度级别（级别 3 跳过 get_connection_agent + reinit）
+- **--mode brom/preloader/auto**：工作模式选择
+- **rl --skip <分区列表>**：全量读取时跳过指定分区
+- **wl 支持 .bin/.img**：写入分区自动匹配文件扩展名
+- **Preloader 模式设备检测**：连接管理器支持 PID=0x2000
+
+### 命令重构
+- 命令名全部改为英文缩写（read→r, write→w, erase→e, readall→rl, writeall→wl 等）
+
+### 时序对齐 Python
+- `send_da` → `jump_da` 延迟：200ms（对齐 Python time.sleep(0.2)）
+- `flush_input` 超时：30ms → 200ms
+- `echo` 超时：1000ms → 200ms
+- `jump_da` 首次延迟：50ms → 200ms
+- `write_with_retry`：去掉 clear_halt（Python 没有），重试 3→5 次，延迟 20→100ms
 
 ## 最近更新 (2026-06-30 v9) — 输出优化 + send_da 超时修复
 - **v0.1.12：GPT 表格优化 + send_da 超时修复**
