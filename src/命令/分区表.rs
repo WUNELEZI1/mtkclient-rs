@@ -34,7 +34,7 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
                     boot1_size = simple_info.boot1_size;
                     boot2_size = simple_info.boot2_size;
                     println!();
-                    println!("{}", " eMMC Info (simplified) ".on_yellow().black());
+                    println!("{}", " eMMC Info (简化) ".on_yellow().black());
                     println!(
                         "  Boot1: {} ({:.2} MB)",
                         format!("0x{:06X}", simple_info.boot1_size).green(),
@@ -44,6 +44,25 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
                         "  Boot2: {} ({:.2} MB)",
                         format!("0x{:06X}", simple_info.boot2_size).green(),
                         simple_info.boot2_size as f64 / 1_048_576.0
+                    );
+                } else {
+                    // 两种方式都失败，记录警告日志
+                    warn!("eMMC 信息获取失败 (get_emmc_info 和 get_emmc_info_simple 均返回错误)");
+                    println!();
+                    println!(
+                        "{}",
+                        " 警告: 无法获取 eMMC Boot1/Boot2 信息 "
+                            .on_red()
+                            .white()
+                            .bold()
+                    );
+                    println!(
+                        "{}",
+                        " 设备可能不支持 0x01010C 命令，或 DA 会话异常。".yellow()
+                    );
+                    println!(
+                        "{}",
+                        " 分区表仍将正常显示，但 Boot1/Boot2 行将缺失。".yellow()
                     );
                 }
             }
@@ -222,8 +241,8 @@ fn format_bytes_comma(bytes: u64) -> String {
     result
 }
 
-/// 打印 GPT 表格到控制台（含 EMMC_Boot1/Boot2 显示）
-/// 使用 ASCII 表格风格: | 和 - 作为分隔符，列标签英文
+/// 打印 GPT 表格到控制台（含 eMMC_Boot1/Boot2 显示）
+/// 使用 ASCII 表格风格: | 和 - 作为分隔符，列标签中文
 fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64) {
     let gpt_info = match crate::DA分区::GptInfo::parse(data) {
         Ok(info) => info,
@@ -253,12 +272,12 @@ fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64) {
     // 表头行（先格式化定宽纯文本，再整体上色）
     let header_plain = format!(
         "| {:<idx$} | {:<name$} | {:>addr$} | {:>addr$} | {:>size$} | {:>bytes$} |",
-        "#",
-        "Name",
-        "Start",
-        "End",
-        "Size",
-        "Bytes",
+        "编号",
+        "名称",
+        "起始地址",
+        "结束地址",
+        "大小",
+        "字节数",
         idx = W_IDX,
         name = W_NAME,
         addr = W_ADDR,
@@ -330,8 +349,8 @@ fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64) {
 
     // 底部分隔线 + 总计
     println!("{}", sep);
-    // Total 行横跨整个表格宽度
-    let total_label = format!("| Total: {} partitions", row);
+    // Total 行横跨整个表格宽度，使用中文标签
+    let total_label = format!("| 共 {} 个分区", row);
     // 计算分隔线总宽度
     let sep_len = sep.len();
     let total_text = format!("{:<width$} |", total_label, width = sep_len - 1);

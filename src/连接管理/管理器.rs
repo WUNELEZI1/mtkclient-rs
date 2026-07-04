@@ -17,7 +17,7 @@ use crate::config::工作模式;
 use crate::连接管理::driver::{UsbBusDetectionResult, detect_brom_driver_from_usb_bus};
 use crate::预加载器::{Preloader, SerialPortTransport};
 use colored::Colorize;
-use log::{info, trace, warn};
+use log::{error, info, trace, warn};
 use std::time::Duration;
 
 const RECONNECT_INTERVAL_MS: u64 = 200;
@@ -27,6 +27,8 @@ const SERIAL_HANDSHAKE_RETRY_DELAY_SECS: u64 = 2;
 const USB_REENUM_DELAY_SECS: u64 = 3;
 const USB_REENUM_DELAY_MS: u64 = 500;
 const QUICK_CONNECT_INTERVAL_MS: u64 = 200;
+/// 连续握手失败上限：超过此次数后删除 .state 并退出程序
+const MAX_CONSECUTIVE_HANDSHAKE_FAILURES: u32 = 5;
 
 /// 设备模式
 #[derive(Debug, PartialEq, Clone)]
@@ -65,6 +67,9 @@ impl ConnectionManager {
 
         info!("等待设备连接 (BROM: Vol+ + Vol- + Power)");
 
+        // 连续握手失败计数器：用于检测 DA 会话失效
+        let mut consecutive_handshake_failures: u32 = 0;
+
         // 无限等待设备出现
         loop {
             let detection_result = detect_brom_driver_from_usb_bus();
@@ -77,7 +82,8 @@ impl ConnectionManager {
                             .green()
                             .bold()
                     );
-                    return self.fallback_to_winusb(context);
+                    return self
+                        .fallback_to_winusb_with_retry(context, consecutive_handshake_failures);
                 }
                 UsbBusDetectionResult::SerialPort(port_name) => {
                     if port_name.is_empty() {
@@ -89,7 +95,10 @@ impl ConnectionManager {
                             crate::连接管理::driver::detect::enumerate_all_com_ports();
                         if all_ports.is_empty() {
                             warn!("[COM] 系统中没有任何 COM 口，降级到 WinUSB 直连");
-                            return self.fallback_to_winusb(context);
+                            return self.fallback_to_winusb_with_retry(
+                                context,
+                                consecutive_handshake_failures,
+                            );
                         }
 
                         info!(
@@ -120,7 +129,11 @@ impl ConnectionManager {
                         }
 
                         warn!("[COM] 所有 COM 口均握手失败，降级到 WinUSB 直连");
-                        return self.fallback_to_winusb(context);
+                        consecutive_handshake_failures += all_ports.len() as u32;
+                        return self.fallback_to_winusb_with_retry(
+                            context,
+                            consecutive_handshake_failures,
+                        );
                     }
 
                     info!("[COM] 发现 BROM COM 口: {}", port_name);
@@ -160,11 +173,14 @@ impl ConnectionManager {
                         "[COM] 连续 {} 次失败，降级到 WinUSB 直连模式",
                         SERIAL_HANDSHAKE_RETRY
                     );
-                    return self.fallback_to_winusb(context);
+                    consecutive_handshake_failures += SERIAL_HANDSHAKE_RETRY;
+                    return self
+                        .fallback_to_winusb_with_retry(context, consecutive_handshake_failures);
                 }
                 UsbBusDetectionResult::Unknown(driver_mfg) => {
                     warn!("[USB] 未知驱动: {}，尝试 WinUSB 直连", driver_mfg);
-                    return self.fallback_to_winusb(context);
+                    return self
+                        .fallback_to_winusb_with_retry(context, consecutive_handshake_failures);
                 }
                 UsbBusDetectionResult::NotFound => {
                     trace!("[USB] 未找到 BROM 设备，尝试枚举 COM 口...");
@@ -241,6 +257,31 @@ impl ConnectionManager {
         self.mode = DeviceMode::Brom;
         self.stage = USB阶段::Brom;
         Ok((preloader, DeviceMode::Brom))
+    }
+
+    /// WinUSB 直连（带握手失败计数）
+    /// 如果累计握手失败次数达到上限，删除 .state 并退出程序
+    fn fallback_to_winusb_with_retry(
+        &mut self,
+        context: &USB上下文,
+        consecutive_failures: u32,
+    ) -> Result<(Preloader, DeviceMode), String> {
+        match self.fallback_to_winusb(context) {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                // 累计失败次数 = 之前串口握手失败 + 本次 WinUSB 失败(计1次)
+                let total_failures = consecutive_failures + 1;
+                if total_failures >= MAX_CONSECUTIVE_HANDSHAKE_FAILURES {
+                    error!(
+                        "连续 {} 次握手失败，DA 会话可能已失效。已删除会话状态文件，请重启设备后重试。",
+                        total_failures
+                    );
+                    crate::连接管理::reset_session();
+                    std::process::exit(1);
+                }
+                Err(e)
+            }
+        }
     }
 
     /// COM 口前置握手 → 释放 → WinUSB 接管
