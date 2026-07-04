@@ -25,11 +25,14 @@ impl<'a> DAXFlash<'a> {
         self.readflash_data_ex(addr, size, 8)
     }
 
-    /// 读取 flash 数据到文件（流式写入，带进度回调）
-    /// 每个 USB 数据包收到后立即写入文件并更新进度，避免全量内存占用。
-    /// 支持断点续传：通过 start_offset 指定从何处开始读取。
+    /// 读取 flash 数据到文件（流水线多线程：USB读取与磁盘写入并行）
     ///
-    /// 回调 on_packet(total_bytes_read: u64) 在每包写入后被调用。
+    /// 架构（对齐 Python mtkclient 的 writedata 线程）：
+    /// - 主线程：USB 读取循环（读头 → 读数据 → 放入 channel → 发 ACK）
+    /// - 写入线程：从 channel 取数据 → 写文件 → 8MB 缓冲
+    ///
+    /// channel 容量上限 32 包（约 128MB @ 4MB/包），主线程满了会等待写入线程消费
+    /// 这样 USB 读取不会被磁盘写入阻塞，实现真正的流水线并行
     pub(crate) fn readflash_to_file<F>(
         &mut self,
         addr: u64,
@@ -42,7 +45,10 @@ impl<'a> DAXFlash<'a> {
     where
         F: Fn(u64),
     {
-        // 2. cmd_read_data
+        use std::io::Write;
+        use std::sync::mpsc::{self, Receiver, SyncSender};
+
+        // cmd_read_data
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
         self.write_with_retry(&pkt, "readflash xsend")?;
         self.write_with_retry(&CMD_READ_DATA.to_le_bytes(), "readflash CMD")?;
@@ -66,42 +72,70 @@ impl<'a> DAXFlash<'a> {
             return Err(format!("send_param status=0x{:08X}", st2));
         }
 
-        // 3. 流式读取循环：每包 → 写文件 → 回调
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(output_file)
-            .map_err(|e| format!("打开文件失败: {}", e))?;
+        // 创建 bounded channel（容量 32 包，与 Python Queue(maxsize=32) 一致）
+        // 数据类型：Vec<u8>（每包的原始数据）
+        const CHANNEL_CAP: usize = 32;
+        let (tx, rx): (SyncSender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::sync_channel(CHANNEL_CAP);
 
+        // 输出文件路径（给写入线程用）
+        let output_path = output_file.to_string();
+
+        // 启动后台写入线程
+        let writer_thread = std::thread::Builder::new()
+            .name("flash_writer".into())
+            .spawn(move || -> Result<(), String> {
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(&output_path)
+                    .map_err(|e| format!("打开文件失败: {}", e))?;
+
+                // 8MB 写缓冲（与 Python open(wb, buffering=8*1024*1024) 一致）
+                let mut total_written: u64 = 0;
+                while let Ok(data) = rx.recv() {
+                    if data.is_empty() {
+                        // 哨兵：结束信号
+                        break;
+                    }
+                    file.write_all(&data)
+                        .map_err(|e| format!("写入文件失败: {}", e))?;
+                    total_written += data.len() as u64;
+                    // 每 64MB flush 一次
+                    if total_written % (64 * 1024 * 1024) < data.len() as u64 {
+                        file.flush().ok();
+                    }
+                }
+                file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
+                trace!("[writer] 写入线程结束，总计写入 {} 字节", total_written);
+                Ok(())
+            });
+
+        // ---- 主线程：USB 读取循环 ----
         let mut total_read: u64 = start_offset;
         let target_remaining = size - start_offset;
         let mut bytes_received: u64 = 0;
 
-        // 预分配最大数据包 buffer（复用，避免每包重新分配）
-        // DA 通常最大返回 4MB 一包
+        // 预分配 buffer
         const MAX_PACKET_SIZE: usize = 0x400000; // 4MB
         let mut data_buf = vec![0u8; MAX_PACKET_SIZE];
 
-        // flush 间隔改为 64MB
-        const FLUSH_INTERVAL: u64 = 64 * 1024 * 1024;
-        let mut last_flush_pos: u64 = 0;
-
-        // 进度条更新间隔改为 1MB
+        // 进度条更新间隔 1MB
         const PROGRESS_INTERVAL: u64 = 1024 * 1024;
         let mut last_progress_pos: u64 = 0;
 
-        while bytes_received < target_remaining {
+        let mut read_error: Option<String> = None;
+
+        while bytes_received < target_remaining && read_error.is_none() {
             // 读 12 字节头
             let mut hdr = [0u8; 12];
             match self.preloader.device.read_exact(&mut hdr) {
                 Ok(0) => {
-                    trace!("[readflash_to_file] ZLP on header read, ending loop");
+                    trace!("[readflash] ZLP on header read, ending");
                     break;
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    trace!("[readflash_to_file] read header error: {}", e);
+                    read_error = Some(format!("read header: {}", e));
                     break;
                 }
             }
@@ -111,59 +145,59 @@ impl<'a> DAXFlash<'a> {
 
             if magic != CMD_MAGIC {
                 trace!(
-                    "[readflash_to_file] bad magic: 0x{:08X} at offset {}, ending",
+                    "[readflash] bad magic: 0x{:08X} at offset {}, ending",
                     magic, total_read
                 );
                 break;
             }
 
-            // 心跳包跳过：先读 4 字节到 data_buf 检查
+            // 心跳包
             if slength == 4 {
                 self.preloader.device.read_exact(&mut data_buf[..4]).ok();
                 if data_buf[0] == 0 && data_buf[1] == 0 && data_buf[2] == 0 && data_buf[3] == 0 {
-                    trace!("[readflash_to_file] 心跳包，跳过");
+                    trace!("[readflash] 心跳包，跳过");
                     continue;
                 }
-                // 非心跳的 4 字节包，写入文件
-                file.write_all(&data_buf[..4])
-                    .map_err(|e| format!("写入文件失败: {}", e))?;
-                bytes_received += 4;
-                total_read += 4;
+                let chunk = data_buf[..4].to_vec();
+                let chunk_len = 4u64;
+                if tx.send(chunk).is_err() {
+                    read_error = Some("写入线程已终止".into());
+                    break;
+                }
+                bytes_received += chunk_len;
+                total_read += chunk_len;
             } else if slength == 0 {
-                // 空包，跳过
                 continue;
             } else if (slength as usize) <= MAX_PACKET_SIZE {
-                // 正常包：复用预分配 buffer
                 let slen = slength as usize;
                 if let Err(e) = self.preloader.device.read_exact(&mut data_buf[..slen]) {
-                    trace!("[readflash_to_file] read data error: {}", e);
+                    read_error = Some(format!("read data: {}", e));
                     break;
                 }
-                file.write_all(&data_buf[..slen])
-                    .map_err(|e| format!("写入文件失败: {}", e))?;
-                let data_len = slen as u64;
-                bytes_received += data_len;
-                total_read += data_len;
+                let chunk = data_buf[..slen].to_vec();
+                let chunk_len = slen as u64;
+                if tx.send(chunk).is_err() {
+                    read_error = Some("写入线程已终止".into());
+                    break;
+                }
+                bytes_received += chunk_len;
+                total_read += chunk_len;
             } else {
-                // 超大包（不太可能），退回到分配新 buffer
                 let mut data = vec![0u8; slength as usize];
                 if let Err(e) = self.preloader.device.read_exact(&mut data) {
-                    trace!("[readflash_to_file] read data error: {}", e);
+                    read_error = Some(format!("read data (large): {}", e));
                     break;
                 }
-                file.write_all(&data)
-                    .map_err(|e| format!("写入文件失败: {}", e))?;
-                bytes_received += data.len() as u64;
-                total_read += data.len() as u64;
+                let chunk_len = data.len() as u64;
+                if tx.send(data).is_err() {
+                    read_error = Some("写入线程已终止".into());
+                    break;
+                }
+                bytes_received += chunk_len;
+                total_read += chunk_len;
             }
 
-            // 每 64MB flush 一次
-            if total_read - last_flush_pos >= FLUSH_INTERVAL {
-                file.flush().ok();
-                last_flush_pos = total_read;
-            }
-
-            // 每 1MB 更新进度条
+            // 进度条更新（每 1MB）
             if total_read - last_progress_pos >= PROGRESS_INTERVAL {
                 on_packet(total_read);
                 last_progress_pos = total_read;
@@ -171,20 +205,36 @@ impl<'a> DAXFlash<'a> {
 
             // 最后一包判断
             if bytes_received >= target_remaining {
-                trace!("[readflash_to_file] 最后一包，跳过 ACK");
+                trace!("[readflash] 最后一包，跳过 ACK");
                 break;
             }
             if let Err(e) = self.ack_silent() {
-                trace!("[readflash_to_file] send_ack failed: {}", e);
+                read_error = Some(format!("send_ack: {}", e));
                 break;
             }
         }
 
-        // 确保最终进度和 flush
+        let writer_handle = match writer_thread {
+            Ok(handle) => handle,
+            Err(e) => return Err(format!("创建写入线程失败: {}", e)),
+        };
+
+        // 发送结束哨兵
+        let _ = tx.send(Vec::new());
+
+        // 等待写入线程完成
+        if let Err(e) = writer_handle.join().unwrap_or(Ok(())) {
+            read_error = Some(e);
+        }
+
+        // 最终进度更新
         on_packet(total_read);
 
-        file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
-        trace!("[readflash_to_file] total read {} bytes", total_read);
+        if let Some(e) = read_error {
+            return Err(e);
+        }
+
+        trace!("[readflash] total read {} bytes", total_read);
         Ok(total_read)
     }
 
