@@ -83,7 +83,7 @@ pub struct Cli {
     #[arg(
         long = "da_x_speed",
         default_value_t = 1,
-        help = "DA 加载速度：1=默认（完整协议）、2=快速（跳过可选查询）、3=极速（裸奔）"
+        help = "DA 加载速度：1=默认（完整协议）、2=快速（跳过可选查询）、3=极速（跳过 reinit 高速重连，可能导致不稳定）"
     )]
     pub da_x_speed: u8,
 

@@ -85,6 +85,21 @@ pub trait BromTransport {
     fn clear_halt_ep(&mut self, _ep: u8) -> Result<(), String> {
         Err("clear_halt_ep not supported on this transport".to_string())
     }
+
+    /// USB 总线复位（默认不支持，仅 UsbDevice 实现）
+    fn reset_device(&mut self) -> Result<(), String> {
+        Err("reset_device not supported on this transport".to_string())
+    }
+
+    /// 关闭 USB 设备（默认不支持，仅 UsbDevice 实现）
+    fn close_device(&mut self) -> Result<(), String> {
+        Err("close_device not supported on this transport".to_string())
+    }
+
+    /// 重新打开 USB 设备（默认不支持，仅 UsbDevice 实现）
+    fn reopen_device(&mut self, _context: &crate::usb::USB上下文) -> Result<(), String> {
+        Err("reopen_device not supported on this transport".to_string())
+    }
 }
 
 /// BROM 端口检测结果
@@ -357,5 +372,18 @@ impl BromTransport for USB设备 {
         } else {
             USB设备::清除输出端点停顿(self)
         }
+    }
+
+    fn reset_device(&mut self) -> Result<(), String> {
+        USB设备::reset_device(self)
+    }
+
+    fn close_device(&mut self) -> Result<(), String> {
+        USB设备::关闭(self);
+        Ok(())
+    }
+
+    fn reopen_device(&mut self, context: &crate::usb::USB上下文) -> Result<(), String> {
+        USB设备::重新打开(self, context)
     }
 }
