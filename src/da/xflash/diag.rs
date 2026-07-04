@@ -336,6 +336,41 @@ impl<'a> DAXFlash<'a> {
             false
         }
     }
+
+    /// DA 会话恢复：关闭死 USB 连接 → 重新打开 → sync
+    /// 用于 Ctrl+C 中断后设备未重启的场景（DA 仍在运行，只是 USB 管道断了）
+    pub(crate) fn reconnect_usb(
+        &mut self, context: &crate::usb::USB上下文
+    ) -> Result<(), String> {
+        info!("[RECONNECT_USB] 关闭死 USB 连接...");
+        self.preloader.device.close_device()?;
+
+        info!("[RECONNECT_USB] 等待设备重新枚举...");
+        std::thread::sleep(Duration::from_millis(500));
+
+        // 重新打开 USB 设备（使用同一 VID/PID）
+        info!("[RECONNECT_USB] 重新打开 USB 设备...");
+        let max_retries = 10;
+        for attempt in 1..=max_retries {
+            match self.preloader.device.reopen_device(context) {
+                Ok(_) => {
+                    info!("[RECONNECT_USB] 重新连接成功 (第 {} 次尝试)", attempt);
+                    return Ok(());
+                }
+                Err(e) => {
+                    trace!(
+                        "[RECONNECT_USB] 第 {}/{} 次尝试失败: {}",
+                        attempt, max_retries, e
+                    );
+                    if attempt < max_retries {
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                }
+            }
+        }
+
+        Err(format!("USB 重新连接失败（{} 次尝试）", max_retries))
+    }
 }
 
 // =============================================================================
