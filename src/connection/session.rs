@@ -15,6 +15,8 @@ pub struct SessionState {
     pub hw_code: u16,
     pub target_config: u32,
     pub da_loaded: bool,
+    /// 上次成功 dump 的 preloader 文件路径，避免重复 dump
+    pub preloader_path: Option<String>,
 }
 
 impl fmt::Display for SessionState {
@@ -23,7 +25,11 @@ impl fmt::Display for SessionState {
             f,
             "usb_vid=0x{:04X}\nusb_pid=0x{:04X}\nhw_code=0x{:04X}\ntarget_config=0x{:08X}\nda_loaded={}",
             self.usb_vid, self.usb_pid, self.hw_code, self.target_config, self.da_loaded
-        )
+        )?;
+        if let Some(ref path) = self.preloader_path {
+            write!(f, "\npreloader_path={}", path)?;
+        }
+        Ok(())
     }
 }
 
@@ -44,6 +50,7 @@ impl SessionState {
             target_config: u32::from_str_radix(map.get("target_config")?.strip_prefix("0x")?, 16)
                 .ok()?,
             da_loaded: map.get("da_loaded")?.parse::<bool>().ok()?,
+            preloader_path: map.get("preloader_path").map(|s| s.to_string()),
         })
     }
 
@@ -116,13 +123,20 @@ pub fn try_reuse_da_session(vid: u16, pid: u16) -> bool {
 }
 
 /// 保存 DA 会话状态（在 DA 加载成功后调用）
-pub fn save_da_session(vid: u16, pid: u16, hw_code: u16, target_config: u32) {
+pub fn save_da_session(
+    vid: u16,
+    pid: u16,
+    hw_code: u16,
+    target_config: u32,
+    preloader_path: Option<&str>,
+) {
     let state = SessionState {
         usb_vid: vid,
         usb_pid: pid,
         hw_code,
         target_config,
         da_loaded: true,
+        preloader_path: preloader_path.map(|s| s.to_string()),
     };
     if let Err(e) = state.save() {
         warn!("[session] 保存 .state 失败: {}", e);

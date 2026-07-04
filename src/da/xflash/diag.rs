@@ -191,7 +191,14 @@ impl<'a> DAXFlash<'a> {
             let target_config = 0u32; // 占位 — session.rs 的 target_config 字段当前不参与复用判断
 
             if let Ok(hw_code) = hw_code_result {
-                crate::connection::save_da_session(vid, pid, hw_code, target_config);
+                let preloader_path = self.preloader_path.as_deref();
+                crate::connection::save_da_session(
+                    vid,
+                    pid,
+                    hw_code,
+                    target_config,
+                    preloader_path,
+                );
             } else {
                 warn!("save_session_state: chip 未初始化，跳过 .state 保存");
             }

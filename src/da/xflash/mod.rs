@@ -79,6 +79,8 @@ pub struct DAXFlash<'a> {
     pub da_x_speed: u8,
     /// 缓存 DA 文件数据，避免 upload_da1/da2 重复读取
     pub(crate) da_file_data: Option<Vec<u8>>,
+    /// 当前使用的 preloader 文件路径，用于保存到 .state
+    pub(crate) preloader_path: Option<String>,
 }
 
 impl<'a> DAXFlash<'a> {
@@ -94,6 +96,7 @@ impl<'a> DAXFlash<'a> {
             patch_da: true,
             da_x_speed: 1,
             da_file_data: None,
+            preloader_path: None,
         }
     }
 }

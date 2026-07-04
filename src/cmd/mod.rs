@@ -140,25 +140,35 @@ pub fn handle_command(
     }
 
     // Preloader 模式下 DRAM 已由 preloader 初始化，EMI 数据可选
-    if !preloader_file.is_empty() {
-        info!("加载 EMI 数据: {}", preloader_file);
-        if let Err(e) = da.load_preloader_emi(preloader_file) {
-            return Err(format!("EMI 加载失败: {}", e).into());
-        }
-    } else if let Some(ref f) = auto_dumped_file {
+    let effective_preloader = if !preloader_file.is_empty() {
+        Some(preloader_file.to_string())
+    } else {
+        auto_dumped_file.clone()
+    };
+
+    if let Some(ref f) = effective_preloader {
         info!("加载 EMI 数据: {}", f);
         if let Err(e) = da.load_preloader_emi(f) {
             return Err(format!("EMI 加载失败: {}", e).into());
         }
+        da.preloader_path = Some(f.clone());
     } else if da.preloader.is_preloader_mode {
         info!("Preloader 模式：跳过 EMI 加载（DRAM 已由 preloader 初始化）");
     } else {
         return Err("未找到 preloader 文件，且自动提取失败".into());
     }
 
+    // DA 会话检测与恢复（对齐刷机匣"初始化DA模式"机制）
     if da.daext {
-        info!("DA 已加载，复用会话");
-        da.reinit().map_err(|e| format!("DA reinit 失败: {}", e))?;
+        info!("DA 已加载，检测会话有效性...");
+        if da.check_da_session() {
+            info!("DA 会话有效，执行 reinit...");
+            da.reinit().map_err(|e| format!("DA reinit 失败: {}", e))?;
+        } else {
+            warn!("DA 会话已失效，重新加载...");
+            da.daext = false;
+            da.upload_da().map_err(|e| format!("DA 加载失败: {}", e))?;
+        }
     } else {
         da.upload_da().map_err(|e| format!("DA 加载失败: {}", e))?;
     }
