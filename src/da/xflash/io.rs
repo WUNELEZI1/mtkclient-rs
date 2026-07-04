@@ -42,10 +42,6 @@ impl<'a> DAXFlash<'a> {
     where
         F: Fn(u64),
     {
-        // 1. get_packet_length + status
-        let _ = self.send_devctrl(0x040007, None);
-        let _ = self.status();
-
         // 2. cmd_read_data
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
         self.write_with_retry(&pkt, "readflash xsend")?;
@@ -82,6 +78,19 @@ impl<'a> DAXFlash<'a> {
         let target_remaining = size - start_offset;
         let mut bytes_received: u64 = 0;
 
+        // 预分配最大数据包 buffer（复用，避免每包重新分配）
+        // DA 通常最大返回 4MB 一包
+        const MAX_PACKET_SIZE: usize = 0x400000; // 4MB
+        let mut data_buf = vec![0u8; MAX_PACKET_SIZE];
+
+        // flush 间隔改为 64MB
+        const FLUSH_INTERVAL: u64 = 64 * 1024 * 1024;
+        let mut last_flush_pos: u64 = 0;
+
+        // 进度条更新间隔改为 1MB
+        const PROGRESS_INTERVAL: u64 = 1024 * 1024;
+        let mut last_progress_pos: u64 = 0;
+
         while bytes_received < target_remaining {
             // 读 12 字节头
             let mut hdr = [0u8; 12];
@@ -108,35 +117,57 @@ impl<'a> DAXFlash<'a> {
                 break;
             }
 
-            // 读数据
-            let mut data = vec![0u8; slength as usize];
-            if slength > 0
-                && let Err(e) = self.preloader.device.read_exact(&mut data)
-            {
-                trace!("[readflash_to_file] read data error: {}", e);
-                break;
-            }
-
-            // 心跳包跳过
-            if slength == 4 && data.iter().all(|&b| b == 0) {
-                trace!("[readflash_to_file] 心跳包，跳过");
+            // 心跳包跳过：先读 4 字节到 data_buf 检查
+            if slength == 4 {
+                self.preloader.device.read_exact(&mut data_buf[..4]).ok();
+                if data_buf[0] == 0 && data_buf[1] == 0 && data_buf[2] == 0 && data_buf[3] == 0 {
+                    trace!("[readflash_to_file] 心跳包，跳过");
+                    continue;
+                }
+                // 非心跳的 4 字节包，写入文件
+                file.write_all(&data_buf[..4])
+                    .map_err(|e| format!("写入文件失败: {}", e))?;
+                bytes_received += 4;
+                total_read += 4;
+            } else if slength == 0 {
+                // 空包，跳过
                 continue;
+            } else if (slength as usize) <= MAX_PACKET_SIZE {
+                // 正常包：复用预分配 buffer
+                let slen = slength as usize;
+                if let Err(e) = self.preloader.device.read_exact(&mut data_buf[..slen]) {
+                    trace!("[readflash_to_file] read data error: {}", e);
+                    break;
+                }
+                file.write_all(&data_buf[..slen])
+                    .map_err(|e| format!("写入文件失败: {}", e))?;
+                let data_len = slen as u64;
+                bytes_received += data_len;
+                total_read += data_len;
+            } else {
+                // 超大包（不太可能），退回到分配新 buffer
+                let mut data = vec![0u8; slength as usize];
+                if let Err(e) = self.preloader.device.read_exact(&mut data) {
+                    trace!("[readflash_to_file] read data error: {}", e);
+                    break;
+                }
+                file.write_all(&data)
+                    .map_err(|e| format!("写入文件失败: {}", e))?;
+                bytes_received += data.len() as u64;
+                total_read += data.len() as u64;
             }
 
-            // 写入文件
-            file.write_all(&data)
-                .map_err(|e| format!("写入文件失败: {}", e))?;
-
-            bytes_received += data.len() as u64;
-            total_read += data.len() as u64;
-
-            // 每 1MB flush 一次（平衡 IO 性能和数据安全）
-            if bytes_received % (1024 * 1024) < data.len() as u64 {
+            // 每 64MB flush 一次
+            if total_read - last_flush_pos >= FLUSH_INTERVAL {
                 file.flush().ok();
+                last_flush_pos = total_read;
             }
 
-            // 更新进度
-            on_packet(total_read);
+            // 每 1MB 更新进度条
+            if total_read - last_progress_pos >= PROGRESS_INTERVAL {
+                on_packet(total_read);
+                last_progress_pos = total_read;
+            }
 
             // 最后一包判断
             if bytes_received >= target_remaining {
@@ -148,6 +179,9 @@ impl<'a> DAXFlash<'a> {
                 break;
             }
         }
+
+        // 确保最终进度和 flush
+        on_packet(total_read);
 
         file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
         trace!("[readflash_to_file] total read {} bytes", total_read);

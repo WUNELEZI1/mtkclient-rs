@@ -220,7 +220,10 @@ impl<'a> DAXFlash<'a> {
 
         let st = self.status()?;
         if st != 0 {
-            if st != 0xC0010004 {
+            // 已知正常状态码：静默处理
+            // 0x00010009 = DEVICE_CTRL 不支持（部分设备/DA版本）
+            // 0xC0010004 = 命令不支持
+            if st != 0xC0010004 && st != 0x00010009 {
                 warn!("send_devctrl DEVICE_CTRL 阶段1 状态: 0x{:08X}", st);
             }
             return Ok(vec![]);
@@ -233,7 +236,7 @@ impl<'a> DAXFlash<'a> {
 
         let st2 = self.status()?;
         if st2 != 0 {
-            if st2 != 0xC0010004 {
+            if st2 != 0xC0010004 && st2 != 0x00010009 {
                 warn!("send_devctrl(0x{:06X}) 状态: 0x{:08X}", cmd, st2);
             }
             return Ok(vec![]);
