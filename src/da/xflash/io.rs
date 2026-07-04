@@ -100,23 +100,21 @@ impl<'a> DAXFlash<'a> {
             .name("flash_writer".into())
             .spawn(move || -> Result<(), String> {
                 use std::fs::File;
-                use std::io::Seek;
 
-                let raw_file =
-                    File::create(&output_path).map_err(|e| format!("创建文件失败: {}", e))?;
-                // 文件预分配：避免写入时动态分配磁盘空间导致碎片和性能下降
-                if start_offset > 0 {
-                    raw_file.set_len(start_offset + target_remaining).ok();
+                let raw_file = if start_offset > 0 {
+                    // 断点续传：追加模式，不截断已有数据
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&output_path)
+                        .map_err(|e| format!("打开文件失败: {}", e))?
                 } else {
-                    raw_file.set_len(target_remaining).ok();
-                }
+                    // 新文件：预分配完整大小避免写入时动态扩展
+                    let f = File::create(&output_path)
+                        .map_err(|e| format!("创建文件失败: {}", e))?;
+                    f.set_len(target_remaining).ok();
+                    f
+                };
                 let mut file = BufWriter::with_capacity(BUF_WRITER_CAP, raw_file);
-
-                // 断点续传：跳过已写入部分
-                if start_offset > 0 {
-                    file.seek(std::io::SeekFrom::Start(start_offset))
-                        .map_err(|e| format!("seek 失败: {}", e))?;
-                }
 
                 while let Ok(data) = rx.recv() {
                     if data.is_empty() {
