@@ -166,35 +166,33 @@ pub fn handle_command(
             info!("DA 会话有效，执行 reinit...");
             da.reinit().map_err(|e| format!("DA reinit 失败: {}", e))?;
         } else {
-            // DA 心跳失败（USB 管道断了），但设备可能没重启
-            // 尝试：关闭死连接 → 重新打开 USB → sync → reinit
+            // DA 心跳失败（USB 管道断了），尝试恢复
             warn!("[DA_SESSION] DA 心跳失败，尝试重新连接 USB...");
-            crate::connection::reset_session();
             match da.reconnect_usb(_context) {
                 Ok(()) => {
-                    info!("[DA_SESSION] USB 重新连接成功，执行 sync + reinit...");
-                    da.xflash_sync().map_err(|e| format!("sync 失败: {}", e))?;
-                    da.reinit().map_err(|e| format!("reinit 失败: {}", e))?;
-                    info!("{}", "[DA_SESSION] DA 会话恢复成功".green().bold());
-                    // reinit 成功后标记 DA 已加载，跳过后续 upload_da
-                    // 重新保存 .state
-                    let hw_code = da.preloader.chip.map(|c| c.hw_code).unwrap_or(0);
-                    let vid = da.preloader.device.get_vid().unwrap_or(0);
-                    let pid = da.preloader.device.get_pid().unwrap_or(0);
-                    crate::connection::save_da_session(
-                        vid,
-                        pid,
-                        hw_code,
-                        0,
-                        app_config.preloader_path.as_deref(),
-                    );
+                    info!("[DA_SESSION] USB 重新连接成功，尝试 sync...");
+                    match da.xflash_sync() {
+                        Ok(_) => {
+                            da.reinit().map_err(|e| format!("reinit 失败: {}", e))?;
+                            info!("{}", "[DA_SESSION] DA 会话恢复成功".green().bold());
+                            let hw_code = da.preloader.chip.map(|c| c.hw_code).unwrap_or(0);
+                            let vid = da.preloader.device.get_vid().unwrap_or(0);
+                            let pid = da.preloader.device.get_pid().unwrap_or(0);
+                            crate::connection::save_da_session(
+                                vid, pid, hw_code, 0,
+                                app_config.preloader_path.as_deref(),
+                            );
+                        }
+                        Err(_) => {
+                            // sync 失败说明 DA 端已不在 sync 状态，回退到 upload_da
+                            warn!("[DA_SESSION] sync 失败，DA 可能已掉线，回退到重新加载...");
+                            da.daext = false;
+                            da.upload_da().map_err(|e| format!("DA 加载失败: {}", e))?;
+                        }
+                    }
                 }
-                Err(e) => {
-                    return Err(format!(
-                        "DA 会话恢复失败: {}。设备可能已断开，请重启设备（长按电源键 10 秒）后重试。",
-                        e
-                    )
-                    .into());
+                Err(_) => {
+                    return Err("DA 会话恢复失败。设备可能已断开，请重启设备（长按电源键 10 秒）后重试。".into());
                 }
             }
         }
