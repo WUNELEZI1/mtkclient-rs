@@ -46,28 +46,28 @@ pub struct Cli {
     pub quiet: bool,
 
     #[arg(
-        long = "quiet-dump",
+        long = "quiet_dump",
         default_value_t = false,
         help = "静默 dump 模式（不打印进度条和 USB 读取日志）"
     )]
     pub quiet_dump: bool,
 
     #[arg(
-        long = "usb-log",
+        long = "usb_log",
         default_value_t = false,
         help = "启用 USB 通信追踪日志（输出到 usb_debug.log）"
     )]
     pub usb_log: bool,
 
     #[arg(
-        long = "patch-da",
+        long = "patch_da",
         default_value_t = true,
         help = "是否 patch DA（默认开启）"
     )]
     pub patch_da: bool,
 
     #[arg(
-        long = "no-elevate",
+        long = "no_elevate",
         default_value_t = false,
         help = "跳过管理员提权检查（已手动以管理员身份运行时使用）"
     )]
@@ -81,7 +81,7 @@ pub struct Cli {
     pub mode: String,
 
     #[arg(
-        long = "da-x-speed",
+        long = "da_x_speed",
         default_value_t = 1,
         help = "DA 加载速度：1=默认（完整协议）、2=快速（跳过可选查询）、3=极速（裸奔）"
     )]
@@ -96,20 +96,19 @@ pub struct Cli {
     #[arg(
         help = "要执行的命令",
         long_help = "可用命令:\n\
-          printgpt              打印 GPT 分区表 + EMMC 信息 + 生成 scatter\n\
-          dump                  从 RAM 提取 Preloader\n\
-          r <part> <file>       读取分区到文件\n\
-          r gpt <dir>           保存 GPT 原始数据到目录\n\
+          printgpt              打印 GPT 分区表 + EMMC 信息\n\
+          dumppreloader         从 RAM 提取 Preloader\n\
+          r <part> <file>       读取分区到文件 (支持: r gpt <dir>, r boot1 <file>, r boot2 <file>, r rpmb <file>)\n\
           rl <dir>              读取全部分区到目录 (支持 --skip)\n\
           w <part> <file>       写入文件到分区\n\
           wl <dir>              从目录恢复全部分区 (.bin/.img)\n\
           e <part>              擦除分区\n\
-          vbmeta <mode>         修补 vbmeta (0/1/2/3)\n\
+          zyb vbmeta <mode>     修补 vbmeta (0/1/2/3)\n\
+          zyb seccfg unlock     解锁 Bootloader\n\
+          zyb seccfg lock       锁定 Bootloader\n\
           frp                   FRP OEM 解锁\n\
-          unlock                解锁 Bootloader\n\
-          lock                  锁定 Bootloader\n\
-          reset                 重启设备\n\
-          scatter               打印 scatter 到屏幕并保存文件\n\
+          reboot [system|fastboot|recovery|fastbootd]  重启设备（默认 system）\n\
+          slot show/a/b         显示/切换 A/B 槽位\n\
           adb                   在 DA 模式下开启 ADB"
     )]
     pub command: Option<String>,
