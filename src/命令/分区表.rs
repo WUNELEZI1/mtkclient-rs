@@ -142,31 +142,20 @@ fn print_emmc_info(info: &crate::DA扩展::EmmcInfo) {
     }
 }
 
-/// 格式化字节数为人类可读字符串 (KB/MB/GB, 保留1位小数)
+/// 格式化字节数为人类可读字符串 (KB/MB/GB, 保留 2 位小数)
 fn format_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = 1024.0 * KB;
     const GB: f64 = 1024.0 * MB;
     if bytes >= (1024 * 1024 * 1024) {
-        format!("{:.1} GB", bytes as f64 / GB)
+        format!("{:.2} GB", bytes as f64 / GB)
     } else if bytes >= (1024 * 1024) {
-        format!("{:.1} MB", bytes as f64 / MB)
+        format!("{:.2} MB", bytes as f64 / MB)
     } else if bytes >= 1024 {
-        format!("{:.1} KB", bytes as f64 / KB)
+        format!("{:.2} KB", bytes as f64 / KB)
     } else {
         format!("{} B", bytes)
     }
-}
-
-fn separator_line() -> String {
-    format!(
-        "{}  {}  {}  {}  {}",
-        "─".repeat(4),
-        "─".repeat(22),
-        "─".repeat(14),
-        "─".repeat(12),
-        "─".repeat(16)
-    )
 }
 
 /// 格式化字节数为带千分位的字符串
@@ -190,60 +179,129 @@ fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64) {
     };
 
     let partitions = gpt_info.partitions();
+    let emmc_count = (if boot1_size > 0 { 1 } else { 0 }) + (if boot2_size > 0 { 1 } else { 0 });
+    let total_rows = partitions.len() + emmc_count;
 
-    println!();
-    println!(
-        " {}",
-        format!(" GPT 分区表 ({} 个分区) ", partitions.len()).on_green().black()
-    );
+    // 列宽（地址按 0x%016X = 18 字符）
+    const W_IDX: usize = 4;
+    const W_NAME: usize = 22;
+    const W_ADDR: usize = 18;
+    const W_SIZE: usize = 16;
+    const W_BYTES: usize = 20;
+    const INNER_W: usize = W_IDX + 2 + W_NAME + 2 + W_ADDR + 2 + W_ADDR + 2 + W_SIZE + 2 + W_BYTES;
+
+    // 标题框（先 format 出纯文本，再整体上色，避免 ANSI 破坏对齐）
+    let title = format!(" GPT 分区表 ({} 个分区) ", total_rows);
+    let pad = INNER_W.saturating_sub(title.len());
+    let lpad = pad / 2;
+    let rpad = pad - lpad;
+    println!(" ╔{}╗", "═".repeat(INNER_W));
+    println!(" ║{}{}{}║", " ".repeat(lpad), title, " ".repeat(rpad));
+    println!(" ╚{}╝", "═".repeat(INNER_W));
 
     // 表头
-    println!(
-        " {:<4}  {:<22} {:>14}  {:>12}  {:>16}",
-        "#", "名称", "起始地址", "大小", "字节数"
+    let header = format!(
+        " {:<4}  {:<22} {:>18}  {:>18}  {:>16}  {:>20}",
+        "编号", "名称", "起始地址", "结束地址", "大小", "字节数"
     );
-    println!("{}", separator_line());
+    println!("{}", header.bright_white());
+
+    // 分隔线
+    println!(
+        " {}  {}  {}  {}  {}  {}",
+        "─".repeat(W_IDX),
+        "─".repeat(W_NAME),
+        "─".repeat(W_ADDR),
+        "─".repeat(W_ADDR),
+        "─".repeat(W_SIZE),
+        "─".repeat(W_BYTES)
+    );
 
     let mut row = 0usize;
 
-    // EMMC Boot 区域
+    // EMMC Boot 区域（dimmed 灰色）
     if boot1_size > 0 {
         row += 1;
+        let idx = format!("{:<4}", format!("{:02}", row));
+        let name = format!("{:<22}", "boot1");
+        let start = format!("{:>18}", format!("0x{:016X}", 0u64));
+        let end = format!("{:>18}", format!("0x{:016X}", boot1_size.saturating_sub(1)));
+        let size = format!("{:>16}", format_size(boot1_size));
+        let bytes = format!("{:>20}", format_bytes_comma(boot1_size));
         println!(
-            " {:>3}  {:<22} {:>14}  {:>12}  {:>16}",
-            row,
-            "eMMC_Boot1".dimmed(),
-            format!("0x{:08X}", 0u64).dimmed(),
-            format_size(boot1_size).dimmed(),
-            format_bytes_comma(boot1_size).dimmed()
+            " {}  {}  {}  {}  {}  {}",
+            idx.dimmed(),
+            name.dimmed(),
+            start.dimmed(),
+            end.dimmed(),
+            size.dimmed(),
+            bytes.dimmed()
         );
     }
     if boot2_size > 0 {
         row += 1;
+        let idx = format!("{:<4}", format!("{:02}", row));
+        let name = format!("{:<22}", "boot2");
+        let start = format!("{:>18}", format!("0x{:016X}", 0u64));
+        let end = format!("{:>18}", format!("0x{:016X}", boot2_size.saturating_sub(1)));
+        let size = format!("{:>16}", format_size(boot2_size));
+        let bytes = format!("{:>20}", format_bytes_comma(boot2_size));
         println!(
-            " {:>3}  {:<22} {:>14}  {:>12}  {:>16}",
-            row,
-            "eMMC_Boot2".dimmed(),
-            format!("0x{:08X}", 0u64).dimmed(),
-            format_size(boot2_size).dimmed(),
-            format_bytes_comma(boot2_size).dimmed()
+            " {}  {}  {}  {}  {}  {}",
+            idx.dimmed(),
+            name.dimmed(),
+            start.dimmed(),
+            end.dimmed(),
+            size.dimmed(),
+            bytes.dimmed()
         );
     }
 
-    // GPT 分区
-    for entry in &partitions {
+    // GPT 分区（交替亮度，先 format 定宽再上色）
+    for (i, entry) in partitions.iter().enumerate() {
         row += 1;
-        println!(
-            " {:>3}  {:<22} {:>14}  {:>12}  {:>16}",
-            row,
-            entry.name,
-            format!("0x{:08X}", entry.start_addr),
-            format_size(entry.size),
-            format_bytes_comma(entry.size)
-        );
+        let start_addr = entry.start_addr;
+        let end_addr = start_addr.saturating_add(entry.size).saturating_sub(1);
+        let idx = format!("{:<4}", format!("{:02}", row));
+        let name = format!("{:<22}", &entry.name);
+        let start = format!("{:>18}", format!("0x{:016X}", start_addr));
+        let end = format!("{:>18}", format!("0x{:016X}", end_addr));
+        let size = format!("{:>16}", format_size(entry.size));
+        let bytes = format!("{:>20}", format_bytes_comma(entry.size));
+
+        if i % 2 == 0 {
+            println!(
+                " {}  {}  {}  {}  {}  {}",
+                idx.cyan(),
+                name.white(),
+                start.green(),
+                end.green(),
+                size.yellow(),
+                bytes.white()
+            );
+        } else {
+            println!(
+                " {}  {}  {}  {}  {}  {}",
+                idx.bright_cyan(),
+                name.bright_white(),
+                start.bright_green(),
+                end.bright_green(),
+                size.bright_yellow(),
+                bytes.bright_white()
+            );
+        }
     }
 
-    println!("{}", separator_line());
+    // 底部分隔线
+    println!(
+        " {}  {}  {}  {}  {}  {}",
+        "─".repeat(W_IDX),
+        "─".repeat(W_NAME),
+        "─".repeat(W_ADDR),
+        "─".repeat(W_ADDR),
+        "─".repeat(W_SIZE),
+        "─".repeat(W_BYTES)
+    );
     println!("  共 {} 个分区", row);
     println!();
 }
