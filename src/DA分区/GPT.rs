@@ -96,9 +96,7 @@ impl<'a> GptInfo<'a> {
             .checked_sub(first_lba)
             .and_then(|d| d.checked_add(1))
             .ok_or("GPT invalid partition: last_lba < first_lba")?;
-        let size = sector_count
-            .checked_mul(512)
-            .ok_or("GPT size overflow")?;
+        let size = sector_count.checked_mul(512).ok_or("GPT size overflow")?;
 
         Ok(PartitionEntry {
             name,

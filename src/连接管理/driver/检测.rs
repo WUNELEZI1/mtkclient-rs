@@ -10,8 +10,8 @@
 use log::trace;
 
 use super::setupapi::{
-    self, MTK_BROM_PID, MTK_VID, SPDRP_COMPATIBLEIDS, SPDRP_DEVICEDESC, SPDRP_HARDWAREID, SPDRP_MFG, SPDRP_PORTNAME,
-    SpDevinfoData, enum_ports_devices, enum_usb_devices, read_reg_wide,
+    self, MTK_BROM_PID, MTK_VID, SPDRP_COMPATIBLEIDS, SPDRP_DEVICEDESC, SPDRP_HARDWAREID,
+    SPDRP_MFG, SPDRP_PORTNAME, SpDevinfoData, enum_ports_devices, enum_usb_devices, read_reg_wide,
 };
 
 /// BROM 设备驱动类型
@@ -57,10 +57,7 @@ fn find_com_port_by_hardware_id() -> Option<String> {
         let mut result = None;
 
         // 目标硬件 ID 的多种可能格式
-        let target_vid_pid = format!(
-            "VID_{:04X}&PID_{:04X}",
-            MTK_VID, MTK_BROM_PID
-        ).to_uppercase();
+        let target_vid_pid = format!("VID_{:04X}&PID_{:04X}", MTK_VID, MTK_BROM_PID).to_uppercase();
 
         for index in 0..256 {
             if setupapi::SetupDiEnumDeviceInfo(device_info_set, index, &mut dev_info) == 0 {
@@ -72,12 +69,10 @@ fn find_com_port_by_hardware_id() -> Option<String> {
             if let Some(compatible_ids) =
                 read_reg_wide(device_info_set, &dev_info, SPDRP_COMPATIBLEIDS)
                 && compatible_ids.to_uppercase().contains(&target_vid_pid)
-                && let Some(port_name) =
-                    read_reg_wide(device_info_set, &dev_info, SPDRP_PORTNAME)
+                && let Some(port_name) = read_reg_wide(device_info_set, &dev_info, SPDRP_PORTNAME)
             {
                 let device_desc =
-                    read_reg_wide(device_info_set, &dev_info, SPDRP_DEVICEDESC)
-                        .unwrap_or_default();
+                    read_reg_wide(device_info_set, &dev_info, SPDRP_DEVICEDESC).unwrap_or_default();
                 trace!(
                     "[USB_BUS] 通过硬件 ID 找到 COM 口: {} (desc='{}')",
                     port_name, device_desc
@@ -87,15 +82,12 @@ fn find_com_port_by_hardware_id() -> Option<String> {
             }
 
             // 也检查 SPDRP_HARDWAREID
-            if let Some(hw_id) =
-                read_reg_wide(device_info_set, &dev_info, SPDRP_HARDWAREID)
+            if let Some(hw_id) = read_reg_wide(device_info_set, &dev_info, SPDRP_HARDWAREID)
                 && hw_id.to_uppercase().contains(&target_vid_pid)
-                && let Some(port_name) =
-                    read_reg_wide(device_info_set, &dev_info, SPDRP_PORTNAME)
+                && let Some(port_name) = read_reg_wide(device_info_set, &dev_info, SPDRP_PORTNAME)
             {
                 let device_desc =
-                    read_reg_wide(device_info_set, &dev_info, SPDRP_DEVICEDESC)
-                        .unwrap_or_default();
+                    read_reg_wide(device_info_set, &dev_info, SPDRP_DEVICEDESC).unwrap_or_default();
                 trace!(
                     "[USB_BUS] 通过 HardwareID 找到 COM 口: {} (desc='{}')",
                     port_name, device_desc

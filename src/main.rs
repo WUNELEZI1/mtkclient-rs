@@ -10,32 +10,32 @@ unsafe extern "system" {
     fn SetConsoleCP(wCodePageID: u32) -> i32;
 }
 
-mod cli;
-#[path = "命令/模块.rs"]
-mod 命令;
-mod config;
-#[path = "连接管理/模块.rs"]
-mod 连接管理;
 #[path = "DA分区/模块.rs"]
 mod DA分区;
+#[path = "DA加载/模块.rs"]
+mod DA加载;
 #[path = "DA扩展/模块.rs"]
 mod DA扩展;
 #[path = "DA扩展命令/模块.rs"]
 mod DA扩展命令;
-#[path = "DA加载/模块.rs"]
-mod DA加载;
-#[path = "漏洞利用/模块.rs"]
-mod 漏洞利用;
-mod paths;
-#[path = "预加载器/模块.rs"]
-mod 预加载器;
-#[path = "安全/模块.rs"]
-mod 安全;
 #[path = "USB通信/模块.rs"]
 mod USB通信;
+mod cli;
+mod config;
+mod paths;
+#[path = "命令/模块.rs"]
+mod 命令;
+#[path = "安全/模块.rs"]
+mod 安全;
+#[path = "漏洞利用/模块.rs"]
+mod 漏洞利用;
+#[path = "连接管理/模块.rs"]
+mod 连接管理;
+#[path = "预加载器/模块.rs"]
+mod 预加载器;
 
-use 连接管理::ConnectionManager;
 use USB通信::USB上下文;
+use 连接管理::ConnectionManager;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
@@ -52,8 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "{}",
-        "Copyright (c) wunelezi & trae | Licensed under GPL-3.0"
-            .dimmed()
+        "Copyright (c) wunelezi & trae | Licensed under GPL-3.0".dimmed()
     );
     println!();
 
@@ -197,27 +196,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   2. 读 .state 文件，检查 da_loaded 标志和 VID/PID 匹配
     //   3. 如果复用条件满足 → connect_to_da_mode（直接连接 PID=0x2000）
     //   4. 否则 → 走正常的 smart_init 流程
-    let da_session_reused =
-        if let Some((current_vid, current_pid, _dev_type)) = USB通信::获取第一个联发科VIDPID() {
-            if current_pid == 0x0003 {
-                // 核心修复：如果当前设备是 BROM (0003)，说明设备已重启，必须重置 DA 会话
-                trace!("[session] 检测到 BROM 设备，强制重置旧的 DA 会话状态");
-                crate::连接管理::reset_session();
-                false
-            } else if crate::连接管理::try_reuse_da_session(current_vid, current_pid) {
-                info!(
-                    "{}",
-                    "[DA_SESSION] 检测到现有 DA 会话，尝试复用..."
-                        .green()
-                        .bold()
-                );
-                true
-            } else {
-                false
-            }
+    let da_session_reused = if let Some((current_vid, current_pid, _dev_type)) =
+        USB通信::获取第一个联发科VIDPID()
+    {
+        if current_pid == 0x0003 {
+            // 核心修复：如果当前设备是 BROM (0003)，说明设备已重启，必须重置 DA 会话
+            trace!("[session] 检测到 BROM 设备，强制重置旧的 DA 会话状态");
+            crate::连接管理::reset_session();
+            false
+        } else if crate::连接管理::try_reuse_da_session(current_vid, current_pid) {
+            info!(
+                "{}",
+                "[DA_SESSION] 检测到现有 DA 会话，尝试复用..."
+                    .green()
+                    .bold()
+            );
+            true
         } else {
             false
-        };
+        }
+    } else {
+        false
+    };
 
     let (mut preloader, _mode) = if da_session_reused {
         match conn_mgr.connect_to_da_mode(&usb_context) {

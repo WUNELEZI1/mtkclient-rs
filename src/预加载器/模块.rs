@@ -8,17 +8,17 @@
 
 #[path = "BROM初始化.rs"]
 pub(crate) mod BROM初始化;
-#[path = "BROM输入输出.rs"]
-pub(crate) mod BROM输入输出;
 #[path = "BROM寄存器访问.rs"]
 pub(crate) mod BROM寄存器访问;
-#[path = "核心.rs"]
-pub(crate) mod 核心;
+#[path = "BROM输入输出.rs"]
+pub(crate) mod BROM输入输出;
 #[path = "传输.rs"]
 pub(crate) mod 传输;
+#[path = "核心.rs"]
+pub(crate) mod 核心;
 
 // 公共 API re-export（与原 preloader.rs 完全兼容）
 #[allow(unused_imports)]
-pub use 核心::Preloader;
-#[allow(unused_imports)]
 pub use 传输::{BromPortResult, BromTransport, SerialPortTransport};
+#[allow(unused_imports)]
+pub use 核心::Preloader;

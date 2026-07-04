@@ -21,8 +21,8 @@ impl<'a> DAXFlash<'a> {
     fn open_da_file() -> Result<(File, String), String> {
         let path = 获取可执行文件相对路径(DEFAULT_DA_FILE);
         let path_str = path.to_string_lossy().to_string();
-        let file = File::open(&path)
-            .map_err(|e| format!("无法打开 DA 文件 '{}': {}", path_str, e))?;
+        let file =
+            File::open(&path).map_err(|e| format!("无法打开 DA 文件 '{}': {}", path_str, e))?;
         Ok((file, path_str))
     }
 
@@ -61,7 +61,11 @@ impl<'a> DAXFlash<'a> {
 
         info!(
             "upload_da1: DA 文件大小={} bytes (0x{:X}), DA1 地址=0x{:08X}, DA1 大小={} bytes (0x{:X})",
-            da_data.len(), da_data.len(), da1_address, da1_len, da1_len
+            da_data.len(),
+            da_data.len(),
+            da1_address,
+            da1_len,
+            da1_len
         );
 
         let da1_start = da1_buf_offset as usize;
@@ -83,9 +87,7 @@ impl<'a> DAXFlash<'a> {
 
         trace!("成功上传 stage 1，跳转中...");
 
-        // 对齐 Python: 给设备时间处理 DA，但用轮询代替固定 200ms
-        // 设备 ready 后会响应 USB 读取，用短超时轮询检测
-        self.preloader.flush_input_poll(Duration::from_millis(5), 40)?;
+        // jump_da 内部已有 flush_input_poll，无需重复刷新
         self.preloader.jump_da(da1_address)?;
 
         // Python: sync = self.usbread(1) 等待 0xC0 — 已有 5s 超时
@@ -113,7 +115,9 @@ impl<'a> DAXFlash<'a> {
 
         // 设备需要时间返回 xread 响应，用轮询代替固定 500ms
         // 先 flush_input 轮询等设备 ready，再 xread
-        self.preloader.flush_input_poll(Duration::from_millis(10), 200)?;
+        // 100 次 x 10ms = 最大 1s，缓冲区空则提前退出
+        self.preloader
+            .flush_input_poll(Duration::from_millis(10), 100)?;
 
         // Python: res = self.xread(); if res == pack("<I", self.Cmd.SYNC_SIGNAL)
         let resp = self.xread()?;

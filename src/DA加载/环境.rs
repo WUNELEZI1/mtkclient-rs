@@ -37,7 +37,10 @@ impl<'a> DAXFlash<'a> {
                     if attempt < MAX_RETRY {
                         sleep(Duration::from_millis(RETRY_DELAY_MS));
                     } else {
-                        return Err(format!("{} write 失败 ({}次重试后): {}", label, MAX_RETRY, e));
+                        return Err(format!(
+                            "{} write 失败 ({}次重试后): {}",
+                            label, MAX_RETRY, e
+                        ));
                     }
                 }
             }

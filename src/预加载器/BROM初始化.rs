@@ -168,23 +168,34 @@ impl Preloader {
                 Ok(_) => {
                     if buf[0] == cmd {
                         if i > 0 {
-                            trace!("[ECHO_1] skipped {} residual bytes, echo 0x{:02X} matched", i, cmd);
+                            trace!(
+                                "[ECHO_1] skipped {} residual bytes, echo 0x{:02X} matched",
+                                i, cmd
+                            );
                         }
                         return Ok(true);
                     } else {
                         trace!(
                             "[ECHO_1] skip residual 0x{:02X} (attempt {}), waiting for 0x{:02X}",
-                            buf[0], i + 1, cmd
+                            buf[0],
+                            i + 1,
+                            cmd
                         );
                     }
                 }
                 Err(e) => {
-                    trace!("[ECHO_1] read error for 0x{:02X} after {} attempts: {}", cmd, i, e);
+                    trace!(
+                        "[ECHO_1] read error for 0x{:02X} after {} attempts: {}",
+                        cmd, i, e
+                    );
                     return Ok(false);
                 }
             }
         }
-        trace!("[ECHO_1] mismatch: expected 0x{:02X}, too much residual data after 32 reads", cmd);
+        trace!(
+            "[ECHO_1] mismatch: expected 0x{:02X}, too much residual data after 32 reads",
+            cmd
+        );
         self.flush_input();
         Ok(false)
     }

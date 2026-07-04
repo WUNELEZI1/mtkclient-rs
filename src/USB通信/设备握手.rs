@@ -3,8 +3,8 @@
 //! 协议：逐字节发送 [A0, 0A, 50, 05]，每字节期望取反回复。
 //! Python 风格：失败计数器重置，最多 10 次重试，每次间隔 300ms。
 
-use super::设备::USB设备;
 use super::日志::usb_trace;
+use super::设备::USB设备;
 use log::info;
 use std::time::Duration;
 
@@ -58,11 +58,7 @@ impl USB设备 {
                     break;
                 }
                 // echo write trace
-                usb_trace(
-                    "TX",
-                    "USB设备::执行握手 echo_write",
-                    &[握手字节序列[i]],
-                );
+                usb_trace("TX", "USB设备::执行握手 echo_write", &[握手字节序列[i]]);
                 let mut r = [0u8; 1]; // 握手 echo 每次只读 1 字节
                 match self.读取(&mut r) {
                     Ok(n) if n > 0 => {

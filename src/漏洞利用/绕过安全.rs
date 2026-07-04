@@ -6,9 +6,9 @@
 use log::{info, trace};
 use std::time::Duration;
 
+use crate::USB通信::USB上下文;
 use crate::paths::获取可执行文件相对路径;
 use crate::预加载器::Preloader;
-use crate::USB通信::USB上下文;
 
 impl Preloader {
     pub fn bypass_security(&mut self, _context: &USB上下文) -> Result<(), String> {
