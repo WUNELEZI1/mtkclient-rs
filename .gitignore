@@ -15,3 +15,5 @@ rubbish/
 archive/
 .vscode/
 .idea/
+*.img
+*.bin
