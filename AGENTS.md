@@ -1,6 +1,38 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
-> 最近更新：2026-07-04 v10
+> 最近更新：2026-07-04 v11
+
+## 最近更新 (2026-07-04 v11) — 分区表精美输出 + readflash心跳修复 + 速度优化 + clippy清零
+
+### 关键 bug 修复
+- **readflash 心跳包跳过**：`slength==4 && data全零` 时不追加 buffer（对齐 Python），修复 GPT 数据偏移 4 字节
+- **GPT 分区名偏移**：name 从 entry offset 0 → 56（标准 GPT 分区项结构）
+- **readflash 最后一包跳过 ACK**：设备已结束传输不再接收写入
+- **send_da size 参数**：`da1_len - 0x100` → `da1_len`（对齐 Python）
+- **xflash_sync 信号**：恢复发送 SYNC_SIGNAL (0x434E5953)
+- **scatter SPFT 兼容**：`EMPC_BOOT` → `EMMC_BOOT`
+
+### 分区表输出重构
+- ASCII 表格风格（`|`/`-` 分隔符），英文标签
+- 双列大小：两位小数人类可读 + 千分位字节数
+- 首尾地址显示（Start + End）
+- eMMC Boot1/Boot2 灰色显示在表格内
+- 编号两位数（01, 02...）
+
+### 速度优化
+- 轮询代替固定 sleep：flush_input_poll 检测设备 ready
+- 去掉 jump_da 重复 flush（内部已有）
+- setup_hw_init 后轮询 200→100 次
+- boot_to 后延迟 50→20ms
+- send_da 超时 10s→2s
+- jump_da 去掉 clear_halt + post-delay
+
+### 代码质量
+- cargo fmt 全部格式化
+- cargo clippy 0 warnings（修复 useless_format/single_match/collapsible_if/manual_is_multiple_of）
+
+### 版本
+- v0.2.0
 > 完整历史：Temp_Agent_Archive.md
 
 ## 最近更新 (2026-07-04 v10) — DA 加载协议修复 + 性能优化 + 命令重构

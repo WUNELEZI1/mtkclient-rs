@@ -11,11 +11,11 @@
 //! STEP 2: WinUSB 直连（降级路径，跳过握手）
 //! ```
 
+use crate::USB通信;
+use crate::USB通信::{USB上下文, USB阶段};
 use crate::config::工作模式;
 use crate::连接管理::driver::{UsbBusDetectionResult, detect_brom_driver_from_usb_bus};
 use crate::预加载器::{Preloader, SerialPortTransport};
-use crate::USB通信;
-use crate::USB通信::{USB上下文, USB阶段};
 use colored::Colorize;
 use log::{info, trace, warn};
 use std::time::Duration;
@@ -59,9 +59,8 @@ impl ConnectionManager {
         context: &USB上下文,
         工作模式: 工作模式,
     ) -> Result<(Preloader, DeviceMode), String> {
-        match 工作模式 {
-            工作模式::Preloader => return self.smart_init_preloader(context),
-            _ => {}
+        if 工作模式 == 工作模式::Preloader {
+            return self.smart_init_preloader(context);
         }
 
         info!("等待设备连接 (BROM: Vol+ + Vol- + Power)");
@@ -86,13 +85,18 @@ impl ConnectionManager {
                         // 解决方案：枚举所有 COM 口，逐个尝试 BROM 握手
                         warn!("[COM] 注册表匹配不到 COM 口，枚举所有 COM 口逐个尝试握手...");
 
-                        let all_ports = crate::连接管理::driver::detect::enumerate_all_com_ports();
+                        let all_ports =
+                            crate::连接管理::driver::detect::enumerate_all_com_ports();
                         if all_ports.is_empty() {
                             warn!("[COM] 系统中没有任何 COM 口，降级到 WinUSB 直连");
                             return self.fallback_to_winusb(context);
                         }
 
-                        info!("[COM] 系统中有 {} 个 COM 口: {:?}", all_ports.len(), all_ports);
+                        info!(
+                            "[COM] 系统中有 {} 个 COM 口: {:?}",
+                            all_ports.len(),
+                            all_ports
+                        );
 
                         for port in &all_ports {
                             info!("[COM] 尝试 {} ...", port);
@@ -168,7 +172,11 @@ impl ConnectionManager {
                     // libusb 可能看不到使用串口驱动的设备，直接枚举 COM 口尝试
                     let all_ports = crate::连接管理::driver::detect::enumerate_all_com_ports();
                     if !all_ports.is_empty() {
-                        info!("[COM] 系统中有 {} 个 COM 口: {:?}", all_ports.len(), all_ports);
+                        info!(
+                            "[COM] 系统中有 {} 个 COM 口: {:?}",
+                            all_ports.len(),
+                            all_ports
+                        );
 
                         for port in &all_ports {
                             info!("[COM] 尝试 {} ...", port);
@@ -332,7 +340,9 @@ impl ConnectionManager {
                 if let Ok(new_ctx) = USB上下文::新建() {
                     let ctx_ref: &'static USB上下文 = Box::leak(Box::new(new_ctx));
                     for &pid in &pids {
-                        if let Ok(device) = USB通信::USB设备::按VID_PID打开(ctx_ref, 0x0E8D, pid) {
+                        if let Ok(device) =
+                            USB通信::USB设备::按VID_PID打开(ctx_ref, 0x0E8D, pid)
+                        {
                             info!("[RECONNECT] 使用新 context 成功连接 (attempt {})", retry);
                             return Ok(device);
                         }
@@ -354,7 +364,9 @@ impl ConnectionManager {
 
     /// DA 加载后重连
     #[allow(dead_code)] // 预留：DA 加载后设备重枚举流程
-    pub fn reconnect_after_da(&self, context: &USB上下文) -> Result<USB通信::USB设备, String> {
+    pub fn reconnect_after_da(
+        &self, context: &USB上下文
+    ) -> Result<USB通信::USB设备, String> {
         info!("[DA] DA 加载完成，等待设备重枚举...");
         std::thread::sleep(Duration::from_millis(USB_REENUM_DELAY_MS));
 
@@ -373,7 +385,10 @@ impl ConnectionManager {
 
     /// Kamakiri exploit 后重连
     #[allow(dead_code)] // 预留：Kamakiri2 exploit 后设备重枚举流程
-    pub fn reconnect_after_kamakiri(&self, context: &USB上下文) -> Result<USB通信::USB设备, String> {
+    pub fn reconnect_after_kamakiri(
+        &self,
+        context: &USB上下文,
+    ) -> Result<USB通信::USB设备, String> {
         info!("[KAMAKIRI] payload 已发送，等待设备重枚举...");
         std::thread::sleep(Duration::from_millis(USB_REENUM_DELAY_MS));
         self.reconnect_loop(context, USB阶段::Brom)
@@ -437,25 +452,23 @@ impl ConnectionManager {
             // 1. 枚举 COM 口，找 PID=0x2000 的 Preloader VCOM
             if let Ok(ports) = serialport::available_ports() {
                 for p in &ports {
-                    if let serialport::SerialPortType::UsbPort(ref info) = p.port_type {
-                        if info.vid == 0x0E8D && info.pid == 0x2000 {
-                            info!(
-                                "[PRELOADER] 发现 Preloader COM 口: {} (VID={:04X} PID={:04X})",
-                                p.port_name, info.vid, info.pid
-                            );
-                            match self.preloader_serial_handshake(&p.port_name) {
-                                Ok(preloader) => {
-                                    self.mode = DeviceMode::Preloader;
-                                    self.stage = USB阶段::Preloader;
-                                    self.port_name = Some(p.port_name.clone());
-                                    return Ok((preloader, DeviceMode::Preloader));
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "[PRELOADER] {} 握手失败: {}",
-                                        p.port_name, e
-                                    );
-                                }
+                    if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
+                        && info.vid == 0x0E8D
+                        && info.pid == 0x2000
+                    {
+                        info!(
+                            "[PRELOADER] 发现 Preloader COM 口: {} (VID={:04X} PID={:04X})",
+                            p.port_name, info.vid, info.pid
+                        );
+                        match self.preloader_serial_handshake(&p.port_name) {
+                            Ok(preloader) => {
+                                self.mode = DeviceMode::Preloader;
+                                self.stage = USB阶段::Preloader;
+                                self.port_name = Some(p.port_name.clone());
+                                return Ok((preloader, DeviceMode::Preloader));
+                            }
+                            Err(e) => {
+                                warn!("[PRELOADER] {} 握手失败: {}", p.port_name, e);
                             }
                         }
                     }
@@ -463,28 +476,26 @@ impl ConnectionManager {
             }
 
             // 2. 串口没找到，尝试 WinUSB（PID=0x2000）
-            match USB通信::USB设备::按VID_PID打开(context, 0x0E8D, 0x2000) {
-                Ok(usb_device) => {
-                    info!(
-                        "[PRELOADER] WinUSB 设备已连接: VID={:04X} PID={:04X}",
-                        usb_device.vid, usb_device.pid
-                    );
-                    let mut preloader = Preloader::new(Box::new(usb_device));
-                    match preloader.init_preloader() {
-                        Ok(true) => {
-                            self.mode = DeviceMode::Preloader;
-                            self.stage = USB阶段::Preloader;
-                            return Ok((preloader, DeviceMode::Preloader));
-                        }
-                        Ok(false) => {
-                            warn!("[PRELOADER] init 未成功，继续等待...");
-                        }
-                        Err(e) => {
-                            warn!("[PRELOADER] init 失败: {}，继续等待...", e);
-                        }
+            if let Ok(usb_device) = USB通信::USB设备::按VID_PID打开(context, 0x0E8D, 0x2000)
+            {
+                info!(
+                    "[PRELOADER] WinUSB 设备已连接: VID={:04X} PID={:04X}",
+                    usb_device.vid, usb_device.pid
+                );
+                let mut preloader = Preloader::new(Box::new(usb_device));
+                match preloader.init_preloader() {
+                    Ok(true) => {
+                        self.mode = DeviceMode::Preloader;
+                        self.stage = USB阶段::Preloader;
+                        return Ok((preloader, DeviceMode::Preloader));
+                    }
+                    Ok(false) => {
+                        warn!("[PRELOADER] init 未成功，继续等待...");
+                    }
+                    Err(e) => {
+                        warn!("[PRELOADER] init 失败: {}，继续等待...", e);
                     }
                 }
-                Err(_) => {}
             }
 
             std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));

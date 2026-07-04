@@ -12,6 +12,8 @@
 
 #[path = "上下文.rs"]
 pub mod 上下文;
+#[path = "日志.rs"]
+pub mod 日志;
 #[path = "设备.rs"]
 pub mod 设备;
 #[path = "设备IO.rs"]
@@ -20,17 +22,14 @@ pub mod 设备IO;
 pub mod 设备握手;
 #[path = "诊断.rs"]
 pub mod 诊断;
-#[path = "日志.rs"]
-pub mod 日志;
 
 // 公共 re-export，保持外部调用方式不变
 #[allow(unused_imports)]
 pub use 上下文::{
-    USB上下文, USB阶段, 通过libusb检测联发科设备, 获取第一个联发科VIDPID,
-    是否有联发科设备,
+    USB上下文, USB阶段, 是否有联发科设备, 获取第一个联发科VIDPID, 通过libusb检测联发科设备,
 };
-pub use 设备::USB设备;
 #[allow(unused_imports)]
-pub use 日志::{设置USB读取静默, 设置USB日志开关, usb_trace};
+pub use 日志::{usb_trace, 设置USB日志开关, 设置USB读取静默};
+pub use 设备::USB设备;
 // 注意：usb_trace_tx! / usb_trace_rx! 由 #[macro_export] 在 crate 根导出，
 // 调用方应使用 crate::usb_trace_tx! / crate::usb_trace_rx!

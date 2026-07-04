@@ -90,7 +90,7 @@ pub fn 通过libusb检测联发科设备() -> Option<(u16, DeviceType)> {
         let mut 设备列表: *const *mut libusb1_sys::libusb_device = std::ptr::null_mut();
         let 设备数量 = libusb1_sys::libusb_get_device_list(上下文指针, &mut 设备列表);
         if 设备数量 <= 0 {
-            libusb1_sys::libusb_free_device_list(设备列表,1);
+            libusb1_sys::libusb_free_device_list(设备列表, 1);
             libusb1_sys::libusb_exit(上下文指针);
             return None;
         }
@@ -137,7 +137,7 @@ pub fn 获取第一个联发科VIDPID() -> Option<(u16, u16, DeviceType)> {
         let mut 设备列表: *const *mut libusb1_sys::libusb_device = std::ptr::null_mut();
         let 设备数量 = libusb1_sys::libusb_get_device_list(上下文指针, &mut 设备列表);
         if 设备数量 <= 0 {
-            libusb1_sys::libusb_free_device_list(设备列表,1);
+            libusb1_sys::libusb_free_device_list(设备列表, 1);
             libusb1_sys::libusb_exit(上下文指针);
             return None;
         }
@@ -166,7 +166,7 @@ pub fn 获取第一个联发科VIDPID() -> Option<(u16, u16, DeviceType)> {
             break;
         }
 
-        libusb1_sys::libusb_free_device_list(设备列表,1);
+        libusb1_sys::libusb_free_device_list(设备列表, 1);
         libusb1_sys::libusb_exit(上下文指针);
         结果
     }
@@ -185,7 +185,7 @@ pub fn 是否有联发科设备() -> bool {
         let mut 设备列表: *const *mut libusb1_sys::libusb_device = std::ptr::null_mut();
         let 设备数量 = libusb1_sys::libusb_get_device_list(上下文指针, &mut 设备列表);
         if 设备数量 <= 0 {
-            libusb1_sys::libusb_free_device_list(设备列表,1);
+            libusb1_sys::libusb_free_device_list(设备列表, 1);
             libusb1_sys::libusb_exit(上下文指针);
             return false;
         }
@@ -203,7 +203,7 @@ pub fn 是否有联发科设备() -> bool {
             }
         }
 
-        libusb1_sys::libusb_free_device_list(设备列表,1);
+        libusb1_sys::libusb_free_device_list(设备列表, 1);
         libusb1_sys::libusb_exit(上下文指针);
         找到
     }

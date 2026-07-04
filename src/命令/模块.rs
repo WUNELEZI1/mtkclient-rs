@@ -9,19 +9,19 @@
 //! - `print_help`       — 打印帮助信息
 //! - `handle_command`   — 单命令执行入口（处理 Phase1 dump/bypass + Phase2 DA 命令）
 
-#[path = "转储.rs"]
-pub mod 转储;
 #[path = "分区表.rs"]
 pub mod 分区表;
+#[path = "转储.rs"]
+pub mod 转储;
 #[path = "输入输出.rs"]
 pub mod 输入输出;
 
 use colored::Colorize;
 use log::{error, info, warn};
 
-use crate::config::AppConfig;
 use crate::DA扩展::DAXFlash;
 use crate::USB通信::USB上下文;
+use crate::config::AppConfig;
 
 pub fn print_help() {
     println!("用法:");

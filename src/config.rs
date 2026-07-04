@@ -121,8 +121,7 @@ impl AppConfig {
             _ => log::LevelFilter::Info,
         };
 
-        let 工作模式 = 工作模式::from_str(&cli.mode)
-            .unwrap_or(工作模式::Brom);
+        let 工作模式 = 工作模式::from_str(&cli.mode).unwrap_or(工作模式::Brom);
 
         AppConfig {
             log_level,

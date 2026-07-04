@@ -122,5 +122,3 @@ pub fn generate_scatter_from_gpt(
 
     Ok(partition_info_list)
 }
-
-

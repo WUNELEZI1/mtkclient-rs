@@ -6,8 +6,8 @@
 
 use log::{debug, info, trace};
 
-use crate::预加载器::Preloader;
 use crate::USB通信::USB上下文;
+use crate::预加载器::Preloader;
 
 /// MTK preloader 签名（8 字节，对齐 mtkclient dump_preloader_ram）
 const SIG: [u8; 8] = [0x4D, 0x4D, 0x4D, 0x01, 0x38, 0x00, 0x00, 0x00];
@@ -33,8 +33,9 @@ impl Preloader {
         _context: &USB上下文,
     ) -> Result<(Vec<u8>, String), String> {
         // 1. 加载并注入 generic_preloader_dump_payload
-        let payload_path =
-            crate::paths::获取可执行文件相对路径("payloads/generic_preloader_dump_payload.bin");
+        let payload_path = crate::paths::获取可执行文件相对路径(
+            "payloads/generic_preloader_dump_payload.bin",
+        );
         let payload = std::fs::read(&payload_path)
             .map_err(|e| format!("读取 generic_preloader_dump_payload.bin 失败: {}", e))?;
 
@@ -234,12 +235,18 @@ impl Preloader {
                     all_data.extend_from_slice(&swapped);
                     current_offset += CHUNK_BYTES;
 
-                    let progress = (all_data.len().min(total_size) as f64 / total_size as f64) * 100.0;
+                    let progress =
+                        (all_data.len().min(total_size) as f64 / total_size as f64) * 100.0;
                     // 仅首次和接近完成时输出具体信息
                     if progress < 1.0 {
                         eprint!("\r  读取中... {:.1}%", progress);
                     } else if progress >= 99.9 {
-                        eprint!("\r  读取完成 {:.1}% ({}/{})", progress, all_data.len().min(total_size), total_size);
+                        eprint!(
+                            "\r  读取完成 {:.1}% ({}/{})",
+                            progress,
+                            all_data.len().min(total_size),
+                            total_size
+                        );
                     } else {
                         // 中间用简洁格式，\r 覆盖上一行
                         eprint!("\r  {:.0}%", progress);
@@ -257,24 +264,25 @@ impl Preloader {
         all_data.truncate(total_size);
 
         // 4. 提取文件名
-        let filename = if let Some(info_idx) = all_data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
-            debug!("[dump] 找到 MTK_BLOADER_INFO 在偏移 0x{:X}", info_idx);
-            let filename_start = info_idx + 0x1B;
-            let filename_end = std::cmp::min(filename_start + 0x30, all_data.len());
-            let filename_bytes = &all_data[filename_start..filename_end];
-            let filename_str = String::from_utf8_lossy(filename_bytes)
-                .trim_end_matches('\0')
-                .to_string();
-            if filename_str.is_empty() {
-                "preloader_dumped.bin".to_string()
+        let filename =
+            if let Some(info_idx) = all_data.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
+                debug!("[dump] 找到 MTK_BLOADER_INFO 在偏移 0x{:X}", info_idx);
+                let filename_start = info_idx + 0x1B;
+                let filename_end = std::cmp::min(filename_start + 0x30, all_data.len());
+                let filename_bytes = &all_data[filename_start..filename_end];
+                let filename_str = String::from_utf8_lossy(filename_bytes)
+                    .trim_end_matches('\0')
+                    .to_string();
+                if filename_str.is_empty() {
+                    "preloader_dumped.bin".to_string()
+                } else {
+                    debug!("[dump] 提取的文件名: {}", filename_str);
+                    filename_str
+                }
             } else {
-                debug!("[dump] 提取的文件名: {}", filename_str);
-                filename_str
-            }
-        } else {
-            debug!("[dump] 未找到 MTK_BLOADER_INFO，使用默认文件名");
-            "preloader_dumped.bin".to_string()
-        };
+                debug!("[dump] 未找到 MTK_BLOADER_INFO，使用默认文件名");
+                "preloader_dumped.bin".to_string()
+            };
 
         std::fs::write(&filename, &all_data).map_err(|e| format!("保存失败: {}", e))?;
         info!(
@@ -315,7 +323,9 @@ impl Preloader {
             match self.read32_brom_batch(addr, large_scan_dwords) {
                 Ok(data) => {
                     let swapped = Self::dword_swap(&data);
-                    if let Some(info_idx) = swapped.windows(16).position(|w| w == b"MTK_BLOADER_INFO") {
+                    if let Some(info_idx) =
+                        swapped.windows(16).position(|w| w == b"MTK_BLOADER_INFO")
+                    {
                         info!("在 0x{:08X}+0x{:X} 找到 MTK_BLOADER_INFO", addr, info_idx);
                         return Ok((addr, data));
                     }

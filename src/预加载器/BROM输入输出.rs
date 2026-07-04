@@ -7,7 +7,7 @@
 //! - `get_soc_id` — 读取 SOC_ID
 
 use super::核心::Preloader;
-use log::{trace, info};
+use log::{info, trace};
 use std::time::{Duration, Instant};
 
 const DA_UPLOAD_TIMEOUT_MS: u64 = 2000;
@@ -66,7 +66,8 @@ impl Preloader {
         const CHUNK_SIZE: usize = 64;
         trace!(
             "[UPLOAD] sending {} bytes, chunk={} (Python 对齐)",
-            dadata.len(), CHUNK_SIZE
+            dadata.len(),
+            CHUNK_SIZE
         );
 
         // 4a. 设置超时

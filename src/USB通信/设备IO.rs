@@ -7,8 +7,8 @@
 //! - `清除输入端点停顿`/`清除输出端点停顿` — 复位 bulk 端点（stall）
 
 use super::上下文::LIBUSB错误_超时;
-use super::设备::USB设备;
 use super::日志::{QUIET_USB_READ, usb_trace};
+use super::设备::USB设备;
 use log::trace;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -129,10 +129,7 @@ impl USB设备 {
                 // 这符合标准 read 语义，也避免了 handshake 等场景下的挂起
                 if 总计 > 0 {
                     if !静默 {
-                        trace!(
-                            "[USB READ] data received ({} bytes), returning early",
-                            总计
-                        );
+                        trace!("[USB READ] data received ({} bytes), returning early", 总计);
                     }
                     break;
                 }
@@ -265,7 +262,11 @@ impl USB设备 {
     ) -> Result<usize, String> {
         trace!(
             "[CTRL] OUT rt=0x{:02X} r=0x{:02X} v=0x{:04X} i=0x{:04X} len={}",
-            rt, r, v, i, data.len()
+            rt,
+            r,
+            v,
+            i,
+            data.len()
         );
         usb_trace("TX", "USB设备::控制传输输出", data);
         unsafe {

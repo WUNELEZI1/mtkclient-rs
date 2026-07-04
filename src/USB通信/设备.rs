@@ -59,10 +59,10 @@ impl USB设备 {
             }
 
             // 对齐 Python usblib.py connect():先 claim 0 再 claim 1
-            libusb1_sys::libusb_detach_kernel_driver(设备句柄,0);
-            let _ = libusb1_sys::libusb_claim_interface(设备句柄,0);
-            libusb1_sys::libusb_detach_kernel_driver(设备句柄,1);
-            if libusb1_sys::libusb_claim_interface(设备句柄,1) != 0 {
+            libusb1_sys::libusb_detach_kernel_driver(设备句柄, 0);
+            let _ = libusb1_sys::libusb_claim_interface(设备句柄, 0);
+            libusb1_sys::libusb_detach_kernel_driver(设备句柄, 1);
+            if libusb1_sys::libusb_claim_interface(设备句柄, 1) != 0 {
                 return Err("claim interface 1 failed".into());
             }
 
@@ -72,7 +72,7 @@ impl USB设备 {
             }
 
             let mut 描述符: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
-            let 返回码_描述符 = libusb1_sys::libusb_get_device_descriptor(设备,&mut 描述符);
+            let 返回码_描述符 = libusb1_sys::libusb_get_device_descriptor(设备, &mut 描述符);
             if 返回码_描述符 != 0 {
                 return Err(format!(
                     "获取设备描述失败 (error {}): libusb 驱动异常",
@@ -86,7 +86,7 @@ impl USB设备 {
             let mut 输入端点地址: u8 = 默认输入端点;
             let mut 输出端点最大包: u16 = 默认最大包大小;
             let mut 输入端点最大包: u16 = 默认最大包大小;
-            let 返回码 = libusb1_sys::libusb_get_active_config_descriptor(设备,&mut 配置指针);
+            let 返回码 = libusb1_sys::libusb_get_active_config_descriptor(设备, &mut 配置指针);
             if 返回码 != 0 || 配置指针.is_null() {
                 info!(
                     "[USB] WARNING: get_active_config_descriptor failed (ret={}), trying known combos...",
@@ -115,7 +115,7 @@ impl USB设备 {
                             };
                             trace!(
                                 "[USB]   EP: 0x{:02X} dir={} type={} size={}",
-                                地址,方向,端点类型,端点.wMaxPacketSize
+                                地址, 方向, 端点类型, 端点.wMaxPacketSize
                             );
                             if 方向 == "OUT" && 端点类型 == "Bulk" {
                                 输出端点地址 = 地址;
@@ -133,7 +133,7 @@ impl USB设备 {
 
             info!(
                 "[USB] EP_OUT=0x{:02X} wMaxPacketSize={} EP_IN=0x{:02X}",
-                输出端点地址,输出端点最大包,输入端点地址
+                输出端点地址, 输出端点最大包, 输入端点地址
             );
 
             let 阶段 = USB阶段::从PID生成(描述符.idProduct);
@@ -143,12 +143,12 @@ impl USB设备 {
                 vid: 描述符.idVendor,
                 pid: 描述符.idProduct,
                 阶段,
-                设备类型:找到的设备类型,
-                输出端点:输出端点地址,
-                输入端点:输入端点地址,
-                输出端点最大包大小:输出端点最大包,
-                输入端点最大包大小:输入端点最大包,
-                超时:Duration::from_millis(默认超时毫秒),
+                设备类型: 找到的设备类型,
+                输出端点: 输出端点地址,
+                输入端点: 输入端点地址,
+                输出端点最大包大小: 输出端点最大包,
+                输入端点最大包大小: 输入端点最大包,
+                超时: Duration::from_millis(默认超时毫秒),
             })
         }
     }
@@ -157,16 +157,16 @@ impl USB设备 {
     pub fn 按VID_PID打开(context: &USB上下文, vid: u16, pid: u16) -> Result<Self, String> {
         let 上下文指针 = context.获取指针();
         unsafe {
-            let 设备句柄 = libusb1_sys::libusb_open_device_with_vid_pid(上下文指针,vid, pid);
+            let 设备句柄 = libusb1_sys::libusb_open_device_with_vid_pid(上下文指针, vid, pid);
             if 设备句柄.is_null() {
                 return Err(format!("未找到设备 VID={:04X} PID={:04X}", vid, pid));
             }
 
             // 对齐 Python usblib.py connect():先 claim 0 再 claim 1
-            libusb1_sys::libusb_detach_kernel_driver(设备句柄,0);
-            let _ = libusb1_sys::libusb_claim_interface(设备句柄,0);
-            libusb1_sys::libusb_detach_kernel_driver(设备句柄,1);
-            if libusb1_sys::libusb_claim_interface(设备句柄,1) != 0 {
+            libusb1_sys::libusb_detach_kernel_driver(设备句柄, 0);
+            let _ = libusb1_sys::libusb_claim_interface(设备句柄, 0);
+            libusb1_sys::libusb_detach_kernel_driver(设备句柄, 1);
+            if libusb1_sys::libusb_claim_interface(设备句柄, 1) != 0 {
                 libusb1_sys::libusb_close(设备句柄);
                 return Err("claim interface 1 failed".into());
             }
@@ -178,7 +178,7 @@ impl USB设备 {
             }
 
             let mut 描述符: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
-            let 返回码_描述符 = libusb1_sys::libusb_get_device_descriptor(设备,&mut 描述符);
+            let 返回码_描述符 = libusb1_sys::libusb_get_device_descriptor(设备, &mut 描述符);
             if 返回码_描述符 != 0 {
                 libusb1_sys::libusb_close(设备句柄);
                 return Err(format!(
@@ -193,7 +193,7 @@ impl USB设备 {
             let mut 输入端点地址: u8 = 默认输入端点;
             let mut 输出端点最大包: u16 = 默认最大包大小;
             let mut 输入端点最大包: u16 = 默认最大包大小;
-            let 返回码 = libusb1_sys::libusb_get_active_config_descriptor(设备,&mut 配置指针);
+            let 返回码 = libusb1_sys::libusb_get_active_config_descriptor(设备, &mut 配置指针);
             if 返回码 != 0 || 配置指针.is_null() {
                 info!(
                     "[USB] WARNING: get_active_config_descriptor failed (ret={}), using defaults",
@@ -238,12 +238,12 @@ impl USB设备 {
                 vid: 描述符.idVendor,
                 pid: 描述符.idProduct,
                 阶段,
-                设备类型:DeviceType::from_vid_pid(vid, 描述符.idProduct),
-                输出端点:输出端点地址,
-                输入端点:输入端点地址,
-                输出端点最大包大小:输出端点最大包,
-                输入端点最大包大小:输入端点最大包,
-                超时:Duration::from_millis(默认超时毫秒),
+                设备类型: DeviceType::from_vid_pid(vid, 描述符.idProduct),
+                输出端点: 输出端点地址,
+                输入端点: 输入端点地址,
+                输出端点最大包大小: 输出端点最大包,
+                输入端点最大包大小: 输入端点最大包,
+                超时: Duration::from_millis(默认超时毫秒),
             })
         }
     }
@@ -275,8 +275,8 @@ impl USB设备 {
     pub fn 关闭(&mut self) {
         unsafe {
             if !self.设备句柄.is_null() {
-                libusb1_sys::libusb_release_interface(self.设备句柄,1);
-                libusb1_sys::libusb_release_interface(self.设备句柄,0);
+                libusb1_sys::libusb_release_interface(self.设备句柄, 1);
+                libusb1_sys::libusb_release_interface(self.设备句柄, 0);
                 libusb1_sys::libusb_close(self.设备句柄);
                 self.设备句柄 = std::ptr::null_mut();
             }

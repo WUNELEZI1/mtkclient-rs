@@ -7,16 +7,14 @@
 
 #[path = "GPT.rs"]
 pub mod GPT;
-#[path = "输入输出.rs"]
-pub mod 输入输出;
 #[path = "分区表.rs"]
 pub mod 分区表;
+#[path = "输入输出.rs"]
+pub mod 输入输出;
 
 pub use GPT::GptInfo;
 #[allow(unused_imports)]
-pub use 分区表::{
-    generate_scatter_from_gpt, generate_scatter_header, parse_gpt_from_data,
-};
+pub use 分区表::{generate_scatter_from_gpt, generate_scatter_header, parse_gpt_from_data};
 // 注意：read_gpt / read_partition / write_partition / write_partition_with_verify /
 // erase_partition 是 DAXFlash 的方法（在 输入输出.rs 的 impl 块中定义），
 // 调用方式：crate::DA分区::输入输出::DAXFlash::read_gpt(&mut da)

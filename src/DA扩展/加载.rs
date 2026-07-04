@@ -54,14 +54,20 @@ impl<'a> DAXFlash<'a> {
                 warn!("set_checksum_level 失败 (可能不支持): {}", e);
             }
         } else {
-            trace!("[SPEED{}] 跳过 get_expire_date / set_reset_key / set_checksum_level", self.da_x_speed);
+            trace!(
+                "[SPEED{}] 跳过 get_expire_date / set_reset_key / set_checksum_level",
+                self.da_x_speed
+            );
         }
 
         // 连接代理判断（级别3直接根据已知模式推断）
         let is_brom_conn = if self.da_x_speed >= 3 {
             // 极速模式：跳过 get_connection_agent，直接根据模式推断
             let brom = !self.preloader.is_preloader_mode;
-            trace!("[SPEED3] 跳过 get_connection_agent，推断 conn_agent={}", if brom { "brom" } else { "preloader" });
+            trace!(
+                "[SPEED3] 跳过 get_connection_agent，推断 conn_agent={}",
+                if brom { "brom" } else { "preloader" }
+            );
             brom
         } else {
             let conn_agent = match self.get_connection_agent() {
@@ -148,8 +154,8 @@ impl<'a> DAXFlash<'a> {
     /// BOOT_TO 成功后的 CUSTOM_ACK / CUSTOM_SET_STORAGE 流程
     fn load_da_extensions_after_boot(&mut self) {
         // Python 第 1251 行：boot_to 成功后立刻发送 CUSTOM_ACK
-        // 给 extensions 一点初始化时间
-        std::thread::sleep(Duration::from_millis(50));
+        // boot_to 已等待响应，只需极短缓冲给设备切换上下文
+        std::thread::sleep(Duration::from_millis(20));
         if let Ok(ack) = self.send_devctrl(DA_EXTENSIONS_DEVCTRL_ACK, None) {
             // Python 第 1252 行：send_devctrl 后还要读一次 status
             let status = self.status();
