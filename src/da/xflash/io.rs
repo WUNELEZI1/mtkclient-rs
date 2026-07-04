@@ -21,73 +21,78 @@ use crate::da::xflash::protocol::{CMD_MAGIC, CMD_READ_DATA, pack3};
 
 impl<'a> DAXFlash<'a> {
     /// 读取 flash 数据，返回原始字节（默认 USER 分区类型）
-    /// 对齐 Python xflash_lib.py:879-891 (filename="" 分支):
-    ///   get_packet_length → cmd_read_data → xread 循环 (header+data) → ack
-    /// 注意：filename="" 分支没有 readflash_final 包，设备不会发送 final
     pub(crate) fn readflash_data(&mut self, addr: u64, size: u64) -> Result<Vec<u8>, String> {
         self.readflash_data_ex(addr, size, 8)
     }
 
-    /// 读取 flash 数据，支持指定分区类型（boot1/boot2/rpmb/user 等）
-    /// parttype: 1=boot1, 2=boot2, 3=rpmb, 8=user
-    pub(crate) fn readflash_data_ex(
+    /// 读取 flash 数据到文件（流式写入，带进度回调）
+    /// 每个 USB 数据包收到后立即写入文件并更新进度，避免全量内存占用。
+    /// 支持断点续传：通过 start_offset 指定从何处开始读取。
+    ///
+    /// 回调 on_packet(total_bytes_read: u64) 在每包写入后被调用。
+    pub(crate) fn readflash_to_file<F>(
         &mut self,
         addr: u64,
         size: u64,
         parttype: u32,
-    ) -> Result<Vec<u8>, String> {
-        // 1. get_packet_length (send_devctrl 0x040007 + status)
-        // Python: get_packet_length() → send_devctrl → if resp != "": status()
+        output_file: &str,
+        start_offset: u64,
+        on_packet: F,
+    ) -> Result<u64, String>
+    where
+        F: Fn(u64),
+    {
+        // 1. get_packet_length + status
         let _ = self.send_devctrl(0x040007, None);
         let _ = self.status();
 
-        // 2. cmd_read_data: xsend(CMD_READ_DATA) → status → send_param → status
+        // 2. cmd_read_data
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
         self.write_with_retry(&pkt, "readflash xsend")?;
         self.write_with_retry(&CMD_READ_DATA.to_le_bytes(), "readflash CMD")?;
-
         let st = self.status()?;
         if st != 0 {
             return Err(format!("READ_DATA status=0x{:08X}", st));
         }
 
-        // send_param: storage(4) + parttype(4) + addr(8) + size(8) + NandExtension(32)
-        // 这里的 size 保持调用方传入的"实际分区大小"，不要改成请求读取长度
+        // send_param
         let mut param = Vec::with_capacity(56);
-        param.extend_from_slice(&1u32.to_le_bytes()); // storage = 1 (eMMC)
-        param.extend_from_slice(&parttype.to_le_bytes()); // parttype: 1=boot1, 2=boot2, 3=rpmb, 8=user
+        param.extend_from_slice(&1u32.to_le_bytes());
+        param.extend_from_slice(&parttype.to_le_bytes());
         param.extend_from_slice(&addr.to_le_bytes());
         param.extend_from_slice(&size.to_le_bytes());
-        param.extend_from_slice(&[0u8; 32]); // NandExtension 全零
+        param.extend_from_slice(&[0u8; 32]);
         let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
         self.write_with_retry(&param_pkt, "readflash param_hdr")?;
         self.write_with_retry(&param, "readflash param")?;
-
         let st2 = self.status()?;
         if st2 != 0 {
             return Err(format!("send_param status=0x{:08X}", st2));
         }
 
-        // 3. 数据读取循环 — 对齐 Python xflash_lib.py:879-891 (filename="" 分支)
-        // 预分配 buffer，避免循环内多次重新分配（对大分区如 super 显著提升性能）
-        let mut buffer = Vec::with_capacity(size as usize);
-        let mut remaining = size as usize;
+        // 3. 流式读取循环：每包 → 写文件 → 回调
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(output_file)
+            .map_err(|e| format!("打开文件失败: {}", e))?;
 
-        while remaining > 0 {
+        let mut total_read: u64 = start_offset;
+        let target_remaining = size - start_offset;
+        let mut bytes_received: u64 = 0;
+
+        while bytes_received < target_remaining {
             // 读 12 字节头
             let mut hdr = [0u8; 12];
             match self.preloader.device.read_exact(&mut hdr) {
                 Ok(0) => {
-                    // ZLP 或空响应 — 设备无更多数据，正常结束
-                    trace!("[readflash_data] ZLP on header read, ending loop");
+                    trace!("[readflash_to_file] ZLP on header read, ending loop");
                     break;
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    trace!(
-                        "[readflash_data] read header error (end of transfer): {}",
-                        e
-                    );
+                    trace!("[readflash_to_file] read header error: {}", e);
                     break;
                 }
             }
@@ -96,11 +101,9 @@ impl<'a> DAXFlash<'a> {
             let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
 
             if magic != CMD_MAGIC {
-                // 读到非预期数据，可能是残留状态包，容错退出
                 trace!(
-                    "[readflash_data] bad magic: 0x{:08X} at offset {}, ending loop",
-                    magic,
-                    buffer.len()
+                    "[readflash_to_file] bad magic: 0x{:08X} at offset {}, ending",
+                    magic, total_read
                 );
                 break;
             }
@@ -110,27 +113,132 @@ impl<'a> DAXFlash<'a> {
             if slength > 0
                 && let Err(e) = self.preloader.device.read_exact(&mut data)
             {
+                trace!("[readflash_to_file] read data error: {}", e);
+                break;
+            }
+
+            // 心跳包跳过
+            if slength == 4 && data.iter().all(|&b| b == 0) {
+                trace!("[readflash_to_file] 心跳包，跳过");
+                continue;
+            }
+
+            // 写入文件
+            file.write_all(&data)
+                .map_err(|e| format!("写入文件失败: {}", e))?;
+
+            bytes_received += data.len() as u64;
+            total_read += data.len() as u64;
+
+            // 每 1MB flush 一次（平衡 IO 性能和数据安全）
+            if bytes_received % (1024 * 1024) < data.len() as u64 {
+                file.flush().ok();
+            }
+
+            // 更新进度
+            on_packet(total_read);
+
+            // 最后一包判断
+            if bytes_received >= target_remaining {
+                trace!("[readflash_to_file] 最后一包，跳过 ACK");
+                break;
+            }
+            if let Err(e) = self.ack_silent() {
+                trace!("[readflash_to_file] send_ack failed: {}", e);
+                break;
+            }
+        }
+
+        file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
+        trace!("[readflash_to_file] total read {} bytes", total_read);
+        Ok(total_read)
+    }
+
+    /// 读取 flash 数据（全量到内存），用于小分区或需要内存操作的场景
+    pub(crate) fn readflash_data_ex(
+        &mut self,
+        addr: u64,
+        size: u64,
+        parttype: u32,
+    ) -> Result<Vec<u8>, String> {
+        // 1. get_packet_length + status
+        let _ = self.send_devctrl(0x040007, None);
+        let _ = self.status();
+
+        // 2. cmd_read_data
+        let pkt = pack3(CMD_MAGIC, 0x01, 4);
+        self.write_with_retry(&pkt, "readflash xsend")?;
+        self.write_with_retry(&CMD_READ_DATA.to_le_bytes(), "readflash CMD")?;
+        let st = self.status()?;
+        if st != 0 {
+            return Err(format!("READ_DATA status=0x{:08X}", st));
+        }
+
+        // send_param
+        let mut param = Vec::with_capacity(56);
+        param.extend_from_slice(&1u32.to_le_bytes());
+        param.extend_from_slice(&parttype.to_le_bytes());
+        param.extend_from_slice(&addr.to_le_bytes());
+        param.extend_from_slice(&size.to_le_bytes());
+        param.extend_from_slice(&[0u8; 32]);
+        let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
+        self.write_with_retry(&param_pkt, "readflash param_hdr")?;
+        self.write_with_retry(&param, "readflash param")?;
+        let st2 = self.status()?;
+        if st2 != 0 {
+            return Err(format!("send_param status=0x{:08X}", st2));
+        }
+
+        // 3. 数据读取循环（全量到内存）
+        let mut buffer = Vec::with_capacity(size as usize);
+        let mut remaining = size as usize;
+
+        while remaining > 0 {
+            let mut hdr = [0u8; 12];
+            match self.preloader.device.read_exact(&mut hdr) {
+                Ok(0) => {
+                    trace!("[readflash_data] ZLP on header read, ending loop");
+                    break;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    trace!("[readflash_data] read header error: {}", e);
+                    break;
+                }
+            }
+
+            let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+            let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
+
+            if magic != CMD_MAGIC {
+                trace!(
+                    "[readflash_data] bad magic: 0x{:08X} at offset {}, ending loop",
+                    magic,
+                    buffer.len()
+                );
+                break;
+            }
+
+            let mut data = vec![0u8; slength as usize];
+            if slength > 0
+                && let Err(e) = self.preloader.device.read_exact(&mut data)
+            {
                 trace!("[readflash_data] read data error: {}", e);
                 break;
             }
 
-            // 心跳包处理（对齐 Python readflash: slength==4 且值为 0 → 跳过）
             if slength == 4 && data.iter().all(|&b| b == 0) {
                 trace!("[readflash_data] 心跳包，跳过");
                 continue;
             }
 
-            // 追加数据
             buffer.extend_from_slice(&data);
             remaining = remaining.saturating_sub(data.len());
 
-            // 发送 ACK（只发不读）
-            // 最后一个包之后设备不再接收写入，所以跳过
             if remaining == 0 {
                 trace!("[readflash_data] 最后一包，跳过 ACK");
                 break;
             }
-            // 关键：不在此处读 status！下一个数据包的包头就是 DA 对 ACK 的响应
             if let Err(e) = self.ack_silent() {
                 trace!("[readflash_data] send_ack failed: {}", e);
                 break;
