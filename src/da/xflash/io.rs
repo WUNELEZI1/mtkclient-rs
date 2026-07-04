@@ -33,6 +33,14 @@ impl<'a> DAXFlash<'a> {
     ///
     /// channel 容量上限 32 包（约 128MB @ 4MB/包），主线程满了会等待写入线程消费
     /// 这样 USB 读取不会被磁盘写入阻塞，实现真正的流水线并行
+    /// 激进优化版：读取 flash 数据到文件
+    /// 优化点：
+    ///   1. BufWriter 64MB 写入缓冲（Python open(wb, buffering=8MB) 的 8 倍）
+    ///   2. Batch 累积 8MB 后一次性 channel send（减少同步开销）
+    ///   3. Channel 容量 64（512MB 总缓冲 @ 8MB/包）
+    ///   4. 进度条更新间隔 16MB（减少锁竞争）
+    ///   5. 预分配 buffer 16MB（覆盖更大的 USB 包）
+    ///   6. 简化读取循环，移除高频 trace! 日志
     pub(crate) fn readflash_to_file<F>(
         &mut self,
         addr: u64,
@@ -45,11 +53,10 @@ impl<'a> DAXFlash<'a> {
     where
         F: Fn(u64),
     {
-        use std::io::Write;
+        use std::io::{BufWriter, Write};
         use std::sync::mpsc::{self, Receiver, SyncSender};
 
         // 对齐 Python readflash：在 cmd_read_data 之前先查询 get_packet_length
-        // send_devctrl + status() 调用序列是 DA 状态机所需的，省略会导致后续命令失败
         let _ = self.send_devctrl(0x040007, None);
         let _ = self.status();
 
@@ -77,67 +84,54 @@ impl<'a> DAXFlash<'a> {
             return Err(format!("send_param status=0x{:08X}", st2));
         }
 
-        // 创建 bounded channel（容量 32 包，与 Python Queue(maxsize=32) 一致）
-        // 数据类型：Vec<u8>（每包的原始数据）
-        const CHANNEL_CAP: usize = 32;
-        let (tx, rx): (SyncSender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::sync_channel(CHANNEL_CAP);
+        // === 激进优化：增大 channel 容量到 64，batch 8MB ===
+        const CHANNEL_CAP: usize = 64;
+        const BATCH_SIZE: usize = 8 * 1024 * 1024; // 8MB batch
+        const PROGRESS_INTERVAL: u64 = 16 * 1024 * 1024; // 16MB 进度更新
+        const MAX_PACKET_SIZE: usize = 0x1000000; // 16MB 预分配 buffer
+        const BUF_WRITER_CAP: usize = 64 * 1024 * 1024; // 64MB BufWriter
 
-        // 输出文件路径（给写入线程用）
+        let (tx, rx): (SyncSender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::sync_channel(CHANNEL_CAP);
         let output_path = output_file.to_string();
 
-        // 启动后台写入线程
+        // 启动后台写入线程（BufWriter 64MB）
         let writer_thread = std::thread::Builder::new()
             .name("flash_writer".into())
             .spawn(move || -> Result<(), String> {
-                let mut file = std::fs::OpenOptions::new()
+                let raw_file = std::fs::OpenOptions::new()
                     .append(true)
                     .create(true)
                     .open(&output_path)
                     .map_err(|e| format!("打开文件失败: {}", e))?;
+                let mut file = BufWriter::with_capacity(BUF_WRITER_CAP, raw_file);
 
-                // 8MB 写缓冲（与 Python open(wb, buffering=8*1024*1024) 一致）
-                let mut total_written: u64 = 0;
                 while let Ok(data) = rx.recv() {
                     if data.is_empty() {
-                        // 哨兵：结束信号
                         break;
                     }
                     file.write_all(&data)
                         .map_err(|e| format!("写入文件失败: {}", e))?;
-                    total_written += data.len() as u64;
-                    // 每 64MB flush 一次
-                    if total_written % (64 * 1024 * 1024) < data.len() as u64 {
-                        file.flush().ok();
-                    }
                 }
                 file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
-                trace!("[writer] 写入线程结束，总计写入 {} 字节", total_written);
                 Ok(())
             });
 
-        // ---- 主线程：USB 读取循环 ----
+        // ---- 主线程：USB 读取循环（batch 累积模式）----
         let mut total_read: u64 = start_offset;
         let target_remaining = size - start_offset;
         let mut bytes_received: u64 = 0;
-
-        // 预分配 buffer
-        const MAX_PACKET_SIZE: usize = 0x400000; // 4MB
         let mut data_buf = vec![0u8; MAX_PACKET_SIZE];
-
-        // 进度条更新间隔 1MB
-        const PROGRESS_INTERVAL: u64 = 1024 * 1024;
         let mut last_progress_pos: u64 = 0;
-
         let mut read_error: Option<String> = None;
+
+        // batch 累积 buffer
+        let mut batch: Vec<u8> = Vec::with_capacity(BATCH_SIZE);
 
         while bytes_received < target_remaining && read_error.is_none() {
             // 读 12 字节头
             let mut hdr = [0u8; 12];
             match self.preloader.device.read_exact(&mut hdr) {
-                Ok(0) => {
-                    trace!("[readflash] ZLP on header read, ending");
-                    break;
-                }
+                Ok(0) => break,
                 Ok(_) => {}
                 Err(e) => {
                     read_error = Some(format!("read header: {}", e));
@@ -149,28 +143,17 @@ impl<'a> DAXFlash<'a> {
             let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
 
             if magic != CMD_MAGIC {
-                trace!(
-                    "[readflash] bad magic: 0x{:08X} at offset {}, ending",
-                    magic, total_read
-                );
                 break;
             }
 
-            // 心跳包
             if slength == 4 {
                 self.preloader.device.read_exact(&mut data_buf[..4]).ok();
                 if data_buf[0] == 0 && data_buf[1] == 0 && data_buf[2] == 0 && data_buf[3] == 0 {
-                    trace!("[readflash] 心跳包，跳过");
-                    continue;
+                    continue; // 心跳包，跳过
                 }
-                let chunk = data_buf[..4].to_vec();
-                let chunk_len = 4u64;
-                if tx.send(chunk).is_err() {
-                    read_error = Some("写入线程已终止".into());
-                    break;
-                }
-                bytes_received += chunk_len;
-                total_read += chunk_len;
+                batch.extend_from_slice(&data_buf[..4]);
+                bytes_received += 4;
+                total_read += 4;
             } else if slength == 0 {
                 continue;
             } else if (slength as usize) <= MAX_PACKET_SIZE {
@@ -179,30 +162,30 @@ impl<'a> DAXFlash<'a> {
                     read_error = Some(format!("read data: {}", e));
                     break;
                 }
-                let chunk = data_buf[..slen].to_vec();
-                let chunk_len = slen as u64;
-                if tx.send(chunk).is_err() {
-                    read_error = Some("写入线程已终止".into());
-                    break;
-                }
-                bytes_received += chunk_len;
-                total_read += chunk_len;
+                batch.extend_from_slice(&data_buf[..slen]);
+                bytes_received += slen as u64;
+                total_read += slen as u64;
             } else {
                 let mut data = vec![0u8; slength as usize];
                 if let Err(e) = self.preloader.device.read_exact(&mut data) {
                     read_error = Some(format!("read data (large): {}", e));
                     break;
                 }
-                let chunk_len = data.len() as u64;
-                if tx.send(data).is_err() {
+                batch.extend_from_slice(&data);
+                bytes_received += data.len() as u64;
+                total_read += data.len() as u64;
+            }
+
+            // batch 满或最后一包时发送
+            if batch.len() >= BATCH_SIZE || bytes_received >= target_remaining {
+                if tx.send(std::mem::take(&mut batch)).is_err() {
                     read_error = Some("写入线程已终止".into());
                     break;
                 }
-                bytes_received += chunk_len;
-                total_read += chunk_len;
+                batch = Vec::with_capacity(BATCH_SIZE);
             }
 
-            // 进度条更新（每 1MB）
+            // 进度条更新（每 16MB）
             if total_read - last_progress_pos >= PROGRESS_INTERVAL {
                 on_packet(total_read);
                 last_progress_pos = total_read;
@@ -210,7 +193,6 @@ impl<'a> DAXFlash<'a> {
 
             // 最后一包判断
             if bytes_received >= target_remaining {
-                trace!("[readflash] 最后一包，跳过 ACK");
                 break;
             }
             if let Err(e) = self.ack_silent() {
@@ -219,27 +201,29 @@ impl<'a> DAXFlash<'a> {
             }
         }
 
+        // 发送剩余的 batch
+        if !batch.is_empty() && read_error.is_none() {
+            let _ = tx.send(batch);
+        }
+
         let writer_handle = match writer_thread {
             Ok(handle) => handle,
             Err(e) => return Err(format!("创建写入线程失败: {}", e)),
         };
 
-        // 发送结束哨兵
+        // 结束哨兵
         let _ = tx.send(Vec::new());
 
-        // 等待写入线程完成
         if let Err(e) = writer_handle.join().unwrap_or(Ok(())) {
             read_error = Some(e);
         }
 
-        // 最终进度更新
         on_packet(total_read);
 
         if let Some(e) = read_error {
             return Err(e);
         }
 
-        trace!("[readflash] total read {} bytes", total_read);
         Ok(total_read)
     }
 
