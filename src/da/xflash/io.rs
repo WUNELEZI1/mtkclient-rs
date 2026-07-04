@@ -40,7 +40,7 @@ impl<'a> DAXFlash<'a> {
     ///   3. Channel 容量 64（512MB 总缓冲 @ 8MB/包）
     ///   4. 进度条更新间隔 16MB（减少锁竞争）
     ///   5. 预分配 buffer 16MB（覆盖更大的 USB 包）
-    ///   6. 简化读取循环，移除高频 trace! 日志
+    ///   6. 文件预分配 set_len（避免写入时动态分配磁盘空间）
     pub(crate) fn readflash_to_file<F>(
         &mut self,
         addr: u64,
@@ -84,7 +84,7 @@ impl<'a> DAXFlash<'a> {
             return Err(format!("send_param status=0x{:08X}", st2));
         }
 
-        // === 激进优化：增大 channel 容量到 64，batch 8MB ===
+        // === 激进优化参数 ===
         const CHANNEL_CAP: usize = 64;
         const BATCH_SIZE: usize = 8 * 1024 * 1024; // 8MB batch
         const PROGRESS_INTERVAL: u64 = 16 * 1024 * 1024; // 16MB 进度更新
@@ -93,17 +93,30 @@ impl<'a> DAXFlash<'a> {
 
         let (tx, rx): (SyncSender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::sync_channel(CHANNEL_CAP);
         let output_path = output_file.to_string();
+        let target_remaining = size - start_offset;
 
-        // 启动后台写入线程（BufWriter 64MB）
+        // 启动后台写入线程（BufWriter 64MB + 文件预分配）
         let writer_thread = std::thread::Builder::new()
             .name("flash_writer".into())
             .spawn(move || -> Result<(), String> {
-                let raw_file = std::fs::OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(&output_path)
-                    .map_err(|e| format!("打开文件失败: {}", e))?;
+                use std::fs::File;
+                use std::io::Seek;
+
+                let raw_file =
+                    File::create(&output_path).map_err(|e| format!("创建文件失败: {}", e))?;
+                // 文件预分配：避免写入时动态分配磁盘空间导致碎片和性能下降
+                if start_offset > 0 {
+                    raw_file.set_len(start_offset + target_remaining).ok();
+                } else {
+                    raw_file.set_len(target_remaining).ok();
+                }
                 let mut file = BufWriter::with_capacity(BUF_WRITER_CAP, raw_file);
+
+                // 断点续传：跳过已写入部分
+                if start_offset > 0 {
+                    file.seek(std::io::SeekFrom::Start(start_offset))
+                        .map_err(|e| format!("seek 失败: {}", e))?;
+                }
 
                 while let Ok(data) = rx.recv() {
                     if data.is_empty() {
@@ -113,12 +126,12 @@ impl<'a> DAXFlash<'a> {
                         .map_err(|e| format!("写入文件失败: {}", e))?;
                 }
                 file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
+                trace!("[writer] 写入线程结束，总计写入 {} 字节", target_remaining);
                 Ok(())
             });
 
         // ---- 主线程：USB 读取循环（batch 累积模式）----
         let mut total_read: u64 = start_offset;
-        let target_remaining = size - start_offset;
         let mut bytes_received: u64 = 0;
         let mut data_buf = vec![0u8; MAX_PACKET_SIZE];
         let mut last_progress_pos: u64 = 0;
@@ -131,7 +144,10 @@ impl<'a> DAXFlash<'a> {
             // 读 12 字节头
             let mut hdr = [0u8; 12];
             match self.preloader.device.read_exact(&mut hdr) {
-                Ok(0) => break,
+                Ok(0) => {
+                    trace!("[readflash] ZLP on header read, ending");
+                    break;
+                }
                 Ok(_) => {}
                 Err(e) => {
                     read_error = Some(format!("read header: {}", e));
@@ -143,13 +159,18 @@ impl<'a> DAXFlash<'a> {
             let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
 
             if magic != CMD_MAGIC {
+                trace!(
+                    "[readflash] bad magic: 0x{:08X} at offset {}, ending",
+                    magic, total_read
+                );
                 break;
             }
 
             if slength == 4 {
                 self.preloader.device.read_exact(&mut data_buf[..4]).ok();
                 if data_buf[0] == 0 && data_buf[1] == 0 && data_buf[2] == 0 && data_buf[3] == 0 {
-                    continue; // 心跳包，跳过
+                    trace!("[readflash] 心跳包，跳过");
+                    continue;
                 }
                 batch.extend_from_slice(&data_buf[..4]);
                 bytes_received += 4;
@@ -193,6 +214,7 @@ impl<'a> DAXFlash<'a> {
 
             // 最后一包判断
             if bytes_received >= target_remaining {
+                trace!("[readflash] 最后一包，跳过 ACK");
                 break;
             }
             if let Err(e) = self.ack_silent() {
@@ -224,6 +246,7 @@ impl<'a> DAXFlash<'a> {
             return Err(e);
         }
 
+        trace!("[readflash] total read {} bytes", total_read);
         Ok(total_read)
     }
 
