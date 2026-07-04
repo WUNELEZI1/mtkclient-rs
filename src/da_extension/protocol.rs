@@ -11,7 +11,7 @@
 //! 设计原则：保持与 Python mtkclient xflash_lib.py 的协议层一一对应，
 //! 不依赖任何上层 DAXFlash 业务逻辑，方便单测与回溯。
 
-use log::{trace, warn};
+use log::{info, trace, warn};
 use std::time::Duration;
 
 use crate::da_extension::DAXFlash;
@@ -300,6 +300,19 @@ impl<'a> DAXFlash<'a> {
         } else {
             Err("sla_status empty".to_string())
         }
+    }
+
+    /// 设置 OEM 解锁开关状态（对齐 C# 版）
+    /// 命令 0x040009 用于控制 OEM 解锁状态
+    /// enable: true=解锁, false=锁定
+    pub fn set_oem_unlock(&mut self, enable: bool) -> Result<(), String> {
+        let value = if enable { 1u32 } else { 0u32 };
+        let _ = self.send_devctrl(0x040009, Some(&value.to_le_bytes()))?;
+        info!(
+            "OEM 解锁状态已设置: {}",
+            if enable { "解锁" } else { "锁定" }
+        );
+        Ok(())
     }
 }
 

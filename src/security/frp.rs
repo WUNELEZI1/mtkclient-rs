@@ -1,26 +1,27 @@
-use colored::Colorize;
-use log::info;
+use log::{info, warn};
 
 use crate::da_extension::DAXFlash;
 
 pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
-    info!("开始 FRP OEM 解锁...");
+    info!("FRP 解锁...");
 
-    let frp_part = find_frp_partition(da)?;
-    let (addr, size) = da.find_partition_addr(&frp_part)?;
+    // 1. 设置 OEM 开关状态为解锁（对齐 C# 版）
+    match da.set_oem_unlock(true) {
+        Ok(()) => info!("OEM 开关已设置为解锁"),
+        Err(e) => warn!("设置 OEM 开关失败 (不影响 FRP 解锁): {}", e),
+    }
 
-    info!(
-        "  找到 FRP 分区: {} @ 0x{:X}, 大小: 0x{:X}",
-        frp_part, addr, size
-    );
+    // 2. 读取 frp 分区
+    da.读取分区("frp", "frp_backup.bin")?;
+    let frp_data = std::fs::read("frp_backup.bin").map_err(|e| format!("读取备份失败: {}", e))?;
+    info!("frp 分区: {} 字节", frp_data.len());
 
-    let data = da.readflash_data(addr, size)?;
-    info!("  读取到 {} 字节", data.len());
+    // 3. 清零并写回
+    let cleared = vec![0u8; frp_data.len()];
+    std::fs::write("frp_cleared.bin", &cleared).map_err(|e| format!("写入临时文件失败: {}", e))?;
+    da.写入分区("frp", "frp_cleared.bin")?;
 
-    let modified = patch_frp_data(&data)?;
-
-    da.write_flash_data(addr, &modified, 1, 8)?;
-    info!("{}", "FRP OEM 解锁成功".green());
+    info!("FRP 已清零");
     Ok(())
 }
 

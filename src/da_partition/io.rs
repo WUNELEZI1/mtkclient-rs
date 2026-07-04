@@ -77,8 +77,58 @@ impl<'a> DAXFlash<'a> {
         }
     }
 
+    /// 解析特殊分区名（boot1/boot2/rpmb 等），返回 (parttype, addr, size)
+    /// parttype: 1=boot1, 2=boot2, 3=rpmb, 8=user
+    fn resolve_special_partition(&mut self, name: &str) -> Option<(u32, u64, u64)> {
+        let emmc = self.get_emmc_info().ok()?;
+        let lower = name.to_lowercase();
+        match lower.as_str() {
+            "boot1" | "emmc_boot1" => {
+                if emmc.boot1_size > 0 {
+                    Some((1, 0, emmc.boot1_size))
+                } else {
+                    None
+                }
+            }
+            "boot2" | "emmc_boot2" => {
+                if emmc.boot2_size > 0 {
+                    Some((2, 0, emmc.boot2_size))
+                } else {
+                    None
+                }
+            }
+            "rpmb" | "emmc_rpmb" => {
+                if emmc.rpmb_size > 0 {
+                    Some((3, 0, emmc.rpmb_size))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// 读取分区数据到文件
+    /// 支持 GPT 分区（如 system_a, vendor_a）和特殊 EMMC 分区（boot1, boot2, rpmb）
     pub fn 读取分区(&mut self, 分区名: &str, 输出文件: &str) -> Result<(), String> {
+        // 先尝试解析特殊分区（boot1/boot2/rpmb）
+        if let Some((parttype, addr, size)) = self.resolve_special_partition(分区名) {
+            info!(
+                "读取特殊分区 {} (parttype={}), addr=0x{:X}, size={} 字节",
+                分区名, parttype, addr, size
+            );
+            let data = self.readflash_data_ex(addr, size, parttype)?;
+            info!("  读取到 {} 字节", data.len());
+
+            let mut file = File::create(输出文件).map_err(|e| format!("创建文件失败: {}", e))?;
+            file.write_all(&data)
+                .map_err(|e| format!("写入文件失败: {}", e))?;
+
+            info!("  已保存到: {}", 输出文件);
+            return Ok(());
+        }
+
+        // GPT 分区读取
         if self.last_gpt_data.is_none() {
             self.read_gpt()?;
         }
@@ -188,17 +238,24 @@ impl<'a> DAXFlash<'a> {
     pub fn 写入分区(&mut self, 分区名: &str, 输入文件: &str) -> Result<(), String> {
         info!("写入文件 {} 到分区 {}...", 输入文件, 分区名);
 
-        // 如果无 GPT 缓存，自动读取 GPT 数据
-        if self.last_gpt_data.is_none() {
-            self.read_gpt()?;
-        }
-
         // 读取文件
         let 文件数据 = std::fs::read(输入文件).map_err(|e| format!("无法读取文件: {}", e))?;
         let 文件大小 = 文件数据.len();
 
-        // 找到分区地址和大小
-        let (地址, _分区大小) = self.find_partition_addr(分区名)?;
+        // 先尝试解析特殊分区（boot1/boot2/rpmb）
+        let (parttype, 地址) =
+            if let Some((pt, addr, _size)) = self.resolve_special_partition(分区名) {
+                info!("写入特殊分区 {} (parttype={})", 分区名, pt);
+                (pt, addr)
+            } else {
+                // 如果无 GPT 缓存，自动读取 GPT 数据
+                if self.last_gpt_data.is_none() {
+                    self.read_gpt()?;
+                }
+                // 找到分区地址
+                let (addr, _size) = self.find_partition_addr(分区名)?;
+                (8u32, addr) // parttype = USER
+            };
 
         let mut 数据 = 文件数据;
         // 对齐到 512 字节（Python: 如果长度不是 512 的倍数，补零）
@@ -210,7 +267,7 @@ impl<'a> DAXFlash<'a> {
         if 填充 > 0 {
             数据.resize(数据.len() + 填充, 0);
         }
-        self.write_flash_data(地址, &数据, 1, 8)?;
+        self.write_flash_data(地址, &数据, 1, parttype)?;
 
         info!("  写入完成: {} 字节写入分区 {}", 文件大小, 分区名);
         Ok(())
@@ -222,13 +279,20 @@ impl<'a> DAXFlash<'a> {
     pub fn 擦除分区(&mut self, 分区名: &str) -> Result<(), String> {
         info!("擦除分区 {}...", 分区名);
 
-        // 如果无 GPT 缓存，自动读取 GPT 数据
-        if self.last_gpt_data.is_none() {
-            self.read_gpt()?;
-        }
-
-        // 找到分区地址和大小
-        let (地址, 大小) = self.find_partition_addr(分区名)?;
+        // 先尝试解析特殊分区（boot1/boot2/rpmb）
+        let (parttype, 地址, 大小) =
+            if let Some((pt, addr, size)) = self.resolve_special_partition(分区名) {
+                info!("擦除特殊分区 {} (parttype={})", 分区名, pt);
+                (pt, addr, size)
+            } else {
+                // 如果无 GPT 缓存，自动读取 GPT 数据
+                if self.last_gpt_data.is_none() {
+                    self.read_gpt()?;
+                }
+                // 找到分区地址和大小
+                let (addr, size) = self.find_partition_addr(分区名)?;
+                (8u32, addr, size) // parttype = USER
+            };
 
         // 发送 FORMAT 命令
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
@@ -243,7 +307,7 @@ impl<'a> DAXFlash<'a> {
         // 发送参数: storage(4) + parttype(4) + addr(8) + size(8) + NandExtension(32)
         let mut param = Vec::with_capacity(56);
         param.extend_from_slice(&1u32.to_le_bytes()); // storage = EMMC
-        param.extend_from_slice(&8u32.to_le_bytes()); // parttype = USER
+        param.extend_from_slice(&parttype.to_le_bytes()); // parttype
         param.extend_from_slice(&地址.to_le_bytes());
         param.extend_from_slice(&大小.to_le_bytes());
         // NandExtension 全零（对齐 Python xflash_flash_param.py）

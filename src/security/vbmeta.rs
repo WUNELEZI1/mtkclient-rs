@@ -8,7 +8,22 @@ use crate::da_extension::DAXFlash;
 pub fn vbmeta_disable(da: &mut DAXFlash, mode: u32) -> Result<(), String> {
     info!("开始 vbmeta 禁用 (mode={})...", mode);
 
-    let candidates = ["vbmeta_a", "vbmeta_b", "vbmeta"];
+    // 扩展候选分区列表，对齐 C# 版支持的 vbmeta 变体
+    let candidates = [
+        "vbmeta_a",
+        "vbmeta_b",
+        "vbmeta",
+        "vbmeta_system_a",
+        "vbmeta_system_b",
+        "vbmeta_vendor_a",
+        "vbmeta_vendor_b",
+        "vbmeta_product_a",
+        "vbmeta_product_b",
+        "vbmeta_system_ext_a",
+        "vbmeta_system_ext_b",
+        "vbmeta_odm_a",
+        "vbmeta_odm_b",
+    ];
     let mut patched_any = false;
 
     for name in &candidates {
@@ -29,7 +44,7 @@ pub fn vbmeta_disable(da: &mut DAXFlash, mode: u32) -> Result<(), String> {
     }
 
     if !patched_any {
-        return Err("未找到 vbmeta 相关分区 (vbmeta_a/vbmeta_b/vbmeta)".to_string());
+        return Err("未找到 vbmeta 相关分区".to_string());
     }
 
     info!("{}", "vbmeta 禁用成功".green());
