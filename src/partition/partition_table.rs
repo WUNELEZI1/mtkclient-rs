@@ -44,41 +44,71 @@ pub fn parse_gpt_from_data(data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// 生成单个 scatter 分区块（标准 SP Flash Tool 格式）
+fn scatter_block(
+    name: &str,
+    physical_start_addr: u64,
+    partition_size: u64,
+    region: &str,
+    operation_type: &str,
+) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("{} 0x0", name.to_uppercase()));
+    lines.push("{".to_string());
+    lines.push(format!(
+        "  physical_start_addr: 0x{:X}",
+        physical_start_addr
+    ));
+    lines.push(format!("  partition_size: 0x{:X}", partition_size));
+    lines.push(format!("  region: {}", region));
+    lines.push("  storage: HW_STORAGE_EMMC".to_string());
+    lines.push("  boundary_check: true".to_string());
+    lines.push("  is_reserved: false".to_string());
+    lines.push(format!("  operation_type: {}", operation_type));
+    lines.push("  type: NORMAL_ROM".to_string());
+    lines.push("  reserve: 0x00".to_string());
+    lines.push("}".to_string());
+    lines.push(String::new());
+    lines.join("\n")
+}
+
 /// Scatter header 统一生成（PRELOADER + EMMC_BOOT_1 + EMMC_BOOT_2）
-/// console / file 输出共用，避免重复定义
+/// 标准 SP Flash Tool 格式
 pub fn generate_scatter_header() -> String {
-    let lines: Vec<String> = vec![
-        "PRELOADER 0x0".to_string(),
-        "{".to_string(),
-        "  <Physical_Storage_Type_1>".to_string(),
-        "  is_upgradeable: 1".to_string(),
-        "  is_download: 1".to_string(),
-        "  is_reserved: 0".to_string(),
-        "  linear_addr: 0x0".to_string(),
-        "}".to_string(),
-        String::new(),
-        "EMMC_BOOT_1 0x0".to_string(),
-        "{".to_string(),
-        "  type: EMMC_BOOT_1".to_string(),
-        "  is_upgradeable: 1".to_string(),
-        "  is_download: 1".to_string(),
-        "  is_reserved: 0".to_string(),
-        "}".to_string(),
-        String::new(),
-        "EMMC_BOOT_2 0x0".to_string(),
-        "{".to_string(),
-        "  type: EMMC_BOOT_2".to_string(),
-        "  is_upgradeable: 1".to_string(),
-        "  is_download: 1".to_string(),
-        "  is_reserved: 0".to_string(),
-        "}".to_string(),
-        String::new(),
-    ];
-    lines.join("\n") + "\n"
+    let mut blocks = String::new();
+
+    // PRELOADER: 属于 BOOTLOADERS 类型，region 为 EMMC_BOOT_1_BOOT2
+    blocks.push_str(&scatter_block(
+        "PRELOADER",
+        0x0,
+        0x0,
+        "EMMC_BOOT_1_BOOT2",
+        "BOOTLOADERS",
+    ));
+
+    // EMMC_BOOT_1
+    blocks.push_str(&scatter_block(
+        "EMMC_BOOT_1",
+        0x0,
+        0x0,
+        "EMMC_BOOT_1",
+        "UPDATE",
+    ));
+
+    // EMMC_BOOT_2
+    blocks.push_str(&scatter_block(
+        "EMMC_BOOT_2",
+        0x0,
+        0x0,
+        "EMMC_BOOT_2",
+        "UPDATE",
+    ));
+
+    blocks
 }
 
 /// 从 GPT 数据生成 SP Flash Tool 格式的 scatter 文件
-/// 对齐 C# 版：包含 PRELOADER 块、EMMC_BOOT_1/2 区域、无 {} 空行
+/// 标准格式对齐 MTK ptgen 输出
 pub fn generate_scatter_from_gpt(
     gpt_data: &[u8],
     output_file: &str,
@@ -88,29 +118,19 @@ pub fn generate_scatter_from_gpt(
     let mut scatter_lines: Vec<String> = Vec::new();
     let mut partition_info_list: Vec<(String, u64, u64, u32)> = Vec::new();
 
-    // 添加 PRELOADER + EMMC_BOOT_1 + EMMC_BOOT_2（统一入口）
-    let header = generate_scatter_header();
-    for line in header.lines() {
-        scatter_lines.push(line.to_string());
-    }
+    // 添加 PRELOADER + EMMC_BOOT_1 + EMMC_BOOT_2（标准格式）
+    scatter_lines.push(generate_scatter_header());
 
     // 遍历 GPT 分区表生成条目
     for entry in gpt_info.iter_partitions() {
-        // 生成 scatter 条目
-        scatter_lines.push(format!(
-            "{} 0x{:X}",
-            entry.name.to_uppercase(),
-            entry.start_addr
-        ));
-        scatter_lines.push("{".to_string());
-        scatter_lines.push("  is_upgradeable: 1".to_string());
-        scatter_lines.push("  is_download: 1".to_string());
-        scatter_lines.push("  is_reserved: 0".to_string());
-        scatter_lines.push("  reserve: 0".to_string());
-        scatter_lines.push("  operation: UPDATE".to_string());
-        scatter_lines.push(format!("  partition_size: 0x{:X}", entry.size));
-        scatter_lines.push("}".to_string());
-        scatter_lines.push(String::new());
+        let block = scatter_block(
+            &entry.name,
+            entry.start_addr,
+            entry.size,
+            "EMMC_USER",
+            "UPDATE",
+        );
+        scatter_lines.push(block);
 
         partition_info_list.push((entry.name, entry.start_addr, entry.size, 1));
     }
