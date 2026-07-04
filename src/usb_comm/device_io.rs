@@ -7,8 +7,8 @@
 //! - `清除输入端点停顿`/`清除输出端点停顿` — 复位 bulk 端点（stall）
 
 use super::context::LIBUSB错误_超时;
-use super::log::{QUIET_USB_READ, usb_trace};
 use super::device::USB设备;
+use super::log::{QUIET_USB_READ, usb_trace};
 use log::trace;
 use std::sync::atomic::Ordering;
 use std::time::Duration;

@@ -3,8 +3,8 @@
 //! 协议：逐字节发送 [A0, 0A, 50, 05]，每字节期望取反回复。
 //! Python 风格：失败计数器重置，最多 10 次重试，每次间隔 300ms。
 
-use super::log::usb_trace;
 use super::device::USB设备;
+use super::log::usb_trace;
 use log::info;
 use std::time::Duration;
 

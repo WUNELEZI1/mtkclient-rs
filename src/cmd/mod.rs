@@ -10,19 +10,19 @@
 //! - `handle_command`   — 单命令执行入口（处理 Phase1 dump/bypass + Phase2 DA 命令）
 
 pub mod cli;
-#[path = "partition_table.rs"]
-pub mod partition_table;
 #[path = "dump.rs"]
 pub mod dump;
 #[path = "io.rs"]
 pub mod io;
+#[path = "partition_table.rs"]
+pub mod partition_table;
 
 use colored::Colorize;
 use log::{error, info, warn};
 
 use crate::da_extension::DAXFlash;
-use crate::usb_comm::USB上下文;
 use crate::system::config::AppConfig;
+use crate::usb_comm::USB上下文;
 
 pub fn print_help() {
     println!("用法:");

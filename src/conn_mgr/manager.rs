@@ -11,11 +11,11 @@
 //! STEP 2: WinUSB 直连（降级路径，跳过握手）
 //! ```
 
-use crate::usb_comm;
-use crate::usb_comm::{USB上下文, USB阶段};
-use crate::system::config::工作模式;
 use crate::conn_mgr::driver::{UsbBusDetectionResult, detect_brom_driver_from_usb_bus};
 use crate::preloader::{Preloader, SerialPortTransport};
+use crate::system::config::工作模式;
+use crate::usb_comm;
+use crate::usb_comm::{USB上下文, USB阶段};
 use colored::Colorize;
 use log::{error, info, trace, warn};
 use std::time::Duration;
@@ -91,8 +91,7 @@ impl ConnectionManager {
                         // 解决方案：枚举所有 COM 口，逐个尝试 BROM 握手
                         warn!("[COM] 注册表匹配不到 COM 口，枚举所有 COM 口逐个尝试握手...");
 
-                        let all_ports =
-                            crate::conn_mgr::driver::detect::enumerate_all_com_ports();
+                        let all_ports = crate::conn_mgr::driver::detect::enumerate_all_com_ports();
                         if all_ports.is_empty() {
                             warn!("[COM] 系统中没有任何 COM 口，降级到 WinUSB 直连");
                             return self.fallback_to_winusb_with_retry(
@@ -483,13 +482,19 @@ impl ConnectionManager {
     }
 
     /// Preloader 模式初始化：等待 Preloader VCOM (PID=0x2000)，握手后直接返回
+    /// 如果找不到 Preloader 设备但检测到 BROM 设备，自动 fallback 到 BROM 模式
     fn smart_init_preloader(
         &mut self,
         context: &USB上下文,
     ) -> Result<(Preloader, DeviceMode), String> {
         info!("等待 Preloader VCOM 设备连接 (PID=0x2000)，无需按任何按键...");
 
+        let mut retry_count = 0u32;
+        const PRELOADER_MAX_RETRY: u32 = 50; // 约 10 秒 (50 * 200ms)
+
         loop {
+            retry_count += 1;
+
             // 1. 枚举 COM 口，找 PID=0x2000 的 Preloader VCOM
             if let Ok(ports) = serialport::available_ports() {
                 for p in &ports {
@@ -517,8 +522,7 @@ impl ConnectionManager {
             }
 
             // 2. 串口没找到，尝试 WinUSB（PID=0x2000）
-            if let Ok(usb_device) = usb_comm::USB设备::按VID_PID打开(context, 0x0E8D, 0x2000)
-            {
+            if let Ok(usb_device) = usb_comm::USB设备::按VID_PID打开(context, 0x0E8D, 0x2000) {
                 info!(
                     "[PRELOADER] WinUSB 设备已连接: VID={:04X} PID={:04X}",
                     usb_device.vid, usb_device.pid
@@ -537,6 +541,43 @@ impl ConnectionManager {
                         warn!("[PRELOADER] init 失败: {}，继续等待...", e);
                     }
                 }
+            }
+
+            // 3. 尝试一定次数后仍未找到 Preloader 设备，检测 BROM 设备并 fallback
+            if retry_count >= PRELOADER_MAX_RETRY {
+                warn!(
+                    "[PRELOADER] 等待 {} 次 (约 {} 秒) 未找到 Preloader 设备，尝试检测 BROM 设备...",
+                    retry_count,
+                    (retry_count * 200) / 1000
+                );
+
+                // 检测 BROM COM 口
+                if let Ok(ports) = serialport::available_ports() {
+                    for p in &ports {
+                        if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
+                            && info.vid == 0x0E8D
+                            && info.pid == 0x0003
+                        {
+                            warn!(
+                                "[PRELOADER] 检测到 BROM COM 口: {}，自动切换到 BROM 模式",
+                                p.port_name
+                            );
+                            return self.smart_init(context, crate::system::config::工作模式::Brom);
+                        }
+                    }
+                }
+
+                // 检测 BROM WinUSB 设备
+                if let Ok(_usb_device) =
+                    usb_comm::USB设备::按VID_PID打开(context, 0x0E8D, 0x0003)
+                {
+                    warn!("[PRELOADER] 检测到 BROM WinUSB 设备 (PID=0x0003)，自动切换到 BROM 模式");
+                    return self.smart_init(context, crate::system::config::工作模式::Brom);
+                }
+
+                // 重置计数器继续等待（给用户更多时间）
+                retry_count = 0;
+                warn!("[PRELOADER] 未检测到 BROM 设备，继续等待 Preloader 设备...");
             }
 
             std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
