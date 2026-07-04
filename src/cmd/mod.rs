@@ -166,9 +166,9 @@ pub fn handle_command(
             info!("DA 会话有效，执行 reinit...");
             da.reinit().map_err(|e| format!("DA reinit 失败: {}", e))?;
         } else {
-            warn!("DA 会话已失效，重新加载...");
-            da.daext = false;
-            da.upload_da().map_err(|e| format!("DA 加载失败: {}", e))?;
+            return Err(
+                "DA 会话已失效（USB 管道已断开）。请重启设备（长按电源键 10 秒）后重试。".into(),
+            );
         }
     } else {
         da.upload_da().map_err(|e| format!("DA 加载失败: {}", e))?;

@@ -45,9 +45,10 @@ codegen-units = 256
 lto = false
 
 [profile.release]
-# 发布模式：性能最强
+# 发布模式：最佳性能与稳定性
 opt-level = 3
-lto = "fat"               # 启用更激进的链接时优化
+lto = "fat"
 codegen-units = 1
+debug = false
 strip = true
-panic = "abort"           # 使用 abort 策略，减小二进制大小并略微提升性能
+panic = "abort"
