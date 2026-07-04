@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::da_extension::DAXFlash;
+use crate::da::DAXFlash;
 use aes::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit};
 use log::{debug, info, trace};
 use std::cell::RefCell;

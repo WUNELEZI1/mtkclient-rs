@@ -20,9 +20,9 @@ pub mod partition_table;
 use colored::Colorize;
 use log::{error, info, warn};
 
-use crate::da_extension::DAXFlash;
+use crate::da::DAXFlash;
 use crate::system::config::AppConfig;
-use crate::usb_comm::USB上下文;
+use crate::usb::USB上下文;
 
 pub fn print_help() {
     println!("用法:");

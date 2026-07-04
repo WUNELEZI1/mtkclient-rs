@@ -3,7 +3,7 @@
 use colored::Colorize;
 use log::info;
 
-use crate::da_extension::DAXFlash;
+use crate::da::DAXFlash;
 
 pub fn vbmeta_disable(da: &mut DAXFlash, mode: u32) -> Result<(), String> {
     info!("开始 vbmeta 禁用 (mode={})...", mode);

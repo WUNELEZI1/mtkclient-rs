@@ -12,28 +12,24 @@ unsafe extern "system" {
 
 #[path = "cmd/mod.rs"]
 mod cmd;
-#[path = "conn_mgr/mod.rs"]
-mod conn_mgr;
-#[path = "da_ext_cmd/mod.rs"]
-mod da_ext_cmd;
-#[path = "da_extension/mod.rs"]
-mod da_extension;
-#[path = "da_loader/mod.rs"]
-mod da_loader;
-#[path = "da_partition/mod.rs"]
-mod da_partition;
+#[path = "connection/mod.rs"]
+mod connection;
+#[path = "da/mod.rs"]
+mod da;
 #[path = "exploit/mod.rs"]
 mod exploit;
+#[path = "partition/mod.rs"]
+mod partition;
 #[path = "preloader/mod.rs"]
 mod preloader;
 #[path = "security/mod.rs"]
 mod security;
 mod system;
-#[path = "usb_comm/mod.rs"]
-mod usb_comm;
+#[path = "usb/mod.rs"]
+mod usb;
 
-use conn_mgr::ConnectionManager;
-use usb_comm::USB上下文;
+use connection::ConnectionManager;
+use usb::USB上下文;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
@@ -68,12 +64,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     {
         if !cli.no_elevate
-            && !conn_mgr::driver::is_admin()
+            && !connection::driver::is_admin()
             && std::env::var_os("MTKCLIENT_ELEVATED").is_none()
         {
             // 提示用户（UAC 弹窗会覆盖这个）
             eprintln!("[MAIN] 需要管理员权限以安装 WinUSB 驱动，正在请求提权...");
-            if let Err(e) = conn_mgr::driver::restart_as_admin() {
+            if let Err(e) = connection::driver::restart_as_admin() {
                 eprintln!("[MAIN] 提权失败: {}", e);
                 eprintln!(
                     "[MAIN] 请右键以管理员身份运行本程序，或加 --检测管理员权限 跳过（将无法切换 WinUSB）"
@@ -86,11 +82,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_config = system::config::AppConfig::from_cli(&cli);
 
-    usb_comm::设置USB日志开关(cli.usb_log);
+    usb::设置USB日志开关(cli.usb_log);
 
     // --quiet-dump: 抑制 USB 读取日志和进度条
     if cli.quiet_dump {
-        usb_comm::设置USB读取静默(true);
+        usb::设置USB读取静默(true);
     }
 
     let log_level = if cli.quiet {
@@ -194,35 +190,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   2. 读 .state 文件，检查 da_loaded 标志和 VID/PID 匹配
     //   3. 如果复用条件满足 → connect_to_da_mode（直接连接 PID=0x2000）
     //   4. 否则 → 走正常的 smart_init 流程
-    let da_session_reused = if let Some((current_vid, current_pid, _dev_type)) =
-        usb_comm::获取第一个联发科VIDPID()
-    {
-        if current_pid == 0x0003 {
-            // 核心修复：如果当前设备是 BROM (0003)，说明设备已重启，必须重置 DA 会话
-            trace!("[session] 检测到 BROM 设备，强制重置旧的 DA 会话状态");
-            crate::conn_mgr::reset_session();
-            false
-        } else if crate::conn_mgr::try_reuse_da_session(current_vid, current_pid) {
-            info!(
-                "{}",
-                "[DA_SESSION] 检测到现有 DA 会话，尝试复用..."
-                    .green()
-                    .bold()
-            );
-            true
+    let da_session_reused =
+        if let Some((current_vid, current_pid, _dev_type)) = usb::获取第一个联发科VIDPID() {
+            if current_pid == 0x0003 {
+                // 核心修复：如果当前设备是 BROM (0003)，说明设备已重启，必须重置 DA 会话
+                trace!("[session] 检测到 BROM 设备，强制重置旧的 DA 会话状态");
+                crate::connection::reset_session();
+                false
+            } else if crate::connection::try_reuse_da_session(current_vid, current_pid) {
+                info!(
+                    "{}",
+                    "[DA_SESSION] 检测到现有 DA 会话，尝试复用..."
+                        .green()
+                        .bold()
+                );
+                true
+            } else {
+                false
+            }
         } else {
             false
-        }
-    } else {
-        false
-    };
+        };
 
     let (mut preloader, _mode) = if da_session_reused {
         match conn_mgr.connect_to_da_mode(&usb_context) {
             Ok(pair) => pair,
             Err(e) => {
                 warn!("[DA_SESSION] DA 会话复用失败: {}，回退到正常流程", e);
-                crate::conn_mgr::reset_session();
+                crate::connection::reset_session();
                 conn_mgr.smart_init(&usb_context, 工作模式)?
             }
         }
@@ -255,7 +250,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let mut da = da_extension::DAXFlash::new(&mut preloader);
+    let mut da = da::DAXFlash::new(&mut preloader);
     da.patch_da = cli.patch_da;
     da.da_x_speed = app_config.da_x_speed;
 

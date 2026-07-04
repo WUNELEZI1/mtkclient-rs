@@ -1,6 +1,6 @@
 use log::{info, warn};
 
-use crate::da_extension::DAXFlash;
+use crate::da::DAXFlash;
 
 pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
     info!("FRP 解锁...");

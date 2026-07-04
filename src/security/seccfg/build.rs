@@ -6,7 +6,7 @@
 use log::info;
 use sha2::{Digest, Sha256};
 
-use crate::da_extension::DAXFlash;
+use crate::da::DAXFlash;
 use crate::security::sej::{sej_hacc_sign, with_backend};
 
 use super::v4::SecCfgV4;
