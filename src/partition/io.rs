@@ -188,14 +188,13 @@ impl<'a> DAXFlash<'a> {
             .progress_chars("█▓░"),
         );
         bar.set_message(format!("读取: {}", 分区名));
-        bar.enable_steady_tick(Duration::from_millis(100));
+        bar.enable_steady_tick(Duration::from_millis(500));
         bar.set_position(start_offset);
 
         // 流式读取：每个 USB 包写入文件后立即更新进度条
         let read_addr = addr + start_offset;
-        let remaining = size - start_offset;
         let total =
-            self.readflash_to_file(read_addr, remaining, parttype, 输出文件, start_offset, {
+            self.readflash_to_file(read_addr, size, parttype, 输出文件, start_offset, {
                 let bar = bar.clone();
                 move |bytes_read| {
                     bar.set_position(bytes_read);

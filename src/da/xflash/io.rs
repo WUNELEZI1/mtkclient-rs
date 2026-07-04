@@ -87,7 +87,7 @@ impl<'a> DAXFlash<'a> {
         // === 激进优化参数 ===
         const CHANNEL_CAP: usize = 64;
         const BATCH_SIZE: usize = 8 * 1024 * 1024; // 8MB batch
-        const PROGRESS_INTERVAL: u64 = 16 * 1024 * 1024; // 16MB 进度更新
+        const PROGRESS_INTERVAL: u64 = 4 * 1024 * 1024; // 4MB 进度更新
         const MAX_PACKET_SIZE: usize = 0x1000000; // 16MB 预分配 buffer
         const BUF_WRITER_CAP: usize = 64 * 1024 * 1024; // 64MB BufWriter
 
@@ -108,11 +108,8 @@ impl<'a> DAXFlash<'a> {
                         .open(&output_path)
                         .map_err(|e| format!("打开文件失败: {}", e))?
                 } else {
-                    // 新文件：预分配完整大小避免写入时动态扩展
-                    let f = File::create(&output_path)
-                        .map_err(|e| format!("创建文件失败: {}", e))?;
-                    f.set_len(target_remaining).ok();
-                    f
+                    File::create(&output_path)
+                        .map_err(|e| format!("创建文件失败: {}", e))?
                 };
                 let mut file = BufWriter::with_capacity(BUF_WRITER_CAP, raw_file);
 
