@@ -48,6 +48,11 @@ impl<'a> DAXFlash<'a> {
         use std::io::Write;
         use std::sync::mpsc::{self, Receiver, SyncSender};
 
+        // 对齐 Python readflash：在 cmd_read_data 之前先查询 get_packet_length
+        // send_devctrl + status() 调用序列是 DA 状态机所需的，省略会导致后续命令失败
+        let _ = self.send_devctrl(0x040007, None);
+        let _ = self.status();
+
         // cmd_read_data
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
         self.write_with_retry(&pkt, "readflash xsend")?;

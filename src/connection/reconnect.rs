@@ -139,15 +139,42 @@ impl ConnectionManager {
         Err(format!("快速连接失败 ({} 次重试)", retries))
     }
 
-    /// DA 会话复用入口：直接连接到已处于 DA 模式的设备（PID=0x2000）
+    /// DA 会话复用入口：直接连接到已处于 DA 模式的设备
+    /// MTK 设备加载 DA 后通常仍使用 PID=0x0003（与 BROM 相同），
+    /// 所以不能只等待 PID=0x2000，应该直接打开当前已枚举的设备
     pub fn connect_to_da_mode(
         &mut self,
         context: &USB上下文,
     ) -> Result<(Preloader, DeviceMode), String> {
-        info!("[DA_SESSION] 直接连接 DA 模式设备 (PID=0x2000)...");
-        info!("[DA_SESSION] 等待 Preloader 设备出现 (PID=0x2000)...");
+        // 从 .state 获取上次使用的 VID/PID
+        let state = match crate::connection::SessionState::load() {
+            Some(s) => s,
+            None => return Err("[DA_SESSION] .state 不存在".to_string()),
+        };
 
-        let usb_device = self.reconnect_loop(context, USB阶段::Preloader)?;
+        info!(
+            "[DA_SESSION] 尝试连接 DA 设备 (VID={:04X}, PID={:04X})...",
+            state.usb_vid, state.usb_pid
+        );
+
+        // 直接用 .state 中的 VID/PID 打开设备（不等待特定 PID）
+        let usb_device =
+            match usb::USB设备::按VID_PID打开(context, state.usb_vid, state.usb_pid) {
+                Ok(dev) => dev,
+                Err(e) => {
+                    // 如果指定 PID 打开失败，尝试扫描所有已知 MTK PID
+                    warn!(
+                        "[DA_SESSION] PID={:04X} 打开失败 ({})，扫描所有 MTK PID...",
+                        state.usb_pid, e
+                    );
+                    let usb_device = self.reconnect_loop(context, USB阶段::未知)?;
+                    info!(
+                        "[DA_SESSION] 扫描连接成功: VID={:04X}, PID={:04X}",
+                        usb_device.vid, usb_device.pid
+                    );
+                    usb_device
+                }
+            };
 
         info!(
             "[DA_SESSION] DA 设备已连接: VID={:04X}, PID={:04X}, stage={:?}",
@@ -160,17 +187,15 @@ impl ConnectionManager {
 
         // 从 .state 恢复 chip 配置（如果 .state 中有 hw_code）
         #[allow(clippy::collapsible_if)]
-        if let Some(state) = crate::connection::SessionState::load() {
-            if let Some(chip) = crate::system::config::CHIP_CONFIGS
-                .iter()
-                .find(|c| c.hw_code == state.hw_code)
-            {
-                preloader.chip = Some(*chip);
-                info!(
-                    "[DA_SESSION] 从 .state 恢复 chip 配置: HW code=0x{:04X}",
-                    state.hw_code
-                );
-            }
+        if let Some(chip) = crate::system::config::CHIP_CONFIGS
+            .iter()
+            .find(|c| c.hw_code == state.hw_code)
+        {
+            preloader.chip = Some(*chip);
+            info!(
+                "[DA_SESSION] 从 .state 恢复 chip 配置: HW code=0x{:04X}",
+                state.hw_code
+            );
         }
 
         self.mode = DeviceMode::Brom;
