@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use colored::Colorize;
-use log::{error, info, trace, warn};
+use log::{error, info, warn};
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" {
@@ -192,12 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   4. 否则 → 走正常的 smart_init 流程
     let da_session_reused =
         if let Some((current_vid, current_pid, _dev_type)) = usb::获取第一个联发科VIDPID() {
-            if current_pid == 0x0003 {
-                // 核心修复：如果当前设备是 BROM (0003)，说明设备已重启，必须重置 DA 会话
-                trace!("[session] 检测到 BROM 设备，强制重置旧的 DA 会话状态");
-                crate::connection::reset_session();
-                false
-            } else if crate::connection::try_reuse_da_session(current_vid, current_pid) {
+            if crate::connection::try_reuse_da_session(current_vid, current_pid) {
                 info!(
                     "{}",
                     "[DA_SESSION] 检测到现有 DA 会话，尝试复用..."

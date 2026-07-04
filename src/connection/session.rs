@@ -95,19 +95,10 @@ impl SessionState {
 }
 
 /// 尝试复用现有 DA 会话
-/// 如果 .state 存在且设备已处于 DA 模式（PID=0x2000 / 0x0005），跳过 BROM→DA 流程
+/// 如果 .state 存在且 da_loaded=true，跳过 BROM→DA 流程。
+/// 真正的 DA 模式验证由后续的 check_da_session / reinit 完成（心跳检测），
+/// 不在此处通过 PID 过滤，因为 MTK 设备在 BROM/DA 模式下通常都使用 PID=0x0003。
 pub fn try_reuse_da_session(vid: u16, pid: u16) -> bool {
-    // 核心安全检查：只有当设备明确处于 DA 模式时，才允许复用
-    // PID 0x2000 是标准的 DA 模式 PID
-    // PID 0x0005 是某些旧芯片或特定 DA 的 PID
-    if pid != 0x2000 && pid != 0x0005 {
-        trace!(
-            "[session] 设备 PID=0x{:04X} 不属于 DA 模式，拒绝复用会话",
-            pid
-        );
-        return false;
-    }
-
     if let Some(state) = SessionState::load() {
         if state.da_loaded && state.device_online(vid, pid) {
             info!(
