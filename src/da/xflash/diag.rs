@@ -9,6 +9,7 @@
 //! 拆分动机：这些方法都是"只读 / 元信息"操作，不参与 DA 加载主流程。
 
 use log::{info, trace, warn};
+use std::time::Duration;
 
 use crate::da::xflash::{DAXFlash, EmmcInfo};
 
@@ -17,7 +18,11 @@ use crate::da::xflash::{DAXFlash, EmmcInfo};
 // =============================================================================
 
 impl<'a> DAXFlash<'a> {
-    /// 重新初始化（获取 EMMC/芯片信息等）
+    /// 重新初始化（获取 EMMC/芯片信息 + USB 高速重连）
+    /// 对齐 Python reinit(True)：
+    ///   1. 查询设备信息（RAM/EMMC/chip/DA version）
+    ///   2. get_usb_speed() → 如果 full-speed 且 reconnect=True →
+    ///      set_usb_speed() → reset_device → sleep(2s) → reopen
     pub(crate) fn reinit(&mut self) -> Result<(), String> {
         // GET_RAM_INFO
         match self.send_devctrl(0x010107, None) {
@@ -63,7 +68,95 @@ impl<'a> DAXFlash<'a> {
             );
         }
 
+        // === USB 高速重连（对齐 Python reinit 核心提速步骤）===
+        // Python: speed = self.get_usb_speed()
+        //         if speed == "full-speed" and self.daconfig.reconnect:
+        //             self.set_usb_speed()
+        //             self.mtk.port.close(reset=True)
+        //             time.sleep(2)
+        //             while not self.mtk.port.cdc.connect():
+        //                 time.sleep(0.5)
+        //             self.mtk.port.cdc.set_fast_mode(True)
+        self.try_usb_high_speed_reconnect();
+
         Ok(())
+    }
+
+    /// USB 高速重连：检测当前速度，如果是 full-speed 则切换并重连
+    pub(crate) fn try_usb_high_speed_reconnect(&mut self) {
+        let speed = match self.get_usb_speed() {
+            Ok(s) => s,
+            Err(e) => {
+                trace!("[RECONNECT] get_usb_speed 失败: {}，跳过重连", e);
+                return;
+            }
+        };
+
+        if speed != "full-speed" {
+            info!("[RECONNECT] 当前 USB 速度: {}，无需重连", speed);
+            return;
+        }
+
+        info!("[RECONNECT] 检测到 full-speed，执行高速重连...");
+
+        // 1. 命令设备切换到高速
+        if let Err(e) = self.set_usb_speed() {
+            warn!("[RECONNECT] set_usb_speed 失败: {}，跳过重连", e);
+            return;
+        }
+
+        // 2. USB 总线复位（触发设备以新速度重新枚举）
+        if let Err(e) = self.preloader.device.reset_device() {
+            warn!("[RECONNECT] USB reset 失败: {}，跳过重连", e);
+            return;
+        }
+
+        // 3. 释放旧 USB 句柄
+        if let Err(e) = self.preloader.device.close_device() {
+            warn!("[RECONNECT] 关闭旧 USB 句柄失败: {}，跳过重连", e);
+            return;
+        }
+        info!("[RECONNECT] 已关闭旧 USB 句柄，等待设备重新枚举...");
+
+        // 4. 等待设备重新枚举（2 秒，对齐 Python time.sleep(2)）
+        std::thread::sleep(Duration::from_secs(2));
+
+        // 5. 重新打开 USB 设备
+        let usb_context = match crate::usb::USB上下文::新建() {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                warn!("[RECONNECT] 创建 USB 上下文失败: {}，重连终止", e);
+                return;
+            }
+        };
+
+        // 循环尝试打开设备（对齐 Python while not connect()）
+        let max_retries = 10;
+        for attempt in 1..=max_retries {
+            match self.preloader.device.reopen_device(&usb_context) {
+                Ok(_) => {
+                    info!(
+                        "[RECONNECT] USB 高速重连成功 (第 {} 次尝试)，读取速度将显著提升",
+                        attempt
+                    );
+                    return;
+                }
+                Err(e) => {
+                    trace!(
+                        "[RECONNECT] 第 {}/{} 次尝试失败: {}",
+                        attempt, max_retries, e
+                    );
+                    if attempt < max_retries {
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                }
+            }
+        }
+
+        warn!(
+            "[RECONNECT] USB 重连失败（{} 次尝试），保持当前连接",
+            max_retries
+        );
     }
 
     /// 获取 EMMC 完整信息（Boot1/Boot2/RPMB/User Size/Block Size/CID）

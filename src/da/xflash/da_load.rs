@@ -110,7 +110,9 @@ impl<'a> DAXFlash<'a> {
         }
 
         if self.da_x_speed >= 3 {
-            trace!("[SPEED3] 跳过 reinit");
+            // 极速模式：跳过设备信息查询，但仍执行 USB 高速重连
+            trace!("[SPEED3] 跳过设备信息查询，直接执行 USB 高速重连");
+            self.try_usb_high_speed_reconnect();
         } else if let Err(e) = self.reinit() {
             warn!("reinit 失败: {}", e);
         }

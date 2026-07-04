@@ -283,6 +283,22 @@ impl USB设备 {
         }
     }
 
+    /// USB 总线复位（对齐 Python device.reset()）
+    /// 触发设备重新枚举，用于 DA2 加载后从 full-speed 切换到 high-speed
+    pub fn reset_device(&mut self) -> Result<(), String> {
+        unsafe {
+            if self.设备句柄.is_null() {
+                return Err("设备句柄为空".into());
+            }
+            let ret = libusb1_sys::libusb_reset_device(self.设备句柄);
+            if ret != 0 {
+                return Err(format!("USB reset 失败: {}", ret));
+            }
+            info!("[USB] 设备已复位，等待重新枚举...");
+            Ok(())
+        }
+    }
+
     /// 重新打开 USB 设备:关闭旧句柄,等待设备稳定,重新打开并 claim interface
     pub fn 重新打开(&mut self, context: &USB上下文) -> Result<(), String> {
         self.关闭();

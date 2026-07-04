@@ -317,6 +317,43 @@ impl<'a> DAXFlash<'a> {
         );
         Ok(())
     }
+
+    /// 查询当前 USB 速度（对齐 Python get_usb_speed）
+    /// 返回 "full-speed" / "high-speed" / "hyper-speed" 或空字符串
+    pub(crate) fn get_usb_speed(&mut self) -> Result<String, String> {
+        let data = self.send_devctrl(0x010115, None)?; // GET_USB_SPEED
+        if data.is_empty() {
+            return Err("get_usb_speed 返回空".to_string());
+        }
+        let speed = String::from_utf8_lossy(&data).trim().to_string();
+        trace!("  USB 速度: {}", speed);
+        Ok(speed)
+    }
+
+    /// 命令设备切换到更高 USB 速度（对齐 Python set_usb_speed）
+    /// 发送 SWITCH_USB_SPEED + magic 0x0E8D2001
+    pub(crate) fn set_usb_speed(&mut self) -> Result<(), String> {
+        // Python: self.xsend(self.Cmd.SWITCH_USB_SPEED) + status
+        let pkt = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&pkt)?;
+        self.preloader.device.write(&0x010114u32.to_le_bytes())?; // SWITCH_USB_SPEED
+        let st = self.status()?;
+        if st != 0 {
+            return Err(format!("SWITCH_USB_SPEED 状态: 0x{:08X}", st));
+        }
+
+        // Python: self.xsend(pack("<I", 0x0E8D2001)) + status
+        let pkt2 = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&pkt2)?;
+        self.preloader.device.write(&0x0E8D2001u32.to_le_bytes())?; // MediaTek USB VID magic
+        let st2 = self.status()?;
+        if st2 != 0 {
+            return Err(format!("set_usb_speed magic 状态: 0x{:08X}", st2));
+        }
+
+        info!("已发送 USB 速度切换命令");
+        Ok(())
+    }
 }
 
 // =============================================================================
