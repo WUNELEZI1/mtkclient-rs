@@ -9,7 +9,7 @@
 //!    避免在串口实现中重复冗余代码。
 //! 2. 串口实现负责扫描可用 COM 口并区分 WinUSB / 串口驱动的 BROM 设备。
 
-use crate::usb_comm::USB设备;
+use crate::usb::USB设备;
 use log::trace;
 use std::fs::OpenOptions;
 use std::time::Duration;
@@ -171,7 +171,7 @@ impl SerialPortTransport {
                         }
 
                         if let Some(usb_info) =
-                            crate::conn_mgr::driver::query_com_port_usb_info(&p.port_name)
+                            crate::connection::driver::query_com_port_usb_info(&p.port_name)
                         {
                             trace!(
                                 "COM 口 {} 设备信息: desc='{}', mfg='{}'",

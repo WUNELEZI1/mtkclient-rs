@@ -5,8 +5,8 @@
 use colored::Colorize;
 use log::{info, warn};
 
-use crate::da_extension::DAXFlash;
-use crate::usb_comm::USB上下文;
+use crate::da::DAXFlash;
+use crate::usb::USB上下文;
 
 /// 提取 Preloader（mtkclient 风格）
 /// 流程：

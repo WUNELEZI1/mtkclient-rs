@@ -4,7 +4,7 @@
 
 use log::info;
 
-use crate::da_extension::DAXFlash;
+use crate::da::DAXFlash;
 
 use super::build::build_v4_image_online;
 use super::v3::SecCfgV3;

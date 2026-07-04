@@ -11,7 +11,7 @@
 use colored::Colorize;
 use log::{info, warn};
 
-use crate::da_extension::DAXFlash;
+use crate::da::DAXFlash;
 
 /// 读取分区数据到文件
 pub fn cmd_read(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -72,14 +72,14 @@ pub fn cmd_reset(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error>> {
         Ok(()) => {
             info!("{}", "设备已通过 DA 重启".green());
             // 设备重启后会退出 DA 模式，下次启动时无法复用会话
-            crate::conn_mgr::reset_session();
+            crate::connection::reset_session();
             Ok(())
         }
         Err(e) => {
             warn!("DA 重启失败，回退到 BROM jump_bl: {}", e);
             da.close_device(true);
             // 设备重启后会退出 DA 模式，下次启动时无法复用会话
-            crate::conn_mgr::reset_session();
+            crate::connection::reset_session();
             info!("{}", "设备已重启".green());
             Ok(())
         }

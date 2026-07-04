@@ -12,8 +12,8 @@ use colored::Colorize;
 use log::{error, info, trace, warn};
 use std::time::SystemTime;
 
-use crate::da_extension::DAXFlash;
-use crate::da_partition::generate_scatter_from_gpt;
+use crate::da::DAXFlash;
+use crate::partition::generate_scatter_from_gpt;
 use crate::system::config::AppConfig;
 
 /// 打印 GPT 分区表
@@ -94,7 +94,7 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
 }
 
 /// 打印完整 EMMC 信息（对齐 C# 版输出格式）
-fn print_emmc_info(info: &crate::da_extension::EmmcInfo) {
+fn print_emmc_info(info: &crate::da::EmmcInfo) {
     // 格式化字节数为人类可读字符串
     fn fmt_bytes(b: u64) -> String {
         if b >= 1_073_741_824 {
@@ -235,7 +235,7 @@ fn format_bytes_comma(bytes: u64) -> String {
 /// 打印 GPT 表格到控制台（含 eMMC_Boot1/Boot2 显示）
 /// 使用 ASCII 表格风格: | 和 - 作为分隔符，列标签中文
 fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64) {
-    let gpt_info = match crate::da_partition::GptInfo::parse(data) {
+    let gpt_info = match crate::partition::GptInfo::parse(data) {
         Ok(info) => info,
         Err(_) => return,
     };
@@ -405,8 +405,7 @@ pub fn cmd_read_all(
     };
 
     let gpt_data = da.get_last_gpt_data()?.clone();
-    let gpt_info = crate::da_partition::GptInfo::parse(&gpt_data)?;
-
+    let gpt_info = crate::partition::GptInfo::parse(&gpt_data)?;
     let mut read_count = 0usize;
     let mut skip_count = 0usize;
 
@@ -459,7 +458,7 @@ pub fn cmd_write_all(
     }
 
     let gpt_data = da.get_last_gpt_data()?.clone();
-    let gpt_info = crate::da_partition::GptInfo::parse(&gpt_data)?;
+    let gpt_info = crate::partition::GptInfo::parse(&gpt_data)?;
 
     let mut 写入计数 = 0usize;
     let mut 跳过计数 = 0usize;
@@ -524,7 +523,7 @@ pub fn cmd_print_scatter(
     }
 
     let gpt_data = da.get_last_gpt_data()?;
-    let gpt_info = crate::da_partition::GptInfo::parse(gpt_data)?;
+    let gpt_info = crate::partition::GptInfo::parse(gpt_data)?;
 
     println!();
     println!(
@@ -533,7 +532,7 @@ pub fn cmd_print_scatter(
     );
     println!();
 
-    let header = crate::da_partition::generate_scatter_header();
+    let header = crate::partition::generate_scatter_header();
     for line in header.lines() {
         println!("{}", line);
     }
