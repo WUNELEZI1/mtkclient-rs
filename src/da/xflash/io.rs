@@ -85,9 +85,9 @@ impl<'a> DAXFlash<'a> {
         }
 
         // === 激进优化参数 ===
-        const CHANNEL_CAP: usize = 64;
-        const BATCH_SIZE: usize = 8 * 1024 * 1024; // 8MB batch
-        const PROGRESS_INTERVAL: u64 = 4 * 1024 * 1024; // 4MB 进度更新
+        const CHANNEL_CAP: usize = 128;
+        const BATCH_SIZE: usize = 16 * 1024 * 1024; // 16MB batch
+        const PROGRESS_INTERVAL: u64 = 1 * 1024 * 1024; // 1MB 进度更新
         const MAX_PACKET_SIZE: usize = 0x1000000; // 16MB 预分配 buffer
         const BUF_WRITER_CAP: usize = 64 * 1024 * 1024; // 64MB BufWriter
 
