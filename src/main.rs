@@ -225,6 +225,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         conn_mgr.smart_init(&usb_context, 工作模式)?
     };
 
+    // 从 .state 恢复 preloader 路径（如果存在且用户未指定）
+    let restored_preloader_path = if da_session_reused {
+        if let Some(state) = crate::connection::SessionState::load() {
+            if let Some(ref path) = state.preloader_path {
+                if std::path::Path::new(path).exists() {
+                    info!("[DA_SESSION] 从 .state 恢复 preloader 路径: {}", path);
+                    Some(path.clone())
+                } else {
+                    warn!("[DA_SESSION] .state 中的 preloader 路径不存在: {}", path);
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     match 工作模式 {
         crate::system::config::工作模式::Preloader => {
             info!("{}", "连接成功 (Preloader 模式)".green().bold());
@@ -254,6 +275,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     da.patch_da = cli.patch_da;
     da.da_x_speed = app_config.da_x_speed;
 
+    // 复用 DA 会话时标记 DA 已加载，避免 handle_command 中重复 upload_da
+    if da_session_reused {
+        da.daext = true;
+        info!("[DA_SESSION] DA 已标记为加载状态 (daext=true)");
+    }
+
+    // preloader 路径优先级：用户指定 > .state 恢复 > 从设备 dump
+    let effective_preloader_path = if !final_preloader_path.is_empty() {
+        final_preloader_path.clone()
+    } else if let Some(ref path) = restored_preloader_path {
+        path.clone()
+    } else {
+        String::new()
+    };
+
     // dump + load + bypass + upload_da 全部由 handle_command 内部完成
     // 这里不再调用 dump_preloader_payload / load_preloader_emi / upload_da
     cmd::handle_command(
@@ -261,7 +297,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &app_config,
         cli.log_level,
         cli.quiet_dump,
-        &final_preloader_path,
+        &effective_preloader_path,
         &usb_context,
     )?;
 
