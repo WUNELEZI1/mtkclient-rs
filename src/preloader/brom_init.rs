@@ -157,9 +157,19 @@ impl Preloader {
     pub fn echo_1byte(&mut self, cmd: u8) -> Result<bool, String> {
         self.device
             .set_timeout(Duration::from_millis(ECHO_TIMEOUT_MS));
-        self.device
-            .write(&[cmd])
-            .map_err(|e| format!("echo write: {}", e))?;
+        if let Err(e) = self.device.write(&[cmd]) {
+            // PIPE 错误（端点 STALL）：clear_halt 后重试一次
+            if e.contains("err -7") {
+                trace!("[ECHO_1] write PIPE error, clear_halt_out + retry...");
+                let _ = self.device.clear_halt_out();
+                std::thread::sleep(Duration::from_millis(50));
+                self.device
+                    .write(&[cmd])
+                    .map_err(|e2| format!("echo write: {}", e2))?;
+            } else {
+                return Err(format!("echo write: {}", e));
+            }
+        }
         let mut buf = [0u8; 1];
         for i in 0..32 {
             match self.device.read_exact(&mut buf) {
@@ -202,9 +212,18 @@ impl Preloader {
     pub fn echo_cmd_4byte(&mut self, cmd: u8) -> Result<bool, String> {
         let le_bytes = [cmd, 0, 0, 0];
         trace!("[ECHO_CMD_4] 发送: {:02X?}", le_bytes);
-        self.device
-            .write(&le_bytes)
-            .map_err(|e| format!("echo_cmd_4byte write: {}", e))?;
+        if let Err(e) = self.device.write(&le_bytes) {
+            if e.contains("err -7") {
+                trace!("[ECHO_CMD_4] write PIPE error, clear_halt_out + retry...");
+                let _ = self.device.clear_halt_out();
+                std::thread::sleep(Duration::from_millis(50));
+                self.device
+                    .write(&le_bytes)
+                    .map_err(|e2| format!("echo_cmd_4byte write: {}", e2))?;
+            } else {
+                return Err(format!("echo_cmd_4byte write: {}", e));
+            }
+        }
         let mut buf = [0u8; 4];
         match self.device.read_exact(&mut buf) {
             Ok(_) => {
@@ -231,9 +250,18 @@ impl Preloader {
     pub fn echo_4byte(&mut self, val: u32) -> Result<bool, String> {
         let be = val.to_be_bytes();
         trace!("[ECHO_4] 发送: {:02X?} (值=0x{:08X})", be, val);
-        self.device
-            .write(&be)
-            .map_err(|e| format!("echo_4byte write: {}", e))?;
+        if let Err(e) = self.device.write(&be) {
+            if e.contains("err -7") {
+                trace!("[ECHO_4] write PIPE error, clear_halt_out + retry...");
+                let _ = self.device.clear_halt_out();
+                std::thread::sleep(Duration::from_millis(50));
+                self.device
+                    .write(&be)
+                    .map_err(|e2| format!("echo_4byte write: {}", e2))?;
+            } else {
+                return Err(format!("echo_4byte write: {}", e));
+            }
+        }
         let mut echo = [0u8; 4];
         self.device
             .read_exact(&mut echo)
