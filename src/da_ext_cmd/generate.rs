@@ -5,8 +5,8 @@
 
 use log::{trace, warn};
 
-use crate::da_extension::DAXFlash;
 use crate::da_ext_cmd::{DA_EXTENSIONS_TEMPLATE, patch::find_binary};
+use crate::da_extension::DAXFlash;
 
 impl<'a> DAXFlash<'a> {
     /// 生成 DA extensions 二进制数据

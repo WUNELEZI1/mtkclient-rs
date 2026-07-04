@@ -202,6 +202,43 @@ impl<'a> DAXFlash<'a> {
 }
 
 // =============================================================================
+// DA 心跳检测 / 会话保持
+// =============================================================================
+
+impl<'a> DAXFlash<'a> {
+    /// DA 心跳检测：发送轻量级命令检测 DA 是否仍然在线
+    /// 返回 true 表示 DA 存活，false 表示 DA 已断开或设备已重启
+    pub fn da_heartbeat(&mut self) -> bool {
+        // 使用 GET_CHIP_ID (0x010106) 作为心跳命令，数据量小且安全
+        match self.send_devctrl(0x010106, None) {
+            Ok(data) if data.len() >= 2 => {
+                trace!("[HEARTBEAT] DA 存活，响应 {} 字节", data.len());
+                true
+            }
+            Ok(_) => {
+                trace!("[HEARTBEAT] DA 响应空数据，视为存活");
+                true
+            }
+            Err(e) => {
+                trace!("[HEARTBEAT] DA 无响应: {}", e);
+                false
+            }
+        }
+    }
+
+    /// 检查 DA 会话是否有效，如果无效则重置会话状态
+    pub fn check_da_session(&mut self) -> bool {
+        if self.da_heartbeat() {
+            true
+        } else {
+            warn!("[DA_SESSION] DA 会话已失效，重置会话状态");
+            crate::conn_mgr::reset_session();
+            false
+        }
+    }
+}
+
+// =============================================================================
 // 调试 / Getter 方法
 // =============================================================================
 

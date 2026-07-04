@@ -8,8 +8,8 @@
 
 use log::{info, warn};
 
-use crate::da_extension::DAXFlash;
 use crate::da_ext_cmd::DA_EXTENSIONS_TEMPLATE;
+use crate::da_extension::DAXFlash;
 
 /// 在二进制数据中搜索模式（支持 `.` 0x2E 作为单字节通配符）
 /// 对齐 Python utils.py find_binary()

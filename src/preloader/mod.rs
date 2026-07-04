@@ -8,17 +8,17 @@
 
 #[path = "brom_init.rs"]
 pub(crate) mod brom_init;
-#[path = "brom_reg_access.rs"]
-pub(crate) mod brom_reg_access;
 #[path = "brom_io.rs"]
 pub(crate) mod brom_io;
-#[path = "transport.rs"]
-pub(crate) mod transport;
+#[path = "brom_reg_access.rs"]
+pub(crate) mod brom_reg_access;
 #[path = "core.rs"]
 pub(crate) mod core;
+#[path = "transport.rs"]
+pub(crate) mod transport;
 
 // 公共 API re-export（与原 preloader.rs 完全兼容）
 #[allow(unused_imports)]
-pub use transport::{BromPortResult, BromTransport, SerialPortTransport};
-#[allow(unused_imports)]
 pub use core::Preloader;
+#[allow(unused_imports)]
+pub use transport::{BromPortResult, BromTransport, SerialPortTransport};

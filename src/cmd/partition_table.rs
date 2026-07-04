@@ -12,8 +12,8 @@ use colored::Colorize;
 use log::{error, info, trace, warn};
 use std::time::SystemTime;
 
-use crate::da_partition::generate_scatter_from_gpt;
 use crate::da_extension::DAXFlash;
+use crate::da_partition::generate_scatter_from_gpt;
 use crate::system::config::AppConfig;
 
 /// 打印 GPT 分区表
@@ -93,7 +93,7 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
     }
 }
 
-/// 打印完整 EMMC 信息（英文标签，紧凑格式）
+/// 打印完整 EMMC 信息（对齐 C# 版输出格式）
 fn print_emmc_info(info: &crate::da_extension::EmmcInfo) {
     // 格式化字节数为人类可读字符串
     fn fmt_bytes(b: u64) -> String {
@@ -108,84 +108,75 @@ fn print_emmc_info(info: &crate::da_extension::EmmcInfo) {
         }
     }
 
+    // 将 CID 字节数组格式化为十六进制字符串（对齐 C# 版）
+    fn fmt_cid_hex(cid: &[u8]) -> String {
+        cid.iter().map(|b| format!("{:02X}", b)).collect()
+    }
+
     // 每列先格式化定宽字符串，再整体上色，避免 ANSI 破坏对齐
     let mut rows: Vec<(String, String, String)> = Vec::new();
+
+    // Type
     rows.push((
-        format!("{:<10}", "Type"),
+        format!("{:<15}", "EMMC Type"),
         info.emmc_type.clone(),
         String::new(),
     ));
+
+    // User Area
     if info.user_size > 0 {
         rows.push((
-            format!("{:<10}", "User Area"),
-            format!(
-                "{} ({})",
-                fmt_bytes(info.user_size),
-                format_bytes_comma(info.user_size)
-            ),
+            format!("{:<15}", "EMMC USER Size"),
+            format!("0x{:X} ({})", info.user_size, fmt_bytes(info.user_size)),
             String::new(),
         ));
     }
+
+    // Boot1
     if info.boot1_size > 0 {
         rows.push((
-            format!("{:<10}", "Boot1"),
-            format!(
-                "{} ({})",
-                fmt_bytes(info.boot1_size),
-                format_bytes_comma(info.boot1_size)
-            ),
+            format!("{:<15}", "EMMC Boot1 Size"),
+            format!("0x{:X} ({})", info.boot1_size, fmt_bytes(info.boot1_size)),
             String::new(),
         ));
     }
+
+    // Boot2
     if info.boot2_size > 0 {
         rows.push((
-            format!("{:<10}", "Boot2"),
-            format!(
-                "{} ({})",
-                fmt_bytes(info.boot2_size),
-                format_bytes_comma(info.boot2_size)
-            ),
+            format!("{:<15}", "EMMC Boot2 Size"),
+            format!("0x{:X} ({})", info.boot2_size, fmt_bytes(info.boot2_size)),
             String::new(),
         ));
     }
+
+    // RPMB
     if info.rpmb_size > 0 {
         rows.push((
-            format!("{:<10}", "RPMB"),
-            format!(
-                "{} ({})",
-                fmt_bytes(info.rpmb_size),
-                format_bytes_comma(info.rpmb_size)
-            ),
+            format!("{:<15}", "EMMC RPMB Size"),
+            format!("0x{:X} ({})", info.rpmb_size, fmt_bytes(info.rpmb_size)),
             String::new(),
         ));
     }
+
+    // Block Size
     if info.block_size > 0 {
         rows.push((
-            format!("{:<10}", "Block Size"),
+            format!("{:<15}", "Block Size"),
             format!("0x{:X} ({} bytes)", info.block_size, info.block_size),
             String::new(),
         ));
     }
+
+    // CID（十六进制格式，对齐 C# 版）
     if !info.cid.is_empty() {
-        let trimmed: Vec<u8> = info.cid.iter().copied().filter(|&b| b != 0).collect();
-        if !trimmed.is_empty() {
-            let cid_str: String = trimmed
-                .iter()
-                .map(|&b| {
-                    if b.is_ascii_graphic() || b == b' ' {
-                        b as char
-                    } else {
-                        '.'
-                    }
-                })
-                .collect();
-            rows.push((format!("{:<10}", "CID"), cid_str, String::new()));
-        }
+        let cid_hex = fmt_cid_hex(&info.cid);
+        rows.push((format!("{:<15}", "EMMC CID"), cid_hex, String::new()));
     }
 
     // 计算最大内容宽度（不包含标签列的空格）
     let max_val_w = rows.iter().map(|(_, v, _)| v.len()).max().unwrap_or(20);
-    let total_inner = 10 + 2 + max_val_w; // "Type      " + "  " + value
+    let total_inner = 15 + 2 + max_val_w; // "EMMC Boot1 Size" + "  " + value
 
     println!();
     // 标题行

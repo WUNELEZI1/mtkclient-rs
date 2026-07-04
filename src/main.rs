@@ -10,30 +10,30 @@ unsafe extern "system" {
     fn SetConsoleCP(wCodePageID: u32) -> i32;
 }
 
-#[path = "da_partition/mod.rs"]
-mod da_partition;
-#[path = "da_loader/mod.rs"]
-mod da_loader;
-#[path = "da_extension/mod.rs"]
-mod da_extension;
-#[path = "da_ext_cmd/mod.rs"]
-mod da_ext_cmd;
-#[path = "usb_comm/mod.rs"]
-mod usb_comm;
-mod system;
 #[path = "cmd/mod.rs"]
 mod cmd;
-#[path = "security/mod.rs"]
-mod security;
-#[path = "exploit/mod.rs"]
-mod exploit;
 #[path = "conn_mgr/mod.rs"]
 mod conn_mgr;
+#[path = "da_ext_cmd/mod.rs"]
+mod da_ext_cmd;
+#[path = "da_extension/mod.rs"]
+mod da_extension;
+#[path = "da_loader/mod.rs"]
+mod da_loader;
+#[path = "da_partition/mod.rs"]
+mod da_partition;
+#[path = "exploit/mod.rs"]
+mod exploit;
 #[path = "preloader/mod.rs"]
 mod preloader;
+#[path = "security/mod.rs"]
+mod security;
+mod system;
+#[path = "usb_comm/mod.rs"]
+mod usb_comm;
 
-use usb_comm::USB上下文;
 use conn_mgr::ConnectionManager;
+use usb_comm::USB上下文;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
