@@ -11,6 +11,7 @@
 pub mod driver;
 #[path = "manager.rs"]
 pub mod manager;
+pub mod reconnect;
 #[path = "session.rs"]
 pub mod session;
 

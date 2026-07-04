@@ -1,9 +1,10 @@
 //! 用户命令入口
 //!
 //! 子模块：
-//! - `分区表` — printgpt / read_gpt / read_all / print_scatter 等分区表相关
-//! - `输入输出` — read / write / erase / vbmeta / unlock / lock / reset 等 IO 命令
-//! - `转储`  — dumppreloader 等镜像提取
+//! - `cli`            — 命令行参数解析
+//! - `dump`           — dumppreloader 等镜像提取
+//! - `io`             — r/w/e/reboot/slot 等 IO 命令
+//! - `partition_table` — printgpt / rl / wl 等分区表相关
 //!
 //! 顶层入口：
 //! - `print_help`       — 打印帮助信息
@@ -14,7 +15,6 @@ pub mod cli;
 pub mod dump;
 #[path = "io.rs"]
 pub mod io;
-#[path = "partition_table.rs"]
 pub mod partition_table;
 
 use colored::Colorize;
@@ -29,33 +29,34 @@ pub fn print_help() {
     println!("  mtkclient-rs.exe <命令> [参数]");
     println!();
     println!("命令:");
-    println!("  printgpt            打印 GPT 分区表 + EMMC 信息 + 生成 scatter");
-    println!("  dump                从 RAM 提取 Preloader (Exploit)");
-    println!("  r <part> <file>     读取分区到文件");
-    println!("  r gpt <dir>          保存 GPT 原始数据到目录");
-    println!("  rl <dir>             读取全部分区到目录 (支持 --skip)");
-    println!("  w <part> <file>     写入文件到分区");
-    println!("  wl <dir>             从目录恢复全部分区 (.bin/.img)");
-    println!("  e <part>             擦除分区");
-    println!("  vbmeta <mode>        修补 vbmeta (0/1/2/3)");
-    println!("  reset                重启设备");
-    println!("  unlock               解锁 Bootloader");
-    println!("  lock                 锁定 Bootloader");
-    println!("  frp                  FRP OEM 解锁");
-    println!("  scatter              打印 scatter 到屏幕并保存文件");
-    println!("  adb                  在 DA 模式下开启 ADB");
+    println!("  printgpt              打印 GPT 分区表 + EMMC 信息");
+    println!("  dumppreloader         从 RAM 提取 Preloader (Exploit)");
+    println!(
+        "  r <part> <file>       读取分区到文件 (支持: r gpt <dir>, r boot1, r boot2, r rpmb)"
+    );
+    println!("  rl <dir>              读取全部分区到目录 (支持 --skip)");
+    println!("  w <part> <file>       写入文件到分区");
+    println!("  wl <dir>              从目录恢复全部分区 (.bin/.img)");
+    println!("  e <part>              擦除分区");
+    println!("  zyb vbmeta <mode>     修补 vbmeta (0/1/2/3)");
+    println!("  zyb seccfg unlock     解锁 Bootloader");
+    println!("  zyb seccfg lock       锁定 Bootloader");
+    println!("  frp                   FRP OEM 解锁");
+    println!("  reboot [mode]         重启设备 (system/fastboot/recovery/fastbootd, 默认 system)");
+    println!("  slot show/a/b         显示/切换 A/B 槽位");
+    println!("  adb                   在 DA 模式下开启 ADB");
     println!();
     println!("选项:");
-    println!("  --preloader <file>  指定 preloader 文件");
-    println!("  --verify            写入后校验");
-    println!("  --log <level>       日志级别：1=INFO，2=DEBUG，3=TRACE");
-    println!("  --patch-da          是否 patch DA（默认 true）");
-    println!("  --mode <mode>       工作模式：brom（默认）/ preloader / auto");
-    println!("  --da-x-speed <1-3>  DA 加载速度级别");
-    println!("  --skip <parts>      rl 跳过的分区（逗号分隔）");
-    println!("  --quiet             静默模式");
-    println!("  --quiet-dump        静默 dump（不打印进度条）");
-    println!("  --usb-log           启用 USB 通信追踪日志");
+    println!("  --preloader <file>    指定 preloader 文件");
+    println!("  --verify              写入后校验");
+    println!("  --log <level>         日志级别：1=INFO，2=DEBUG，3=TRACE");
+    println!("  --patch_da            是否 patch DA（默认 true）");
+    println!("  --mode <mode>         工作模式：brom（默认）/ preloader / auto");
+    println!("  --da_x_speed <1-3>    DA 加载速度级别");
+    println!("  --skip <parts>        rl 跳过的分区（逗号分隔）");
+    println!("  --quiet               静默模式");
+    println!("  --quiet_dump          静默 dump（不打印进度条）");
+    println!("  --usb_log             启用 USB 通信追踪日志");
 }
 
 /// 单命令执行入口
@@ -70,15 +71,16 @@ pub fn handle_command(
     let is_brom = !da.preloader.is_preloader_mode;
     let mut auto_dumped_file: Option<String> = None;
 
+    let cmd = app_config.command.as_deref().unwrap_or("");
+
     if is_brom {
-        let cmd = app_config.command.as_deref().unwrap_or("");
         match cmd {
-            "dump" => {
+            "dumppreloader" => {
                 dump::cmd_dumppreloader(da, _context)?;
                 return Ok(());
             }
-            "reset" => {
-                io::cmd_reset(da)?;
+            "reboot" => {
+                io::cmd_reboot(da, &app_config.cmd_args)?;
                 return Ok(());
             }
             _ => {}
@@ -125,7 +127,7 @@ pub fn handle_command(
                 }
                 Err(e) => {
                     return Err(format!(
-                        "自动提取 preloader 失败: {}。请手动运行 'dump' 命令获取文件，\n\
+                        "自动提取 preloader 失败: {}。请手动运行 'dumppreloader' 命令获取文件，\n\
                          然后使用 --preloader <文件> 参数。",
                         e
                     )
@@ -134,15 +136,6 @@ pub fn handle_command(
             }
         }
     }
-
-    let cmd: &str = match &app_config.command {
-        Some(c) => c,
-        None => {
-            error!("{}", "未指定命令".red());
-            print_help();
-            return Err("未指定命令".into());
-        }
-    };
 
     // Preloader 模式下 DRAM 已由 preloader 初始化，EMI 数据可选
     if !preloader_file.is_empty() {
@@ -202,6 +195,9 @@ pub fn execute_single_command(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         "printgpt" => partition_table::cmd_printgpt(da, log_level),
+        "dumppreloader" => {
+            info!("dumppreloader 命令请在 BROM 模式下直接执行，无需进入 DA 模式");
+        }
         "r" => {
             if args.first().map(|s| s.as_str()) == Some("gpt") {
                 let dir = args.get(1).ok_or("用法: mtkclient r gpt <dir>")?;
@@ -220,12 +216,10 @@ pub fn execute_single_command(
         }
         "w" => io::cmd_write(da, args, verify)?,
         "e" => io::cmd_erase(da, args)?,
-        "vbmeta" => io::cmd_vbmeta(da, args)?,
+        "zyb" => handle_zyb_command(da, args)?,
         "frp" => crate::security::frp::frp_unlock(da)?,
-        "reset" => io::cmd_reset(da)?,
-        "unlock" => io::cmd_unlock(da)?,
-        "lock" => io::cmd_lock(da)?,
-        "scatter" => partition_table::cmd_print_scatter(da, log_level)?,
+        "reboot" => io::cmd_reboot(da, args)?,
+        "slot" => io::cmd_slot(da, args)?,
         "adb" => {
             da.enable_adb_and_reboot()?;
             info!("{}", "ADB 已启用，设备正在重启进入系统".green());
@@ -235,6 +229,52 @@ pub fn execute_single_command(
             print_help();
             return Err(format!("未知命令: {}", cmd).into());
         }
+    }
+
+    Ok(())
+}
+
+/// 处理 zyb 子命令
+fn handle_zyb_command(
+    da: &mut DAXFlash,
+    args: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if args.is_empty() {
+        return Err("用法: mtkclient zyb <subcmd> [args]".into());
+    }
+
+    let subcmd = args[0].as_str();
+    let sub_args = &args[1..];
+
+    match subcmd {
+        "vbmeta" => {
+            if sub_args.is_empty() {
+                return Err("用法: mtkclient zyb vbmeta <mode> (0/1/2/3)".into());
+            }
+            let mode = sub_args[0].parse::<u32>().map_err(|_| "无效模式")?;
+            crate::security::vbmeta::vbmeta_disable(da, mode)
+                .map_err(|e| format!("修补失败: {}", e))?;
+            info!("{}", "vbmeta 已修补".green());
+        }
+        "seccfg" => {
+            if sub_args.is_empty() {
+                return Err("用法: mtkclient zyb seccfg unlock/lock".into());
+            }
+            match sub_args[0].as_str() {
+                "unlock" => {
+                    da.unlock_bootloader()
+                        .map_err(|e| format!("解锁失败: {}", e))?;
+                    info!("{}", "Bootloader 已解锁".green());
+                }
+                "lock" => {
+                    da.lock_bootloader()
+                        .map_err(|e| format!("锁定失败: {}", e))?;
+                    info!("{}", "Bootloader 已锁定".green());
+                }
+                _ => return Err("用法: mtkclient zyb seccfg unlock/lock".into()),
+            }
+        }
+        _ => return Err(format!("未知 zyb 子命令: {}", subcmd).into()),
     }
 
     Ok(())
