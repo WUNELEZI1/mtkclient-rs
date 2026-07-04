@@ -15,6 +15,7 @@ pub mod cli;
 pub mod dump;
 #[path = "io.rs"]
 pub mod io;
+pub mod multi;
 pub mod partition_table;
 
 use colored::Colorize;
@@ -45,6 +46,7 @@ pub fn print_help() {
     println!("  reboot [mode]         重启设备 (system/fastboot/recovery/fastbootd, 默认 system)");
     println!("  slot show/a/b         显示/切换 A/B 槽位");
     println!("  adb                   在 DA 模式下开启 ADB");
+    println!("  multi \"<cmds>\"         一次 DA 会话执行多个命令 (分号分隔)");
     println!();
     println!("选项:");
     println!("  --preloader <file>    指定 preloader 文件");
@@ -173,9 +175,15 @@ pub fn handle_command(
     let args = &app_config.cmd_args;
     let verify = app_config.verify;
 
+    // multi 和 adb 都在 DA 会话已建立后执行，不需要走 execute_single_command
     if cmd == "adb" {
         da.enable_adb_and_reboot()?;
         info!("{}", "ADB 已启用，设备正在重启进入系统".green());
+        return Ok(());
+    }
+
+    if cmd == "multi" {
+        multi::cmd_multi(da, args, app_config, log_level)?;
         return Ok(());
     }
 

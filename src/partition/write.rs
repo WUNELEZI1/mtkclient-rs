@@ -1,16 +1,18 @@
 //! DAXFlash 底层写入原语
 //!
-//! - `write_flash_data` — 按原始地址写入数据（带进度显示）
+//! - `write_flash_data` — 按原始地址写入数据（带进度条显示）
 //! - `get_packet_length` — 获取写包长度
 //! - `cmd_write_data`   — 发送写命令
 
+use indicatif::{ProgressBar, ProgressStyle};
 use log::info;
+use std::time::Duration;
 
 use crate::da::xflash::{CMD_MAGIC, CMD_WRITE_DATA, DAXFlash, pack3};
 
 impl<'a> DAXFlash<'a> {
     /// 按原始地址写入一段数据，供分区写入、seccfg/frp 等场景复用。
-    /// 带进度显示：每 10% 输出一次进度，最后输出总耗时和速度。
+    /// 带进度条显示：使用 indicatif 实时更新进度，最后输出总耗时和速度。
     pub(crate) fn write_flash_data(
         &mut self,
         addr: u64,
@@ -21,13 +23,27 @@ impl<'a> DAXFlash<'a> {
         self.cmd_write_data(addr, data.len() as u64, storage, parttype)?;
 
         let write_packet_size = self.get_packet_length()?;
-        let mut pos = 0;
         let total = data.len();
         let start_time = std::time::Instant::now();
-        let mut last_pct = 0;
+
+        // 创建进度条（indicatif）
+        let bar = ProgressBar::new(total as u64);
+        bar.set_style(
+            ProgressStyle::with_template(
+                "  {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] \
+                 {binary_bytes}/{binary_total_bytes} ({percent}%) \
+                 {binary_bytes_per_sec} ETA {eta}",
+            )
+            .unwrap()
+            .progress_chars("█▓░"),
+        );
+        bar.set_message(format!("写入: 0x{:08X}", addr));
+        bar.enable_steady_tick(Duration::from_millis(100));
+
         // 预分配最大 param buffer，循环内复用避免重复分配
         let max_param_len = 8 + write_packet_size;
         let mut param = Vec::with_capacity(max_param_len);
+        let mut pos = 0;
         while pos < total {
             let dsize = std::cmp::min(write_packet_size, total - pos);
             let chunk = &data[pos..pos + dsize];
@@ -44,16 +60,13 @@ impl<'a> DAXFlash<'a> {
 
             pos += dsize;
 
-            // 进度显示：每 10% 输出一次
-            let pct = (pos * 100 / total) as u32;
-            if pct >= last_pct + 10 {
-                info!("  写入进度: {}% ({}/{} 字节)", pct, pos, total);
-                last_pct = pct;
-            }
+            // 更新进度条
+            bar.set_position(pos as u64);
         }
 
         let st = self.status()?;
         if st != 0 {
+            bar.abandon_with_message(format!("写入失败: status=0x{:08X}", st));
             return Err(format!("writeflash status error: 0x{:08X}", st));
         }
 
@@ -65,6 +78,7 @@ impl<'a> DAXFlash<'a> {
         } else {
             0.0
         };
+        bar.finish_with_message(format!("写入完成: {:.2} MB/s", speed));
         info!(
             "  写入完成: {} 字节, 耗时 {:.2}s, 速度 {:.2} MB/s",
             total, elapsed, speed

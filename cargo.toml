@@ -1,6 +1,6 @@
 [package]
 name = "mtkclient-rs"
-version = "0.3.4"
+version = "0.4.0"
 authors = ["wunelezi <wunelezi@example.com>", "trae <trae@example.com>"]
 license = "GPL-3.0"
 edition = "2024"
@@ -33,6 +33,8 @@ libusb1-sys = "0.7"
 wdi-rs = "0.1.1"
 # Windows 管理员权限检测
 is_elevated = "0.1"
+# 进度条显示
+indicatif = "0.18"
 
 [profile.dev]
 # 开发模式：编译最快，不优化，保留完整调试信息
