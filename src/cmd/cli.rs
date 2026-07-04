@@ -109,7 +109,8 @@ pub struct Cli {
           frp                   FRP OEM 解锁\n\
           reboot [system|fastboot|recovery|fastbootd]  重启设备（默认 system）\n\
           slot show/a/b         显示/切换 A/B 槽位\n\
-          adb                   在 DA 模式下开启 ADB"
+          adb                   在 DA 模式下开启 ADB\n\
+          multi \"<cmds>\"         一次 DA 会话执行多个命令 (分号分隔)"
     )]
     pub command: Option<String>,
 
