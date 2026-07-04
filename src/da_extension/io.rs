@@ -20,11 +20,22 @@ use crate::da_extension::protocol::{CMD_MAGIC, CMD_READ_DATA, pack3};
 // =============================================================================
 
 impl<'a> DAXFlash<'a> {
-    /// 读取 flash 数据，返回原始字节
+    /// 读取 flash 数据，返回原始字节（默认 USER 分区类型）
     /// 对齐 Python xflash_lib.py:879-891 (filename="" 分支):
     ///   get_packet_length → cmd_read_data → xread 循环 (header+data) → ack
     /// 注意：filename="" 分支没有 readflash_final 包，设备不会发送 final
     pub(crate) fn readflash_data(&mut self, addr: u64, size: u64) -> Result<Vec<u8>, String> {
+        self.readflash_data_ex(addr, size, 8)
+    }
+
+    /// 读取 flash 数据，支持指定分区类型（boot1/boot2/rpmb/user 等）
+    /// parttype: 1=boot1, 2=boot2, 3=rpmb, 8=user
+    pub(crate) fn readflash_data_ex(
+        &mut self,
+        addr: u64,
+        size: u64,
+        parttype: u32,
+    ) -> Result<Vec<u8>, String> {
         // 1. get_packet_length (send_devctrl 0x040007 + status)
         // Python: get_packet_length() → send_devctrl → if resp != "": status()
         let _ = self.send_devctrl(0x040007, None);
@@ -44,7 +55,7 @@ impl<'a> DAXFlash<'a> {
         // 这里的 size 保持调用方传入的"实际分区大小"，不要改成请求读取长度
         let mut param = Vec::with_capacity(56);
         param.extend_from_slice(&1u32.to_le_bytes()); // storage = 1 (eMMC)
-        param.extend_from_slice(&8u32.to_le_bytes()); // parttype = 8 (USER)
+        param.extend_from_slice(&parttype.to_le_bytes()); // parttype: 1=boot1, 2=boot2, 3=rpmb, 8=user
         param.extend_from_slice(&addr.to_le_bytes());
         param.extend_from_slice(&size.to_le_bytes());
         param.extend_from_slice(&[0u8; 32]); // NandExtension 全零
