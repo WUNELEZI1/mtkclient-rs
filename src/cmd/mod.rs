@@ -75,7 +75,8 @@ pub fn handle_command(
 
     let cmd = app_config.command.as_deref().unwrap_or("");
 
-    if is_brom {
+    // DA 会话复用时跳过 preloader dump / bypass / EMI 加载（DA 仍在运行）
+    if !da.daext && is_brom {
         match cmd {
             "dumppreloader" => {
                 dump::cmd_dumppreloader(da, _context)?;

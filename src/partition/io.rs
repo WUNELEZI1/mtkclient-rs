@@ -8,7 +8,6 @@
 //! - `write_flash_data` / `cmd_write_data` / `get_packet_length` — 底层写入原语
 
 use log::info;
-use std::io::Write;
 
 use crate::da::xflash::{CMD_FORMAT, CMD_MAGIC, DAXFlash, pack3};
 
@@ -108,10 +107,9 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 读取分区数据到文件
-    /// 支持 GPT 分区（如 system_a, vendor_a）和特殊 EMMC 分区（boot1, boot2, rpmb）
-    /// 支持断点续传：如果输出文件已存在且未完成，从断点继续读取
-    /// 支持进度显示：使用 indicatif 进度条
-    /// 流式写入：大文件分块读取，每块立即写入磁盘
+    /// 支持断点续传：检测已有文件大小，从断点继续读取
+    /// 流式写入：每个 USB 数据包收到后立即写入磁盘，内存占用极低
+    /// 进度显示：使用 indicatif 进度条，每包更新
     pub fn 读取分区(&mut self, 分区名: &str, 输出文件: &str) -> Result<(), String> {
         use indicatif::{ProgressBar, ProgressStyle};
         use std::time::Duration;
@@ -143,29 +141,23 @@ impl<'a> DAXFlash<'a> {
                 (8u32, entry.start_addr, entry.size)
             };
 
-        // 断点续传检查：获取已存在文件的大小
+        // 断点续传检查
         let existing_size = if std::path::Path::new(输出文件).exists() {
-            let metadata =
-                std::fs::metadata(输出文件).map_err(|e| format!("无法读取文件信息: {}", e))?;
-            metadata.len()
+            std::fs::metadata(输出文件).map(|m| m.len()).unwrap_or(0)
         } else {
             0
         };
 
-        // 文件已完整，跳过读取
         if existing_size >= size {
             info!("  文件已存在且完整 ({} 字节)，跳过读取", existing_size);
             return Ok(());
         }
 
-        // 计算断点续传起始偏移（对齐到 512 字节边界）
-        let read_start_offset = if existing_size > 0 {
+        // 对齐到 512 字节边界
+        let start_offset = if existing_size > 0 {
             let aligned = (existing_size / 512) * 512;
             if aligned != existing_size {
-                info!(
-                    "  断点续传: 文件大小 {} 字节不是 512 对齐，截断到 {} 字节",
-                    existing_size, aligned
-                );
+                info!("  断点续传: 截断到 512 对齐 {} 字节", aligned);
                 let file = std::fs::OpenOptions::new()
                     .write(true)
                     .open(输出文件)
@@ -174,8 +166,9 @@ impl<'a> DAXFlash<'a> {
                     .map_err(|e| format!("截断文件失败: {}", e))?;
             }
             info!(
-                "  断点续传: 已有 {} 字节，还需读取 {} 字节",
+                "  断点续传: 已有 {} 字节 ({}%)，还需读取 {} 字节",
                 aligned,
+                aligned as f64 / size as f64 * 100.0,
                 size - aligned
             );
             aligned
@@ -196,34 +189,19 @@ impl<'a> DAXFlash<'a> {
         );
         bar.set_message(format!("读取: {}", 分区名));
         bar.enable_steady_tick(Duration::from_millis(100));
-        bar.set_position(read_start_offset);
+        bar.set_position(start_offset);
 
-        // 分块大小：64MB
-        const CHUNK_SIZE: u64 = 0x4000000;
+        // 流式读取：每个 USB 包写入文件后立即更新进度条
+        let read_addr = addr + start_offset;
+        let total =
+            self.readflash_to_file(read_addr, size, parttype, 输出文件, start_offset, {
+                let bar = bar.clone();
+                move |bytes_read| {
+                    bar.set_position(bytes_read);
+                }
+            })?;
 
-        // 打开文件（追加模式）
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(输出文件)
-            .map_err(|e| format!("打开文件失败: {}", e))?;
-
-        let mut offset = read_start_offset;
-        while offset < size {
-            let chunk_remaining = size - offset;
-            let chunk_size = std::cmp::min(CHUNK_SIZE, chunk_remaining);
-
-            let data =
-                self.readflash_data_ex(addr + (offset - read_start_offset), chunk_size, parttype)?;
-            file.write_all(&data)
-                .map_err(|e| format!("写入文件失败: {}", e))?;
-            file.flush().ok(); // 确保数据写入磁盘
-
-            bar.set_position(offset + data.len() as u64);
-            offset += data.len() as u64;
-        }
-
-        bar.finish_with_message(format!("{} 读取完成 ({} 字节)", 分区名, size));
+        bar.finish_with_message(format!("{} 读取完成 ({} 字节)", 分区名, total));
         info!("  已保存到: {}", 输出文件);
         Ok(())
     }
