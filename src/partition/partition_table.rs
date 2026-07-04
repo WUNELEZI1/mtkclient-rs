@@ -1,12 +1,15 @@
-//! Scatter 文件生成（MTK SP Flash Tool 格式）
+//! Scatter 文件生成（MTK SP Flash Tool YAML 格式）
 //!
 //! - `parse_gpt_from_data`        — 解析 GPT 数据并打印分区表
-//! - `generate_scatter_header`    — PRELOADER + EMMC_BOOT_1/2 公共头
-//! - `generate_scatter_from_gpt`  — SP Flash Tool 格式 scatter
+//! - `generate_scatter_header`    — PRELOADER 公共头
+//! - `generate_scatter_from_gpt`  — SP Flash Tool YAML 格式 scatter
 
 use log::info;
 
 use super::gpt::GptInfo;
+
+/// scatter 文件分隔符（对齐刷机匣 MT6768_Android_scatter.txt 格式）
+const SEPARATOR: &str = "################################################mtkclient-rs################################################";
 
 /// 解析 GPT 分区表（独立函数，不依赖 USB）
 pub fn parse_gpt_from_data(data: &[u8]) -> Result<(), String> {
@@ -16,7 +19,6 @@ pub fn parse_gpt_from_data(data: &[u8]) -> Result<(), String> {
 
     println!("GPT 头部 (偏移=0x{:X}):", gpt_info.base_offset);
 
-    // 验证 revision
     if gpt_info.revision != 0x10000 {
         return Err(format!("GPT revision 不匹配: 0x{:08X}", gpt_info.revision));
     }
@@ -44,99 +46,144 @@ pub fn parse_gpt_from_data(data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// 生成单个 scatter 分区块（标准 SP Flash Tool 格式）
-fn scatter_block(
-    name: &str,
-    physical_start_addr: u64,
-    partition_size: u64,
-    region: &str,
-    operation_type: &str,
-) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("{} 0x0", name.to_uppercase()));
-    lines.push("{".to_string());
-    lines.push(format!(
-        "  physical_start_addr: 0x{:X}",
-        physical_start_addr
-    ));
-    lines.push(format!("  partition_size: 0x{:X}", partition_size));
-    lines.push(format!("  region: {}", region));
-    lines.push("  storage: HW_STORAGE_EMMC".to_string());
-    lines.push("  boundary_check: true".to_string());
-    lines.push("  is_reserved: false".to_string());
-    lines.push(format!("  operation_type: {}", operation_type));
-    lines.push("  type: NORMAL_ROM".to_string());
-    lines.push("  reserve: 0x00".to_string());
-    lines.push("}".to_string());
-    lines.push(String::new());
-    lines.join("\n")
+/// scatter 分区块参数
+struct ScatterEntry<'a> {
+    idx: usize,
+    name: &'a str,
+    addr: u64,
+    size: u64,
+    region: &'a str,
+    operation_type: &'a str,
+    blk_type: &'a str,
+    is_upgradable: bool,
+    is_reserved: bool,
 }
 
-/// Scatter header 统一生成（PRELOADER + EMMC_BOOT_1 + EMMC_BOOT_2）
-/// 标准 SP Flash Tool 格式
+/// 生成单个 scatter YAML 分区块（标准 SP Flash Tool 格式）
+fn scatter_block(e: &ScatterEntry) -> String {
+    format!(
+        "- partition_index: SYS{}\n\
+         partition_name: {}\n\
+         file_name: NONE\n\
+         is_download: false\n\
+         type: {}\n\
+         linear_start_addr: 0x{:X}\n\
+         physical_start_addr: 0x{:X}\n\
+         partition_size: 0x{:X}\n\
+         region: {}\n\
+         storage: HW_STORAGE_EMMC\n\
+         boundary_check: false\n\
+         is_reserved: {}\n\
+         operation_type: {}\n\
+         is_upgradable: {}\n\
+         empty_boot_needed: false\n\
+         reserve: 0x00\n",
+        e.idx,
+        e.name.to_lowercase(),
+        e.blk_type,
+        e.addr,
+        e.addr,
+        e.size,
+        e.region,
+        e.is_reserved,
+        e.operation_type,
+        e.is_upgradable,
+    )
+}
+
+/// Scatter header 统一生成（PRELOADER）
 pub fn generate_scatter_header() -> String {
-    let mut blocks = String::new();
-
-    // PRELOADER: 属于 BOOTLOADERS 类型，region 为 EMMC_BOOT_1_BOOT2
-    blocks.push_str(&scatter_block(
-        "PRELOADER",
-        0x0,
-        0x0,
-        "EMMC_BOOT_1_BOOT2",
-        "BOOTLOADERS",
-    ));
-
-    // EMMC_BOOT_1
-    blocks.push_str(&scatter_block(
-        "EMMC_BOOT_1",
-        0x0,
-        0x0,
-        "EMMC_BOOT_1",
-        "UPDATE",
-    ));
-
-    // EMMC_BOOT_2
-    blocks.push_str(&scatter_block(
-        "EMMC_BOOT_2",
-        0x0,
-        0x0,
-        "EMMC_BOOT_2",
-        "UPDATE",
-    ));
-
-    blocks
+    scatter_block(&ScatterEntry {
+        idx: 0,
+        name: "preloader",
+        addr: 0x0,
+        size: 0x400000,
+        region: "EMMC_BOOT1_BOOT2",
+        operation_type: "BOOTLOADERS",
+        blk_type: "SV5_BL_BIN",
+        is_upgradable: true,
+        is_reserved: false,
+    })
 }
 
-/// 从 GPT 数据生成 SP Flash Tool 格式的 scatter 文件
-/// 标准格式对齐 MTK ptgen 输出
+/// 从 GPT 数据生成 SP Flash Tool 格式的 scatter 文件（YAML 格式）
 pub fn generate_scatter_from_gpt(
     gpt_data: &[u8],
     output_file: &str,
 ) -> Result<Vec<(String, u64, u64, u32)>, String> {
     let gpt_info = GptInfo::parse(gpt_data)?;
 
-    let mut scatter_lines: Vec<String> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
     let mut partition_info_list: Vec<(String, u64, u64, u32)> = Vec::new();
 
-    // 添加 PRELOADER + EMMC_BOOT_1 + EMMC_BOOT_2（标准格式）
-    scatter_lines.push(generate_scatter_header());
+    // === General Setting ===
+    lines.push(SEPARATOR.to_string());
+    lines.push("#".to_string());
+    lines.push("#  General Setting".to_string());
+    lines.push("#".to_string());
+    lines.push(SEPARATOR.to_string());
+    lines.push("- general: MTK_PLATFORM_CFG".to_string());
+    lines.push("  info:".to_string());
+    lines.push("  - config_version: V1.1.2".to_string());
+    lines.push("    platform: MT6768".to_string());
+    lines.push("    project: mtkclient-rs".to_string());
+    lines.push("    storage: EMMC".to_string());
+    lines.push("    boot_channel: MSDC_0".to_string());
+    lines.push("    block_size: 0x200".to_string());
+    lines.push("    check_bootloaders_consistency: false".to_string());
+    lines.push(String::new());
+
+    // === Layout Setting ===
+    lines.push(SEPARATOR.to_string());
+    lines.push("#".to_string());
+    lines.push("#  Layout Setting".to_string());
+    lines.push("#".to_string());
+    lines.push(SEPARATOR.to_string());
+    lines.push(String::new());
+
+    // PRELOADER 块
+    lines.push(generate_scatter_header());
+    lines.push(String::new());
+
+    // 特殊分区 operation_type 映射（对齐刷机匣 MT6768 scatter）
+    let special_ops: &[(&str, &str, bool)] = &[
+        ("nvcfg", "PROTECTED", false),
+        ("nvdata", "PROTECTED", false),
+        ("protect1", "PROTECTED", false),
+        ("protect2", "PROTECTED", false),
+        ("proinfo", "PROTECTED", false),
+        ("flashinfo", "RESERVED", false),
+    ];
 
     // 遍历 GPT 分区表生成条目
-    for entry in gpt_info.iter_partitions() {
-        let block = scatter_block(
-            &entry.name,
-            entry.start_addr,
-            entry.size,
-            "EMMC_USER",
-            "UPDATE",
-        );
-        scatter_lines.push(block);
+    for (i, entry) in gpt_info.iter_partitions().enumerate() {
+        let idx = i + 1;
+
+        let (op_type, upgradable) = special_ops
+            .iter()
+            .find(|(name, _, _)| entry.name.eq_ignore_ascii_case(name))
+            .map(|(_, op, up)| (*op, *up))
+            .unwrap_or(("UPDATE", true));
+
+        let is_reserved = entry.name.eq_ignore_ascii_case("flashinfo");
+
+        lines.push(scatter_block(&ScatterEntry {
+            idx,
+            name: &entry.name,
+            addr: entry.start_addr,
+            size: entry.size,
+            region: "EMMC_USER",
+            operation_type: op_type,
+            blk_type: "NORMAL_ROM",
+            is_upgradable: upgradable,
+            is_reserved,
+        }));
+        lines.push(String::new());
 
         partition_info_list.push((entry.name, entry.start_addr, entry.size, 1));
     }
 
-    // 写入文件
-    std::fs::write(output_file, scatter_lines.join("\n"))
+    std::fs::write(output_file, lines.join("\n"))
         .map_err(|e| format!("写入 scatter 文件失败: {}", e))?;
     info!("scatter 文件已生成: {}", output_file);
 
