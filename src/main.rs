@@ -10,32 +10,30 @@ unsafe extern "system" {
     fn SetConsoleCP(wCodePageID: u32) -> i32;
 }
 
-#[path = "DA分区/模块.rs"]
-mod DA分区;
-#[path = "DA加载/模块.rs"]
-mod DA加载;
-#[path = "DA扩展/模块.rs"]
-mod DA扩展;
-#[path = "DA扩展命令/模块.rs"]
-mod DA扩展命令;
-#[path = "USB通信/模块.rs"]
-mod USB通信;
-mod cli;
-mod config;
-mod paths;
-#[path = "命令/模块.rs"]
-mod 命令;
-#[path = "安全/模块.rs"]
-mod 安全;
-#[path = "漏洞利用/模块.rs"]
-mod 漏洞利用;
-#[path = "连接管理/模块.rs"]
-mod 连接管理;
-#[path = "预加载器/模块.rs"]
-mod 预加载器;
+#[path = "da_partition/mod.rs"]
+mod da_partition;
+#[path = "da_loader/mod.rs"]
+mod da_loader;
+#[path = "da_extension/mod.rs"]
+mod da_extension;
+#[path = "da_ext_cmd/mod.rs"]
+mod da_ext_cmd;
+#[path = "usb_comm/mod.rs"]
+mod usb_comm;
+mod system;
+#[path = "cmd/mod.rs"]
+mod cmd;
+#[path = "security/mod.rs"]
+mod security;
+#[path = "exploit/mod.rs"]
+mod exploit;
+#[path = "conn_mgr/mod.rs"]
+mod conn_mgr;
+#[path = "preloader/mod.rs"]
+mod preloader;
 
-use USB通信::USB上下文;
-use 连接管理::ConnectionManager;
+use usb_comm::USB上下文;
+use conn_mgr::ConnectionManager;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
@@ -59,23 +57,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let raw_args: Vec<String> = std::env::args().collect();
     let is_help = raw_args.iter().any(|a| a == "-h" || a == "--help");
     if is_help {
-        命令::print_help();
+        cmd::print_help();
         return Ok(());
     }
 
-    let cli = cli::Cli::parse();
+    let cli = cmd::cli::Cli::parse();
 
     // Windows: 驱动安装 (pnputil / wdi-rs) 必须管理员，提前提权
     // 用环境变量 MTKCLIENT_ELEVATED 标记避免子进程重复提权造成死循环
     #[cfg(target_os = "windows")]
     {
         if !cli.no_elevate
-            && !连接管理::driver::is_admin()
+            && !conn_mgr::driver::is_admin()
             && std::env::var_os("MTKCLIENT_ELEVATED").is_none()
         {
             // 提示用户（UAC 弹窗会覆盖这个）
             eprintln!("[MAIN] 需要管理员权限以安装 WinUSB 驱动，正在请求提权...");
-            if let Err(e) = 连接管理::driver::restart_as_admin() {
+            if let Err(e) = conn_mgr::driver::restart_as_admin() {
                 eprintln!("[MAIN] 提权失败: {}", e);
                 eprintln!(
                     "[MAIN] 请右键以管理员身份运行本程序，或加 --检测管理员权限 跳过（将无法切换 WinUSB）"
@@ -86,13 +84,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let app_config = config::AppConfig::from_cli(&cli);
+    let app_config = system::config::AppConfig::from_cli(&cli);
 
-    USB通信::设置USB日志开关(cli.usb_log);
+    usb_comm::设置USB日志开关(cli.usb_log);
 
     // --quiet-dump: 抑制 USB 读取日志和进度条
     if cli.quiet_dump {
-        USB通信::设置USB读取静默(true);
+        usb_comm::设置USB读取静默(true);
     }
 
     let log_level = if cli.quiet {
@@ -173,7 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cmd = app_config.command.as_deref().unwrap_or("");
 
     if cmd.is_empty() {
-        命令::print_help();
+        cmd::print_help();
         return Ok(());
     }
 
@@ -197,14 +195,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   3. 如果复用条件满足 → connect_to_da_mode（直接连接 PID=0x2000）
     //   4. 否则 → 走正常的 smart_init 流程
     let da_session_reused = if let Some((current_vid, current_pid, _dev_type)) =
-        USB通信::获取第一个联发科VIDPID()
+        usb_comm::获取第一个联发科VIDPID()
     {
         if current_pid == 0x0003 {
             // 核心修复：如果当前设备是 BROM (0003)，说明设备已重启，必须重置 DA 会话
             trace!("[session] 检测到 BROM 设备，强制重置旧的 DA 会话状态");
-            crate::连接管理::reset_session();
+            crate::conn_mgr::reset_session();
             false
-        } else if crate::连接管理::try_reuse_da_session(current_vid, current_pid) {
+        } else if crate::conn_mgr::try_reuse_da_session(current_vid, current_pid) {
             info!(
                 "{}",
                 "[DA_SESSION] 检测到现有 DA 会话，尝试复用..."
@@ -224,7 +222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(pair) => pair,
             Err(e) => {
                 warn!("[DA_SESSION] DA 会话复用失败: {}，回退到正常流程", e);
-                crate::连接管理::reset_session();
+                crate::conn_mgr::reset_session();
                 conn_mgr.smart_init(&usb_context, 工作模式)?
             }
         }
@@ -233,7 +231,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     match 工作模式 {
-        crate::config::工作模式::Preloader => {
+        crate::system::config::工作模式::Preloader => {
             info!("{}", "连接成功 (Preloader 模式)".green().bold());
         }
         _ => {
@@ -245,7 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   - Some(path)：使用用户指定的文件作为 EMI 数据源，跳过 dump + bypass
     //   - None：强制从设备 dump preloader 一次（覆盖同名文件），然后按需 bypass
     //
-    // 注意：dump + load + bypass + upload_da 全部下放到 命令::handle_command 统一处理，
+    // 注意：dump + load + bypass + upload_da 全部下放到 cmd::handle_command 统一处理，
     // 避免在 main.rs 与 handle_command 双重执行（之前会 dump 两次）。
     let final_preloader_path = app_config.preloader_path.clone().unwrap_or_default();
     if !final_preloader_path.is_empty() {
@@ -257,13 +255,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let mut da = DA扩展::DAXFlash::new(&mut preloader);
+    let mut da = da_extension::DAXFlash::new(&mut preloader);
     da.patch_da = cli.patch_da;
     da.da_x_speed = app_config.da_x_speed;
 
     // dump + load + bypass + upload_da 全部由 handle_command 内部完成
     // 这里不再调用 dump_preloader_payload / load_preloader_emi / upload_da
-    命令::handle_command(
+    cmd::handle_command(
         &mut da,
         &app_config,
         cli.log_level,
