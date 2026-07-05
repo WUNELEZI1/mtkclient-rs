@@ -3,12 +3,27 @@
 //! - `print_gpt_table` — ASCII 表格风格打印分区表
 
 use colored::Colorize;
+use unicode_width::UnicodeWidthStr;
 
 use super::emmc;
 use crate::partition::GptInfo;
 
 /// 打印 GPT 表格到控制台（含 eMMC_Boot1/Boot2 显示）
 /// 使用 ASCII 表格风格: | 和 - 作为分隔符，列标签中文
+fn pad_display_width(input: &str, width: usize, align_right: bool) -> String {
+    let display_width = UnicodeWidthStr::width(input);
+    if display_width >= width {
+        input.to_string()
+    } else {
+        let padding = " ".repeat(width - display_width);
+        if align_right {
+            format!("{}{}", padding, input)
+        } else {
+            format!("{}{}", input, padding)
+        }
+    }
+}
+
 pub fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64) {
     let gpt_info = match GptInfo::parse(data) {
         Ok(info) => info,
@@ -54,8 +69,13 @@ pub fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64) {
     // 格式化一行为定宽纯文本（不含颜色代码）
     fn fmt_row(idx: &str, name: &str, start: &str, end: &str, size: &str, bytes: &str) -> String {
         format!(
-            "| {:<4} | {:<22} | {:>18} | {:>18} | {:>10} | {:>17} |",
-            idx, name, start, end, size, bytes
+            "| {} | {} | {} | {} | {} | {} |",
+            pad_display_width(idx, 4, false),
+            pad_display_width(name, 22, false),
+            pad_display_width(start, 18, true),
+            pad_display_width(end, 18, true),
+            pad_display_width(size, 10, true),
+            pad_display_width(bytes, 17, true)
         )
     }
 
@@ -121,4 +141,22 @@ pub fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64) {
     println!("{}", total_text.green().bold());
     println!("{}", sep);
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn pad_display_width_counts_chinese_as_double_width() {
+        let padded = pad_display_width("起始地址", 10, false);
+
+        assert_eq!(UnicodeWidthStr::width(padded.as_str()), 10);
+    }
+
+    #[test]
+    fn pad_display_width_right_aligns_ascii_values() {
+        assert_eq!(pad_display_width("1 MB", 8, true), "    1 MB");
+    }
 }

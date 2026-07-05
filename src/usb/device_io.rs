@@ -166,22 +166,27 @@ impl USB设备 {
         if buf.is_empty() {
             return Ok(0);
         }
-        trace!(
-            "[USB READ EXACT] starting, buf_len={}, timeout={:?}ms",
-            buf.len(),
-            self.超时.as_millis()
-        );
+        let 静默 = QUIET_USB_READ.load(Ordering::Relaxed);
+        if !静默 {
+            trace!(
+                "[USB READ EXACT] starting, buf_len={}, timeout={:?}ms",
+                buf.len(),
+                self.超时.as_millis()
+            );
+        }
 
         let ep_addr = 输入端点地址(self);
         let max_packet_size = self.输入端点最大包大小;
         let pending_copied = drain_pending_into(&mut self.输入暂存, buf);
         if pending_copied > 0 {
-            trace!(
-                "[USB READ EXACT] got {} bytes from pending (total: {}/{})",
-                pending_copied,
-                pending_copied,
-                buf.len()
-            );
+            if !静默 {
+                trace!(
+                    "[USB READ EXACT] got {} bytes from pending (total: {}/{})",
+                    pending_copied,
+                    pending_copied,
+                    buf.len()
+                );
+            }
         }
         let interface = self.获取interface_mut().ok_or("设备未初始化")?;
         let mut ep_in = interface
@@ -200,11 +205,13 @@ impl USB设备 {
                 None => {
                     ep_in.cancel_all();
                     if 总计 > 0 {
-                        trace!(
-                            "[USB READ EXACT] partial read: {}/{} bytes before timeout",
-                            总计,
-                            buf.len()
-                        );
+                        if !静默 {
+                            trace!(
+                                "[USB READ EXACT] partial read: {}/{} bytes before timeout",
+                                总计,
+                                buf.len()
+                            );
+                        }
                         break;
                     }
                     return Err("read_exact timeout".into());
@@ -214,12 +221,14 @@ impl USB设备 {
             match result.status {
                 Ok(()) => {
                     let 实际长度 = result.actual_len;
-                    trace!(
-                        "[USB READ EXACT] got {} bytes (total: {}/{})",
-                        实际长度,
-                        总计 + 实际长度,
-                        buf.len()
-                    );
+                    if !静默 {
+                        trace!(
+                            "[USB READ EXACT] got {} bytes (total: {}/{})",
+                            实际长度,
+                            总计 + 实际长度,
+                            buf.len()
+                        );
+                    }
                     if 实际长度 == 0 {
                         std::hint::spin_loop();
                         continue;
@@ -244,7 +253,9 @@ impl USB设备 {
             }
         }
 
-        trace!("[USB READ EXACT] total read: {}/{} bytes", 总计, buf.len());
+        if !静默 {
+            trace!("[USB READ EXACT] total read: {}/{} bytes", 总计, buf.len());
+        }
         if 总计 > 0 {
             usb_trace("RX", "USB设备::精确读取", &buf[..总计]);
         }
