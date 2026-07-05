@@ -19,6 +19,11 @@ const JUMP_DA_RETRY_DELAY_MS: u64 = 100;
 const JUMP_DA_RETRY_QUIET_MS: u64 = 30;
 const JUMP_BL_POST_DELAY_MS: u64 = 50;
 
+fn jump_da_echo_has_command_prefix(echo: [u8; 4], addr: u32) -> bool {
+    let addr_bytes = addr.to_be_bytes();
+    echo[0] == 0xD5 && echo[1..] == addr_bytes[..3]
+}
+
 impl Preloader {
     /// SEND_DA: 发送 Download Agent 到设备
     /// 对齐 Python mtkclient 2.0.1 的实现
@@ -156,7 +161,19 @@ impl Preloader {
             let mut echo = [0u8; 4];
             match self.device.read_exact(&mut echo) {
                 Ok(_) => {
-                    let resaddr = u32::from_be_bytes(echo);
+                    let mut resaddr = u32::from_be_bytes(echo);
+                    if resaddr != addr && jump_da_echo_has_command_prefix(echo, addr) {
+                        let mut tail = [0u8; 1];
+                        self.device
+                            .read_exact(&mut tail)
+                            .map_err(|e| format!("jump_da addr resync tail: {}", e))?;
+                        echo = [echo[1], echo[2], echo[3], tail[0]];
+                        resaddr = u32::from_be_bytes(echo);
+                        trace!(
+                            "[JUMP_DA] addr echo had 0xD5 prefix, resynced to {:08X}",
+                            resaddr
+                        );
+                    }
                     if resaddr != addr {
                         return Err(format!(
                             "jump_da addr mismatch: expected {:08X}, got {:08X}",
@@ -233,5 +250,26 @@ impl Preloader {
         let _status = self.rword()?;
         trace!("SOC_ID: {:02X?}", data);
         Ok(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jump_da_echo_detects_command_prefix_before_address() {
+        assert!(jump_da_echo_has_command_prefix(
+            [0xD5, 0x00, 0x20, 0x00],
+            0x00200000
+        ));
+    }
+
+    #[test]
+    fn jump_da_echo_does_not_treat_unrelated_mismatch_as_prefix() {
+        assert!(!jump_da_echo_has_command_prefix(
+            [0xD5, 0x12, 0x34, 0x56],
+            0x00200000
+        ));
     }
 }
