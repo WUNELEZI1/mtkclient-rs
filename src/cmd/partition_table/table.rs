@@ -31,6 +31,41 @@ pub fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64) {
     };
 
     let partitions = gpt_info.partitions();
+    if let Ok(report) = gpt_info.crc_report() {
+        println!();
+        println!("{}", "GPT 校验:".bright_white().bold());
+        if report.header_ok() {
+            println!(
+                "  HeaderCRC: {}",
+                format!("0x{:08X} OK", report.stored_header_crc32).green()
+            );
+        } else {
+            println!(
+                "  HeaderCRC: {}",
+                format!(
+                    "失败 原=0x{:08X} 计算=0x{:08X}",
+                    report.stored_header_crc32, report.calculated_header_crc32
+                )
+                .yellow()
+            );
+        }
+        if report.partition_entries_ok() {
+            println!(
+                "  分区条目CRC: {}",
+                format!("0x{:08X} OK", report.stored_partition_entries_crc32).green()
+            );
+        } else {
+            println!(
+                "  分区条目CRC: {}",
+                format!(
+                    "失败 原=0x{:08X} 计算=0x{:08X}",
+                    report.stored_partition_entries_crc32,
+                    report.calculated_partition_entries_crc32
+                )
+                .yellow()
+            );
+        }
+    }
 
     // 列宽定义（地址按 0x%016X = 18 字符，含 0x 前缀）
     const W_IDX: usize = 4; // "01" 等
