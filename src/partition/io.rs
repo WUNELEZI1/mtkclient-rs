@@ -18,6 +18,13 @@ use super::gpt::GptInfo;
 const GPT_CACHE_FILE: &str = "gpt.bin";
 
 impl<'a> DAXFlash<'a> {
+    pub(crate) fn save_gpt_cache_file(path: &str, data: &[u8]) -> Result<(), String> {
+        GptInfo::parse(data).map_err(|e| format!("GPT 缓存数据无效: {}", e))?;
+        std::fs::write(path, data).map_err(|e| format!("写 GPT 缓存失败 '{}': {}", path, e))?;
+        crate::connection::session::save_gpt_cache_path(path);
+        Ok(())
+    }
+
     fn load_gpt_cache_from_file(path: &str) -> Result<Vec<u8>, String> {
         let data =
             std::fs::read(path).map_err(|e| format!("读取 GPT 缓存失败 '{}': {}", path, e))?;
@@ -81,8 +88,7 @@ impl<'a> DAXFlash<'a> {
         info!("已写入 gpt_full.bin, {} 字节", gpt_data.len());
 
         // 备份 gpt.bin（对齐 mtkclient 行为）
-        std::fs::write(GPT_CACHE_FILE, &gpt_data).expect("写 gpt.bin 失败");
-        crate::connection::session::save_gpt_cache_path(GPT_CACHE_FILE);
+        Self::save_gpt_cache_file(GPT_CACHE_FILE, &gpt_data)?;
         info!("已写入 {}, {} 字节", GPT_CACHE_FILE, gpt_data.len());
 
         // 只做解析校验。完整分区表输出只在 printgpt 命令中执行，
@@ -477,5 +483,15 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert!(err.contains("GPT 缓存无效"));
+    }
+
+    #[test]
+    fn save_gpt_cache_rejects_invalid_data() {
+        let path =
+            std::env::temp_dir().join(format!("invalid_save_gpt_cache_{}.bin", std::process::id()));
+        let err = DAXFlash::save_gpt_cache_file(path.to_str().unwrap(), b"not a gpt").unwrap_err();
+
+        assert!(err.contains("GPT 缓存数据无效"));
+        assert!(!path.exists());
     }
 }

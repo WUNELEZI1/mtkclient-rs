@@ -5,10 +5,28 @@
 //! - `cmd_write_data`   — 发送写命令
 
 use indicatif::{ProgressBar, ProgressStyle};
-use log::info;
+use log::{info, warn};
 use std::time::Duration;
 
 use crate::da::xflash::{CMD_MAGIC, CMD_WRITE_DATA, DAXFlash, pack3};
+
+fn explain_write_status(status: u32) -> &'static str {
+    match status {
+        CMD_WRITE_DATA => {
+            "读到了 WRITE_DATA 命令 echo，说明 XFlash 状态流错位；请先重试一次，若仍失败请重新进 BROM"
+        }
+        _ => "DA 返回非零状态",
+    }
+}
+
+fn format_write_status_error(stage: &str, status: u32) -> String {
+    format!(
+        "{} status error: 0x{:08X} ({})",
+        stage,
+        status,
+        explain_write_status(status)
+    )
+}
 
 impl<'a> DAXFlash<'a> {
     /// 按原始地址写入一段数据，供分区写入、seccfg/frp 等场景复用。
@@ -55,8 +73,8 @@ impl<'a> DAXFlash<'a> {
             param.extend_from_slice(chunk);
 
             let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
-            self.preloader.device.write(&param_pkt)?;
-            self.preloader.device.write(&param)?;
+            self.write_with_retry(&param_pkt, "writeflash chunk header")?;
+            self.write_with_retry(&param, "writeflash chunk data")?;
 
             pos += dsize;
 
@@ -67,7 +85,7 @@ impl<'a> DAXFlash<'a> {
         let st = self.status()?;
         if st != 0 {
             bar.abandon_with_message(format!("写入失败: status=0x{:08X}", st));
-            return Err(format!("writeflash status error: 0x{:08X}", st));
+            return Err(format_write_status_error("writeflash final", st));
         }
 
         self.send_devctrl(0x800005, None)?;
@@ -108,10 +126,14 @@ impl<'a> DAXFlash<'a> {
     ) -> Result<bool, String> {
         // xsend(WRITE_DATA)
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
-        self.preloader.device.write(&pkt)?;
-        self.preloader.device.write(&CMD_WRITE_DATA.to_le_bytes())?;
+        self.write_with_retry(&pkt, "cmd_write_data xsend")?;
+        self.write_with_retry(&CMD_WRITE_DATA.to_le_bytes(), "cmd_write_data CMD")?;
 
-        let st = self.status()?;
+        let mut st = self.status()?;
+        if st == CMD_WRITE_DATA {
+            warn!("cmd_write_data 读到 WRITE_DATA echo，尝试再读一次 status 进行重同步");
+            st = self.status()?;
+        }
         if st == 0 {
             let mut param = Vec::with_capacity(56);
             param.extend_from_slice(&storage.to_le_bytes());
@@ -120,11 +142,34 @@ impl<'a> DAXFlash<'a> {
             param.extend_from_slice(&size.to_le_bytes());
             param.extend_from_slice(&[0u8; 32]); // NandExtension 全零
             let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
-            self.preloader.device.write(&param_pkt)?;
-            self.preloader.device.write(&param)?;
+            self.write_with_retry(&param_pkt, "cmd_write_data param_hdr")?;
+            self.write_with_retry(&param, "cmd_write_data param")?;
             let st2 = self.status()?;
-            return Ok(st2 == 0);
+            if st2 == 0 {
+                return Ok(true);
+            }
+            return Err(format_write_status_error("cmd_write_data param", st2));
         }
-        Err(format!("cmd_write_data status error: 0x{:08X}", st))
+        Err(format_write_status_error("cmd_write_data", st))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_status_explains_command_echo_desync() {
+        assert!(explain_write_status(CMD_WRITE_DATA).contains("WRITE_DATA 命令 echo"));
+        assert_eq!(explain_write_status(0xDEAD), "DA 返回非零状态");
+    }
+
+    #[test]
+    fn write_status_error_includes_stage_code_and_explanation() {
+        let message = format_write_status_error("cmd_write_data", CMD_WRITE_DATA);
+
+        assert!(message.contains("cmd_write_data status error"));
+        assert!(message.contains("0x00010004"));
+        assert!(message.contains("状态流错位"));
     }
 }

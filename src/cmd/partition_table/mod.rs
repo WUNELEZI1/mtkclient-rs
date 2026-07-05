@@ -110,7 +110,7 @@ pub fn cmd_read_gpt(
     }
 
     let gpt_data = da.get_last_gpt_data()?;
-    std::fs::write(&output, gpt_data).map_err(|e| format!("写入失败: {}", e))?;
+    DAXFlash::save_gpt_cache_file(&output, gpt_data).map_err(|e| format!("写入失败: {}", e))?;
     info!(
         "{}",
         format!("GPT 已保存: {} ({} 字节)", output, gpt_data.len()).green()
