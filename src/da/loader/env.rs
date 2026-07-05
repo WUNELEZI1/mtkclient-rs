@@ -21,6 +21,10 @@ const CMD_INIT_EXT_RAM: u32 = 0x01000A;
 const CMD_BOOT_TO: u32 = 0x010008;
 const CMD_SYNC_SIGNAL: u32 = 0x434E5953;
 
+fn boot_to_should_clear_halt_before_write() -> bool {
+    false
+}
+
 impl<'a> DAXFlash<'a> {
     /// 带重试的 USB 写入：clear_halt + 重试 3 次
     pub(crate) fn write_with_retry(&mut self, data: &[u8], label: &str) -> Result<(), String> {
@@ -188,8 +192,9 @@ impl<'a> DAXFlash<'a> {
             trace!("Boot 到地址: 0x{:08X}, 大小: {} 字节", addr, da.len());
         }
 
-        // 写入前清理 USB 端点状态
-        if self.preloader.device.is_libusb() {
+        // WinUSB/nusb 下不要在正常 boot_to 前 clear_halt。
+        // clear_halt 会发 CLEAR_FEATURE control transfer，Python 成功路径没有这一步。
+        if boot_to_should_clear_halt_before_write() && self.preloader.device.is_libusb() {
             let _ = self.preloader.device.clear_halt_in();
             let _ = self.preloader.device.clear_halt_out();
         }
@@ -297,5 +302,15 @@ impl<'a> DAXFlash<'a> {
                 Ok(true)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boot_to_does_not_clear_halt_before_normal_write_flow() {
+        assert!(!boot_to_should_clear_halt_before_write());
     }
 }
