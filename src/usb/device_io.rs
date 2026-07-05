@@ -317,6 +317,59 @@ impl USB设备 {
         Ok(总计)
     }
 
+    pub fn 精确读取到Vec(&mut self, len: usize) -> Result<Vec<u8>, String> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+
+        let max_packet_size = self.输入端点最大包大小;
+        let mut out = Vec::with_capacity(len);
+        if !self.输入暂存.is_empty() {
+            let take = self.输入暂存.len().min(len);
+            out.extend_from_slice(&self.输入暂存[..take]);
+            self.输入暂存.drain(..take);
+        }
+
+        while out.len() < len {
+            let remaining = len - out.len();
+            let submit_len = bulk_in_submit_len(remaining, max_packet_size);
+            let timeout = self.超时;
+            let (mut chunk, actual_len) = {
+                let ep_in = self.获取输入端点_mut().ok_or("输入端点未初始化")?;
+                let buffer = nusb::transfer::Buffer::new(submit_len);
+                ep_in.submit(buffer);
+                let result = match ep_in.wait_next_complete(timeout) {
+                    Some(r) => r,
+                    None => {
+                        cancel_and_drain_in_endpoint(ep_in);
+                        return Err("read_exact_vec timeout".to_string());
+                    }
+                };
+                result
+                    .status
+                    .map_err(|e| format!("read_exact_vec err: {:?}", e))?;
+                (result.buffer.into_vec(), result.actual_len)
+            };
+            if actual_len == 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            if chunk.len() > actual_len {
+                chunk.truncate(actual_len);
+            }
+            let copy_len = chunk.len().min(remaining);
+            if copy_len == chunk.len() && out.is_empty() && copy_len == len {
+                return Ok(chunk);
+            }
+            out.extend_from_slice(&chunk[..copy_len]);
+            if chunk.len() > copy_len {
+                self.输入暂存.extend_from_slice(&chunk[copy_len..]);
+            }
+        }
+
+        Ok(out)
+    }
+
     pub fn 控制传输输入(
         &mut self,
         rt: u8,

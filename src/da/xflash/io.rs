@@ -410,11 +410,19 @@ impl<'a> DAXFlash<'a> {
                 continue;
             } else if (slength as usize) <= MAX_PACKET_SIZE {
                 let slen = slength as usize;
-                let mut data = acquire_dump_buffer(&recycle_rx, slen);
-                self.preloader
-                    .device
-                    .read_exact(&mut data)
-                    .map_err(|e| format!("read data: {}", e))?;
+                let data = if self.da_x_speed >= 3 {
+                    self.preloader
+                        .device
+                        .read_exact_vec(slen)
+                        .map_err(|e| format!("read data fast: {}", e))?
+                } else {
+                    let mut data = acquire_dump_buffer(&recycle_rx, slen);
+                    self.preloader
+                        .device
+                        .read_exact(&mut data)
+                        .map_err(|e| format!("read data: {}", e))?;
+                    data
+                };
                 writer_tx
                     .send(Some(data))
                     .map_err(|_| "写入线程已退出".to_string())?;
