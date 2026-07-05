@@ -14,9 +14,14 @@ const 握手重试延迟毫秒: u64 = 300;
 const 握手前发送A0延迟毫秒: u64 = 10;
 const 握手排空超时毫秒: u64 = 50;
 const 单次握手最大错位次数: u32 = 8;
+const 残留DA流检测窗口: usize = 4;
 
 fn handshake_should_restart_after_mismatch(mismatch_count: u32) -> bool {
     mismatch_count >= 单次握手最大错位次数
+}
+
+fn looks_like_da_residual_stream(bytes: &[u8]) -> bool {
+    bytes.len() >= 残留DA流检测窗口 && bytes.iter().all(|b| matches!(*b, 0xA1 | 0x0B))
 }
 
 impl USB设备 {
@@ -57,6 +62,7 @@ impl USB设备 {
 
             let mut 成功 = true;
             let mut 错位次数 = 0;
+            let mut 最近错位字节: Vec<u8> = Vec::with_capacity(残留DA流检测窗口);
             let mut i = 0;
             while i < 握手字节序列.len() {
                 if let Err(e) = self.写入(&[握手字节序列[i]]) {
@@ -77,11 +83,21 @@ impl USB设备 {
                             i += 1;
                         } else {
                             错位次数 += 1;
+                            最近错位字节.push(最后字节);
+                            if 最近错位字节.len() > 残留DA流检测窗口 {
+                                最近错位字节.remove(0);
+                            }
                             if 错位次数 <= 3 || handshake_should_restart_after_mismatch(错位次数)
                             {
                                 info!(
                                     "[USB] handshake mismatch at byte {}: got 0x{:02X}, expected 0x{:02X}",
                                     i, 最后字节, !握手字节序列[i]
+                                );
+                            }
+                            if looks_like_da_residual_stream(&最近错位字节) {
+                                return Err(
+                                    "BROM 握手读到疑似 DA/残留响应流 (A1/0B)。请长按电源 10 秒或重新插拔，确认设备重新进入干净 BROM 后再试。"
+                                        .to_string(),
                                 );
                             }
                             if handshake_should_restart_after_mismatch(错位次数) {
@@ -126,5 +142,12 @@ mod tests {
         assert!(handshake_should_restart_after_mismatch(
             单次握手最大错位次数
         ));
+    }
+
+    #[test]
+    fn handshake_detects_da_residual_stream_pattern() {
+        assert!(looks_like_da_residual_stream(&[0xA1, 0x0B, 0xA1, 0x0B]));
+        assert!(!looks_like_da_residual_stream(&[0xA1, 0x0B, 0x5F, 0xF5]));
+        assert!(!looks_like_da_residual_stream(&[0xA1, 0x0B, 0xA1]));
     }
 }
