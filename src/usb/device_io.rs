@@ -9,8 +9,17 @@ use log::trace;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
 use nusb::MaybeFuture;
+use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
+
+pub(crate) fn bulk_in_submit_len(requested_len: usize, max_packet_size: u16) -> usize {
+    let packet_size = usize::from(max_packet_size).max(1);
+    if requested_len == 0 {
+        0
+    } else {
+        requested_len.div_ceil(packet_size) * packet_size
+    }
+}
 
 /// 获取 IN 端点地址（解决借用检查问题）
 fn 输入端点地址(设备: &USB设备) -> u8 {
@@ -26,7 +35,8 @@ impl USB设备 {
     pub fn 写入(&mut self, data: &[u8]) -> Result<usize, String> {
         let ep_addr = 输出端点地址(self);
         let interface = self.获取interface_mut().ok_or("设备未初始化")?;
-        let mut ep_out = interface.endpoint::<nusb::transfer::Bulk, nusb::transfer::Out>(ep_addr)
+        let mut ep_out = interface
+            .endpoint::<nusb::transfer::Bulk, nusb::transfer::Out>(ep_addr)
             .map_err(|e| format!("获取输出端点失败: {}", e))?;
 
         if data.is_empty() {
@@ -34,9 +44,10 @@ impl USB设备 {
             usb_trace("TX", "USB设备::写入 ZLP", &[]);
             let buf: nusb::transfer::Buffer = Vec::<u8>::new().into();
             ep_out.submit(buf);
-            let result = ep_out.wait_next_complete(self.超时)
-                .ok_or("ZLP 写入超时")?;
-            result.status.map_err(|e| format!("write ZLP err: {:?}", e))?;
+            let result = ep_out.wait_next_complete(self.超时).ok_or("ZLP 写入超时")?;
+            result
+                .status
+                .map_err(|e| format!("write ZLP err: {:?}", e))?;
             return Ok(0);
         }
 
@@ -44,8 +55,7 @@ impl USB设备 {
 
         let buf: nusb::transfer::Buffer = data.to_vec().into();
         ep_out.submit(buf);
-        let result = ep_out.wait_next_complete(self.超时)
-            .ok_or("写入超时")?;
+        let result = ep_out.wait_next_complete(self.超时).ok_or("写入超时")?;
         result.status.map_err(|e| format!("write err: {:?}", e))?;
         Ok(result.actual_len)
     }
@@ -62,11 +72,14 @@ impl USB设备 {
             );
         }
 
+        let submit_len = bulk_in_submit_len(buf.len(), self.输入端点最大包大小);
+
         let interface = self.获取interface_mut().ok_or("设备未初始化")?;
-        let mut ep_in = interface.endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(ep_addr)
+        let mut ep_in = interface
+            .endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(ep_addr)
             .map_err(|e| format!("获取输入端点失败: {}", e))?;
 
-        let buffer = nusb::transfer::Buffer::new(buf.len());
+        let buffer = nusb::transfer::Buffer::new(submit_len);
         ep_in.submit(buffer);
 
         let result = match ep_in.wait_next_complete(self.超时) {
@@ -122,14 +135,17 @@ impl USB设备 {
         );
 
         let ep_addr = 输入端点地址(self);
+        let max_packet_size = self.输入端点最大包大小;
         let interface = self.获取interface_mut().ok_or("设备未初始化")?;
-        let mut ep_in = interface.endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(ep_addr)
+        let mut ep_in = interface
+            .endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(ep_addr)
             .map_err(|e| format!("获取输入端点失败: {}", e))?;
 
         let mut 总计 = 0usize;
         while 总计 < buf.len() {
             let 剩余 = buf.len() - 总计;
-            let buffer = nusb::transfer::Buffer::new(剩余);
+            let submit_len = bulk_in_submit_len(剩余, max_packet_size);
+            let buffer = nusb::transfer::Buffer::new(submit_len);
             ep_in.submit(buffer);
 
             let result = match ep_in.wait_next_complete(self.超时) {
@@ -153,7 +169,9 @@ impl USB设备 {
                     let 实际长度 = result.actual_len;
                     trace!(
                         "[USB READ EXACT] got {} bytes (total: {}/{})",
-                        实际长度, 总计 + 实际长度, buf.len()
+                        实际长度,
+                        总计 + 实际长度,
+                        buf.len()
                     );
                     if 实际长度 == 0 {
                         std::hint::spin_loop();
@@ -208,7 +226,9 @@ impl USB设备 {
             length: len,
         };
 
-        let result = interface.control_in(control, 超时).wait()
+        let result = interface
+            .control_in(control, 超时)
+            .wait()
             .map_err(|e| format!("ctrl_transfer_in err: {:?}", e))?;
 
         usb_trace("RX", "USB设备::控制传输输入", &result);
@@ -225,7 +245,11 @@ impl USB设备 {
     ) -> Result<usize, String> {
         trace!(
             "[CTRL] OUT rt=0x{:02X} r=0x{:02X} v=0x{:04X} i=0x{:04X} len={}",
-            rt, r, v, i, data.len()
+            rt,
+            r,
+            v,
+            i,
+            data.len()
         );
         usb_trace("TX", "USB设备::控制传输输出", data);
 
@@ -241,7 +265,9 @@ impl USB设备 {
             data,
         };
 
-        interface.control_out(control, 超时).wait()
+        interface
+            .control_out(control, 超时)
+            .wait()
             .map_err(|e| format!("ctrl_transfer_out err: {:?}", e))?;
 
         Ok(data.len())
@@ -260,7 +286,9 @@ impl USB设备 {
             index: ep_addr as u16,
             data: &[],
         };
-        interface.control_out(control, Duration::from_millis(100)).wait()
+        interface
+            .control_out(control, Duration::from_millis(100))
+            .wait()
             .map_err(|e| format!("clear_halt ep_in err: {:?}", e))?;
         Ok(())
     }
@@ -276,7 +304,9 @@ impl USB设备 {
             index: ep_addr as u16,
             data: &[],
         };
-        interface.control_out(control, Duration::from_millis(100)).wait()
+        interface
+            .control_out(control, Duration::from_millis(100))
+            .wait()
             .map_err(|e| format!("clear_halt ep_out err: {:?}", e))?;
         Ok(())
     }
@@ -302,5 +332,25 @@ impl USB设备 {
             3 => Recipient::Other,
             _ => Recipient::Device,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bulk_in_submit_len_uses_one_packet_for_single_byte_read() {
+        assert_eq!(bulk_in_submit_len(1, 512), 512);
+    }
+
+    #[test]
+    fn bulk_in_submit_len_rounds_up_to_packet_multiple() {
+        assert_eq!(bulk_in_submit_len(513, 512), 1024);
+    }
+
+    #[test]
+    fn bulk_in_submit_len_keeps_zero_length_zero() {
+        assert_eq!(bulk_in_submit_len(0, 512), 0);
     }
 }
