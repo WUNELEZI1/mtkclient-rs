@@ -226,8 +226,8 @@ impl USB设备 {
         );
 
         let 超时 = self.超时;
-        let index = control_index_for_recipient(rt, i, self.接口编号);
-        let interface = self.获取interface_mut().ok_or("设备未初始化")?;
+        let index = control_index_for_recipient(rt, i, self.控制接口编号);
+        let interface = self.获取控制interface().ok_or("控制接口未初始化")?;
 
         let control = ControlIn {
             control_type: Self::转换控制类型(rt),
@@ -266,8 +266,8 @@ impl USB设备 {
         usb_trace("TX", "USB设备::控制传输输出", data);
 
         let 超时 = self.超时;
-        let index = control_index_for_recipient(rt, i, self.接口编号);
-        let interface = self.获取interface_mut().ok_or("设备未初始化")?;
+        let index = control_index_for_recipient(rt, i, self.控制接口编号);
+        let interface = self.获取控制interface().ok_or("控制接口未初始化")?;
 
         let control = ControlOut {
             control_type: Self::转换控制类型(rt),
@@ -368,9 +368,9 @@ mod tests {
     }
 
     #[test]
-    fn interface_control_transfer_uses_claimed_interface_number_as_index() {
-        assert_eq!(control_index_for_recipient(0xA1, 0, 1), 1);
-        assert_eq!(control_index_for_recipient(0x21, 0, 1), 1);
+    fn interface_control_transfer_uses_control_interface_number_as_index() {
+        assert_eq!(control_index_for_recipient(0xA1, 0, 0), 0);
+        assert_eq!(control_index_for_recipient(0x21, 0, 0), 0);
     }
 
     #[test]

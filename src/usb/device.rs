@@ -25,6 +25,8 @@ const 重新打开延迟毫秒: u64 = 200;
 pub struct USB设备 {
     /// nusb 设备接口（持有 claim 的 interface）
     interface: Option<nusb::Interface>,
+    /// CDC/WinUSB 控制传输接口
+    控制interface: Option<nusb::Interface>,
     /// nusb 设备句柄（用于 reopen 时 drop + reopen）
     device: Option<nusb::Device>,
     pub vid: u16,
@@ -34,6 +36,7 @@ pub struct USB设备 {
     pub 输出端点: u8,
     pub 输入端点: u8,
     pub(crate) 接口编号: u8,
+    pub(crate) 控制接口编号: u8,
     #[allow(dead_code)]
     输出端点最大包大小: u16,
     pub 输入端点最大包大小: u16,
@@ -82,28 +85,11 @@ impl USB设备 {
             .map_err(|e| format!("打开设备失败: {}", e))?;
 
         // 扫描端点（从 active_configuration 获取）
-        let (输出端点地址, 输入端点地址, 输出端点最大包, 输入端点最大包) =
+        let (输出端点地址, 输入端点地址, 输出端点最大包, 输入端点最大包, bulk接口编号) =
             Self::扫描端点_from_device(&device);
 
-        // 尝试 claim interface 1（MTK BROM 使用 interface 1）
-        let (interface, 接口编号) = match device.claim_interface(1).wait() {
-            Ok(iface) => {
-                trace!("[USB] claim interface 1 成功");
-                (iface, 1)
-            }
-            Err(e) => {
-                // 尝试 interface 0
-                match device.claim_interface(0).wait() {
-                    Ok(iface) => {
-                        trace!("[USB] claim interface 1 失败 ({})，回退到 interface 0", e);
-                        (iface, 0)
-                    }
-                    Err(e2) => {
-                        return Err(format!("claim interface 失败 (if1: {}, if0: {})", e, e2));
-                    }
-                }
-            }
-        };
+        let (interface, 接口编号, 控制interface, 控制接口编号) =
+            Self::claim_bulk_and_control_interfaces(&device, bulk接口编号)?;
 
         info!(
             "[USB] EP_OUT=0x{:02X} wMaxPacketSize={} EP_IN=0x{:02X}",
@@ -114,6 +100,7 @@ impl USB设备 {
 
         Ok(USB设备 {
             interface: Some(interface),
+            控制interface: Some(控制interface),
             device: Some(device),
             vid,
             pid,
@@ -122,6 +109,7 @@ impl USB设备 {
             输出端点: 输出端点地址,
             输入端点: 输入端点地址,
             接口编号,
+            控制接口编号,
             输出端点最大包大小: 输出端点最大包,
             输入端点最大包大小: 输入端点最大包,
             超时: Duration::from_millis(默认超时毫秒),
@@ -146,19 +134,11 @@ impl USB设备 {
             .map_err(|e| format!("打开设备失败: {}", e))?;
 
         // 扫描端点
-        let (输出端点地址, 输入端点地址, 输出端点最大包, 输入端点最大包) =
+        let (输出端点地址, 输入端点地址, 输出端点最大包, 输入端点最大包, bulk接口编号) =
             Self::扫描端点_from_device(&device);
 
-        // 尝试 claim interface 1，回退到 interface 0
-        let (interface, 接口编号) = match device.claim_interface(1).wait() {
-            Ok(iface) => (iface, 1),
-            Err(e) => match device.claim_interface(0).wait() {
-                Ok(iface) => (iface, 0),
-                Err(e2) => {
-                    return Err(format!("claim interface 失败 (if1: {}, if0: {})", e, e2));
-                }
-            },
-        };
+        let (interface, 接口编号, 控制interface, 控制接口编号) =
+            Self::claim_bulk_and_control_interfaces(&device, bulk接口编号)?;
 
         let 阶段 = USB阶段::从PID生成(pid);
         trace!(
@@ -168,6 +148,7 @@ impl USB设备 {
 
         Ok(USB设备 {
             interface: Some(interface),
+            控制interface: Some(控制interface),
             device: Some(device),
             vid,
             pid,
@@ -176,6 +157,7 @@ impl USB设备 {
             输出端点: 输出端点地址,
             输入端点: 输入端点地址,
             接口编号,
+            控制接口编号,
             输出端点最大包大小: 输出端点最大包,
             输入端点最大包大小: 输入端点最大包,
             超时: Duration::from_millis(默认超时毫秒),
@@ -184,11 +166,12 @@ impl USB设备 {
     }
 
     /// 从 Device 的 active_configuration 扫描 bulk 端点
-    fn 扫描端点_from_device(device: &nusb::Device) -> (u8, u8, u16, u16) {
+    fn 扫描端点_from_device(device: &nusb::Device) -> (u8, u8, u16, u16, u8) {
         let mut 输出端点地址: u8 = 默认输出端点;
         let mut 输入端点地址: u8 = 默认输入端点;
         let mut 输出端点最大包: u16 = 默认最大包大小;
         let mut 输入端点最大包: u16 = 默认最大包大小;
+        let mut bulk接口编号: u8 = 1;
 
         trace!("[USB] scanning endpoints from active_configuration...");
 
@@ -200,6 +183,7 @@ impl USB设备 {
                     alt_setting.interface_number(),
                     alt_setting.endpoints().count()
                 );
+                let 接口编号 = alt_setting.interface_number();
                 for ep in alt_setting.endpoints() {
                     let 地址 = ep.address();
                     let 方向 = if 地址 & 0x80 != 0 { "IN" } else { "OUT" };
@@ -217,10 +201,12 @@ impl USB设备 {
                     if 方向 == "OUT" && 端点类型 == "Bulk" {
                         输出端点地址 = 地址;
                         输出端点最大包 = 最大包 as u16;
+                        bulk接口编号 = 接口编号;
                     }
                     if 方向 == "IN" && 端点类型 == "Bulk" {
                         输入端点地址 = 地址;
                         输入端点最大包 = 最大包 as u16;
+                        bulk接口编号 = 接口编号;
                     }
                 }
             }
@@ -228,7 +214,42 @@ impl USB设备 {
             info!("[USB] WARNING: 无法读取 active configuration，使用默认端点");
         }
 
-        (输出端点地址, 输入端点地址, 输出端点最大包, 输入端点最大包)
+        (
+            输出端点地址,
+            输入端点地址,
+            输出端点最大包,
+            输入端点最大包,
+            bulk接口编号,
+        )
+    }
+
+    fn claim_bulk_and_control_interfaces(
+        device: &nusb::Device,
+        bulk接口编号: u8,
+    ) -> Result<(nusb::Interface, u8, nusb::Interface, u8), String> {
+        let interface = device
+            .claim_interface(bulk接口编号)
+            .wait()
+            .map_err(|e| format!("claim bulk interface {} 失败: {}", bulk接口编号, e))?;
+        trace!("[USB] claim bulk interface {} 成功", bulk接口编号);
+
+        if bulk接口编号 == 0 {
+            return Ok((interface.clone(), bulk接口编号, interface, 0));
+        }
+
+        match device.claim_interface(0).wait() {
+            Ok(控制interface) => {
+                trace!("[USB] claim control interface 0 成功");
+                Ok((interface, bulk接口编号, 控制interface, 0))
+            }
+            Err(e) => {
+                trace!(
+                    "[USB] claim control interface 0 失败 ({})，复用 bulk interface {}",
+                    e, bulk接口编号
+                );
+                Ok((interface.clone(), bulk接口编号, interface, bulk接口编号))
+            }
+        }
     }
 
     /// 是否是 nusb（WinUSB）后端
@@ -261,6 +282,7 @@ impl USB设备 {
         }
         // nusb: drop interface 会自动 release，drop device 会自动 close
         self.interface = None;
+        self.控制interface = None;
         self.device = None;
         self.已关闭 = true;
         trace!("[USB] 设备已关闭");
@@ -286,11 +308,13 @@ impl USB设备 {
 
         // 交换字段
         self.interface = 新设备.interface.take();
+        self.控制interface = 新设备.控制interface.take();
         self.device = 新设备.device.take();
         self.输入端点 = 新设备.输入端点;
         self.输出端点 = 新设备.输出端点;
         self.输入端点最大包大小 = 新设备.输入端点最大包大小;
         self.接口编号 = 新设备.接口编号;
+        self.控制接口编号 = 新设备.控制接口编号;
         self.vid = 新设备.vid;
         self.pid = 新设备.pid;
         self.阶段 = 新设备.阶段;
@@ -309,6 +333,11 @@ impl USB设备 {
     /// 获取 nusb Interface 可变引用
     pub(crate) fn 获取interface_mut(&mut self) -> Option<&mut nusb::Interface> {
         self.interface.as_mut()
+    }
+
+    /// 获取控制传输 Interface 引用
+    pub(crate) fn 获取控制interface(&self) -> Option<&nusb::Interface> {
+        self.控制interface.as_ref()
     }
 }
 
