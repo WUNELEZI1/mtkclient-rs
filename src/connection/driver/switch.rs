@@ -13,11 +13,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 use wdi_rs::{CreateListOptions, PrepareDriverOptions, create_list, prepare_driver};
 
+use super::detect::{BromDriverType, check_brom_driver_type};
 use super::setupapi::{
     INF_NAME, INSTALLFLAG_FORCE, INSTALLFLAG_NONINTERACTIVE, MTK_BROM_PID, MTK_VID,
     UpdateDriverForPlugAndPlayDevicesW,
 };
-use super::verify::check_winusb_installed;
 
 const MTKCLIENT_TEMP_DIR: &str = "mtkclient_winusb";
 const POLL_INTERVAL_MS: u64 = 500;
@@ -37,9 +37,9 @@ pub fn switch_to_winusb() -> Result<(), String> {
         return Err("需要管理员权限才能切换驱动".to_string());
     }
 
-    // 步骤 1：快速路径 — libusb 已经能打开设备
-    if check_winusb_installed() {
-        info!("[DRIVER] 设备已就绪，无需切换");
+    // 步骤 1：快速路径 — 只有 SetupAPI 确认当前服务是 WinUSB/libwdi 才跳过
+    if current_driver_is_winusb() {
+        info!("[DRIVER] SetupAPI 确认设备已是 WinUSB，无需切换");
         return Ok(());
     }
 
@@ -135,6 +135,16 @@ fn find_brom_device() -> Result<wdi_rs::Device, String> {
     Err(last_err)
 }
 
+fn should_skip_switch_for_driver(driver_type: &BromDriverType) -> bool {
+    matches!(driver_type, BromDriverType::WinUsb)
+}
+
+fn current_driver_is_winusb() -> bool {
+    check_brom_driver_type()
+        .map(|driver_type| should_skip_switch_for_driver(&driver_type))
+        .unwrap_or(false)
+}
+
 /// INF 输出目录
 fn get_inf_dir() -> PathBuf {
     std::env::temp_dir().join(MTKCLIENT_TEMP_DIR)
@@ -216,9 +226,9 @@ fn force_install_via_api(
 fn poll_libusb_ready(max_seconds: u32) -> bool {
     for i in 1..=(max_seconds * 2) {
         std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
-        if check_winusb_installed() {
+        if current_driver_is_winusb() {
             info!(
-                "[DRIVER] libusb1-sys 验证通过 ({}×{}ms)",
+                "[DRIVER] SetupAPI 验证 WinUSB 通过 ({}×{}ms)",
                 i, POLL_INTERVAL_MS
             );
             return true;
@@ -229,7 +239,7 @@ fn poll_libusb_ready(max_seconds: u32) -> bool {
 
 /// 确保 WinUSB 驱动已安装（检查 + 切换）
 pub fn ensure_winusb_driver(_vid: u16, _pid: u16) -> Result<(), String> {
-    if check_winusb_installed() {
+    if current_driver_is_winusb() {
         return Ok(());
     }
     switch_to_winusb()
@@ -238,4 +248,27 @@ pub fn ensure_winusb_driver(_vid: u16, _pid: u16) -> Result<(), String> {
 /// 兼容旧接口
 pub fn install_winusb_with_wdi(_vid: u16, _pid: u16) -> Result<(), String> {
     switch_to_winusb()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connection::driver::detect::BromDriverType;
+
+    #[test]
+    fn switch_is_skipped_only_for_confirmed_winusb_driver() {
+        assert!(should_skip_switch_for_driver(&BromDriverType::WinUsb));
+    }
+
+    #[test]
+    fn serial_driver_must_not_skip_switch_even_if_usb_can_be_enumerated() {
+        assert!(!should_skip_switch_for_driver(&BromDriverType::Serial));
+    }
+
+    #[test]
+    fn unknown_driver_must_not_skip_switch() {
+        assert!(!should_skip_switch_for_driver(&BromDriverType::Unknown(
+            "未知驱动".to_string()
+        )));
+    }
 }
