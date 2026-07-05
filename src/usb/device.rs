@@ -11,8 +11,8 @@ use super::context::USB上下文;
 use super::context::USB阶段;
 use crate::system::config::{DeviceType, SUPPORTED_DEVICES};
 use log::{info, trace, warn};
-use nusb::descriptors::TransferType;
 use nusb::MaybeFuture;
+use nusb::descriptors::TransferType;
 use std::time::Duration;
 
 /// USB bulk 端点默认值（找不到时回退）
@@ -33,6 +33,7 @@ pub struct USB设备 {
     pub(crate) 设备类型: DeviceType,
     pub 输出端点: u8,
     pub 输入端点: u8,
+    pub(crate) 接口编号: u8,
     #[allow(dead_code)]
     输出端点最大包大小: u16,
     pub 输入端点最大包大小: u16,
@@ -44,7 +45,9 @@ pub struct USB设备 {
 impl USB设备 {
     /// 查找并打开第一个支持的设备
     pub fn 新建(_context: &USB上下文) -> Result<Self, String> {
-        let devices = nusb::list_devices().wait().map_err(|e| format!("枚举 USB 设备失败: {}", e))?;
+        let devices = nusb::list_devices()
+            .wait()
+            .map_err(|e| format!("枚举 USB 设备失败: {}", e))?;
 
         let mut 找到的设备类型 = DeviceType::Unknown;
         let mut 目标设备信息: Option<nusb::DeviceInfo> = None;
@@ -73,24 +76,27 @@ impl USB设备 {
         let pid = 设备信息.product_id();
 
         // 打开设备并 claim interface
-        let device = 设备信息.open().wait().map_err(|e| format!("打开设备失败: {}", e))?;
+        let device = 设备信息
+            .open()
+            .wait()
+            .map_err(|e| format!("打开设备失败: {}", e))?;
 
         // 扫描端点（从 active_configuration 获取）
         let (输出端点地址, 输入端点地址, 输出端点最大包, 输入端点最大包) =
             Self::扫描端点_from_device(&device);
 
         // 尝试 claim interface 1（MTK BROM 使用 interface 1）
-        let interface = match device.claim_interface(1).wait() {
+        let (interface, 接口编号) = match device.claim_interface(1).wait() {
             Ok(iface) => {
                 trace!("[USB] claim interface 1 成功");
-                iface
+                (iface, 1)
             }
             Err(e) => {
                 // 尝试 interface 0
                 match device.claim_interface(0).wait() {
                     Ok(iface) => {
                         trace!("[USB] claim interface 1 失败 ({})，回退到 interface 0", e);
-                        iface
+                        (iface, 0)
                     }
                     Err(e2) => {
                         return Err(format!("claim interface 失败 (if1: {}, if0: {})", e, e2));
@@ -115,6 +121,7 @@ impl USB设备 {
             设备类型: 找到的设备类型,
             输出端点: 输出端点地址,
             输入端点: 输入端点地址,
+            接口编号,
             输出端点最大包大小: 输出端点最大包,
             输入端点最大包大小: 输入端点最大包,
             超时: Duration::from_millis(默认超时毫秒),
@@ -124,30 +131,33 @@ impl USB设备 {
 
     /// 按指定 VID/PID 打开设备
     pub fn 按VID_PID打开(_context: &USB上下文, vid: u16, pid: u16) -> Result<Self, String> {
-        let devices = nusb::list_devices().wait().map_err(|e| format!("枚举 USB 设备失败: {}", e))?;
+        let devices = nusb::list_devices()
+            .wait()
+            .map_err(|e| format!("枚举 USB 设备失败: {}", e))?;
 
         let 设备信息 = devices
             .into_iter()
             .find(|d| d.vendor_id() == vid && d.product_id() == pid)
             .ok_or_else(|| format!("未找到设备 VID={:04X} PID={:04X}", vid, pid))?;
 
-        let device = 设备信息.open().wait().map_err(|e| format!("打开设备失败: {}", e))?;
+        let device = 设备信息
+            .open()
+            .wait()
+            .map_err(|e| format!("打开设备失败: {}", e))?;
 
         // 扫描端点
         let (输出端点地址, 输入端点地址, 输出端点最大包, 输入端点最大包) =
             Self::扫描端点_from_device(&device);
 
         // 尝试 claim interface 1，回退到 interface 0
-        let interface = match device.claim_interface(1).wait() {
-            Ok(iface) => iface,
-            Err(e) => {
-                match device.claim_interface(0).wait() {
-                    Ok(iface) => iface,
-                    Err(e2) => {
-                        return Err(format!("claim interface 失败 (if1: {}, if0: {})", e, e2));
-                    }
+        let (interface, 接口编号) = match device.claim_interface(1).wait() {
+            Ok(iface) => (iface, 1),
+            Err(e) => match device.claim_interface(0).wait() {
+                Ok(iface) => (iface, 0),
+                Err(e2) => {
+                    return Err(format!("claim interface 失败 (if1: {}, if0: {})", e, e2));
                 }
-            }
+            },
         };
 
         let 阶段 = USB阶段::从PID生成(pid);
@@ -165,6 +175,7 @@ impl USB设备 {
             设备类型: DeviceType::from_vid_pid(vid, pid),
             输出端点: 输出端点地址,
             输入端点: 输入端点地址,
+            接口编号,
             输出端点最大包大小: 输出端点最大包,
             输入端点最大包大小: 输入端点最大包,
             超时: Duration::from_millis(默认超时毫秒),
@@ -279,6 +290,7 @@ impl USB设备 {
         self.输入端点 = 新设备.输入端点;
         self.输出端点 = 新设备.输出端点;
         self.输入端点最大包大小 = 新设备.输入端点最大包大小;
+        self.接口编号 = 新设备.接口编号;
         self.vid = 新设备.vid;
         self.pid = 新设备.pid;
         self.阶段 = 新设备.阶段;

@@ -21,6 +21,17 @@ pub(crate) fn bulk_in_submit_len(requested_len: usize, max_packet_size: u16) -> 
     }
 }
 
+pub(crate) fn control_index_for_recipient(
+    bm_request_type: u8,
+    requested_index: u16,
+    interface_number: u8,
+) -> u16 {
+    match USB设备::转换接收者(bm_request_type) {
+        Recipient::Interface => u16::from(interface_number),
+        _ => requested_index,
+    }
+}
+
 /// 获取 IN 端点地址（解决借用检查问题）
 fn 输入端点地址(设备: &USB设备) -> u8 {
     设备.输入端点
@@ -215,6 +226,7 @@ impl USB设备 {
         );
 
         let 超时 = self.超时;
+        let index = control_index_for_recipient(rt, i, self.接口编号);
         let interface = self.获取interface_mut().ok_or("设备未初始化")?;
 
         let control = ControlIn {
@@ -222,7 +234,7 @@ impl USB设备 {
             recipient: Self::转换接收者(rt),
             request: r,
             value: v,
-            index: i,
+            index,
             length: len,
         };
 
@@ -254,6 +266,7 @@ impl USB设备 {
         usb_trace("TX", "USB设备::控制传输输出", data);
 
         let 超时 = self.超时;
+        let index = control_index_for_recipient(rt, i, self.接口编号);
         let interface = self.获取interface_mut().ok_or("设备未初始化")?;
 
         let control = ControlOut {
@@ -261,7 +274,7 @@ impl USB设备 {
             recipient: Self::转换接收者(rt),
             request: r,
             value: v,
-            index: i,
+            index,
             data,
         };
 
@@ -352,5 +365,16 @@ mod tests {
     #[test]
     fn bulk_in_submit_len_keeps_zero_length_zero() {
         assert_eq!(bulk_in_submit_len(0, 512), 0);
+    }
+
+    #[test]
+    fn interface_control_transfer_uses_claimed_interface_number_as_index() {
+        assert_eq!(control_index_for_recipient(0xA1, 0, 1), 1);
+        assert_eq!(control_index_for_recipient(0x21, 0, 1), 1);
+    }
+
+    #[test]
+    fn device_control_transfer_keeps_requested_index() {
+        assert_eq!(control_index_for_recipient(0x80, 7, 1), 7);
     }
 }
