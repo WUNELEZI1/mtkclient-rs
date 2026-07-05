@@ -96,7 +96,7 @@ impl USB设备 {
                             }
                             if looks_like_da_residual_stream(&最近错位字节) {
                                 return Err(
-                                    "BROM 握手读到疑似 DA/残留响应流 (A1/0B)。请长按电源 10 秒或重新插拔，确认设备重新进入干净 BROM 后再试。"
+                                    "BROM 握手读到疑似残留/错位响应流 (A1/0B)。请重新插拔或长按电源 10 秒，确认设备重新进入干净 BROM 后再试。"
                                         .to_string(),
                                 );
                             }

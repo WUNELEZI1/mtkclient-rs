@@ -10,7 +10,10 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use nusb::MaybeFuture;
-use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
+use nusb::transfer::{Bulk, ControlIn, ControlOut, ControlType, In, Recipient};
+
+const 取消传输排空超时: Duration = Duration::from_millis(20);
+const 取消传输最大排空次数: usize = 8;
 
 pub(crate) fn bulk_in_submit_len(requested_len: usize, max_packet_size: u16) -> usize {
     let packet_size = usize::from(max_packet_size).max(1);
@@ -49,6 +52,16 @@ pub(crate) fn drain_pending_into(pending: &mut Vec<u8>, out: &mut [u8]) -> usize
     out[..copy_len].copy_from_slice(&pending[..copy_len]);
     pending.drain(..copy_len);
     copy_len
+}
+
+fn cancel_and_drain_in_endpoint(ep_in: &mut nusb::Endpoint<Bulk, In>) {
+    ep_in.cancel_all();
+    for _ in 0..取消传输最大排空次数 {
+        if ep_in.pending() == 0 {
+            break;
+        }
+        let _ = ep_in.wait_next_complete(取消传输排空超时);
+    }
 }
 
 /// 获取 IN 端点地址（解决借用检查问题）
@@ -120,7 +133,7 @@ impl USB设备 {
                 if !静默 {
                     trace!("[USB READ] timeout");
                 }
-                ep_in.cancel_all();
+                cancel_and_drain_in_endpoint(ep_in);
                 return Ok(0);
             }
         };
@@ -196,7 +209,7 @@ impl USB设备 {
                 let result = match ep_in.wait_next_complete(timeout) {
                     Some(r) => r,
                     None => {
-                        ep_in.cancel_all();
+                        cancel_and_drain_in_endpoint(ep_in);
                         if 总计 > 0 {
                             if !静默 {
                                 trace!(
