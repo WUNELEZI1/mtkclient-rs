@@ -11,7 +11,8 @@ use log::trace;
 
 use super::setupapi::{
     self, MTK_BROM_PID, MTK_VID, SPDRP_COMPATIBLEIDS, SPDRP_DEVICEDESC, SPDRP_HARDWAREID,
-    SPDRP_MFG, SPDRP_PORTNAME, SpDevinfoData, enum_ports_devices, enum_usb_devices, read_reg_wide,
+    SPDRP_MFG, SPDRP_PORTNAME, SPDRP_SERVICE, SpDevinfoData, enum_ports_devices, enum_usb_devices,
+    read_reg_wide,
 };
 
 /// BROM 设备驱动类型
@@ -36,6 +37,37 @@ pub enum UsbBusDetectionResult {
     SerialPort(String), // COM 口名称
     /// 未知驱动
     Unknown(String), // 驱动制造商
+}
+
+fn classify_brom_driver_from_fields(
+    service: &str,
+    mfg: &str,
+    device_desc: &str,
+    compatible_ids: &str,
+) -> BromDriverType {
+    let service_lower = service.to_lowercase();
+    let mfg_lower = mfg.to_lowercase();
+    let desc_lower = device_desc.to_lowercase();
+    let compatible_lower = compatible_ids.to_lowercase();
+
+    if service_lower.contains("winusb")
+        || mfg_lower.contains("libwdi")
+        || compatible_lower.contains("winusb")
+        || compatible_lower.contains("ms_compatible_id")
+    {
+        BromDriverType::WinUsb
+    } else if service_lower.contains("wdm_usb")
+        || service_lower.contains("usbser")
+        || (desc_lower.contains("mediatek usb port") && mfg_lower.contains("mediatek"))
+    {
+        BromDriverType::Serial
+    } else {
+        BromDriverType::Unknown(if mfg.is_empty() {
+            device_desc.to_string()
+        } else {
+            mfg.to_string()
+        })
+    }
 }
 
 /// COM 口对应的 USB 设备信息
@@ -138,16 +170,20 @@ pub fn check_brom_driver_type() -> Result<BromDriverType, String> {
             if let Some(hw_id) = read_reg_wide(device_info_set, &dev_info, SPDRP_HARDWAREID)
                 && hw_id.to_uppercase().contains(&target_hardware_id)
             {
-                if let Some(mfg) = read_reg_wide(device_info_set, &dev_info, SPDRP_MFG) {
-                    let mfg_lower = mfg.to_lowercase();
-                    if mfg_lower.contains("libwdi") {
-                        result = Ok(BromDriverType::WinUsb);
-                    } else if mfg_lower.contains("mediatek") {
-                        result = Ok(BromDriverType::Serial);
-                    } else {
-                        result = Ok(BromDriverType::Unknown(mfg));
-                    }
-                }
+                let service =
+                    read_reg_wide(device_info_set, &dev_info, SPDRP_SERVICE).unwrap_or_default();
+                let mfg = read_reg_wide(device_info_set, &dev_info, SPDRP_MFG).unwrap_or_default();
+                let device_desc =
+                    read_reg_wide(device_info_set, &dev_info, SPDRP_DEVICEDESC).unwrap_or_default();
+                let compatible_ids = read_reg_wide(device_info_set, &dev_info, SPDRP_COMPATIBLEIDS)
+                    .unwrap_or_default();
+
+                result = Ok(classify_brom_driver_from_fields(
+                    &service,
+                    &mfg,
+                    &device_desc,
+                    &compatible_ids,
+                ));
                 break;
             }
         }
@@ -189,28 +225,27 @@ pub fn detect_brom_driver_from_usb_bus() -> UsbBusDetectionResult {
                     read_reg_wide(device_info_set, &dev_info, SPDRP_DEVICEDESC).unwrap_or_default();
                 let driver_mfg =
                     read_reg_wide(device_info_set, &dev_info, SPDRP_MFG).unwrap_or_default();
+                let service =
+                    read_reg_wide(device_info_set, &dev_info, SPDRP_SERVICE).unwrap_or_default();
+                let compatible_ids = read_reg_wide(device_info_set, &dev_info, SPDRP_COMPATIBLEIDS)
+                    .unwrap_or_default();
 
                 trace!(
-                    "[USB_BUS] 找到 BROM 设备: desc='{}', mfg='{}'",
-                    device_desc, driver_mfg
+                    "[USB_BUS] 找到 BROM 设备: desc='{}', mfg='{}', service='{}'",
+                    device_desc, driver_mfg, service
                 );
 
-                let desc_lower = device_desc.to_lowercase();
-                let mfg_lower = driver_mfg.to_lowercase();
-
-                if desc_lower.contains("mediatek usb port") {
-                    if mfg_lower.contains("libwdi") {
-                        result = UsbBusDetectionResult::WinUsbReady;
-                    } else if mfg_lower.contains("mediatek") {
-                        // 串口驱动：不在这里找 COM 口名，交给上层枚举所有 COM 口逐个握手
-                        result = UsbBusDetectionResult::SerialPort(String::new());
-                    } else {
-                        result = UsbBusDetectionResult::Unknown(driver_mfg);
-                    }
-                } else {
-                    // 设备描述不匹配，但仍在 USB 总线上 → 未知
-                    result = UsbBusDetectionResult::Unknown(device_desc);
-                }
+                result = match classify_brom_driver_from_fields(
+                    &service,
+                    &driver_mfg,
+                    &device_desc,
+                    &compatible_ids,
+                ) {
+                    BromDriverType::WinUsb => UsbBusDetectionResult::WinUsbReady,
+                    // 串口驱动：不在这里找 COM 口名，交给上层枚举所有 COM 口逐个握手
+                    BromDriverType::Serial => UsbBusDetectionResult::SerialPort(String::new()),
+                    BromDriverType::Unknown(name) => UsbBusDetectionResult::Unknown(name),
+                };
                 break;
             }
         }
@@ -296,4 +331,41 @@ pub fn query_com_port_usb_info(com_port: &str) -> Option<ComPortUsbInfo> {
 #[cfg(not(target_os = "windows"))]
 pub fn query_com_port_usb_info(_com_port: &str) -> Option<ComPortUsbInfo> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn winusb_service_wins_over_mediatek_usb_port_name() {
+        assert_eq!(
+            classify_brom_driver_from_fields("WinUSB", "MediaTek Inc.", "MediaTek USB Port", ""),
+            BromDriverType::WinUsb
+        );
+    }
+
+    #[test]
+    fn libwdi_mfg_wins_over_mediatek_usb_port_name() {
+        assert_eq!(
+            classify_brom_driver_from_fields("", "libwdi", "MediaTek USB Port", ""),
+            BromDriverType::WinUsb
+        );
+    }
+
+    #[test]
+    fn wdm_usb_service_is_serial_driver() {
+        assert_eq!(
+            classify_brom_driver_from_fields("wdm_usb", "MediaTek Inc.", "MediaTek USB Port", ""),
+            BromDriverType::Serial
+        );
+    }
+
+    #[test]
+    fn usbser_service_is_serial_driver() {
+        assert_eq!(
+            classify_brom_driver_from_fields("usbser", "", "MediaTek USB Port", ""),
+            BromDriverType::Serial
+        );
+    }
 }
