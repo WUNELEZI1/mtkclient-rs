@@ -15,6 +15,8 @@ pub struct SessionState {
     pub hw_code: u16,
     pub target_config: u32,
     pub da_loaded: bool,
+    /// 设备指纹：由 VID/PID、HW code、target_config、preloader 文件内容摘要组成
+    pub device_fingerprint: Option<String>,
     /// 上次成功 dump 的 preloader 文件路径，避免重复 dump
     pub preloader_path: Option<String>,
     /// GPT 缓存文件路径，DA 会话复用时可避免重复读取 GPT
@@ -32,6 +34,9 @@ impl fmt::Display for SessionState {
         )?;
         if let Some(ref path) = self.preloader_path {
             write!(f, "\npreloader_path={}", path)?;
+        }
+        if let Some(ref fingerprint) = self.device_fingerprint {
+            write!(f, "\ndevice_fingerprint={}", fingerprint)?;
         }
         if let Some(ref path) = self.gpt_cache_path {
             write!(f, "\ngpt_cache_path={}", path)?;
@@ -76,6 +81,7 @@ impl SessionState {
                 .ok()?,
             da_loaded: map.get("da_loaded")?.parse::<bool>().ok()?,
             preloader_path: map.get("preloader_path").map(|s| s.to_string()),
+            device_fingerprint: map.get("device_fingerprint").map(|s| s.to_string()),
             gpt_cache_path: map.get("gpt_cache_path").map(|s| s.to_string()),
             optional_query_failures,
         })
@@ -121,6 +127,35 @@ impl SessionState {
     }
 }
 
+fn preloader_hash(path: Option<&str>) -> u64 {
+    let Some(path) = path else {
+        return 0;
+    };
+    let Ok(data) = fs::read(path) else {
+        return 0;
+    };
+    data.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ (*byte as u64)).wrapping_mul(0x100000001b3)
+    })
+}
+
+pub fn make_device_fingerprint(
+    vid: u16,
+    pid: u16,
+    hw_code: u16,
+    target_config: u32,
+    preloader_path: Option<&str>,
+) -> String {
+    format!(
+        "vid={:04X};pid={:04X};hw={:04X};tc={:08X};pre={:016X}",
+        vid,
+        pid,
+        hw_code,
+        target_config,
+        preloader_hash(preloader_path)
+    )
+}
+
 fn update_session_state<F>(mut update: F)
 where
     F: FnMut(&mut SessionState),
@@ -161,19 +196,35 @@ pub fn save_da_session(
     preloader_path: Option<&str>,
 ) {
     let previous = SessionState::load();
+    let device_fingerprint =
+        make_device_fingerprint(vid, pid, hw_code, target_config, preloader_path);
+    let same_device = previous
+        .as_ref()
+        .and_then(|state| state.device_fingerprint.as_ref())
+        .map(|fingerprint| fingerprint == &device_fingerprint)
+        .unwrap_or(false);
     let state = SessionState {
         usb_vid: vid,
         usb_pid: pid,
         hw_code,
         target_config,
         da_loaded: true,
+        device_fingerprint: Some(device_fingerprint),
         preloader_path: preloader_path.map(|s| s.to_string()),
-        gpt_cache_path: previous
-            .as_ref()
-            .and_then(|state| state.gpt_cache_path.clone()),
-        optional_query_failures: previous
-            .map(|state| state.optional_query_failures)
-            .unwrap_or_default(),
+        gpt_cache_path: if same_device {
+            previous
+                .as_ref()
+                .and_then(|state| state.gpt_cache_path.clone())
+        } else {
+            None
+        },
+        optional_query_failures: if same_device {
+            previous
+                .map(|state| state.optional_query_failures)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        },
     };
     if let Err(e) = state.save() {
         warn!("[session] 保存 .state 失败: {}", e);
@@ -189,7 +240,11 @@ pub fn save_gpt_cache_path(path: &str) {
 }
 
 pub fn get_gpt_cache_path() -> Option<String> {
-    SessionState::load()?.gpt_cache_path
+    let state = SessionState::load()?;
+    if state.device_fingerprint.is_none() {
+        return None;
+    }
+    state.gpt_cache_path
 }
 
 pub fn optional_query_failed(name: &str) -> bool {
@@ -233,6 +288,7 @@ mod tests {
             hw_code: 0x6768,
             target_config: 0xE0,
             da_loaded: true,
+            device_fingerprint: Some("vid=0E8D;pid=0003;hw=6768;tc=000000E0;pre=1".to_string()),
             preloader_path: Some("preloader.bin".to_string()),
             gpt_cache_path: Some("gpt.bin".to_string()),
             optional_query_failures: vec![
@@ -244,6 +300,7 @@ mod tests {
         let parsed = SessionState::from_string(&state.to_string()).unwrap();
 
         assert_eq!(parsed.gpt_cache_path.as_deref(), Some("gpt.bin"));
+        assert!(parsed.device_fingerprint.is_some());
         assert!(
             parsed
                 .optional_query_failures
@@ -254,5 +311,12 @@ mod tests {
                 .optional_query_failures
                 .contains(&"get_sla_status".to_string())
         );
+    }
+
+    #[test]
+    fn device_fingerprint_changes_when_preloader_changes() {
+        let a = make_device_fingerprint(0x0E8D, 0x0003, 0x6768, 0xE0, None);
+        let b = make_device_fingerprint(0x0E8D, 0x0003, 0x6768, 0xE1, None);
+        assert_ne!(a, b);
     }
 }

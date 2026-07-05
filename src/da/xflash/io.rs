@@ -441,6 +441,15 @@ impl<'a> DAXFlash<'a> {
                 last_progress_pos = total_read;
             }
 
+            if crate::cancel::force_requested() {
+                self.preloader.device.cancel_pending_transfers();
+                let written = finish_dump_writer(writer_tx, writer_handle)?;
+                return Err(format!(
+                    "读取已强制停止，已保存 {} 字节；如设备仍在线可续传，否则重新进 BROM 后普通续传",
+                    written
+                ));
+            }
+
             if crate::cancel::requested() {
                 let written = finish_dump_writer(writer_tx, writer_handle)?;
                 return Err(format!(
@@ -458,6 +467,7 @@ impl<'a> DAXFlash<'a> {
             }
 
             if let Err(e) = self.ack_silent() {
+                self.preloader.device.cancel_pending_transfers();
                 write_resume_file(
                     output_file,
                     addr,
