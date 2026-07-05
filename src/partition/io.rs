@@ -83,8 +83,10 @@ impl<'a> DAXFlash<'a> {
         crate::connection::session::save_gpt_cache_path(GPT_CACHE_FILE);
         info!("已写入 {}, {} 字节", GPT_CACHE_FILE, gpt_data.len());
 
-        // 解析 GPT
-        super::partition_table::parse_gpt_from_data(&gpt_data)
+        // 只做解析校验。完整分区表输出只在 printgpt 命令中执行，
+        // 读分区命令内部读取 GPT 时不应刷屏。
+        GptInfo::parse(&gpt_data)?;
+        Ok(())
     }
 
     /// 查找分区的物理地址和大小（需要 GPT 数据）
