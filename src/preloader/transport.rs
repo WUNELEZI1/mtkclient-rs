@@ -42,6 +42,11 @@ pub trait BromTransport {
     fn complete_read_request(&mut self, _buf: &mut [u8]) -> Result<usize, String> {
         Err("queued read not supported on this transport".to_string())
     }
+    fn read_exact_vec(&mut self, len: usize) -> Result<Vec<u8>, String> {
+        let mut buf = vec![0u8; len];
+        self.read_exact(&mut buf)?;
+        Ok(buf)
+    }
     fn cancel_pending_transfers(&mut self) {}
     fn set_timeout(&mut self, duration: Duration);
     fn get_timeout(&self) -> Duration;
@@ -320,6 +325,10 @@ impl BromTransport for USB设备 {
 
     fn complete_read_request(&mut self, buf: &mut [u8]) -> Result<usize, String> {
         USB设备::完成预提交读取(self, buf)
+    }
+
+    fn read_exact_vec(&mut self, len: usize) -> Result<Vec<u8>, String> {
+        USB设备::精确读取到Vec(self, len)
     }
 
     fn cancel_pending_transfers(&mut self) {
