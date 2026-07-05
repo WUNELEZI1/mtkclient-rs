@@ -215,7 +215,19 @@ fn active_read_resume_exists(args: &[String]) -> bool {
     let Ok(content) = std::fs::read_to_string(path) else {
         return false;
     };
-    content.lines().any(|line| line == "active_read=true")
+    if !content.lines().any(|line| line == "active_read=true") {
+        return false;
+    }
+    let Some(written) = content
+        .lines()
+        .find_map(|line| line.strip_prefix("written="))
+        .and_then(|value| value.parse::<u64>().ok())
+    else {
+        return false;
+    };
+    std::fs::metadata(output)
+        .map(|metadata| metadata.len() == written)
+        .unwrap_or(false)
 }
 
 /// 执行单个 DA 命令（不处理 Phase1/Phase2）
@@ -328,12 +340,24 @@ mod tests {
             "active_read=true\nwritten=4096\n",
         )
         .unwrap();
+        std::fs::write(&output, vec![0u8; 4096]).unwrap();
 
         assert!(active_read_resume_exists(&[
             "boot_b".to_string(),
             output.clone()
         ]));
 
+        std::fs::write(
+            format!("{}.resume", output),
+            "active_read=true\nwritten=8192\n",
+        )
+        .unwrap();
+        assert!(!active_read_resume_exists(&[
+            "boot_b".to_string(),
+            output.clone()
+        ]));
+
+        let _ = std::fs::remove_file(&output);
         let _ = std::fs::remove_file(format!("{}.resume", output));
     }
 }
