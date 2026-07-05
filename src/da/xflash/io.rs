@@ -145,11 +145,13 @@ impl<'a> DAXFlash<'a> {
     {
         let _quiet_guard = quiet_usb_reads_temporarily();
 
-        use std::io::Write;
+        use std::io::{BufWriter, Write};
 
-        const FLUSH_INTERVAL: u64 = 8 * 1024 * 1024; // 8MB 落盘一次，Ctrl+C 时强制落盘
-        const PROGRESS_INTERVAL: u64 = 4 * 1024 * 1024; // 4MB 进度更新
+        const FLUSH_INTERVAL: u64 = 128 * 1024 * 1024; // 128MB 落盘一次，Ctrl+C 时强制落盘
+        const RESUME_INTERVAL: u64 = 64 * 1024 * 1024; // 64MB 更新一次续传状态
+        const PROGRESS_INTERVAL: u64 = 16 * 1024 * 1024; // 16MB 进度更新
         const MAX_PACKET_SIZE: usize = 0x1000000; // 16MB 预分配 buffer
+        const BUF_WRITER_CAP: usize = 64 * 1024 * 1024; // 64MB 写缓冲
 
         let target_remaining = size - start_offset;
         ensure_output_file_path(output_file)?;
@@ -217,7 +219,7 @@ impl<'a> DAXFlash<'a> {
             )?;
         }
 
-        let mut file = if start_offset > 0 {
+        let raw_file = if start_offset > 0 {
             std::fs::OpenOptions::new()
                 .append(true)
                 .open(output_file)
@@ -226,12 +228,14 @@ impl<'a> DAXFlash<'a> {
             std::fs::File::create(output_file)
                 .map_err(|e| format!("创建文件失败 '{}': {}", output_file, e))?
         };
+        let mut file = BufWriter::with_capacity(BUF_WRITER_CAP, raw_file);
 
         let mut total_read: u64 = start_offset;
         let mut bytes_received: u64 = 0;
         let mut data_buf = vec![0u8; MAX_PACKET_SIZE];
         let mut last_progress_pos: u64 = start_offset;
         let mut last_flush_pos: u64 = start_offset;
+        let mut last_resume_pos: u64 = start_offset;
 
         while bytes_received < target_remaining {
             let mut hdr = [0u8; 12];
@@ -242,6 +246,7 @@ impl<'a> DAXFlash<'a> {
                 }
                 Ok(_) => {}
                 Err(e) => {
+                    let _ = file.flush();
                     write_resume_file(
                         output_file,
                         addr,
@@ -259,6 +264,7 @@ impl<'a> DAXFlash<'a> {
             let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
 
             if magic != CMD_MAGIC {
+                let _ = file.flush();
                 write_resume_file(
                     output_file,
                     addr,
@@ -315,15 +321,19 @@ impl<'a> DAXFlash<'a> {
                 file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
                 last_flush_pos = total_read;
             }
-            write_resume_file(
-                output_file,
-                addr,
-                size,
-                parttype,
-                total_read,
-                true,
-                packet_len,
-            )?;
+            if total_read - last_resume_pos >= RESUME_INTERVAL || bytes_received >= target_remaining
+            {
+                write_resume_file(
+                    output_file,
+                    addr,
+                    size,
+                    parttype,
+                    total_read,
+                    true,
+                    packet_len,
+                )?;
+                last_resume_pos = total_read;
+            }
 
             if total_read - last_progress_pos >= PROGRESS_INTERVAL
                 || bytes_received >= target_remaining
@@ -350,6 +360,7 @@ impl<'a> DAXFlash<'a> {
             }
 
             if let Err(e) = self.ack_silent() {
+                let _ = file.flush();
                 write_resume_file(
                     output_file,
                     addr,
