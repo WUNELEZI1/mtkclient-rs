@@ -1,6 +1,6 @@
 //! USB 上下文 + 设备检测
 //!
-//! - `USB上下文` — libusb context 封装（Drop 时自动 libusb_exit）
+//! - `USB上下文` — nusb 上下文封装（nusb 无需显式 context，这里保留兼容接口）
 //! - `USB阶段`   — 设备阶段枚举（BROM / Preloader / DA / 未知）
 //! - `通过libusb检测联发科设备` — 前置检测 BROM 设备
 //! - `获取第一个联发科VID_PID` — DA 会话复用检查
@@ -8,8 +8,9 @@
 
 use crate::system::config::DeviceType;
 use log::info;
+use nusb::MaybeFuture;
 
-/// libusb 错误码
+/// libusb 兼容错误码（保持上层代码不变）
 pub(crate) const LIBUSB错误_超时: i32 = -7;
 
 /// USB 设备阶段
@@ -32,179 +33,77 @@ impl USB阶段 {
     }
 }
 
+/// USB 上下文（nusb 不需要显式 context，保留结构体以兼容现有 API）
 pub struct USB上下文 {
-    上下文指针: *mut libusb1_sys::libusb_context,
+    /// nusb 不使用全局 context，此字段仅做标记
+    _valid: bool,
 }
 
 impl USB上下文 {
     pub fn 新建() -> Result<Self, String> {
-        unsafe {
-            let mut 上下文指针: *mut libusb1_sys::libusb_context = std::ptr::null_mut();
-            let 返回码 = libusb1_sys::libusb_init(&mut 上下文指针);
-            if 返回码 != 0 {
-                return Err(format!(
-                    "libusb 初始化失败 (error {})\n\
-                     请检查:\n\
-                     1. libusb-1.0.dll 是否存在（与 exe 同目录或系统路径）\n\
-                     2. 是否被杀毒软件拦截\n\
-                     3. 是否有其他程序占用了 libusb",
-                    返回码
-                ));
-            }
-            Ok(USB上下文 { 上下文指针 })
-        }
+        // nusb 不需要显式初始化，直接返回
+        Ok(USB上下文 { _valid: true })
     }
 
-    pub fn 获取指针(&self) -> *mut libusb1_sys::libusb_context {
-        self.上下文指针
+    /// nusb 兼容：返回非空指针（nusb 不使用裸指针，但 reopen 等接口可能检查）
+    pub fn 获取指针(&self) -> *mut std::ffi::c_void {
+        // nusb 没有裸指针概念，返回一个非空标记值
+        // 此方法仅用于兼容检查，不应被解引用
+        1 as *mut std::ffi::c_void
     }
 }
 
-impl Drop for USB上下文 {
-    fn drop(&mut self) {
-        unsafe {
-            if !self.上下文指针.is_null() {
-                libusb1_sys::libusb_exit(self.上下文指针);
-                self.上下文指针 = std::ptr::null_mut();
-            }
+/// 枚举 nusb 设备列表，查找 MediaTek BROM 设备
+fn 扫描nusb设备() -> Vec<(u16, u16)> {
+    let mut 结果 = Vec::new();
+    let devices = match nusb::list_devices().wait() {
+        Ok(d) => d,
+        Err(_) => return 结果,
+    };
+    for dev in devices {
+        if dev.vendor_id() == 0x0E8D && dev.product_id() == 0x0003 {
+            结果.push((dev.vendor_id(), dev.product_id()));
         }
     }
+    结果
 }
 
-/// 枚举 USB 设备列表,检查是否有任何 MediaTek 设备（BROM 0x0003 / Preloader 0x2000/0x2001）
-///
-/// 返回值：
-/// - `Some((pid, device_type))`：找到的第一个 MediaTek 设备
-/// - `None`：无 MediaTek 设备
-///
-/// 用途：在 smart_init 的 COM 扫描之前调用,如果 libusb 已经能看到 BROM 设备 (PID 0x0003),
-/// 就直接走 WinUSB 模式,跳过耗时 21 秒的 COM 扫描。
-/// 注意：只识别 BROM 阶段设备 (PID 0x0003),其他 PID 一律忽略,避免误识别触发错误路径。
+/// 枚举 USB 设备列表,检查是否有任何 MediaTek 设备（BROM 0x0003）
 pub fn 通过libusb检测联发科设备() -> Option<(u16, DeviceType)> {
-    unsafe {
-        let mut 上下文指针: *mut libusb1_sys::libusb_context = std::ptr::null_mut();
-        if libusb1_sys::libusb_init(&mut 上下文指针) != 0 {
-            return None;
-        }
-
-        let mut 设备列表: *const *mut libusb1_sys::libusb_device = std::ptr::null_mut();
-        let 设备数量 = libusb1_sys::libusb_get_device_list(上下文指针, &mut 设备列表);
-        if 设备数量 <= 0 {
-            libusb1_sys::libusb_free_device_list(设备列表, 1);
-            libusb1_sys::libusb_exit(上下文指针);
-            return None;
-        }
-
-        let mut 结果 = None;
-        for i in 0..设备数量 as isize {
-            let 设备 = *设备列表.wrapping_offset(i);
-            let mut 描述符: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
-            if libusb1_sys::libusb_get_device_descriptor(设备, &mut 描述符) != 0 {
-                continue;
-            }
-            if 描述符.idVendor != 0x0E8D {
-                continue;
-            }
-            // 严格仅识别 BROM 阶段 (PID 0x0003)
-            if 描述符.idProduct != 0x0003 {
-                continue;
-            }
-            let 设备类型 = DeviceType::from_vid_pid(描述符.idVendor, 描述符.idProduct);
-            info!(
-                "[USB] 前置检测：发现 BROM 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
-                描述符.idVendor, 描述符.idProduct, 设备类型
-            );
-            结果 = Some((描述符.idProduct, 设备类型));
-            break;
-        }
-
-        libusb1_sys::libusb_free_device_list(设备列表, 1);
-        libusb1_sys::libusb_exit(上下文指针);
-        结果
+    for (vid, pid) in 扫描nusb设备() {
+        let 设备类型 = DeviceType::from_vid_pid(vid, pid);
+        info!(
+            "[USB] 前置检测：发现 BROM 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
+            vid, pid, 设备类型
+        );
+        return Some((pid, 设备类型));
     }
+    None
 }
 
 /// 枚举 USB 设备列表,返回第一个 MediaTek 设备的 (VID, PID, DeviceType)
-///
-/// 用途：main.rs 启动时检测 DA 会话复用。
 pub fn 获取第一个联发科VIDPID() -> Option<(u16, u16, DeviceType)> {
-    unsafe {
-        let mut 上下文指针: *mut libusb1_sys::libusb_context = std::ptr::null_mut();
-        if libusb1_sys::libusb_init(&mut 上下文指针) != 0 {
-            return None;
-        }
-
-        let mut 设备列表: *const *mut libusb1_sys::libusb_device = std::ptr::null_mut();
-        let 设备数量 = libusb1_sys::libusb_get_device_list(上下文指针, &mut 设备列表);
-        if 设备数量 <= 0 {
-            libusb1_sys::libusb_free_device_list(设备列表, 1);
-            libusb1_sys::libusb_exit(上下文指针);
-            return None;
-        }
-
-        let mut 结果 = None;
-        for i in 0..设备数量 as isize {
-            let 设备 = *设备列表.wrapping_offset(i);
-            let mut 描述符: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
-            if libusb1_sys::libusb_get_device_descriptor(设备, &mut 描述符) != 0 {
-                continue;
-            }
-            if 描述符.idVendor != 0x0E8D {
-                continue;
-            }
-            if 描述符.idProduct != 0x0003 {
-                continue;
-            }
-            let 设备类型 = DeviceType::from_vid_pid(描述符.idVendor, 描述符.idProduct);
-            log::trace!(
-                "[USB] 获取第一个联发科VIDPID: 找到 BROM 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
-                描述符.idVendor,
-                描述符.idProduct,
-                设备类型
-            );
-            结果 = Some((描述符.idVendor, 描述符.idProduct, 设备类型));
-            break;
-        }
-
-        libusb1_sys::libusb_free_device_list(设备列表, 1);
-        libusb1_sys::libusb_exit(上下文指针);
-        结果
+    for (vid, pid) in 扫描nusb设备() {
+        let 设备类型 = DeviceType::from_vid_pid(vid, pid);
+        log::trace!(
+            "[USB] 获取第一个联发科VIDPID: 找到 BROM 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
+            vid, pid, 设备类型
+        );
+        return Some((vid, pid, 设备类型));
     }
+    None
 }
 
 /// 检查当前是否连接了任何 MediaTek USB 设备（VID=0x0E8D）
-///
-/// 用于在 smart_init 中判断是否跳过串口扫描。
 pub fn 是否有联发科设备() -> bool {
-    unsafe {
-        let mut 上下文指针: *mut libusb1_sys::libusb_context = std::ptr::null_mut();
-        if libusb1_sys::libusb_init(&mut 上下文指针) != 0 {
-            return false;
+    let devices = match nusb::list_devices().wait() {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    for dev in devices {
+        if dev.vendor_id() == 0x0E8D {
+            return true;
         }
-
-        let mut 设备列表: *const *mut libusb1_sys::libusb_device = std::ptr::null_mut();
-        let 设备数量 = libusb1_sys::libusb_get_device_list(上下文指针, &mut 设备列表);
-        if 设备数量 <= 0 {
-            libusb1_sys::libusb_free_device_list(设备列表, 1);
-            libusb1_sys::libusb_exit(上下文指针);
-            return false;
-        }
-
-        let mut 找到 = false;
-        for i in 0..设备数量 as isize {
-            let 设备 = *设备列表.wrapping_offset(i);
-            let mut 描述符: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
-            if libusb1_sys::libusb_get_device_descriptor(设备, &mut 描述符) != 0 {
-                continue;
-            }
-            if 描述符.idVendor == 0x0E8D {
-                找到 = true;
-                break;
-            }
-        }
-
-        libusb1_sys::libusb_free_device_list(设备列表, 1);
-        libusb1_sys::libusb_exit(上下文指针);
-        找到
     }
+    false
 }

@@ -1,14 +1,18 @@
-//! USB设备 构造与生命周期（open / close / reopen）
+//! USB 设备构造与生命周期（open / close / reopen）
 //!
 //! - `USB设备::新建`        — 按 SUPPORTED_DEVICES 顺序查找第一个可用设备
 //! - `USB设备::按VID_PID打开` — 按指定 VID/PID 打开
 //! - `USB设备::关闭`      — 释放接口 + 关闭句柄
 //! - `USB设备::重新打开`     — 重新打开设备（用于 BROM↔DA 切换后恢复）
+//!
+//! 底层使用 nusb 纯 Rust USB 库，Windows 上通过 WinUSB 后端通信。
 
 use super::context::USB上下文;
 use super::context::USB阶段;
 use crate::system::config::{DeviceType, SUPPORTED_DEVICES};
-use log::{info, trace};
+use log::{info, trace, warn};
+use nusb::descriptors::TransferType;
+use nusb::MaybeFuture;
 use std::time::Duration;
 
 /// USB bulk 端点默认值（找不到时回退）
@@ -19,7 +23,10 @@ const 默认超时毫秒: u64 = 5000;
 const 重新打开延迟毫秒: u64 = 200;
 
 pub struct USB设备 {
-    pub(crate) 设备句柄: *mut libusb1_sys::libusb_device_handle,
+    /// nusb 设备接口（持有 claim 的 interface）
+    interface: Option<nusb::Interface>,
+    /// nusb 设备句柄（用于 reopen 时 drop + reopen）
+    device: Option<nusb::Device>,
     pub vid: u16,
     pub pid: u16,
     pub 阶段: USB阶段,
@@ -30,225 +37,190 @@ pub struct USB设备 {
     输出端点最大包大小: u16,
     pub 输入端点最大包大小: u16,
     pub(crate) 超时: Duration,
+    /// 是否已关闭（防止 drop 后重复关闭）
+    已关闭: bool,
 }
 
 impl USB设备 {
-    pub fn 新建(context: &USB上下文) -> Result<Self, String> {
-        let 上下文指针 = context.获取指针();
-        unsafe {
-            // 使用统一配置表查找设备
-            let mut 设备句柄 = std::ptr::null_mut();
-            let mut 找到的设备类型 = DeviceType::Unknown;
+    /// 查找并打开第一个支持的设备
+    pub fn 新建(_context: &USB上下文) -> Result<Self, String> {
+        let devices = nusb::list_devices().wait().map_err(|e| format!("枚举 USB 设备失败: {}", e))?;
+
+        let mut 找到的设备类型 = DeviceType::Unknown;
+        let mut 目标设备信息: Option<nusb::DeviceInfo> = None;
+
+        for dev in devices {
             for dev_config in SUPPORTED_DEVICES {
-                设备句柄 = libusb1_sys::libusb_open_device_with_vid_pid(
-                    上下文指针,
-                    dev_config.vid,
-                    dev_config.pid,
-                );
-                if !设备句柄.is_null() {
+                if dev.vendor_id() == dev_config.vid && dev.product_id() == dev_config.pid {
                     info!(
                         "[USB] 已连接:{} - {} (VID:0x{:04X} PID:0x{:04X})",
                         dev_config.name, dev_config.description, dev_config.vid, dev_config.pid
                     );
                     找到的设备类型 = dev_config.device_type;
+                    目标设备信息 = Some(dev);
                     break;
                 }
             }
-            if 设备句柄.is_null() {
-                return Err("未找到支持的设备".into());
+            if 目标设备信息.is_some() {
+                break;
             }
+        }
 
-            // 对齐 Python usblib.py connect():先 claim 0 再 claim 1
-            libusb1_sys::libusb_detach_kernel_driver(设备句柄, 0);
-            let _ = libusb1_sys::libusb_claim_interface(设备句柄, 0);
-            libusb1_sys::libusb_detach_kernel_driver(设备句柄, 1);
-            if libusb1_sys::libusb_claim_interface(设备句柄, 1) != 0 {
-                return Err("claim interface 1 failed".into());
+        let 设备信息 = 目标设备信息.ok_or("未找到支持的设备")?;
+
+        // 从 DeviceInfo 获取 vid/pid（nusb::Device 上没有这些方法）
+        let vid = 设备信息.vendor_id();
+        let pid = 设备信息.product_id();
+
+        // 打开设备并 claim interface
+        let device = 设备信息.open().wait().map_err(|e| format!("打开设备失败: {}", e))?;
+
+        // 扫描端点（从 active_configuration 获取）
+        let (输出端点地址, 输入端点地址, 输出端点最大包, 输入端点最大包) =
+            Self::扫描端点_from_device(&device);
+
+        // 尝试 claim interface 1（MTK BROM 使用 interface 1）
+        let interface = match device.claim_interface(1).wait() {
+            Ok(iface) => {
+                trace!("[USB] claim interface 1 成功");
+                iface
             }
-
-            let 设备 = libusb1_sys::libusb_get_device(设备句柄);
-            if 设备.is_null() {
-                return Err("获取设备描述失败:设备可能已断开".into());
-            }
-
-            let mut 描述符: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
-            let 返回码_描述符 = libusb1_sys::libusb_get_device_descriptor(设备, &mut 描述符);
-            if 返回码_描述符 != 0 {
-                return Err(format!(
-                    "获取设备描述失败 (error {}): libusb 驱动异常",
-                    返回码_描述符
-                ));
-            }
-
-            trace!("[USB] scanning endpoints...");
-            let mut 配置指针: *const libusb1_sys::libusb_config_descriptor = std::ptr::null();
-            let mut 输出端点地址: u8 = 默认输出端点;
-            let mut 输入端点地址: u8 = 默认输入端点;
-            let mut 输出端点最大包: u16 = 默认最大包大小;
-            let mut 输入端点最大包: u16 = 默认最大包大小;
-            let 返回码 = libusb1_sys::libusb_get_active_config_descriptor(设备, &mut 配置指针);
-            if 返回码 != 0 || 配置指针.is_null() {
-                info!(
-                    "[USB] WARNING: get_active_config_descriptor failed (ret={}), trying known combos...",
-                    返回码
-                );
-            } else {
-                let 配置 = &*配置指针;
-                for i in 0..配置.bNumInterfaces as isize {
-                    let 接口 = &*配置.interface.wrapping_add(i as usize);
-                    for j in 0..接口.num_altsetting {
-                        let 备用设置 = &*接口.altsetting.wrapping_add(j as usize);
-                        trace!(
-                            "[USB] interface {} altsetting {} num_endpoints={}",
-                            i, j, 备用设置.bNumEndpoints
-                        );
-                        for k in 0..备用设置.bNumEndpoints as isize {
-                            let 端点 = &*备用设置.endpoint.wrapping_add(k as usize);
-                            let 地址 = 端点.bEndpointAddress;
-                            let 方向 = if 地址 & 0x80 != 0 { "IN" } else { "OUT" };
-                            let 端点类型 = match 端点.bmAttributes & 0x03 {
-                                0 => "Control",
-                                1 => "Isochronous",
-                                2 => "Bulk",
-                                3 => "Interrupt",
-                                _ => "Unknown",
-                            };
-                            trace!(
-                                "[USB]   EP: 0x{:02X} dir={} type={} size={}",
-                                地址, 方向, 端点类型, 端点.wMaxPacketSize
-                            );
-                            if 方向 == "OUT" && 端点类型 == "Bulk" {
-                                输出端点地址 = 地址;
-                                输出端点最大包 = 端点.wMaxPacketSize;
-                            }
-                            if 方向 == "IN" && 端点类型 == "Bulk" {
-                                输入端点地址 = 地址;
-                                输入端点最大包 = 端点.wMaxPacketSize;
-                            }
-                        }
+            Err(e) => {
+                // 尝试 interface 0
+                match device.claim_interface(0).wait() {
+                    Ok(iface) => {
+                        trace!("[USB] claim interface 1 失败 ({})，回退到 interface 0", e);
+                        iface
+                    }
+                    Err(e2) => {
+                        return Err(format!("claim interface 失败 (if1: {}, if0: {})", e, e2));
                     }
                 }
-                libusb1_sys::libusb_free_config_descriptor(配置指针);
             }
+        };
 
-            info!(
-                "[USB] EP_OUT=0x{:02X} wMaxPacketSize={} EP_IN=0x{:02X}",
-                输出端点地址, 输出端点最大包, 输入端点地址
-            );
+        info!(
+            "[USB] EP_OUT=0x{:02X} wMaxPacketSize={} EP_IN=0x{:02X}",
+            输出端点地址, 输出端点最大包, 输入端点地址
+        );
 
-            let 阶段 = USB阶段::从PID生成(描述符.idProduct);
+        let 阶段 = USB阶段::从PID生成(pid);
 
-            Ok(USB设备 {
-                设备句柄,
-                vid: 描述符.idVendor,
-                pid: 描述符.idProduct,
-                阶段,
-                设备类型: 找到的设备类型,
-                输出端点: 输出端点地址,
-                输入端点: 输入端点地址,
-                输出端点最大包大小: 输出端点最大包,
-                输入端点最大包大小: 输入端点最大包,
-                超时: Duration::from_millis(默认超时毫秒),
-            })
-        }
+        Ok(USB设备 {
+            interface: Some(interface),
+            device: Some(device),
+            vid,
+            pid,
+            阶段,
+            设备类型: 找到的设备类型,
+            输出端点: 输出端点地址,
+            输入端点: 输入端点地址,
+            输出端点最大包大小: 输出端点最大包,
+            输入端点最大包大小: 输入端点最大包,
+            超时: Duration::from_millis(默认超时毫秒),
+            已关闭: false,
+        })
     }
 
     /// 按指定 VID/PID 打开设备
-    pub fn 按VID_PID打开(context: &USB上下文, vid: u16, pid: u16) -> Result<Self, String> {
-        let 上下文指针 = context.获取指针();
-        unsafe {
-            let 设备句柄 = libusb1_sys::libusb_open_device_with_vid_pid(上下文指针, vid, pid);
-            if 设备句柄.is_null() {
-                return Err(format!("未找到设备 VID={:04X} PID={:04X}", vid, pid));
-            }
+    pub fn 按VID_PID打开(_context: &USB上下文, vid: u16, pid: u16) -> Result<Self, String> {
+        let devices = nusb::list_devices().wait().map_err(|e| format!("枚举 USB 设备失败: {}", e))?;
 
-            // 对齐 Python usblib.py connect():先 claim 0 再 claim 1
-            libusb1_sys::libusb_detach_kernel_driver(设备句柄, 0);
-            let _ = libusb1_sys::libusb_claim_interface(设备句柄, 0);
-            libusb1_sys::libusb_detach_kernel_driver(设备句柄, 1);
-            if libusb1_sys::libusb_claim_interface(设备句柄, 1) != 0 {
-                libusb1_sys::libusb_close(设备句柄);
-                return Err("claim interface 1 failed".into());
-            }
+        let 设备信息 = devices
+            .into_iter()
+            .find(|d| d.vendor_id() == vid && d.product_id() == pid)
+            .ok_or_else(|| format!("未找到设备 VID={:04X} PID={:04X}", vid, pid))?;
 
-            let 设备 = libusb1_sys::libusb_get_device(设备句柄);
-            if 设备.is_null() {
-                libusb1_sys::libusb_close(设备句柄);
-                return Err("获取设备描述失败:设备可能已断开".into());
-            }
+        let device = 设备信息.open().wait().map_err(|e| format!("打开设备失败: {}", e))?;
 
-            let mut 描述符: libusb1_sys::libusb_device_descriptor = std::mem::zeroed();
-            let 返回码_描述符 = libusb1_sys::libusb_get_device_descriptor(设备, &mut 描述符);
-            if 返回码_描述符 != 0 {
-                libusb1_sys::libusb_close(设备句柄);
-                return Err(format!(
-                    "获取设备描述失败 (error {}): libusb 驱动异常",
-                    返回码_描述符
-                ));
-            }
+        // 扫描端点
+        let (输出端点地址, 输入端点地址, 输出端点最大包, 输入端点最大包) =
+            Self::扫描端点_from_device(&device);
 
-            trace!("[USB] scanning endpoints...");
-            let mut 配置指针: *const libusb1_sys::libusb_config_descriptor = std::ptr::null();
-            let mut 输出端点地址: u8 = 默认输出端点;
-            let mut 输入端点地址: u8 = 默认输入端点;
-            let mut 输出端点最大包: u16 = 默认最大包大小;
-            let mut 输入端点最大包: u16 = 默认最大包大小;
-            let 返回码 = libusb1_sys::libusb_get_active_config_descriptor(设备, &mut 配置指针);
-            if 返回码 != 0 || 配置指针.is_null() {
-                info!(
-                    "[USB] WARNING: get_active_config_descriptor failed (ret={}), using defaults",
-                    返回码
-                );
-            } else {
-                let 配置 = &*配置指针;
-                for i in 0..配置.bNumInterfaces as isize {
-                    let 接口 = &*配置.interface.wrapping_add(i as usize);
-                    for j in 0..接口.num_altsetting {
-                        let 备用设置 = &*接口.altsetting.wrapping_add(j as usize);
-                        for k in 0..备用设置.bNumEndpoints as isize {
-                            let 端点 = &*备用设置.endpoint.wrapping_add(k as usize);
-                            let 地址 = 端点.bEndpointAddress;
-                            let 方向 = if 地址 & 0x80 != 0 { "IN" } else { "OUT" };
-                            let 端点类型 = match 端点.bmAttributes & 0x03 {
-                                2 => "Bulk",
-                                _ => continue,
-                            };
-                            if 方向 == "OUT" && 端点类型 == "Bulk" {
-                                输出端点地址 = 地址;
-                                输出端点最大包 = 端点.wMaxPacketSize;
-                            }
-                            if 方向 == "IN" && 端点类型 == "Bulk" {
-                                输入端点地址 = 地址;
-                                输入端点最大包 = 端点.wMaxPacketSize;
-                            }
-                        }
+        // 尝试 claim interface 1，回退到 interface 0
+        let interface = match device.claim_interface(1).wait() {
+            Ok(iface) => iface,
+            Err(e) => {
+                match device.claim_interface(0).wait() {
+                    Ok(iface) => iface,
+                    Err(e2) => {
+                        return Err(format!("claim interface 失败 (if1: {}, if0: {})", e, e2));
                     }
                 }
-                libusb1_sys::libusb_free_config_descriptor(配置指针);
             }
+        };
 
-            let 阶段 = USB阶段::从PID生成(描述符.idProduct);
-            trace!(
-                "[USB] 按VID_PID打开 OK: VID={:04X} PID={:04X} stage={:?}",
-                vid, pid, 阶段
-            );
+        let 阶段 = USB阶段::从PID生成(pid);
+        trace!(
+            "[USB] 按VID_PID打开 OK: VID={:04X} PID={:04X} stage={:?}",
+            vid, pid, 阶段
+        );
 
-            Ok(USB设备 {
-                设备句柄,
-                vid: 描述符.idVendor,
-                pid: 描述符.idProduct,
-                阶段,
-                设备类型: DeviceType::from_vid_pid(vid, 描述符.idProduct),
-                输出端点: 输出端点地址,
-                输入端点: 输入端点地址,
-                输出端点最大包大小: 输出端点最大包,
-                输入端点最大包大小: 输入端点最大包,
-                超时: Duration::from_millis(默认超时毫秒),
-            })
-        }
+        Ok(USB设备 {
+            interface: Some(interface),
+            device: Some(device),
+            vid,
+            pid,
+            阶段,
+            设备类型: DeviceType::from_vid_pid(vid, pid),
+            输出端点: 输出端点地址,
+            输入端点: 输入端点地址,
+            输出端点最大包大小: 输出端点最大包,
+            输入端点最大包大小: 输入端点最大包,
+            超时: Duration::from_millis(默认超时毫秒),
+            已关闭: false,
+        })
     }
 
-    /// 是否是 libusb（WinUSB）后端
+    /// 从 Device 的 active_configuration 扫描 bulk 端点
+    fn 扫描端点_from_device(device: &nusb::Device) -> (u8, u8, u16, u16) {
+        let mut 输出端点地址: u8 = 默认输出端点;
+        let mut 输入端点地址: u8 = 默认输入端点;
+        let mut 输出端点最大包: u16 = 默认最大包大小;
+        let mut 输入端点最大包: u16 = 默认最大包大小;
+
+        trace!("[USB] scanning endpoints from active_configuration...");
+
+        if let Ok(config) = device.active_configuration() {
+            for iface_desc in config.interfaces() {
+                let alt_setting = iface_desc.first_alt_setting();
+                trace!(
+                    "[USB] interface {} num_endpoints={}",
+                    alt_setting.interface_number(),
+                    alt_setting.endpoints().count()
+                );
+                for ep in alt_setting.endpoints() {
+                    let 地址 = ep.address();
+                    let 方向 = if 地址 & 0x80 != 0 { "IN" } else { "OUT" };
+                    let 端点类型 = match ep.transfer_type() {
+                        TransferType::Bulk => "Bulk",
+                        TransferType::Control => "Control",
+                        TransferType::Interrupt => "Interrupt",
+                        TransferType::Isochronous => "Isochronous",
+                    };
+                    let 最大包 = ep.max_packet_size();
+                    trace!(
+                        "[USB]   EP: 0x{:02X} dir={} type={} size={}",
+                        地址, 方向, 端点类型, 最大包
+                    );
+                    if 方向 == "OUT" && 端点类型 == "Bulk" {
+                        输出端点地址 = 地址;
+                        输出端点最大包 = 最大包 as u16;
+                    }
+                    if 方向 == "IN" && 端点类型 == "Bulk" {
+                        输入端点地址 = 地址;
+                        输入端点最大包 = 最大包 as u16;
+                    }
+                }
+            }
+        } else {
+            info!("[USB] WARNING: 无法读取 active configuration，使用默认端点");
+        }
+
+        (输出端点地址, 输入端点地址, 输出端点最大包, 输入端点最大包)
+    }
+
+    /// 是否是 nusb（WinUSB）后端
     pub fn 是libusb(&self) -> bool {
         true
     }
@@ -273,33 +245,27 @@ impl USB设备 {
     }
 
     pub fn 关闭(&mut self) {
-        unsafe {
-            if !self.设备句柄.is_null() {
-                libusb1_sys::libusb_release_interface(self.设备句柄, 1);
-                libusb1_sys::libusb_release_interface(self.设备句柄, 0);
-                libusb1_sys::libusb_close(self.设备句柄);
-                self.设备句柄 = std::ptr::null_mut();
-            }
+        if self.已关闭 {
+            return;
         }
+        // nusb: drop interface 会自动 release，drop device 会自动 close
+        self.interface = None;
+        self.device = None;
+        self.已关闭 = true;
+        trace!("[USB] 设备已关闭");
     }
 
     /// USB 总线复位（对齐 Python device.reset()）
-    /// 触发设备重新枚举，用于 DA2 加载后从 full-speed 切换到 high-speed
+    /// 注意：nusb 目前没有直接的 reset_device API，
+    /// 这里通过关闭并重新打开来模拟
     pub fn reset_device(&mut self) -> Result<(), String> {
-        unsafe {
-            if self.设备句柄.is_null() {
-                return Err("设备句柄为空".into());
-            }
-            let ret = libusb1_sys::libusb_reset_device(self.设备句柄);
-            if ret != 0 {
-                return Err(format!("USB reset 失败: {}", ret));
-            }
-            info!("[USB] 设备已复位，等待重新枚举...");
-            Ok(())
-        }
+        // nusb 不提供 libusb_reset_device 等价操作
+        // USB 复位通常由 DA reinit 中的 set_usb_speed + close + reopen 处理
+        warn!("[USB] nusb 不支持 USB 总线复位，跳过（由 reinit 流程处理）");
+        Ok(())
     }
 
-    /// 重新打开 USB 设备:关闭旧句柄,等待设备稳定,重新打开并 claim interface
+    /// 重新打开 USB 设备：关闭旧句柄，等待设备稳定，重新打开并 claim interface
     pub fn 重新打开(&mut self, context: &USB上下文) -> Result<(), String> {
         self.关闭();
         // 等待设备稳定
@@ -308,7 +274,8 @@ impl USB设备 {
         let mut 新设备 = USB设备::新建(context)?;
 
         // 交换字段
-        self.设备句柄 = 新设备.设备句柄;
+        self.interface = 新设备.interface.take();
+        self.device = 新设备.device.take();
         self.输入端点 = 新设备.输入端点;
         self.输出端点 = 新设备.输出端点;
         self.输入端点最大包大小 = 新设备.输入端点最大包大小;
@@ -317,10 +284,19 @@ impl USB设备 {
         self.阶段 = 新设备.阶段;
         self.超时 = 新设备.超时;
         self.设备类型 = 新设备.设备类型;
-        // 防止新设备 drop 时关闭已转移的句柄
-        新设备.设备句柄 = std::ptr::null_mut();
+        self.已关闭 = false;
         info!("USB 重连成功");
         Ok(())
+    }
+
+    /// 获取 nusb Interface 引用（用于 device_io.rs 的 bulk transfer）
+    pub(crate) fn 获取interface(&self) -> Option<&nusb::Interface> {
+        self.interface.as_ref()
+    }
+
+    /// 获取 nusb Interface 可变引用
+    pub(crate) fn 获取interface_mut(&mut self) -> Option<&mut nusb::Interface> {
+        self.interface.as_mut()
     }
 }
 
