@@ -30,17 +30,27 @@ fn format_write_status_error(stage: &str, status: u32) -> String {
 const XFLASH_PARAM_CHUNK: usize = 0x200;
 
 impl<'a> DAXFlash<'a> {
-    fn send_param_payload_chunked(&mut self, payload: &[u8], label: &str) -> Result<(), String> {
-        let param_pkt = pack3(CMD_MAGIC, 0x01, payload.len() as u32);
-        self.write_with_retry(&param_pkt, &format!("{} param header", label))?;
-        for (idx, chunk) in payload.chunks(XFLASH_PARAM_CHUNK).enumerate() {
-            if crate::cancel::force_requested() || crate::cancel::requested() {
-                self.preloader.device.cancel_pending_transfers();
-                return Err(format!("{} 已取消", label));
+    fn send_param_list_chunked(&mut self, params: &[&[u8]], label: &str) -> Result<(), String> {
+        for (param_idx, payload) in params.iter().enumerate() {
+            let param_pkt = pack3(CMD_MAGIC, 0x01, payload.len() as u32);
+            self.write_with_retry(&param_pkt, &format!("{} param {} header", label, param_idx))?;
+            for (chunk_idx, chunk) in payload.chunks(XFLASH_PARAM_CHUNK).enumerate() {
+                if crate::cancel::force_requested() || crate::cancel::requested() {
+                    self.preloader.device.cancel_pending_transfers();
+                    return Err(format!("{} 已取消", label));
+                }
+                self.write_with_retry(
+                    chunk,
+                    &format!("{} param {} chunk {}", label, param_idx, chunk_idx),
+                )?;
             }
-            self.write_with_retry(chunk, &format!("{} param chunk {}", label, idx))?;
         }
-        Ok(())
+        let status = self.status()?;
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(format_write_status_error(label, status))
+        }
     }
 
     /// 按原始地址写入一段数据，供分区写入、seccfg/frp 等场景复用。
@@ -71,9 +81,6 @@ impl<'a> DAXFlash<'a> {
         );
         bar.set_message(format!("写入: 0x{:08X}", addr));
 
-        // 预分配最大 param buffer，循环内复用避免重复分配
-        let max_param_len = 8 + write_packet_size;
-        let mut param = Vec::with_capacity(max_param_len);
         let mut pos = 0;
         while pos < total {
             if crate::cancel::force_requested() || crate::cancel::requested() {
@@ -85,12 +92,9 @@ impl<'a> DAXFlash<'a> {
             let chunk = &data[pos..pos + dsize];
             let checksum: u16 = chunk.iter().map(|&b| b as u16).sum::<u16>();
 
-            param.clear();
-            param.extend_from_slice(&0u32.to_le_bytes());
-            param.extend_from_slice(&(checksum as u32).to_le_bytes());
-            param.extend_from_slice(chunk);
-
-            self.send_param_payload_chunked(&param, "writeflash chunk")?;
+            let zero = 0u32.to_le_bytes();
+            let checksum_bytes = (checksum as u32).to_le_bytes();
+            self.send_param_list_chunked(&[&zero, &checksum_bytes, chunk], "writeflash chunk")?;
 
             pos += dsize;
 
@@ -172,12 +176,8 @@ impl<'a> DAXFlash<'a> {
             param.extend_from_slice(&addr.to_le_bytes());
             param.extend_from_slice(&size.to_le_bytes());
             param.extend_from_slice(&[0u8; 32]); // NandExtension 全零
-            self.send_param_payload_chunked(&param, "cmd_write_data")?;
-            let st2 = self.status()?;
-            if st2 == 0 {
-                return Ok(true);
-            }
-            return Err(format_write_status_error("cmd_write_data param", st2));
+            self.send_param_list_chunked(&[&param], "cmd_write_data param")?;
+            return Ok(true);
         }
         Err(format_write_status_error("cmd_write_data", st))
     }

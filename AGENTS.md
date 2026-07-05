@@ -1,16 +1,16 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
-## 最近更新 (2026-07-05 v13) — da_x_speed 分层、写入修复与极速读实验
+## 最近更新 (2026-07-05 v14) — send_param 列表语义、写入修复与极速读实验
 
 - **版本号规则**：每次提交可运行行为变更后，同步更新 `Cargo.toml` 与 `Cargo.lock` 的 crate 版本。
 - **DA/GPT 缓存规则**：不得裸用当前目录 `gpt.bin`。GPT 缓存必须来自 `.state`，并且 `.state` 必须包含设备指纹；设备指纹至少绑定 USB VID/PID、HW code、target_config、preloader 内容摘要。设备指纹变化时不得继承旧 GPT 缓存和可选查询失败缓存。
 - **Ctrl+C 规则**：禁止在 Ctrl+C handler 中直接 `process::exit`。第一次 Ctrl+C 走包边界安全停止；第二次 Ctrl+C 只设置强制取消标志，由读写循环取消 USB pending transfer、flush writer、关闭设备后退出，避免 WinUSB/libusb pending I/O 锁住 `mtkclient-rs.exe`。
 - **XFlash READ_DATA 规则**：DA 的 12 字节 header 是 short packet，不要把 header 和 payload 合并成单个 nusb/WinUSB IN transfer；这会导致 `queued read err: Unknown(1)` 或协议错位。当前安全优化是 writer 线程、buffer pool、以及只预提交下一包 header。
-- **写分区规则**：XFlash `send_param` 必须对齐 Python：协议头声明完整 payload 长度，但 payload 按 `0x200` 字节连续分块写。不要把 `checksum+data` 作为单个大 OUT transfer 写入，否则 WinUSB 会在 `writeflash chunk data` 阶段超时。
+- **写分区规则**：XFlash `send_param` 必须对齐 Python：`send_param([a, b, c])` 代表多个独立参数包，每个参数包都有自己的 12B header，payload 再按 `0x200` 字节连续分块写，整个列表发送完成后读一次 status。写 flash 时必须发送 `[0u32, checksum_u32, data]` 三个参数，不能拼成一个 `0+checksum+data` 参数，否则 DA 会在首包数据阶段 NAK/超时。
 - **da_x_speed 分层**：`1` 是保守安全路径；`3` 是极速实验路径，允许使用更激进的 USB/nusb fast path，但必须保留协议顺序和 `1` 的安全基线。`2` 暂无独立价值。
 - **读速目标**：目标是逼近刷机匣约 15MB/s。当前 `speed=3` 可使用 nusb Buffer `into_vec()` fast path，减少 payload 从 completion buffer 到 writer buffer 的二次复制；继续研究 DA packet length、WinUSB RAW_IO/nusb backend 能力或 DA 端限速。
 
-> 最近更新：2026-07-05 v13
+> 最近更新：2026-07-05 v14
 
 ## 最近更新 (2026-07-04 v11) — 分区表精美输出 + readflash心跳修复 + 速度优化 + clippy清零
 
