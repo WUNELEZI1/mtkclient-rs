@@ -36,6 +36,12 @@ pub trait BromTransport {
     fn write(&mut self, data: &[u8]) -> Result<usize, String>;
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<usize, String>;
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, String>;
+    fn submit_read_request(&mut self, _len: usize) -> Result<bool, String> {
+        Ok(false)
+    }
+    fn complete_read_request(&mut self, _buf: &mut [u8]) -> Result<usize, String> {
+        Err("queued read not supported on this transport".to_string())
+    }
     fn set_timeout(&mut self, duration: Duration);
     fn get_timeout(&self) -> Duration;
     fn do_handshake(&mut self) -> Result<bool, String>;
@@ -305,6 +311,14 @@ impl BromTransport for USB设备 {
 
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
         USB设备::读取(self, buf)
+    }
+
+    fn submit_read_request(&mut self, len: usize) -> Result<bool, String> {
+        USB设备::预提交读取(self, len)
+    }
+
+    fn complete_read_request(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+        USB设备::完成预提交读取(self, buf)
     }
 
     fn set_timeout(&mut self, duration: Duration) {
