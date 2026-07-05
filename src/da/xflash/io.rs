@@ -103,6 +103,7 @@ fn spawn_dump_writer(
 ) -> Result<
     (
         SyncSender<Option<Vec<u8>>>,
+        Receiver<Vec<u8>>,
         std::thread::JoinHandle<Result<u64, String>>,
     ),
     String,
@@ -114,6 +115,8 @@ fn spawn_dump_writer(
 
     let output_path = output_file.to_string();
     let (tx, rx): (SyncSender<Option<Vec<u8>>>, Receiver<Option<Vec<u8>>>) =
+        mpsc::sync_channel(CHANNEL_CAP);
+    let (recycle_tx, recycle_rx): (SyncSender<Vec<u8>>, Receiver<Vec<u8>>) =
         mpsc::sync_channel(CHANNEL_CAP);
 
     let handle = std::thread::Builder::new()
@@ -142,6 +145,9 @@ fn spawn_dump_writer(
                 file.write_all(&data)
                     .map_err(|e| format!("写入文件失败: {}", e))?;
                 written += data.len() as u64;
+                let mut data = data;
+                data.clear();
+                let _ = recycle_tx.send(data);
 
                 if written - last_flush_pos >= FLUSH_INTERVAL || written >= size {
                     file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
@@ -175,7 +181,7 @@ fn spawn_dump_writer(
         })
         .map_err(|e| format!("创建写入线程失败: {}", e))?;
 
-    Ok((tx, handle))
+    Ok((tx, recycle_rx, handle))
 }
 
 fn finish_dump_writer(
@@ -184,6 +190,17 @@ fn finish_dump_writer(
 ) -> Result<u64, String> {
     let _ = tx.send(None);
     handle.join().map_err(|_| "写入线程 panic".to_string())?
+}
+
+fn acquire_dump_buffer(recycle_rx: &Receiver<Vec<u8>>, len: usize) -> Vec<u8> {
+    let mut buf = recycle_rx
+        .try_recv()
+        .unwrap_or_else(|_| Vec::with_capacity(len));
+    if buf.capacity() < len {
+        buf.reserve(len - buf.capacity());
+    }
+    buf.resize(len, 0);
+    buf
 }
 
 fn read_header_with_optional_queue(
@@ -325,12 +342,11 @@ impl<'a> DAXFlash<'a> {
             )?;
         }
 
-        let (writer_tx, writer_handle) =
+        let (writer_tx, recycle_rx, writer_handle) =
             spawn_dump_writer(output_file, addr, size, parttype, start_offset, packet_len)?;
 
         let mut total_read: u64 = start_offset;
         let mut bytes_received: u64 = 0;
-        let mut data_buf = vec![0u8; MAX_PACKET_SIZE];
         let mut last_progress_pos: u64 = start_offset;
         let mut queued_header = false;
 
@@ -376,16 +392,17 @@ impl<'a> DAXFlash<'a> {
             }
 
             if slength == 4 {
+                let mut data = acquire_dump_buffer(&recycle_rx, 4);
                 self.preloader
                     .device
-                    .read_exact(&mut data_buf[..4])
+                    .read_exact(&mut data)
                     .map_err(|e| format!("read data: {}", e))?;
-                if data_buf[0] == 0 && data_buf[1] == 0 && data_buf[2] == 0 && data_buf[3] == 0 {
+                if data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 0 {
                     trace!("[readflash] 心跳包，跳过");
                     continue;
                 }
                 writer_tx
-                    .send(Some(data_buf[..4].to_vec()))
+                    .send(Some(data))
                     .map_err(|_| "写入线程已退出".to_string())?;
                 bytes_received += 4;
                 total_read += 4;
@@ -393,12 +410,13 @@ impl<'a> DAXFlash<'a> {
                 continue;
             } else if (slength as usize) <= MAX_PACKET_SIZE {
                 let slen = slength as usize;
+                let mut data = acquire_dump_buffer(&recycle_rx, slen);
                 self.preloader
                     .device
-                    .read_exact(&mut data_buf[..slen])
+                    .read_exact(&mut data)
                     .map_err(|e| format!("read data: {}", e))?;
                 writer_tx
-                    .send(Some(data_buf[..slen].to_vec()))
+                    .send(Some(data))
                     .map_err(|_| "写入线程已退出".to_string())?;
                 bytes_received += slen as u64;
                 total_read += slen as u64;
@@ -645,7 +663,8 @@ mod tests {
         let _ = std::fs::remove_file(&output);
         remove_resume_file(&output);
 
-        let (tx, handle) = spawn_dump_writer(&output, 0x1000, 6, 8, 0, Some(2)).unwrap();
+        let (tx, _recycle_rx, handle) =
+            spawn_dump_writer(&output, 0x1000, 6, 8, 0, Some(2)).unwrap();
         tx.send(Some(vec![1, 2, 3])).unwrap();
         tx.send(Some(vec![4, 5, 6])).unwrap();
         let written = finish_dump_writer(tx, handle).unwrap();
