@@ -12,6 +12,9 @@
 use log::{info, trace, warn};
 use std::time::Duration;
 
+use crate::connection::session::{
+    mark_optional_query_failed as save_optional_query_failure, optional_query_failed,
+};
 use crate::da::xflash::DAXFlash;
 
 // =============================================================================
@@ -24,12 +27,26 @@ pub const DA_EXTENSIONS_ACK_MAGIC: u32 = 0xA1A2A3A4;
 const DA_EXTENSIONS_DEVCTRL_ACK: u32 = 0x0F0000;
 /// CUSTOM_SET_STORAGE devctrl id（对齐刷机匣 xflash_lib.py:1256）
 const DA_EXTENSIONS_DEVCTRL_SET_STORAGE: u32 = 0x0F0005;
+const QUERY_EXPIRE_DATE: &str = "get_expire_date";
+const QUERY_CONNECTION_AGENT: &str = "get_connection_agent";
+const QUERY_SLA_STATUS: &str = "get_sla_status";
 
 // =============================================================================
 // DA 加载主流程
 // =============================================================================
 
 impl<'a> DAXFlash<'a> {
+    fn optional_query_should_skip(&self, name: &str) -> bool {
+        self.optional_query_failures.iter().any(|item| item == name) || optional_query_failed(name)
+    }
+
+    fn mark_optional_query_failed(&mut self, name: &str) {
+        if !self.optional_query_failures.iter().any(|item| item == name) {
+            self.optional_query_failures.push(name.to_string());
+        }
+        save_optional_query_failure(name);
+    }
+
     /// 上传 DA（完整流程，对齐 Python upload_da）
     pub fn upload_da(&mut self) -> Result<bool, String> {
         trace!("开始 DA 加载流程...");
@@ -40,10 +57,17 @@ impl<'a> DAXFlash<'a> {
 
         // --- 速度级别 1 = 完整协议，2/3 = 跳过可选查询 ---
         if self.da_x_speed == 1 {
-            match self.get_expire_date() {
-                Ok(d) if !d.is_empty() => trace!("  过期日期: {:02X?}", d),
-                Err(e) => warn!("get_expire_date 失败 (可能不支持): {}", e),
-                _ => {}
+            if self.optional_query_should_skip(QUERY_EXPIRE_DATE) {
+                trace!("跳过已知失败的可选查询: {}", QUERY_EXPIRE_DATE);
+            } else {
+                match self.get_expire_date() {
+                    Ok(d) if !d.is_empty() => trace!("  过期日期: {:02X?}", d),
+                    Err(e) => {
+                        warn!("get_expire_date 失败 (可能不支持): {}", e);
+                        self.mark_optional_query_failed(QUERY_EXPIRE_DATE);
+                    }
+                    _ => {}
+                }
             }
 
             if let Err(e) = self.set_reset_key(0x68) {
@@ -70,11 +94,17 @@ impl<'a> DAXFlash<'a> {
             );
             brom
         } else {
-            let conn_agent = match self.get_connection_agent() {
-                Ok(agent) => agent,
-                Err(e) => {
-                    warn!("get_connection_agent 失败: {}", e);
-                    "brom".to_string()
+            let conn_agent = if self.optional_query_should_skip(QUERY_CONNECTION_AGENT) {
+                trace!("跳过已知失败的可选查询: {}", QUERY_CONNECTION_AGENT);
+                "brom".to_string()
+            } else {
+                match self.get_connection_agent() {
+                    Ok(agent) => agent,
+                    Err(e) => {
+                        warn!("get_connection_agent 失败: {}", e);
+                        self.mark_optional_query_failed(QUERY_CONNECTION_AGENT);
+                        "brom".to_string()
+                    }
                 }
             };
             trace!("  连接代理: {}", conn_agent);
@@ -95,15 +125,22 @@ impl<'a> DAXFlash<'a> {
         }
 
         if self.da_x_speed == 1 {
-            match self.get_sla_status() {
-                Ok(sla) => {
-                    if sla != 0 {
-                        trace!("  DA SLA 已启用: 0x{:08X}", sla);
-                    } else {
-                        trace!("  DA SLA 未启用");
+            if self.optional_query_should_skip(QUERY_SLA_STATUS) {
+                trace!("跳过已知失败的可选查询: {}", QUERY_SLA_STATUS);
+            } else {
+                match self.get_sla_status() {
+                    Ok(sla) => {
+                        if sla != 0 {
+                            trace!("  DA SLA 已启用: 0x{:08X}", sla);
+                        } else {
+                            trace!("  DA SLA 未启用");
+                        }
+                    }
+                    Err(e) => {
+                        warn!("get_sla_status 失败: {}", e);
+                        self.mark_optional_query_failed(QUERY_SLA_STATUS);
                     }
                 }
-                Err(e) => warn!("get_sla_status 失败: {}", e),
             }
         } else {
             trace!("[SPEED{}] 跳过 get_sla_status", self.da_x_speed);

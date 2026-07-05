@@ -264,6 +264,9 @@ impl<'a> DAXFlash<'a> {
                     target_config,
                     preloader_path,
                 );
+                for name in &self.optional_query_failures {
+                    crate::connection::session::mark_optional_query_failed(name);
+                }
             } else {
                 warn!("save_session_state: chip 未初始化，跳过 .state 保存");
             }

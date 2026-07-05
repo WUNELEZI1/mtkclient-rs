@@ -17,6 +17,10 @@ pub struct SessionState {
     pub da_loaded: bool,
     /// 上次成功 dump 的 preloader 文件路径，避免重复 dump
     pub preloader_path: Option<String>,
+    /// GPT 缓存文件路径，DA 会话复用时可避免重复读取 GPT
+    pub gpt_cache_path: Option<String>,
+    /// 当前 DA 会话中已知失败的可选查询，避免每次命令重复等待 timeout
+    pub optional_query_failures: Vec<String>,
 }
 
 impl fmt::Display for SessionState {
@@ -28,6 +32,16 @@ impl fmt::Display for SessionState {
         )?;
         if let Some(ref path) = self.preloader_path {
             write!(f, "\npreloader_path={}", path)?;
+        }
+        if let Some(ref path) = self.gpt_cache_path {
+            write!(f, "\ngpt_cache_path={}", path)?;
+        }
+        if !self.optional_query_failures.is_empty() {
+            write!(
+                f,
+                "\noptional_query_failures={}",
+                self.optional_query_failures.join(",")
+            )?;
         }
         Ok(())
     }
@@ -43,6 +57,17 @@ impl SessionState {
             }
         }
 
+        let optional_query_failures = map
+            .get("optional_query_failures")
+            .map(|s| {
+                s.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string)
+                    .collect()
+            })
+            .unwrap_or_else(Vec::new);
+
         Some(SessionState {
             usb_vid: u16::from_str_radix(map.get("usb_vid")?.strip_prefix("0x")?, 16).ok()?,
             usb_pid: u16::from_str_radix(map.get("usb_pid")?.strip_prefix("0x")?, 16).ok()?,
@@ -51,6 +76,8 @@ impl SessionState {
                 .ok()?,
             da_loaded: map.get("da_loaded")?.parse::<bool>().ok()?,
             preloader_path: map.get("preloader_path").map(|s| s.to_string()),
+            gpt_cache_path: map.get("gpt_cache_path").map(|s| s.to_string()),
+            optional_query_failures,
         })
     }
 
@@ -94,6 +121,18 @@ impl SessionState {
     }
 }
 
+fn update_session_state<F>(mut update: F)
+where
+    F: FnMut(&mut SessionState),
+{
+    if let Some(mut state) = SessionState::load() {
+        update(&mut state);
+        if let Err(e) = state.save() {
+            warn!("[session] 更新 .state 失败: {}", e);
+        }
+    }
+}
+
 /// 尝试复用现有 DA 会话
 /// 如果 .state 存在且 da_loaded=true，跳过 BROM→DA 流程。
 /// 真正的 DA 模式验证由后续的 check_da_session / reinit 完成（心跳检测），
@@ -121,6 +160,7 @@ pub fn save_da_session(
     target_config: u32,
     preloader_path: Option<&str>,
 ) {
+    let previous = SessionState::load();
     let state = SessionState {
         usb_vid: vid,
         usb_pid: pid,
@@ -128,6 +168,12 @@ pub fn save_da_session(
         target_config,
         da_loaded: true,
         preloader_path: preloader_path.map(|s| s.to_string()),
+        gpt_cache_path: previous
+            .as_ref()
+            .and_then(|state| state.gpt_cache_path.clone()),
+        optional_query_failures: previous
+            .map(|state| state.optional_query_failures)
+            .unwrap_or_default(),
     };
     if let Err(e) = state.save() {
         warn!("[session] 保存 .state 失败: {}", e);
@@ -136,8 +182,77 @@ pub fn save_da_session(
     }
 }
 
+pub fn save_gpt_cache_path(path: &str) {
+    update_session_state(|state| {
+        state.gpt_cache_path = Some(path.to_string());
+    });
+}
+
+pub fn get_gpt_cache_path() -> Option<String> {
+    SessionState::load()?.gpt_cache_path
+}
+
+pub fn optional_query_failed(name: &str) -> bool {
+    SessionState::load()
+        .map(|state| {
+            state
+                .optional_query_failures
+                .iter()
+                .any(|item| item == name)
+        })
+        .unwrap_or(false)
+}
+
+pub fn mark_optional_query_failed(name: &str) {
+    update_session_state(|state| {
+        if !state
+            .optional_query_failures
+            .iter()
+            .any(|item| item == name)
+        {
+            state.optional_query_failures.push(name.to_string());
+        }
+    });
+}
+
 /// 重置设备并清除 .state
 pub fn reset_session() {
     SessionState::remove();
     info!("[session] 会话已重置");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_state_roundtrips_gpt_cache_and_optional_failures() {
+        let state = SessionState {
+            usb_vid: 0x0E8D,
+            usb_pid: 0x0003,
+            hw_code: 0x6768,
+            target_config: 0xE0,
+            da_loaded: true,
+            preloader_path: Some("preloader.bin".to_string()),
+            gpt_cache_path: Some("gpt.bin".to_string()),
+            optional_query_failures: vec![
+                "get_connection_agent".to_string(),
+                "get_sla_status".to_string(),
+            ],
+        };
+
+        let parsed = SessionState::from_string(&state.to_string()).unwrap();
+
+        assert_eq!(parsed.gpt_cache_path.as_deref(), Some("gpt.bin"));
+        assert!(
+            parsed
+                .optional_query_failures
+                .contains(&"get_connection_agent".to_string())
+        );
+        assert!(
+            parsed
+                .optional_query_failures
+                .contains(&"get_sla_status".to_string())
+        );
+    }
 }
