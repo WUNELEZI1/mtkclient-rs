@@ -54,7 +54,7 @@ pub fn print_help() {
     println!("  --log <level>         日志级别：1=INFO，2=DEBUG，3=TRACE");
     println!("  --patch_da            是否 patch DA（默认 true）");
     println!("  --mode <mode>         工作模式：brom（默认）/ preloader / auto");
-    println!("  --da_x_speed <1-3>    DA 加载速度级别");
+    println!("  --da_x_speed <1-3>    DA 加载速度：1完整 / 2快速 / 3极速+USB高速重连");
     println!("  --skip <parts>        rl 跳过的分区（逗号分隔）");
     println!("  --quiet               静默模式");
     println!("  --quiet_dump          静默 dump（不打印进度条）");
