@@ -27,7 +27,22 @@ fn format_write_status_error(stage: &str, status: u32) -> String {
     )
 }
 
+const XFLASH_PARAM_CHUNK: usize = 0x200;
+
 impl<'a> DAXFlash<'a> {
+    fn send_param_payload_chunked(&mut self, payload: &[u8], label: &str) -> Result<(), String> {
+        let param_pkt = pack3(CMD_MAGIC, 0x01, payload.len() as u32);
+        self.write_with_retry(&param_pkt, &format!("{} param header", label))?;
+        for (idx, chunk) in payload.chunks(XFLASH_PARAM_CHUNK).enumerate() {
+            if crate::cancel::force_requested() || crate::cancel::requested() {
+                self.preloader.device.cancel_pending_transfers();
+                return Err(format!("{} 已取消", label));
+            }
+            self.write_with_retry(chunk, &format!("{} param chunk {}", label, idx))?;
+        }
+        Ok(())
+    }
+
     /// 按原始地址写入一段数据，供分区写入、seccfg/frp 等场景复用。
     /// 带进度条显示：使用 indicatif 实时更新进度，最后输出总耗时和速度。
     pub(crate) fn write_flash_data(
@@ -75,9 +90,7 @@ impl<'a> DAXFlash<'a> {
             param.extend_from_slice(&(checksum as u32).to_le_bytes());
             param.extend_from_slice(chunk);
 
-            let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
-            self.write_with_retry(&param_pkt, "writeflash chunk header")?;
-            self.write_with_retry(&param, "writeflash chunk data")?;
+            self.send_param_payload_chunked(&param, "writeflash chunk")?;
 
             pos += dsize;
 
@@ -159,9 +172,7 @@ impl<'a> DAXFlash<'a> {
             param.extend_from_slice(&addr.to_le_bytes());
             param.extend_from_slice(&size.to_le_bytes());
             param.extend_from_slice(&[0u8; 32]); // NandExtension 全零
-            let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
-            self.write_with_retry(&param_pkt, "cmd_write_data param_hdr")?;
-            self.write_with_retry(&param, "cmd_write_data param")?;
+            self.send_param_payload_chunked(&param, "cmd_write_data")?;
             let st2 = self.status()?;
             if st2 == 0 {
                 return Ok(true);
