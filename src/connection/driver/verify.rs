@@ -1,35 +1,30 @@
-//! libusb1-sys 设备打开验证
+//! WinUSB 设备打开验证
 //!
-//! **唯一真相**：libusb_open_device_with_vid_pid 返回非空 handle 才算成功。
-//! 任何驱动切换流程最终都通过本模块的 `check_winusb_installed` 验证。
+//! 通过 nusb 实际打开设备确认 WinUSB 驱动是否已就绪。
 
 use log::info;
+use nusb::MaybeFuture;
 
 use super::setupapi::{MTK_BROM_PID, MTK_VID};
 
-/// 检查 WinUSB 驱动是否已就绪（libusb1-sys 实际打开设备）
+/// 检查 WinUSB 驱动是否已就绪（nusb 实际打开设备）
 pub fn check_winusb_installed() -> bool {
-    unsafe {
-        let mut ctx: *mut libusb1_sys::libusb_context = std::ptr::null_mut();
-        let ret = libusb1_sys::libusb_init(&mut ctx);
-        if ret != 0 {
-            return false;
-        }
+    let mut devices = match nusb::list_devices().wait() {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
 
-        let handle = libusb1_sys::libusb_open_device_with_vid_pid(ctx, MTK_VID, MTK_BROM_PID);
-        let found = !handle.is_null();
+    let found = devices
+        .any(|d| d.vendor_id() == MTK_VID && d.product_id() == MTK_BROM_PID);
 
-        if found {
-            info!(
-                "[DRIVER] libusb1-sys 已能打开设备 (0x{:04X}:0x{:04X})",
-                MTK_VID, MTK_BROM_PID
-            );
-            libusb1_sys::libusb_close(handle);
-        }
-
-        libusb1_sys::libusb_exit(ctx);
-        found
+    if found {
+        info!(
+            "[DRIVER] nusb 已能枚举设备 (0x{:04X}:0x{:04X})",
+            MTK_VID, MTK_BROM_PID
+        );
     }
+
+    found
 }
 
 /// 兼容旧接口 — 通过 pnputil 枚举设备实例 ID
