@@ -12,6 +12,7 @@
 
 use log::{info, trace, warn};
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, Receiver, SyncSender};
 
 use crate::da::xflash::DAXFlash;
 use crate::da::xflash::protocol::{CMD_MAGIC, CMD_READ_DATA, pack3};
@@ -92,6 +93,99 @@ fn active_resume_matches(output_file: &str, start_offset: u64) -> bool {
             == Some(start_offset)
 }
 
+fn spawn_dump_writer(
+    output_file: &str,
+    addr: u64,
+    size: u64,
+    parttype: u32,
+    start_offset: u64,
+    packet_len: Option<usize>,
+) -> Result<
+    (
+        SyncSender<Option<Vec<u8>>>,
+        std::thread::JoinHandle<Result<u64, String>>,
+    ),
+    String,
+> {
+    const CHANNEL_CAP: usize = 64;
+    const FLUSH_INTERVAL: u64 = 128 * 1024 * 1024;
+    const RESUME_INTERVAL: u64 = 64 * 1024 * 1024;
+    const BUF_WRITER_CAP: usize = 64 * 1024 * 1024;
+
+    let output_path = output_file.to_string();
+    let (tx, rx): (SyncSender<Option<Vec<u8>>>, Receiver<Option<Vec<u8>>>) =
+        mpsc::sync_channel(CHANNEL_CAP);
+
+    let handle = std::thread::Builder::new()
+        .name("flash_dump_writer".to_string())
+        .spawn(move || -> Result<u64, String> {
+            use std::io::{BufWriter, Write};
+
+            let raw_file = if start_offset > 0 {
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&output_path)
+                    .map_err(|e| format!("打开文件失败 '{}': {}", output_path, e))?
+            } else {
+                std::fs::File::create(&output_path)
+                    .map_err(|e| format!("创建文件失败 '{}': {}", output_path, e))?
+            };
+            let mut file = BufWriter::with_capacity(BUF_WRITER_CAP, raw_file);
+            let mut written = start_offset;
+            let mut last_flush_pos = start_offset;
+            let mut last_resume_pos = start_offset;
+
+            while let Ok(message) = rx.recv() {
+                let Some(data) = message else {
+                    break;
+                };
+                file.write_all(&data)
+                    .map_err(|e| format!("写入文件失败: {}", e))?;
+                written += data.len() as u64;
+
+                if written - last_flush_pos >= FLUSH_INTERVAL || written >= size {
+                    file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
+                    last_flush_pos = written;
+                }
+                if written - last_resume_pos >= RESUME_INTERVAL || written >= size {
+                    write_resume_file(
+                        &output_path,
+                        addr,
+                        size,
+                        parttype,
+                        written,
+                        true,
+                        packet_len,
+                    )?;
+                    last_resume_pos = written;
+                }
+            }
+
+            file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
+            write_resume_file(
+                &output_path,
+                addr,
+                size,
+                parttype,
+                written,
+                true,
+                packet_len,
+            )?;
+            Ok(written)
+        })
+        .map_err(|e| format!("创建写入线程失败: {}", e))?;
+
+    Ok((tx, handle))
+}
+
+fn finish_dump_writer(
+    tx: SyncSender<Option<Vec<u8>>>,
+    handle: std::thread::JoinHandle<Result<u64, String>>,
+) -> Result<u64, String> {
+    let _ = tx.send(None);
+    handle.join().map_err(|_| "写入线程 panic".to_string())?
+}
+
 fn final_read_status_from_payload(payload: &[u8]) -> Result<(), String> {
     if payload.len() == 4 {
         let status = u32::from_le_bytes(payload.try_into().unwrap());
@@ -145,13 +239,8 @@ impl<'a> DAXFlash<'a> {
     {
         let _quiet_guard = quiet_usb_reads_temporarily();
 
-        use std::io::{BufWriter, Write};
-
-        const FLUSH_INTERVAL: u64 = 128 * 1024 * 1024; // 128MB 落盘一次，Ctrl+C 时强制落盘
-        const RESUME_INTERVAL: u64 = 64 * 1024 * 1024; // 64MB 更新一次续传状态
         const PROGRESS_INTERVAL: u64 = 16 * 1024 * 1024; // 16MB 进度更新
         const MAX_PACKET_SIZE: usize = 0x1000000; // 16MB 预分配 buffer
-        const BUF_WRITER_CAP: usize = 64 * 1024 * 1024; // 64MB 写缓冲
 
         let target_remaining = size - start_offset;
         ensure_output_file_path(output_file)?;
@@ -219,23 +308,13 @@ impl<'a> DAXFlash<'a> {
             )?;
         }
 
-        let raw_file = if start_offset > 0 {
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open(output_file)
-                .map_err(|e| format!("打开文件失败 '{}': {}", output_file, e))?
-        } else {
-            std::fs::File::create(output_file)
-                .map_err(|e| format!("创建文件失败 '{}': {}", output_file, e))?
-        };
-        let mut file = BufWriter::with_capacity(BUF_WRITER_CAP, raw_file);
+        let (writer_tx, writer_handle) =
+            spawn_dump_writer(output_file, addr, size, parttype, start_offset, packet_len)?;
 
         let mut total_read: u64 = start_offset;
         let mut bytes_received: u64 = 0;
         let mut data_buf = vec![0u8; MAX_PACKET_SIZE];
         let mut last_progress_pos: u64 = start_offset;
-        let mut last_flush_pos: u64 = start_offset;
-        let mut last_resume_pos: u64 = start_offset;
 
         while bytes_received < target_remaining {
             let mut hdr = [0u8; 12];
@@ -246,7 +325,6 @@ impl<'a> DAXFlash<'a> {
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    let _ = file.flush();
                     write_resume_file(
                         output_file,
                         addr,
@@ -264,7 +342,6 @@ impl<'a> DAXFlash<'a> {
             let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
 
             if magic != CMD_MAGIC {
-                let _ = file.flush();
                 write_resume_file(
                     output_file,
                     addr,
@@ -289,8 +366,9 @@ impl<'a> DAXFlash<'a> {
                     trace!("[readflash] 心跳包，跳过");
                     continue;
                 }
-                file.write_all(&data_buf[..4])
-                    .map_err(|e| format!("写入文件失败: {}", e))?;
+                writer_tx
+                    .send(Some(data_buf[..4].to_vec()))
+                    .map_err(|_| "写入线程已退出".to_string())?;
                 bytes_received += 4;
                 total_read += 4;
             } else if slength == 0 {
@@ -301,8 +379,9 @@ impl<'a> DAXFlash<'a> {
                     .device
                     .read_exact(&mut data_buf[..slen])
                     .map_err(|e| format!("read data: {}", e))?;
-                file.write_all(&data_buf[..slen])
-                    .map_err(|e| format!("写入文件失败: {}", e))?;
+                writer_tx
+                    .send(Some(data_buf[..slen].to_vec()))
+                    .map_err(|_| "写入线程已退出".to_string())?;
                 bytes_received += slen as u64;
                 total_read += slen as u64;
             } else {
@@ -311,28 +390,12 @@ impl<'a> DAXFlash<'a> {
                     .device
                     .read_exact(&mut data)
                     .map_err(|e| format!("read data (large): {}", e))?;
-                file.write_all(&data)
-                    .map_err(|e| format!("写入文件失败: {}", e))?;
-                bytes_received += data.len() as u64;
-                total_read += data.len() as u64;
-            }
-
-            if total_read - last_flush_pos >= FLUSH_INTERVAL || bytes_received >= target_remaining {
-                file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
-                last_flush_pos = total_read;
-            }
-            if total_read - last_resume_pos >= RESUME_INTERVAL || bytes_received >= target_remaining
-            {
-                write_resume_file(
-                    output_file,
-                    addr,
-                    size,
-                    parttype,
-                    total_read,
-                    true,
-                    packet_len,
-                )?;
-                last_resume_pos = total_read;
+                let data_len = data.len() as u64;
+                writer_tx
+                    .send(Some(data))
+                    .map_err(|_| "写入线程已退出".to_string())?;
+                bytes_received += data_len;
+                total_read += data_len;
             }
 
             if total_read - last_progress_pos >= PROGRESS_INTERVAL
@@ -343,24 +406,14 @@ impl<'a> DAXFlash<'a> {
             }
 
             if crate::cancel::requested() {
-                file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
-                write_resume_file(
-                    output_file,
-                    addr,
-                    size,
-                    parttype,
-                    total_read,
-                    true,
-                    packet_len,
-                )?;
+                let written = finish_dump_writer(writer_tx, writer_handle)?;
                 return Err(format!(
                     "读取已在包边界安全停止，已保存 {} 字节；重新运行同一命令可续传",
-                    total_read
+                    written
                 ));
             }
 
             if let Err(e) = self.ack_silent() {
-                let _ = file.flush();
                 write_resume_file(
                     output_file,
                     addr,
@@ -379,12 +432,12 @@ impl<'a> DAXFlash<'a> {
         }
 
         self.readflash_final_status()?;
-        file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
+        let written = finish_dump_writer(writer_tx, writer_handle)?;
         remove_resume_file(output_file);
-        on_packet(total_read);
+        on_packet(written);
 
-        trace!("[readflash] total read {} bytes", total_read);
-        Ok(total_read)
+        trace!("[readflash] total read {} bytes", written);
+        Ok(written)
     }
 
     /// 读取 flash 数据（全量到内存），用于小分区或需要内存操作的场景
@@ -556,6 +609,28 @@ mod tests {
         assert!(active_resume_matches(&output, 0x2000));
         assert!(!active_resume_matches(&output, 0x1000));
 
+        remove_resume_file(&output);
+    }
+
+    #[test]
+    fn dump_writer_writes_data_and_resume_metadata() {
+        let output = std::env::temp_dir().join(format!("dump_writer_{}.img", std::process::id()));
+        let output = output.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&output);
+        remove_resume_file(&output);
+
+        let (tx, handle) = spawn_dump_writer(&output, 0x1000, 6, 8, 0, Some(2)).unwrap();
+        tx.send(Some(vec![1, 2, 3])).unwrap();
+        tx.send(Some(vec![4, 5, 6])).unwrap();
+        let written = finish_dump_writer(tx, handle).unwrap();
+
+        assert_eq!(written, 6);
+        assert_eq!(std::fs::read(&output).unwrap(), vec![1, 2, 3, 4, 5, 6]);
+        let resume = std::fs::read_to_string(resume_path_for(&output)).unwrap();
+        assert!(resume.contains("written=6"));
+        assert!(resume.contains("packet_len=2"));
+
+        let _ = std::fs::remove_file(&output);
         remove_resume_file(&output);
     }
 
