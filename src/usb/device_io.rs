@@ -63,18 +63,15 @@ fn 输出端点地址(设备: &USB设备) -> u8 {
 
 impl USB设备 {
     pub fn 写入(&mut self, data: &[u8]) -> Result<usize, String> {
-        let ep_addr = 输出端点地址(self);
-        let interface = self.获取interface_mut().ok_or("设备未初始化")?;
-        let mut ep_out = interface
-            .endpoint::<nusb::transfer::Bulk, nusb::transfer::Out>(ep_addr)
-            .map_err(|e| format!("获取输出端点失败: {}", e))?;
+        let timeout = self.超时;
+        let ep_out = self.获取输出端点_mut().ok_or("输出端点未初始化")?;
 
         if data.is_empty() {
             // ZLP (Zero Length Packet)
             usb_trace("TX", "USB设备::写入 ZLP", &[]);
             let buf: nusb::transfer::Buffer = Vec::<u8>::new().into();
             ep_out.submit(buf);
-            let result = ep_out.wait_next_complete(self.超时).ok_or("ZLP 写入超时")?;
+            let result = ep_out.wait_next_complete(timeout).ok_or("ZLP 写入超时")?;
             result
                 .status
                 .map_err(|e| format!("write ZLP err: {:?}", e))?;
@@ -85,14 +82,13 @@ impl USB设备 {
 
         let buf: nusb::transfer::Buffer = data.to_vec().into();
         ep_out.submit(buf);
-        let result = ep_out.wait_next_complete(self.超时).ok_or("写入超时")?;
+        let result = ep_out.wait_next_complete(timeout).ok_or("写入超时")?;
         result.status.map_err(|e| format!("write err: {:?}", e))?;
         Ok(result.actual_len)
     }
 
     pub fn 读取(&mut self, buf: &mut [u8]) -> Result<usize, String> {
         let 静默 = QUIET_USB_READ.load(Ordering::Relaxed);
-        let ep_addr = 输入端点地址(self);
 
         if !静默 {
             trace!(
@@ -112,15 +108,13 @@ impl USB设备 {
 
         let submit_len = bulk_in_submit_len(buf.len(), self.输入端点最大包大小);
 
-        let interface = self.获取interface_mut().ok_or("设备未初始化")?;
-        let mut ep_in = interface
-            .endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(ep_addr)
-            .map_err(|e| format!("获取输入端点失败: {}", e))?;
+        let timeout = self.超时;
+        let ep_in = self.获取输入端点_mut().ok_or("输入端点未初始化")?;
 
         let buffer = nusb::transfer::Buffer::new(submit_len);
         ep_in.submit(buffer);
 
-        let result = match ep_in.wait_next_complete(self.超时) {
+        let result = match ep_in.wait_next_complete(timeout) {
             Some(r) => r,
             None => {
                 if !静默 {
@@ -175,7 +169,6 @@ impl USB设备 {
             );
         }
 
-        let ep_addr = 输入端点地址(self);
         let max_packet_size = self.输入端点最大包大小;
         let pending_copied = drain_pending_into(&mut self.输入暂存, buf);
         if pending_copied > 0 {
@@ -188,70 +181,72 @@ impl USB设备 {
                 );
             }
         }
-        let interface = self.获取interface_mut().ok_or("设备未初始化")?;
-        let mut ep_in = interface
-            .endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(ep_addr)
-            .map_err(|e| format!("获取输入端点失败: {}", e))?;
-
         let mut 总计 = pending_copied;
-        while 总计 < buf.len() {
-            let 剩余 = buf.len() - 总计;
-            let submit_len = bulk_in_submit_len(剩余, max_packet_size);
-            let buffer = nusb::transfer::Buffer::new(submit_len);
-            ep_in.submit(buffer);
+        let mut overread = Vec::new();
+        {
+            let timeout = self.超时;
+            let ep_in = self.获取输入端点_mut().ok_or("输入端点未初始化")?;
 
-            let result = match ep_in.wait_next_complete(self.超时) {
-                Some(r) => r,
-                None => {
-                    ep_in.cancel_all();
-                    if 总计 > 0 {
-                        if !静默 {
-                            trace!(
-                                "[USB READ EXACT] partial read: {}/{} bytes before timeout",
-                                总计,
-                                buf.len()
-                            );
-                        }
-                        break;
-                    }
-                    return Err("read_exact timeout".into());
-                }
-            };
+            while 总计 < buf.len() {
+                let 剩余 = buf.len() - 总计;
+                let submit_len = bulk_in_submit_len(剩余, max_packet_size);
+                let buffer = nusb::transfer::Buffer::new(submit_len);
+                ep_in.submit(buffer);
 
-            match result.status {
-                Ok(()) => {
-                    let 实际长度 = result.actual_len;
-                    if !静默 {
-                        trace!(
-                            "[USB READ EXACT] got {} bytes (total: {}/{})",
-                            实际长度,
-                            总计 + 实际长度,
-                            buf.len()
-                        );
-                    }
-                    if 实际长度 == 0 {
-                        std::hint::spin_loop();
-                        continue;
-                    }
-                    let copy_len = copy_from_bulk_packet(
-                        &result.buffer[..实际长度],
-                        &mut buf[总计..总计 + 剩余],
-                        &mut self.输入暂存,
-                    );
-                    总计 += copy_len;
-                }
-                Err(e) => {
-                    let err_str = format!("{:?}", e);
-                    if err_str.contains("timeout") || err_str.contains("Timeout") {
+                let result = match ep_in.wait_next_complete(timeout) {
+                    Some(r) => r,
+                    None => {
+                        ep_in.cancel_all();
                         if 总计 > 0 {
+                            if !静默 {
+                                trace!(
+                                    "[USB READ EXACT] partial read: {}/{} bytes before timeout",
+                                    总计,
+                                    buf.len()
+                                );
+                            }
                             break;
                         }
                         return Err("read_exact timeout".into());
                     }
-                    return Err(format!("read_exact err: {}", err_str));
+                };
+
+                match result.status {
+                    Ok(()) => {
+                        let 实际长度 = result.actual_len;
+                        if !静默 {
+                            trace!(
+                                "[USB READ EXACT] got {} bytes (total: {}/{})",
+                                实际长度,
+                                总计 + 实际长度,
+                                buf.len()
+                            );
+                        }
+                        if 实际长度 == 0 {
+                            std::hint::spin_loop();
+                            continue;
+                        }
+                        let copy_len = 实际长度.min(剩余);
+                        buf[总计..总计 + copy_len].copy_from_slice(&result.buffer[..copy_len]);
+                        if 实际长度 > copy_len {
+                            overread.extend_from_slice(&result.buffer[copy_len..实际长度]);
+                        }
+                        总计 += copy_len;
+                    }
+                    Err(e) => {
+                        let err_str = format!("{:?}", e);
+                        if err_str.contains("timeout") || err_str.contains("Timeout") {
+                            if 总计 > 0 {
+                                break;
+                            }
+                            return Err("read_exact timeout".into());
+                        }
+                        return Err(format!("read_exact err: {}", err_str));
+                    }
                 }
             }
         }
+        self.输入暂存.extend(overread);
 
         if !静默 {
             trace!("[USB READ EXACT] total read: {}/{} bytes", 总计, buf.len());

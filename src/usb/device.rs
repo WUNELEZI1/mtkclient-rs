@@ -27,6 +27,10 @@ pub struct USB设备 {
     interface: Option<nusb::Interface>,
     /// CDC/WinUSB 控制传输接口
     控制interface: Option<nusb::Interface>,
+    /// 缓存的 bulk IN 端点句柄
+    输入端点句柄: Option<nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::In>>,
+    /// 缓存的 bulk OUT 端点句柄
+    输出端点句柄: Option<nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::Out>>,
     /// nusb 设备句柄（用于 reopen 时 drop + reopen）
     device: Option<nusb::Device>,
     pub vid: u16,
@@ -91,6 +95,8 @@ impl USB设备 {
 
         let (interface, 接口编号, 控制interface, 控制接口编号) =
             Self::claim_bulk_and_control_interfaces(&device, bulk接口编号)?;
+        let (输入端点句柄, 输出端点句柄) =
+            Self::open_bulk_endpoints(&interface, 输入端点地址, 输出端点地址)?;
 
         info!(
             "[USB] EP_OUT=0x{:02X} wMaxPacketSize={} EP_IN=0x{:02X}",
@@ -102,6 +108,8 @@ impl USB设备 {
         Ok(USB设备 {
             interface: Some(interface),
             控制interface: Some(控制interface),
+            输入端点句柄: Some(输入端点句柄),
+            输出端点句柄: Some(输出端点句柄),
             device: Some(device),
             vid,
             pid,
@@ -141,6 +149,8 @@ impl USB设备 {
 
         let (interface, 接口编号, 控制interface, 控制接口编号) =
             Self::claim_bulk_and_control_interfaces(&device, bulk接口编号)?;
+        let (输入端点句柄, 输出端点句柄) =
+            Self::open_bulk_endpoints(&interface, 输入端点地址, 输出端点地址)?;
 
         let 阶段 = USB阶段::从PID生成(pid);
         trace!(
@@ -151,6 +161,8 @@ impl USB设备 {
         Ok(USB设备 {
             interface: Some(interface),
             控制interface: Some(控制interface),
+            输入端点句柄: Some(输入端点句柄),
+            输出端点句柄: Some(输出端点句柄),
             device: Some(device),
             vid,
             pid,
@@ -255,6 +267,26 @@ impl USB设备 {
         }
     }
 
+    fn open_bulk_endpoints(
+        interface: &nusb::Interface,
+        输入端点地址: u8,
+        输出端点地址: u8,
+    ) -> Result<
+        (
+            nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::In>,
+            nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::Out>,
+        ),
+        String,
+    > {
+        let 输入端点句柄 = interface
+            .endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(输入端点地址)
+            .map_err(|e| format!("打开输入端点失败: {}", e))?;
+        let 输出端点句柄 = interface
+            .endpoint::<nusb::transfer::Bulk, nusb::transfer::Out>(输出端点地址)
+            .map_err(|e| format!("打开输出端点失败: {}", e))?;
+        Ok((输入端点句柄, 输出端点句柄))
+    }
+
     /// 是否是 nusb（WinUSB）后端
     pub fn 是libusb(&self) -> bool {
         true
@@ -284,6 +316,8 @@ impl USB设备 {
             return;
         }
         // nusb: drop interface 会自动 release，drop device 会自动 close
+        self.输入端点句柄 = None;
+        self.输出端点句柄 = None;
         self.interface = None;
         self.控制interface = None;
         self.device = None;
@@ -310,6 +344,8 @@ impl USB设备 {
         let mut 新设备 = USB设备::新建(context)?;
 
         // 交换字段
+        self.输入端点句柄 = 新设备.输入端点句柄.take();
+        self.输出端点句柄 = 新设备.输出端点句柄.take();
         self.interface = 新设备.interface.take();
         self.控制interface = 新设备.控制interface.take();
         self.device = 新设备.device.take();
@@ -337,6 +373,20 @@ impl USB设备 {
     /// 获取 nusb Interface 可变引用
     pub(crate) fn 获取interface_mut(&mut self) -> Option<&mut nusb::Interface> {
         self.interface.as_mut()
+    }
+
+    /// 获取缓存的 bulk IN 端点
+    pub(crate) fn 获取输入端点_mut(
+        &mut self,
+    ) -> Option<&mut nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::In>> {
+        self.输入端点句柄.as_mut()
+    }
+
+    /// 获取缓存的 bulk OUT 端点
+    pub(crate) fn 获取输出端点_mut(
+        &mut self,
+    ) -> Option<&mut nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::Out>> {
+        self.输出端点句柄.as_mut()
     }
 
     /// 获取控制传输 Interface 引用
