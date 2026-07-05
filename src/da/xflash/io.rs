@@ -92,6 +92,19 @@ fn active_resume_matches(output_file: &str, start_offset: u64) -> bool {
             == Some(start_offset)
 }
 
+fn final_read_status_from_payload(payload: &[u8]) -> Result<(), String> {
+    if payload.len() == 4 {
+        let status = u32::from_le_bytes(payload.try_into().unwrap());
+        if status != 0 {
+            return Err(format!(
+                "Read completed with error status: 0x{:08X}",
+                status
+            ));
+        }
+    }
+    Ok(())
+}
+
 // =============================================================================
 // Flash 数据读取
 // =============================================================================
@@ -336,10 +349,6 @@ impl<'a> DAXFlash<'a> {
                 ));
             }
 
-            if bytes_received >= target_remaining {
-                trace!("[readflash] 最后一包，跳过 ACK");
-                break;
-            }
             if let Err(e) = self.ack_silent() {
                 write_resume_file(
                     output_file,
@@ -352,8 +361,13 @@ impl<'a> DAXFlash<'a> {
                 )?;
                 return Err(format!("send_ack: {}", e));
             }
+            if bytes_received >= target_remaining {
+                trace!("[readflash] 最后一包 ACK 已发送，等待最终状态");
+                break;
+            }
         }
 
+        self.readflash_final_status()?;
         file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
         remove_resume_file(output_file);
         on_packet(total_read);
@@ -443,18 +457,40 @@ impl<'a> DAXFlash<'a> {
             buffer.extend_from_slice(&data);
             remaining = remaining.saturating_sub(data.len());
 
-            if remaining == 0 {
-                trace!("[readflash_data] 最后一包，跳过 ACK");
-                break;
-            }
             if let Err(e) = self.ack_silent() {
                 trace!("[readflash_data] send_ack failed: {}", e);
                 break;
             }
+            if remaining == 0 {
+                trace!("[readflash_data] 最后一包 ACK 已发送，等待最终状态");
+                break;
+            }
         }
 
+        self.readflash_final_status()?;
         trace!("[readflash_data] total read {} bytes", buffer.len());
         Ok(buffer)
+    }
+
+    fn readflash_final_status(&mut self) -> Result<(), String> {
+        let mut hdr = [0u8; 12];
+        self.preloader
+            .device
+            .read_exact(&mut hdr)
+            .map_err(|e| format!("readflash final status header: {}", e))?;
+        let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+        let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
+        if magic != CMD_MAGIC {
+            return Err(format!("readflash final status bad magic: 0x{:08X}", magic));
+        }
+        let mut payload = vec![0u8; slength as usize];
+        if slength > 0 {
+            self.preloader
+                .device
+                .read_exact(&mut payload)
+                .map_err(|e| format!("readflash final status payload: {}", e))?;
+        }
+        final_read_status_from_payload(&payload)
     }
 
     /// 静默 ACK（仅发不读），用于 readflash_data 循环中不偷吃下一个包
@@ -510,6 +546,14 @@ mod tests {
         assert!(!active_resume_matches(&output, 0x1000));
 
         remove_resume_file(&output);
+    }
+
+    #[test]
+    fn final_read_status_accepts_zero_and_rejects_error() {
+        assert!(final_read_status_from_payload(&0u32.to_le_bytes()).is_ok());
+        let err = final_read_status_from_payload(&1u32.to_le_bytes()).unwrap_err();
+        assert!(err.contains("0x00000001"));
+        assert!(final_read_status_from_payload(&[]).is_ok());
     }
 }
 
