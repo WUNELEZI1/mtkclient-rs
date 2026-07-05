@@ -151,7 +151,6 @@ impl<'a> DAXFlash<'a> {
     /// 进度显示：使用 indicatif 进度条，每包更新
     pub fn 读取分区(&mut self, 分区名: &str, 输出文件: &str) -> Result<(), String> {
         use indicatif::{ProgressBar, ProgressStyle};
-        use std::time::Duration;
 
         // 解析分区信息（特殊分区或 GPT 分区）
         let (parttype, addr, size) =
@@ -243,8 +242,9 @@ impl<'a> DAXFlash<'a> {
             .progress_chars("█▓░"),
         );
         bar.set_message(format!("读取: {}", 分区名));
-        bar.enable_steady_tick(Duration::from_millis(500));
-        bar.set_position(start_offset);
+        if start_offset > 0 {
+            bar.set_position(start_offset);
+        }
 
         // 滑动窗口速度计算（10 秒窗口，每 4MB 采样一次）
         use std::sync::{Arc, Mutex};
