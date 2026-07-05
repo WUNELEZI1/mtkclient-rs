@@ -141,8 +141,20 @@ impl<'a> DAXFlash<'a> {
                 (8u32, entry.start_addr, entry.size)
             };
 
+        let 输出路径 = std::path::Path::new(输出文件);
+        if 输出路径.is_dir() {
+            return Err(format!("输出路径是目录，不是文件: {}", 输出文件));
+        }
+        if let Some(parent) = 输出路径.parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建输出目录失败 '{}': {}", parent.display(), e))?;
+        }
+
         // 断点续传检查
-        let existing_size = if std::path::Path::new(输出文件).exists() {
+        let existing_size = if 输出路径.exists() {
             std::fs::metadata(输出文件).map(|m| m.len()).unwrap_or(0)
         } else {
             0
@@ -234,7 +246,10 @@ impl<'a> DAXFlash<'a> {
                                 if 时间差 > 0.01 {
                                     let 字节差 = 末次.1.saturating_sub(首次.1);
                                     let 速度_mib = (字节差 as f64 / 1024.0 / 1024.0) / 时间差;
-                                    bar.set_message(format!("读取: {} {:.2} MB/s", 分区名clone, 速度_mib));
+                                    bar.set_message(format!(
+                                        "读取: {} {:.2} MB/s",
+                                        分区名clone, 速度_mib
+                                    ));
                                 }
                             }
                         }

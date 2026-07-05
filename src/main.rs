@@ -32,6 +32,8 @@ use connection::ConnectionManager;
 use usb::USB上下文;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    colored::control::set_override(true);
+
     #[cfg(target_os = "windows")]
     unsafe {
         SetConsoleCP(65001);
@@ -98,6 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::builder()
         .filter_level(log_level)
         .filter_module("mtkclient_rs", log_level) // 明确指定本 crate 的日志级别
+        .filter_module("nusb", log::LevelFilter::Warn)
         .format(|buf, record| {
             use std::io::Write;
             let level = match record.level() {

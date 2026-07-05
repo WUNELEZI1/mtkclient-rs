@@ -11,9 +11,38 @@
 //! 完全解耦，独立成模块便于审查和单元测试。
 
 use log::{info, trace, warn};
+use std::sync::atomic::Ordering;
 
 use crate::da::xflash::DAXFlash;
 use crate::da::xflash::protocol::{CMD_MAGIC, CMD_READ_DATA, pack3};
+use crate::usb::log::QUIET_USB_READ;
+
+struct UsbReadQuietGuard(bool);
+
+impl Drop for UsbReadQuietGuard {
+    fn drop(&mut self) {
+        QUIET_USB_READ.store(self.0, Ordering::Relaxed);
+    }
+}
+
+fn quiet_usb_reads_temporarily() -> UsbReadQuietGuard {
+    UsbReadQuietGuard(QUIET_USB_READ.swap(true, Ordering::Relaxed))
+}
+
+fn ensure_output_file_path(path: &str) -> Result<(), String> {
+    let path_ref = std::path::Path::new(path);
+    if path_ref.is_dir() {
+        return Err(format!("输出路径是目录，不是文件: {}", path));
+    }
+    if let Some(parent) = path_ref.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建输出目录失败 '{}': {}", parent.display(), e))?;
+    }
+    Ok(())
+}
 
 // =============================================================================
 // Flash 数据读取
@@ -53,6 +82,8 @@ impl<'a> DAXFlash<'a> {
     where
         F: Fn(u64),
     {
+        let _quiet_guard = quiet_usb_reads_temporarily();
+
         use std::io::{BufWriter, Write};
         use std::sync::mpsc::{self, Receiver, SyncSender};
 
@@ -93,6 +124,7 @@ impl<'a> DAXFlash<'a> {
 
         let (tx, rx): (SyncSender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::sync_channel(CHANNEL_CAP);
         let output_path = output_file.to_string();
+        ensure_output_file_path(&output_path)?;
         let target_remaining = size - start_offset;
 
         // 启动后台写入线程（BufWriter 64MB + 文件预分配）
@@ -106,10 +138,10 @@ impl<'a> DAXFlash<'a> {
                     std::fs::OpenOptions::new()
                         .append(true)
                         .open(&output_path)
-                        .map_err(|e| format!("打开文件失败: {}", e))?
+                        .map_err(|e| format!("打开文件失败 '{}': {}", output_path, e))?
                 } else {
                     File::create(&output_path)
-                        .map_err(|e| format!("创建文件失败: {}", e))?
+                        .map_err(|e| format!("创建文件失败 '{}': {}", output_path, e))?
                 };
                 let mut file = BufWriter::with_capacity(BUF_WRITER_CAP, raw_file);
 
@@ -346,6 +378,30 @@ impl<'a> DAXFlash<'a> {
         self.write_with_retry(&hdr, "ack_silent hdr")?;
         self.write_with_retry(&0u32.to_le_bytes(), "ack_silent data")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_path_rejects_directory() {
+        let dir = std::env::temp_dir();
+        let err = ensure_output_file_path(dir.to_str().unwrap()).unwrap_err();
+
+        assert!(err.contains("输出路径是目录"));
+    }
+
+    #[test]
+    fn quiet_usb_guard_restores_previous_state() {
+        QUIET_USB_READ.store(false, Ordering::Relaxed);
+        {
+            let _guard = quiet_usb_reads_temporarily();
+            assert!(QUIET_USB_READ.load(Ordering::Relaxed));
+        }
+
+        assert!(!QUIET_USB_READ.load(Ordering::Relaxed));
     }
 }
 

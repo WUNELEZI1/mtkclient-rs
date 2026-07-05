@@ -19,6 +19,8 @@ log = "0.4"
 env_logger = "0.11"
 # 终端彩色输出
 colored = "3.1"
+# 终端显示宽度（中文双宽表格对齐）
+unicode-width = "0.2"
 # 命令行参数解析
 clap = { version = "4", features = ["derive"] }
 # 串口通信
