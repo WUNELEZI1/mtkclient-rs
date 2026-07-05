@@ -93,6 +93,12 @@ fn active_resume_matches(output_file: &str, start_offset: u64) -> bool {
             == Some(start_offset)
 }
 
+struct DumpChunk {
+    buffer: Vec<u8>,
+    offset: usize,
+    len: usize,
+}
+
 fn spawn_dump_writer(
     output_file: &str,
     addr: u64,
@@ -102,7 +108,7 @@ fn spawn_dump_writer(
     packet_len: Option<usize>,
 ) -> Result<
     (
-        SyncSender<Option<Vec<u8>>>,
+        SyncSender<Option<DumpChunk>>,
         Receiver<Vec<u8>>,
         std::thread::JoinHandle<Result<u64, String>>,
     ),
@@ -114,7 +120,7 @@ fn spawn_dump_writer(
     const BUF_WRITER_CAP: usize = 64 * 1024 * 1024;
 
     let output_path = output_file.to_string();
-    let (tx, rx): (SyncSender<Option<Vec<u8>>>, Receiver<Option<Vec<u8>>>) =
+    let (tx, rx): (SyncSender<Option<DumpChunk>>, Receiver<Option<DumpChunk>>) =
         mpsc::sync_channel(CHANNEL_CAP);
     let (recycle_tx, recycle_rx): (SyncSender<Vec<u8>>, Receiver<Vec<u8>>) =
         mpsc::sync_channel(CHANNEL_CAP);
@@ -139,13 +145,13 @@ fn spawn_dump_writer(
             let mut last_resume_pos = start_offset;
 
             while let Ok(message) = rx.recv() {
-                let Some(data) = message else {
+                let Some(chunk) = message else {
                     break;
                 };
-                file.write_all(&data)
+                file.write_all(&chunk.buffer[chunk.offset..chunk.offset + chunk.len])
                     .map_err(|e| format!("写入文件失败: {}", e))?;
-                written += data.len() as u64;
-                let mut data = data;
+                written += chunk.len as u64;
+                let mut data = chunk.buffer;
                 data.clear();
                 let _ = recycle_tx.send(data);
 
@@ -185,7 +191,7 @@ fn spawn_dump_writer(
 }
 
 fn finish_dump_writer(
-    tx: SyncSender<Option<Vec<u8>>>,
+    tx: SyncSender<Option<DumpChunk>>,
     handle: std::thread::JoinHandle<Result<u64, String>>,
 ) -> Result<u64, String> {
     let _ = tx.send(None);
@@ -203,21 +209,67 @@ fn acquire_dump_buffer(recycle_rx: &Receiver<Vec<u8>>, len: usize) -> Vec<u8> {
     buf
 }
 
-fn read_header_with_optional_queue(
+fn submit_combined_packet_read(
     device: &mut dyn crate::preloader::transport::BromTransport,
-    hdr: &mut [u8; 12],
-    queued_header: &mut bool,
-) -> Result<(), String> {
-    if *queued_header {
-        let got = device.complete_read_request(hdr)?;
-        *queued_header = false;
-        if got < hdr.len() {
-            device.read_exact(&mut hdr[got..])?;
-        }
+    expected_payload: usize,
+) -> bool {
+    device
+        .submit_read_request(12 + expected_payload)
+        .unwrap_or(false)
+}
+
+fn complete_or_read_flash_packet(
+    device: &mut dyn crate::preloader::transport::BromTransport,
+    recycle_rx: &Receiver<Vec<u8>>,
+    expected_payload: usize,
+    queued_packet: &mut bool,
+) -> Result<(u32, Option<DumpChunk>), String> {
+    let request_len = 12 + expected_payload + 512;
+    let mut combined = acquire_dump_buffer(recycle_rx, request_len);
+    let got = if *queued_packet {
+        *queued_packet = false;
+        device.complete_read_request(&mut combined)?
+    } else if submit_combined_packet_read(device, expected_payload) {
+        device.complete_read_request(&mut combined)?
     } else {
-        device.read_exact(hdr)?;
+        device.read_exact(&mut combined[..12])?;
+        12
+    };
+
+    if got < 12 {
+        device.read_exact(&mut combined[got..12])?;
     }
-    Ok(())
+
+    let magic = u32::from_le_bytes([combined[0], combined[1], combined[2], combined[3]]);
+    if magic != CMD_MAGIC {
+        return Err(format!("readflash bad magic: 0x{:08X}", magic));
+    }
+
+    let slength = u32::from_le_bytes([combined[8], combined[9], combined[10], combined[11]]);
+    let payload_len = slength as usize;
+    if payload_len == 0 {
+        combined.clear();
+        return Ok((slength, None));
+    }
+
+    let needed = 12 + payload_len;
+    if combined.len() < needed {
+        combined.resize(needed, 0);
+    }
+    if got < needed {
+        device
+            .read_exact(&mut combined[got..needed])
+            .map_err(|e| format!("read data remainder: {}", e))?;
+    }
+
+    Ok((
+        slength,
+        Some(DumpChunk {
+            buffer: combined,
+            offset: 12,
+            len: payload_len,
+        }),
+    ))
 }
 
 fn final_read_status_from_payload(payload: &[u8]) -> Result<(), String> {
@@ -348,16 +400,19 @@ impl<'a> DAXFlash<'a> {
         let mut total_read: u64 = start_offset;
         let mut bytes_received: u64 = 0;
         let mut last_progress_pos: u64 = start_offset;
-        let mut queued_header = false;
+        let mut queued_packet = false;
 
         while bytes_received < target_remaining {
-            let mut hdr = [0u8; 12];
-            match read_header_with_optional_queue(
+            let expected_payload = packet_len
+                .unwrap_or(MAX_PACKET_SIZE)
+                .min((target_remaining - bytes_received) as usize);
+            let (slength, chunk) = match complete_or_read_flash_packet(
                 self.preloader.device.as_mut(),
-                &mut hdr,
-                &mut queued_header,
+                &recycle_rx,
+                expected_payload,
+                &mut queued_packet,
             ) {
-                Ok(()) => {}
+                Ok(packet) => packet,
                 Err(e) => {
                     write_resume_file(
                         output_file,
@@ -368,67 +423,35 @@ impl<'a> DAXFlash<'a> {
                         false,
                         packet_len,
                     )?;
-                    return Err(format!("read header: {}", e));
+                    return Err(format!("read packet: {}", e));
                 }
-            }
-
-            let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
-            let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
-
-            if magic != CMD_MAGIC {
-                write_resume_file(
-                    output_file,
-                    addr,
-                    size,
-                    parttype,
-                    total_read,
-                    false,
-                    packet_len,
-                )?;
-                return Err(format!(
-                    "readflash bad magic: 0x{:08X} at offset {}",
-                    magic, total_read
-                ));
-            }
+            };
 
             if slength == 4 {
-                let mut data = acquire_dump_buffer(&recycle_rx, 4);
-                self.preloader
-                    .device
-                    .read_exact(&mut data)
-                    .map_err(|e| format!("read data: {}", e))?;
-                if data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 0 {
+                let Some(chunk) = chunk else {
+                    continue;
+                };
+                let data = &chunk.buffer[chunk.offset..chunk.offset + chunk.len];
+                if data == [0, 0, 0, 0] {
                     trace!("[readflash] 心跳包，跳过");
+                    let mut buffer = chunk.buffer;
+                    buffer.clear();
                     continue;
                 }
                 writer_tx
-                    .send(Some(data))
+                    .send(Some(chunk))
                     .map_err(|_| "写入线程已退出".to_string())?;
                 bytes_received += 4;
                 total_read += 4;
             } else if slength == 0 {
                 continue;
-            } else if (slength as usize) <= MAX_PACKET_SIZE {
-                let slen = slength as usize;
-                let mut data = acquire_dump_buffer(&recycle_rx, slen);
-                self.preloader
-                    .device
-                    .read_exact(&mut data)
-                    .map_err(|e| format!("read data: {}", e))?;
-                writer_tx
-                    .send(Some(data))
-                    .map_err(|_| "写入线程已退出".to_string())?;
-                bytes_received += slen as u64;
-                total_read += slen as u64;
             } else {
-                let mut data = vec![0u8; slength as usize];
-                self.preloader
-                    .device
-                    .read_exact(&mut data)
-                    .map_err(|e| format!("read data (large): {}", e))?;
-                let data_len = data.len() as u64;
+                let Some(chunk) = chunk else {
+                    continue;
+                };
+                let data_len = chunk.len as u64;
                 writer_tx
-                    .send(Some(data))
+                    .send(Some(chunk))
                     .map_err(|_| "写入线程已退出".to_string())?;
                 bytes_received += data_len;
                 total_read += data_len;
@@ -450,11 +473,13 @@ impl<'a> DAXFlash<'a> {
             }
 
             if bytes_received < target_remaining {
-                queued_header = self
-                    .preloader
-                    .device
-                    .submit_read_request(12)
-                    .unwrap_or(false);
+                let next_expected_payload = packet_len
+                    .unwrap_or(MAX_PACKET_SIZE)
+                    .min((target_remaining - bytes_received) as usize);
+                queued_packet = submit_combined_packet_read(
+                    self.preloader.device.as_mut(),
+                    next_expected_payload,
+                );
             }
 
             if let Err(e) = self.ack_silent() {
@@ -665,8 +690,18 @@ mod tests {
 
         let (tx, _recycle_rx, handle) =
             spawn_dump_writer(&output, 0x1000, 6, 8, 0, Some(2)).unwrap();
-        tx.send(Some(vec![1, 2, 3])).unwrap();
-        tx.send(Some(vec![4, 5, 6])).unwrap();
+        tx.send(Some(DumpChunk {
+            buffer: vec![1, 2, 3],
+            offset: 0,
+            len: 3,
+        }))
+        .unwrap();
+        tx.send(Some(DumpChunk {
+            buffer: vec![4, 5, 6],
+            offset: 0,
+            len: 3,
+        }))
+        .unwrap();
         let written = finish_dump_writer(tx, handle).unwrap();
 
         assert_eq!(written, 6);
