@@ -74,6 +74,7 @@ pub fn handle_command(
     let mut auto_dumped_file: Option<String> = None;
 
     let cmd = app_config.command.as_deref().unwrap_or("");
+    let has_active_read_resume = cmd == "r" && active_read_resume_exists(&app_config.cmd_args);
 
     // DA 会话复用时跳过 preloader dump / bypass / EMI 加载（DA 仍在运行）
     if !da.daext && is_brom {
@@ -162,7 +163,9 @@ pub fn handle_command(
     // DA 会话检测与恢复（对齐刷机匣"初始化DA模式"机制）
     if da.daext {
         info!("DA 已加载，检测会话有效性...");
-        if da.check_da_session() {
+        if has_active_read_resume {
+            info!("[DA_SESSION] 检测到活跃读取续传，跳过 heartbeat/reinit，直接续接数据流");
+        } else if da.check_da_session() {
             info!("DA 会话有效，执行 reinit...");
             da.reinit().map_err(|e| format!("DA reinit 失败: {}", e))?;
         } else {
@@ -202,6 +205,17 @@ pub fn handle_command(
     execute_single_command(da, cmd, args, verify, log_level, app_config)?;
 
     Ok(())
+}
+
+fn active_read_resume_exists(args: &[String]) -> bool {
+    let Some(output) = args.get(1) else {
+        return false;
+    };
+    let path = format!("{}.resume", output);
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    content.lines().any(|line| line == "active_read=true")
 }
 
 /// 执行单个 DA 命令（不处理 Phase1/Phase2）
@@ -298,4 +312,28 @@ fn handle_zyb_command(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_read_resume_detects_sidecar_file() {
+        let output =
+            std::env::temp_dir().join(format!("cmd_active_resume_{}.img", std::process::id()));
+        let output = output.to_string_lossy().to_string();
+        std::fs::write(
+            format!("{}.resume", output),
+            "active_read=true\nwritten=4096\n",
+        )
+        .unwrap();
+
+        assert!(active_read_resume_exists(&[
+            "boot_b".to_string(),
+            output.clone()
+        ]));
+
+        let _ = std::fs::remove_file(format!("{}.resume", output));
+    }
 }

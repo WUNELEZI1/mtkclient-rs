@@ -54,6 +54,44 @@ fn parse_packet_length(data: &[u8]) -> Option<usize> {
     None
 }
 
+fn resume_path_for(output_file: &str) -> String {
+    format!("{}.resume", output_file)
+}
+
+fn write_resume_file(
+    output_file: &str,
+    addr: u64,
+    size: u64,
+    parttype: u32,
+    written: u64,
+    active_read: bool,
+    packet_len: Option<usize>,
+) -> Result<(), String> {
+    let packet = packet_len.unwrap_or(0);
+    let content = format!(
+        "output={}\naddr=0x{:X}\nsize={}\nparttype={}\nwritten={}\nactive_read={}\npacket_len={}\n",
+        output_file, addr, size, parttype, written, active_read, packet
+    );
+    std::fs::write(resume_path_for(output_file), content)
+        .map_err(|e| format!("写入续传状态失败: {}", e))
+}
+
+fn remove_resume_file(output_file: &str) {
+    let _ = std::fs::remove_file(resume_path_for(output_file));
+}
+
+fn active_resume_matches(output_file: &str, start_offset: u64) -> bool {
+    let Ok(content) = std::fs::read_to_string(resume_path_for(output_file)) else {
+        return false;
+    };
+    content.lines().any(|line| line == "active_read=true")
+        && content
+            .lines()
+            .find_map(|line| line.strip_prefix("written="))
+            .and_then(|value| value.parse::<u64>().ok())
+            == Some(start_offset)
+}
+
 // =============================================================================
 // Flash 数据读取
 // =============================================================================
@@ -94,104 +132,95 @@ impl<'a> DAXFlash<'a> {
     {
         let _quiet_guard = quiet_usb_reads_temporarily();
 
-        use std::io::{BufWriter, Write};
-        use std::sync::mpsc::{self, Receiver, SyncSender};
+        use std::io::Write;
 
-        // 对齐 Python readflash：在 cmd_read_data 之前先查询 get_packet_length
-        match self.send_devctrl(0x040007, None) {
-            Ok(data) => {
-                if let Some(packet_len) = parse_packet_length(&data) {
-                    info!(
-                        "DA 读包长度: {} 字节 ({:.2} MiB)",
-                        packet_len,
-                        packet_len as f64 / 1024.0 / 1024.0
-                    );
-                } else {
-                    trace!("DA 读包长度响应为空或无效");
-                }
-            }
-            Err(e) => trace!("获取 DA 读包长度失败: {}", e),
-        }
-        let _ = self.status();
-
-        // cmd_read_data
-        let pkt = pack3(CMD_MAGIC, 0x01, 4);
-        self.write_with_retry(&pkt, "readflash xsend")?;
-        self.write_with_retry(&CMD_READ_DATA.to_le_bytes(), "readflash CMD")?;
-        let st = self.status()?;
-        if st != 0 {
-            return Err(format!("READ_DATA status=0x{:08X}", st));
-        }
-
-        // send_param
-        let mut param = Vec::with_capacity(56);
-        param.extend_from_slice(&1u32.to_le_bytes());
-        param.extend_from_slice(&parttype.to_le_bytes());
-        param.extend_from_slice(&addr.to_le_bytes());
-        param.extend_from_slice(&size.to_le_bytes());
-        param.extend_from_slice(&[0u8; 32]);
-        let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
-        self.write_with_retry(&param_pkt, "readflash param_hdr")?;
-        self.write_with_retry(&param, "readflash param")?;
-        let st2 = self.status()?;
-        if st2 != 0 {
-            return Err(format!("send_param status=0x{:08X}", st2));
-        }
-
-        // === 激进优化参数 ===
-        const CHANNEL_CAP: usize = 128;
-        const BATCH_SIZE: usize = 16 * 1024 * 1024; // 16MB batch
+        const FLUSH_INTERVAL: u64 = 8 * 1024 * 1024; // 8MB 落盘一次，Ctrl+C 时强制落盘
         const PROGRESS_INTERVAL: u64 = 4 * 1024 * 1024; // 4MB 进度更新
         const MAX_PACKET_SIZE: usize = 0x1000000; // 16MB 预分配 buffer
-        const BUF_WRITER_CAP: usize = 64 * 1024 * 1024; // 64MB BufWriter
 
-        let (tx, rx): (SyncSender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::sync_channel(CHANNEL_CAP);
-        let output_path = output_file.to_string();
-        ensure_output_file_path(&output_path)?;
         let target_remaining = size - start_offset;
+        ensure_output_file_path(output_file)?;
 
-        // 启动后台写入线程（BufWriter 64MB + 文件预分配）
-        let writer_thread = std::thread::Builder::new()
-            .name("flash_writer".into())
-            .spawn(move || -> Result<(), String> {
-                use std::fs::File;
+        let active_resume = start_offset > 0 && active_resume_matches(output_file, start_offset);
+        let mut packet_len = None;
 
-                let raw_file = if start_offset > 0 {
-                    // 断点续传：追加模式，不截断已有数据
-                    std::fs::OpenOptions::new()
-                        .append(true)
-                        .open(&output_path)
-                        .map_err(|e| format!("打开文件失败 '{}': {}", output_path, e))?
-                } else {
-                    File::create(&output_path)
-                        .map_err(|e| format!("创建文件失败 '{}': {}", output_path, e))?
-                };
-                let mut file = BufWriter::with_capacity(BUF_WRITER_CAP, raw_file);
-
-                while let Ok(data) = rx.recv() {
-                    if data.is_empty() {
-                        break;
+        if active_resume {
+            info!(
+                "检测到活跃读取流，发送 ACK 后从 {} 字节继续接收",
+                start_offset
+            );
+            self.ack_silent()
+                .map_err(|e| format!("活跃读取流续接 ACK 失败: {}", e))?;
+        } else {
+            // 对齐 Python readflash：在 cmd_read_data 之前先查询 get_packet_length
+            match self.send_devctrl(0x040007, None) {
+                Ok(data) => {
+                    packet_len = parse_packet_length(&data);
+                    if let Some(packet_len) = packet_len {
+                        info!(
+                            "DA 读包长度: {} 字节 ({:.2} MiB)",
+                            packet_len,
+                            packet_len as f64 / 1024.0 / 1024.0
+                        );
+                    } else {
+                        trace!("DA 读包长度响应为空或无效");
                     }
-                    file.write_all(&data)
-                        .map_err(|e| format!("写入文件失败: {}", e))?;
                 }
-                file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
-                trace!("[writer] 写入线程结束，总计写入 {} 字节", target_remaining);
-                Ok(())
-            });
+                Err(e) => trace!("获取 DA 读包长度失败: {}", e),
+            }
+            let _ = self.status();
 
-        // ---- 主线程：USB 读取循环（batch 累积模式）----
+            // cmd_read_data
+            let pkt = pack3(CMD_MAGIC, 0x01, 4);
+            self.write_with_retry(&pkt, "readflash xsend")?;
+            self.write_with_retry(&CMD_READ_DATA.to_le_bytes(), "readflash CMD")?;
+            let st = self.status()?;
+            if st != 0 {
+                return Err(format!("READ_DATA status=0x{:08X}", st));
+            }
+
+            // send_param
+            let mut param = Vec::with_capacity(56);
+            param.extend_from_slice(&1u32.to_le_bytes());
+            param.extend_from_slice(&parttype.to_le_bytes());
+            param.extend_from_slice(&addr.to_le_bytes());
+            param.extend_from_slice(&size.to_le_bytes());
+            param.extend_from_slice(&[0u8; 32]);
+            let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
+            self.write_with_retry(&param_pkt, "readflash param_hdr")?;
+            self.write_with_retry(&param, "readflash param")?;
+            let st2 = self.status()?;
+            if st2 != 0 {
+                return Err(format!("send_param status=0x{:08X}", st2));
+            }
+            write_resume_file(
+                output_file,
+                addr,
+                size,
+                parttype,
+                start_offset,
+                true,
+                packet_len,
+            )?;
+        }
+
+        let mut file = if start_offset > 0 {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(output_file)
+                .map_err(|e| format!("打开文件失败 '{}': {}", output_file, e))?
+        } else {
+            std::fs::File::create(output_file)
+                .map_err(|e| format!("创建文件失败 '{}': {}", output_file, e))?
+        };
+
         let mut total_read: u64 = start_offset;
         let mut bytes_received: u64 = 0;
         let mut data_buf = vec![0u8; MAX_PACKET_SIZE];
-        let mut last_progress_pos: u64 = 0;
-        let mut read_error: Option<String> = None;
+        let mut last_progress_pos: u64 = start_offset;
+        let mut last_flush_pos: u64 = start_offset;
 
-        // batch 累积 buffer
-        let mut batch: Vec<u8> = Vec::with_capacity(BATCH_SIZE);
-
-        while bytes_received < target_remaining && read_error.is_none() {
-            // 读 12 字节头
+        while bytes_received < target_remaining {
             let mut hdr = [0u8; 12];
             match self.preloader.device.read_exact(&mut hdr) {
                 Ok(0) => {
@@ -200,8 +229,16 @@ impl<'a> DAXFlash<'a> {
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    read_error = Some(format!("read header: {}", e));
-                    break;
+                    write_resume_file(
+                        output_file,
+                        addr,
+                        size,
+                        parttype,
+                        total_read,
+                        false,
+                        packet_len,
+                    )?;
+                    return Err(format!("read header: {}", e));
                 }
             }
 
@@ -209,92 +246,117 @@ impl<'a> DAXFlash<'a> {
             let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
 
             if magic != CMD_MAGIC {
-                trace!(
-                    "[readflash] bad magic: 0x{:08X} at offset {}, ending",
+                write_resume_file(
+                    output_file,
+                    addr,
+                    size,
+                    parttype,
+                    total_read,
+                    false,
+                    packet_len,
+                )?;
+                return Err(format!(
+                    "readflash bad magic: 0x{:08X} at offset {}",
                     magic, total_read
-                );
-                break;
+                ));
             }
 
             if slength == 4 {
-                self.preloader.device.read_exact(&mut data_buf[..4]).ok();
+                self.preloader
+                    .device
+                    .read_exact(&mut data_buf[..4])
+                    .map_err(|e| format!("read data: {}", e))?;
                 if data_buf[0] == 0 && data_buf[1] == 0 && data_buf[2] == 0 && data_buf[3] == 0 {
                     trace!("[readflash] 心跳包，跳过");
                     continue;
                 }
-                batch.extend_from_slice(&data_buf[..4]);
+                file.write_all(&data_buf[..4])
+                    .map_err(|e| format!("写入文件失败: {}", e))?;
                 bytes_received += 4;
                 total_read += 4;
             } else if slength == 0 {
                 continue;
             } else if (slength as usize) <= MAX_PACKET_SIZE {
                 let slen = slength as usize;
-                if let Err(e) = self.preloader.device.read_exact(&mut data_buf[..slen]) {
-                    read_error = Some(format!("read data: {}", e));
-                    break;
-                }
-                batch.extend_from_slice(&data_buf[..slen]);
+                self.preloader
+                    .device
+                    .read_exact(&mut data_buf[..slen])
+                    .map_err(|e| format!("read data: {}", e))?;
+                file.write_all(&data_buf[..slen])
+                    .map_err(|e| format!("写入文件失败: {}", e))?;
                 bytes_received += slen as u64;
                 total_read += slen as u64;
             } else {
                 let mut data = vec![0u8; slength as usize];
-                if let Err(e) = self.preloader.device.read_exact(&mut data) {
-                    read_error = Some(format!("read data (large): {}", e));
-                    break;
-                }
-                batch.extend_from_slice(&data);
+                self.preloader
+                    .device
+                    .read_exact(&mut data)
+                    .map_err(|e| format!("read data (large): {}", e))?;
+                file.write_all(&data)
+                    .map_err(|e| format!("写入文件失败: {}", e))?;
                 bytes_received += data.len() as u64;
                 total_read += data.len() as u64;
             }
 
-            // batch 满或最后一包时发送
-            if batch.len() >= BATCH_SIZE || bytes_received >= target_remaining {
-                if tx.send(std::mem::take(&mut batch)).is_err() {
-                    read_error = Some("写入线程已终止".into());
-                    break;
-                }
-                batch = Vec::with_capacity(BATCH_SIZE);
+            if total_read - last_flush_pos >= FLUSH_INTERVAL || bytes_received >= target_remaining {
+                file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
+                last_flush_pos = total_read;
             }
+            write_resume_file(
+                output_file,
+                addr,
+                size,
+                parttype,
+                total_read,
+                true,
+                packet_len,
+            )?;
 
-            // 进度条更新（每 16MB）
-            if total_read - last_progress_pos >= PROGRESS_INTERVAL {
+            if total_read - last_progress_pos >= PROGRESS_INTERVAL
+                || bytes_received >= target_remaining
+            {
                 on_packet(total_read);
                 last_progress_pos = total_read;
             }
 
-            // 最后一包判断
+            if crate::cancel::requested() {
+                file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
+                write_resume_file(
+                    output_file,
+                    addr,
+                    size,
+                    parttype,
+                    total_read,
+                    true,
+                    packet_len,
+                )?;
+                return Err(format!(
+                    "读取已在包边界安全停止，已保存 {} 字节；重新运行同一命令可续传",
+                    total_read
+                ));
+            }
+
             if bytes_received >= target_remaining {
                 trace!("[readflash] 最后一包，跳过 ACK");
                 break;
             }
             if let Err(e) = self.ack_silent() {
-                read_error = Some(format!("send_ack: {}", e));
-                break;
+                write_resume_file(
+                    output_file,
+                    addr,
+                    size,
+                    parttype,
+                    total_read,
+                    false,
+                    packet_len,
+                )?;
+                return Err(format!("send_ack: {}", e));
             }
         }
 
-        // 发送剩余的 batch
-        if !batch.is_empty() && read_error.is_none() {
-            let _ = tx.send(batch);
-        }
-
-        let writer_handle = match writer_thread {
-            Ok(handle) => handle,
-            Err(e) => return Err(format!("创建写入线程失败: {}", e)),
-        };
-
-        // 结束哨兵
-        let _ = tx.send(Vec::new());
-
-        if let Err(e) = writer_handle.join().unwrap_or(Ok(())) {
-            read_error = Some(e);
-        }
-
+        file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
+        remove_resume_file(output_file);
         on_packet(total_read);
-
-        if let Some(e) = read_error {
-            return Err(e);
-        }
 
         trace!("[readflash] total read {} bytes", total_read);
         Ok(total_read)
@@ -435,6 +497,19 @@ mod tests {
         );
         assert_eq!(parse_packet_length(&0u32.to_le_bytes()), None);
         assert_eq!(parse_packet_length(&[1, 2, 3]), None);
+    }
+
+    #[test]
+    fn active_resume_matches_only_when_written_offset_matches() {
+        let output =
+            std::env::temp_dir().join(format!("resume_match_{}_{}.img", std::process::id(), "a"));
+        let output = output.to_string_lossy().to_string();
+        write_resume_file(&output, 0x1000, 0x4000, 8, 0x2000, true, Some(0x1000)).unwrap();
+
+        assert!(active_resume_matches(&output, 0x2000));
+        assert!(!active_resume_matches(&output, 0x1000));
+
+        remove_resume_file(&output);
     }
 }
 
