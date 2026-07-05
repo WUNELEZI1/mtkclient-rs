@@ -7,7 +7,7 @@
 //! - `erase_partition` — 擦除分区
 //! - `write_flash_data` / `cmd_write_data` / `get_packet_length` — 底层写入原语
 
-use log::info;
+use log::{info, warn};
 use std::sync::atomic::Ordering;
 
 use crate::da::xflash::{CMD_FORMAT, CMD_MAGIC, DAXFlash, pack3};
@@ -64,6 +64,7 @@ impl<'a> DAXFlash<'a> {
         // 复用 GptInfo::parse 解析 GPT 头（自动搜索 EFI PART 签名定位基址）
         {
             let gpt_info = GptInfo::parse(&gpt_data)?;
+            log_gpt_crc_report(&gpt_info);
             let num_entries = gpt_info.num_part_entries as u64;
             let entry_size = gpt_info.part_entry_size as u64;
             let needed_len = 512 + num_entries * entry_size;
@@ -466,6 +467,38 @@ impl<'a> DAXFlash<'a> {
     // 预留：unlock/lock 命令使用
     pub fn lock_bootloader(&mut self) -> Result<(), String> {
         crate::security::seccfg::lock_bootloader(self)
+    }
+}
+
+fn log_gpt_crc_report(gpt_info: &GptInfo<'_>) {
+    match gpt_info.crc_report() {
+        Ok(report) => {
+            if report.header_ok() {
+                info!(
+                    "GPT Header CRC 校验成功: 0x{:08X}",
+                    report.stored_header_crc32
+                );
+            } else {
+                warn!(
+                    "GPT Header CRC 校验失败: 原CRC=0x{:08X}, 计算CRC=0x{:08X}",
+                    report.stored_header_crc32, report.calculated_header_crc32
+                );
+            }
+
+            if report.partition_entries_ok() {
+                info!(
+                    "GPT 分区条目 CRC 校验成功: 0x{:08X}",
+                    report.stored_partition_entries_crc32
+                );
+            } else {
+                warn!(
+                    "GPT 分区条目 CRC 校验失败: 原CRC=0x{:08X}, 计算CRC=0x{:08X}",
+                    report.stored_partition_entries_crc32,
+                    report.calculated_partition_entries_crc32
+                );
+            }
+        }
+        Err(e) => warn!("GPT CRC 校验跳过: {}", e),
     }
 }
 
