@@ -75,6 +75,53 @@ fn 输出端点地址(设备: &USB设备) -> u8 {
 }
 
 impl USB设备 {
+    pub fn 预提交读取(&mut self, len: usize) -> Result<bool, String> {
+        if len == 0 || !self.输入暂存.is_empty() {
+            return Ok(false);
+        }
+
+        let max_packet_size = self.输入端点最大包大小;
+        let ep_in = self.获取输入端点_mut().ok_or("输入端点未初始化")?;
+        if ep_in.pending() != 0 {
+            return Ok(false);
+        }
+
+        let submit_len = bulk_in_submit_len(len, max_packet_size);
+        let buffer = nusb::transfer::Buffer::new(submit_len);
+        ep_in.submit(buffer);
+        Ok(true)
+    }
+
+    pub fn 完成预提交读取(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let timeout = self.超时;
+        let ep_in = self.获取输入端点_mut().ok_or("输入端点未初始化")?;
+        if ep_in.pending() == 0 {
+            return Err("没有待完成的预提交读取".to_string());
+        }
+
+        let result = match ep_in.wait_next_complete(timeout) {
+            Some(r) => r,
+            None => {
+                cancel_and_drain_in_endpoint(ep_in);
+                return Err("queued read timeout".to_string());
+            }
+        };
+
+        result
+            .status
+            .map_err(|e| format!("queued read err: {:?}", e))?;
+        let 实际长度 = result.actual_len;
+        Ok(copy_from_bulk_packet(
+            &result.buffer[..实际长度],
+            buf,
+            &mut self.输入暂存,
+        ))
+    }
+
     pub fn 写入(&mut self, data: &[u8]) -> Result<usize, String> {
         let timeout = self.超时;
         let ep_out = self.获取输出端点_mut().ok_or("输出端点未初始化")?;

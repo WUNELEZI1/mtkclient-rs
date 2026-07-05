@@ -186,6 +186,23 @@ fn finish_dump_writer(
     handle.join().map_err(|_| "写入线程 panic".to_string())?
 }
 
+fn read_header_with_optional_queue(
+    device: &mut dyn crate::preloader::transport::BromTransport,
+    hdr: &mut [u8; 12],
+    queued_header: &mut bool,
+) -> Result<(), String> {
+    if *queued_header {
+        let got = device.complete_read_request(hdr)?;
+        *queued_header = false;
+        if got < hdr.len() {
+            device.read_exact(&mut hdr[got..])?;
+        }
+    } else {
+        device.read_exact(hdr)?;
+    }
+    Ok(())
+}
+
 fn final_read_status_from_payload(payload: &[u8]) -> Result<(), String> {
     if payload.len() == 4 {
         let status = u32::from_le_bytes(payload.try_into().unwrap());
@@ -315,15 +332,16 @@ impl<'a> DAXFlash<'a> {
         let mut bytes_received: u64 = 0;
         let mut data_buf = vec![0u8; MAX_PACKET_SIZE];
         let mut last_progress_pos: u64 = start_offset;
+        let mut queued_header = false;
 
         while bytes_received < target_remaining {
             let mut hdr = [0u8; 12];
-            match self.preloader.device.read_exact(&mut hdr) {
-                Ok(0) => {
-                    trace!("[readflash] ZLP on header read, ending");
-                    break;
-                }
-                Ok(_) => {}
+            match read_header_with_optional_queue(
+                self.preloader.device.as_mut(),
+                &mut hdr,
+                &mut queued_header,
+            ) {
+                Ok(()) => {}
                 Err(e) => {
                     write_resume_file(
                         output_file,
@@ -411,6 +429,14 @@ impl<'a> DAXFlash<'a> {
                     "读取已在包边界安全停止，已保存 {} 字节；重新运行同一命令可续传",
                     written
                 ));
+            }
+
+            if bytes_received < target_remaining {
+                queued_header = self
+                    .preloader
+                    .device
+                    .submit_read_request(12)
+                    .unwrap_or(false);
             }
 
             if let Err(e) = self.ack_silent() {
