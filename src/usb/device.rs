@@ -40,6 +40,7 @@ pub struct USB设备 {
     #[allow(dead_code)]
     输出端点最大包大小: u16,
     pub 输入端点最大包大小: u16,
+    pub(crate) 输入暂存: Vec<u8>,
     pub(crate) 超时: Duration,
     /// 是否已关闭（防止 drop 后重复关闭）
     已关闭: bool,
@@ -112,6 +113,7 @@ impl USB设备 {
             控制接口编号,
             输出端点最大包大小: 输出端点最大包,
             输入端点最大包大小: 输入端点最大包,
+            输入暂存: Vec::new(),
             超时: Duration::from_millis(默认超时毫秒),
             已关闭: false,
         })
@@ -160,6 +162,7 @@ impl USB设备 {
             控制接口编号,
             输出端点最大包大小: 输出端点最大包,
             输入端点最大包大小: 输入端点最大包,
+            输入暂存: Vec::new(),
             超时: Duration::from_millis(默认超时毫秒),
             已关闭: false,
         })
@@ -315,6 +318,7 @@ impl USB设备 {
         self.输入端点最大包大小 = 新设备.输入端点最大包大小;
         self.接口编号 = 新设备.接口编号;
         self.控制接口编号 = 新设备.控制接口编号;
+        self.输入暂存.clear();
         self.vid = 新设备.vid;
         self.pid = 新设备.pid;
         self.阶段 = 新设备.阶段;
