@@ -10,6 +10,7 @@ unsafe extern "system" {
     fn SetConsoleCP(wCodePageID: u32) -> i32;
 }
 
+mod cancel;
 #[path = "cmd/mod.rs"]
 mod cmd;
 #[path = "connection/mod.rs"]
@@ -33,6 +34,7 @@ use usb::USB上下文;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     colored::control::set_override(true);
+    cancel::install_ctrlc_handler();
 
     #[cfg(target_os = "windows")]
     unsafe {

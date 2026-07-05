@@ -37,6 +37,8 @@ wdi-rs = "0.1.1"
 is_elevated = "0.1"
 # 进度条显示
 indicatif = "0.18"
+# Ctrl+C 优雅中断
+ctrlc = "3.5"
 
 [profile.dev]
 # 开发模式：编译最快，不优化，保留完整调试信息

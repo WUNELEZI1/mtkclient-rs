@@ -8,8 +8,10 @@
 //! - `write_flash_data` / `cmd_write_data` / `get_packet_length` — 底层写入原语
 
 use log::info;
+use std::sync::atomic::Ordering;
 
 use crate::da::xflash::{CMD_FORMAT, CMD_MAGIC, DAXFlash, pack3};
+use crate::usb::log::QUIET_USB_READ;
 
 use super::gpt::GptInfo;
 
@@ -219,7 +221,11 @@ impl<'a> DAXFlash<'a> {
         };
 
         // 创建进度条（滑动窗口平均速度，避免瞬时速度波动）
-        let bar = ProgressBar::new(size);
+        let bar = if QUIET_USB_READ.load(Ordering::Relaxed) {
+            ProgressBar::hidden()
+        } else {
+            ProgressBar::new(size)
+        };
         bar.set_style(
             ProgressStyle::with_template(
                 "  {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] \
