@@ -29,6 +29,20 @@ pub(crate) const QUICK_CONNECT_INTERVAL_MS: u64 = 200;
 /// 连续握手失败上限：超过此次数后删除 .state 并退出程序
 const MAX_CONSECUTIVE_HANDSHAKE_FAILURES: u32 = 5;
 
+#[derive(Debug, PartialEq, Eq)]
+enum SerialFailureAction {
+    RetrySerial,
+    TryWinUsb,
+}
+
+fn serial_failure_action(confirmed_serial_driver: bool) -> SerialFailureAction {
+    if confirmed_serial_driver {
+        SerialFailureAction::RetrySerial
+    } else {
+        SerialFailureAction::TryWinUsb
+    }
+}
+
 /// 设备模式
 #[derive(Debug, PartialEq, Clone)]
 pub enum DeviceMode {
@@ -93,11 +107,11 @@ impl ConnectionManager {
                         let all_ports =
                             crate::connection::driver::detect::enumerate_all_com_ports();
                         if all_ports.is_empty() {
-                            warn!("[COM] 系统中没有任何 COM 口，降级到 WinUSB 直连");
-                            return self.fallback_to_winusb_with_retry(
-                                context,
-                                consecutive_handshake_failures,
+                            warn!(
+                                "[COM] 系统中没有任何 COM 口；当前仍是串口驱动，继续等待串口设备"
                             );
+                            std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
+                            continue;
                         }
 
                         info!(
@@ -127,12 +141,13 @@ impl ConnectionManager {
                             }
                         }
 
-                        warn!("[COM] 所有 COM 口均握手失败，降级到 WinUSB 直连");
-                        consecutive_handshake_failures += all_ports.len() as u32;
-                        return self.fallback_to_winusb_with_retry(
-                            context,
-                            consecutive_handshake_failures,
+                        warn!(
+                            "[COM] 所有 COM 口均握手失败；当前仍是串口驱动，不进入 WinUSB 直连，继续等待"
                         );
+                        consecutive_handshake_failures += all_ports.len() as u32;
+                        let _ = serial_failure_action(true);
+                        std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
+                        continue;
                     }
 
                     info!("[COM] 发现 BROM COM 口: {}", port_name);
@@ -169,12 +184,13 @@ impl ConnectionManager {
                     }
 
                     warn!(
-                        "[COM] 连续 {} 次失败，降级到 WinUSB 直连模式",
+                        "[COM] 连续 {} 次失败；当前仍是串口驱动，不进入 WinUSB 直连，继续等待",
                         SERIAL_HANDSHAKE_RETRY
                     );
                     consecutive_handshake_failures += SERIAL_HANDSHAKE_RETRY;
-                    return self
-                        .fallback_to_winusb_with_retry(context, consecutive_handshake_failures);
+                    let _ = serial_failure_action(true);
+                    std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
+                    continue;
                 }
                 UsbBusDetectionResult::Unknown(driver_mfg) => {
                     warn!("[USB] 未知驱动: {}，尝试 WinUSB 直连", driver_mfg);
@@ -328,5 +344,23 @@ impl ConnectionManager {
         preloader.brom_initialized = true;
 
         Ok(preloader)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confirmed_serial_driver_must_not_fallback_to_winusb_direct() {
+        assert_eq!(
+            serial_failure_action(true),
+            SerialFailureAction::RetrySerial
+        );
+    }
+
+    #[test]
+    fn non_serial_path_may_try_winusb_direct() {
+        assert_eq!(serial_failure_action(false), SerialFailureAction::TryWinUsb);
     }
 }
