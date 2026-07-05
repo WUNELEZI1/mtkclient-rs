@@ -176,13 +176,13 @@ impl<'a> DAXFlash<'a> {
             0
         };
 
-        // 创建进度条
+        // 创建进度条（滑动窗口平均速度，避免瞬时速度波动）
         let bar = ProgressBar::new(size);
         bar.set_style(
             ProgressStyle::with_template(
                 "  {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] \
              {binary_bytes}/{binary_total_bytes} ({percent}%) \
-             {binary_bytes_per_sec} ETA {eta}",
+             {msg} ETA {eta}",
             )
             .unwrap()
             .progress_chars("█▓░"),
@@ -191,13 +191,54 @@ impl<'a> DAXFlash<'a> {
         bar.enable_steady_tick(Duration::from_millis(500));
         bar.set_position(start_offset);
 
+        // 滑动窗口速度计算（10 秒窗口，每 1MB 采样一次）
+        use std::sync::{Arc, Mutex};
+        let 速度窗口大小: u64 = 10;
+        let 速度采样间隔: u64 = 1 * 1024 * 1024; // 1MB
+        let 速度窗口: Arc<Mutex<Vec<(std::time::Instant, u64)>>> =
+            Arc::new(Mutex::new(Vec::with_capacity(64)));
+        let 上次速度采样: Arc<Mutex<u64>> = Arc::new(Mutex::new(start_offset));
+
         // 流式读取：每个 USB 包写入文件后立即更新进度条
         let read_addr = addr + start_offset;
+        let 分区名clone = 分区名.to_string();
         let total =
             self.readflash_to_file(read_addr, size, parttype, 输出文件, start_offset, {
                 let bar = bar.clone();
+                let 速度窗口 = 速度窗口.clone();
+                let 上次速度采样 = 上次速度采样.clone();
                 move |bytes_read| {
                     bar.set_position(bytes_read);
+
+                    // 滑动窗口速度计算
+                    let now = std::time::Instant::now();
+                    let 上次 = *上次速度采样.lock().unwrap();
+                    let delta = bytes_read.saturating_sub(上次);
+                    if delta >= 速度采样间隔 || bytes_read == size {
+                        {
+                            let mut 窗口 = 速度窗口.lock().unwrap();
+                            窗口.push((now, bytes_read));
+                            *上次速度采样.lock().unwrap() = bytes_read;
+
+                            // 移除过期的采样点
+                            let 截止 = now - std::time::Duration::from_secs(速度窗口大小);
+                            while 窗口.len() > 2 && 窗口[0].0 < 截止 {
+                                窗口.remove(0);
+                            }
+
+                            // 计算窗口平均速度
+                            if 窗口.len() >= 2 {
+                                let 首次 = &窗口[0];
+                                let 末次 = &窗口[窗口.len() - 1];
+                                let 时间差 = 末次.0.duration_since(首次.0).as_secs_f64();
+                                if 时间差 > 0.01 {
+                                    let 字节差 = 末次.1.saturating_sub(首次.1);
+                                    let 速度_mib = (字节差 as f64 / 1024.0 / 1024.0) / 时间差;
+                                    bar.set_message(format!("读取: {} {:.2} MB/s", 分区名clone, 速度_mib));
+                                }
+                            }
+                        }
+                    }
                 }
             })?;
 
