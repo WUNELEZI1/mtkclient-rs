@@ -83,7 +83,8 @@ pub struct Cli {
     #[arg(
         long = "da_x_speed",
         default_value_t = 1,
-        help = "DA 加载速度：1=默认（完整协议）、2=快速（跳过可选查询）、3=极速（跳过 reinit 高速重连，可能导致不稳定）"
+        value_parser = clap::value_parser!(u8).range(1..=3),
+        help = "DA 加载速度：1=完整协议、2=快速跳过可选查询、3=极速跳过更多查询但仍执行 USB 高速重连"
     )]
     pub da_x_speed: u8,
 
