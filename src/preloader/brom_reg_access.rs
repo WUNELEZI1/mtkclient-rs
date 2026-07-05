@@ -69,10 +69,11 @@ impl Preloader {
 
             trace!("brom_reg 准备读 {} 字节数据", byte_count);
 
-            // 关键修复：增加超时 + 重试 + clear_halt
+            // WinUSB/nusb 下不要在正常读取前 clear_halt。
+            // clear_halt 会发标准 CLEAR_FEATURE control transfer，可能打断 BROM
+            // 当前的 data/status 返回流；Python 成功路径也没有这一步。
             self.device
                 .set_timeout(Duration::from_millis(BROM_REG_READ_TIMEOUT_MS));
-            let _ = self.device.clear_halt_in();
 
             let mut success = false;
             for attempt in 0..BROM_REG_RETRY_ATTEMPTS {
