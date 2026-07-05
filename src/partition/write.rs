@@ -90,10 +90,12 @@ impl<'a> DAXFlash<'a> {
             }
             let dsize = std::cmp::min(write_packet_size, total - pos);
             let chunk = &data[pos..pos + dsize];
-            let checksum: u16 = chunk.iter().map(|&b| b as u16).sum::<u16>();
+            let checksum: u32 = chunk
+                .iter()
+                .fold(0u32, |sum, &byte| sum.wrapping_add(byte as u32));
 
             let zero = 0u32.to_le_bytes();
-            let checksum_bytes = (checksum as u32).to_le_bytes();
+            let checksum_bytes = checksum.to_le_bytes();
             self.send_param_list_chunked(&[&zero, &checksum_bytes, chunk], "writeflash chunk")?;
 
             pos += dsize;
