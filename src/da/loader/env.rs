@@ -31,6 +31,10 @@ impl<'a> DAXFlash<'a> {
         const MAX_RETRY: u32 = 5;
         const RETRY_DELAY_MS: u64 = 100;
         for attempt in 1..=MAX_RETRY {
+            if crate::cancel::force_requested() || crate::cancel::requested() {
+                self.preloader.device.cancel_pending_transfers();
+                return Err(format!("{} write 已取消", label));
+            }
             match self.preloader.device.write(data) {
                 Ok(_) => return Ok(()),
                 Err(e) => {

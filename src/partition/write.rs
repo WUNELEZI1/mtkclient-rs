@@ -6,7 +6,6 @@
 
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{info, warn};
-use std::time::Duration;
 
 use crate::da::xflash::{CMD_MAGIC, CMD_WRITE_DATA, DAXFlash, pack3};
 
@@ -56,13 +55,17 @@ impl<'a> DAXFlash<'a> {
             .progress_chars("█▓░"),
         );
         bar.set_message(format!("写入: 0x{:08X}", addr));
-        bar.enable_steady_tick(Duration::from_millis(100));
 
         // 预分配最大 param buffer，循环内复用避免重复分配
         let max_param_len = 8 + write_packet_size;
         let mut param = Vec::with_capacity(max_param_len);
         let mut pos = 0;
         while pos < total {
+            if crate::cancel::force_requested() || crate::cancel::requested() {
+                self.preloader.device.cancel_pending_transfers();
+                bar.abandon_with_message("写入已取消");
+                return Err("写入已取消".to_string());
+            }
             let dsize = std::cmp::min(write_packet_size, total - pos);
             let chunk = &data[pos..pos + dsize];
             let checksum: u16 = chunk.iter().map(|&b| b as u16).sum::<u16>();
@@ -108,9 +111,24 @@ impl<'a> DAXFlash<'a> {
     fn get_packet_length(&mut self) -> Result<usize, String> {
         // 发送 GET_PACKET_LENGTH (0x040007) 通过 devctrl
         let data = self.send_devctrl(0x040007, None)?;
-        if data.len() >= 4 {
+        if data.len() >= 8 {
             let plen = u32::from_le_bytes(data[..4].try_into().unwrap());
-            return Ok(plen as usize);
+            let read_plen = u32::from_le_bytes(data[4..8].try_into().unwrap());
+            info!(
+                "DA 写包长度: {} 字节 ({:.2} MiB), 读包长度: {} 字节 ({:.2} MiB)",
+                plen,
+                plen as f64 / 1024.0 / 1024.0,
+                read_plen,
+                read_plen as f64 / 1024.0 / 1024.0
+            );
+            if plen > 0 {
+                return Ok(plen as usize);
+            }
+        } else if data.len() >= 4 {
+            let plen = u32::from_le_bytes(data[..4].try_into().unwrap());
+            if plen > 0 {
+                return Ok(plen as usize);
+            }
         }
         // 默认值（对齐 Python 默认行为）
         Ok(0x40000)

@@ -315,6 +315,7 @@ impl USB设备 {
         if self.已关闭 {
             return;
         }
+        self.取消挂起传输();
         // nusb: drop interface 会自动 release，drop device 会自动 close
         self.输入端点句柄 = None;
         self.输出端点句柄 = None;
@@ -323,6 +324,27 @@ impl USB设备 {
         self.device = None;
         self.已关闭 = true;
         trace!("[USB] 设备已关闭");
+    }
+
+    pub fn 取消挂起传输(&mut self) {
+        if let Some(ep_in) = self.输入端点句柄.as_mut() {
+            if ep_in.pending() > 0 {
+                trace!("[USB] 取消 {} 个挂起 IN 传输", ep_in.pending());
+                ep_in.cancel_all();
+                while ep_in.pending() > 0 {
+                    let _ = ep_in.wait_next_complete(Duration::from_millis(10));
+                }
+            }
+        }
+        if let Some(ep_out) = self.输出端点句柄.as_mut() {
+            if ep_out.pending() > 0 {
+                trace!("[USB] 取消 {} 个挂起 OUT 传输", ep_out.pending());
+                ep_out.cancel_all();
+                while ep_out.pending() > 0 {
+                    let _ = ep_out.wait_next_complete(Duration::from_millis(10));
+                }
+            }
+        }
     }
 
     /// USB 总线复位（对齐 Python device.reset()）
