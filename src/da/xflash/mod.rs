@@ -81,6 +81,8 @@ pub struct DAXFlash<'a> {
     pub(crate) da_file_data: Option<Vec<u8>>,
     /// 当前使用的 preloader 文件路径，用于保存到 .state
     pub(crate) preloader_path: Option<String>,
+    /// 当前进程内记录的可选 DA 查询失败项，DA 会话保存后同步到 .state
+    pub(crate) optional_query_failures: Vec<String>,
 }
 
 impl<'a> DAXFlash<'a> {
@@ -97,6 +99,7 @@ impl<'a> DAXFlash<'a> {
             da_x_speed: 1,
             da_file_data: None,
             preloader_path: None,
+            optional_query_failures: Vec::new(),
         }
     }
 }

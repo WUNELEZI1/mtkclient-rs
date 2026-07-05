@@ -13,7 +13,34 @@ use crate::da::xflash::{CMD_FORMAT, CMD_MAGIC, DAXFlash, pack3};
 
 use super::gpt::GptInfo;
 
+const GPT_CACHE_FILE: &str = "gpt.bin";
+
 impl<'a> DAXFlash<'a> {
+    fn load_gpt_cache_from_file(path: &str) -> Result<Vec<u8>, String> {
+        let data =
+            std::fs::read(path).map_err(|e| format!("读取 GPT 缓存失败 '{}': {}", path, e))?;
+        GptInfo::parse(&data).map_err(|e| format!("GPT 缓存无效 '{}': {}", path, e))?;
+        Ok(data)
+    }
+
+    fn try_load_cached_gpt(&mut self) -> bool {
+        let Some(path) = crate::connection::session::get_gpt_cache_path() else {
+            return false;
+        };
+
+        match Self::load_gpt_cache_from_file(&path) {
+            Ok(data) => {
+                info!("复用 GPT 缓存: {} ({} 字节)", path, data.len());
+                self.last_gpt_data = Some(data);
+                true
+            }
+            Err(e) => {
+                info!("GPT 缓存不可用，将重新读取: {}", e);
+                false
+            }
+        }
+    }
+
     /// 读取 GPT 分区表（USB 版本）
     pub fn read_gpt(&mut self) -> Result<(), String> {
         info!("读取 GPT 分区表...");
@@ -52,8 +79,9 @@ impl<'a> DAXFlash<'a> {
         info!("已写入 gpt_full.bin, {} 字节", gpt_data.len());
 
         // 备份 gpt.bin（对齐 mtkclient 行为）
-        std::fs::write("gpt.bin", &gpt_data).expect("写 gpt.bin 失败");
-        info!("已写入 gpt.bin, {} 字节", gpt_data.len());
+        std::fs::write(GPT_CACHE_FILE, &gpt_data).expect("写 gpt.bin 失败");
+        crate::connection::session::save_gpt_cache_path(GPT_CACHE_FILE);
+        info!("已写入 {}, {} 字节", GPT_CACHE_FILE, gpt_data.len());
 
         // 解析 GPT
         super::partition_table::parse_gpt_from_data(&gpt_data)
@@ -123,7 +151,7 @@ impl<'a> DAXFlash<'a> {
                 );
                 (pt, addr, size)
             } else {
-                if self.last_gpt_data.is_none() {
+                if self.last_gpt_data.is_none() && !self.try_load_cached_gpt() {
                     self.read_gpt()?;
                 }
                 let gpt_data = self
@@ -203,10 +231,10 @@ impl<'a> DAXFlash<'a> {
         bar.enable_steady_tick(Duration::from_millis(500));
         bar.set_position(start_offset);
 
-        // 滑动窗口速度计算（10 秒窗口，每 1MB 采样一次）
+        // 滑动窗口速度计算（10 秒窗口，每 4MB 采样一次）
         use std::sync::{Arc, Mutex};
         let 速度窗口大小: u64 = 10;
-        let 速度采样间隔: u64 = 1 * 1024 * 1024; // 1MB
+        let 速度采样间隔: u64 = 4 * 1024 * 1024; // 4MB
         let 速度窗口: Arc<Mutex<Vec<(std::time::Instant, u64)>>> =
             Arc::new(Mutex::new(Vec::with_capacity(64)));
         let 上次速度采样: Arc<Mutex<u64>> = Arc::new(Mutex::new(start_offset));
@@ -424,5 +452,22 @@ impl<'a> DAXFlash<'a> {
     // 预留：unlock/lock 命令使用
     pub fn lock_bootloader(&mut self) -> Result<(), String> {
         crate::security::seccfg::lock_bootloader(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_gpt_cache_is_rejected() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("invalid_gpt_cache_{}.bin", std::process::id()));
+        std::fs::write(&path, b"not a gpt").unwrap();
+
+        let err = DAXFlash::load_gpt_cache_from_file(path.to_str().unwrap()).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(err.contains("GPT 缓存无效"));
     }
 }
