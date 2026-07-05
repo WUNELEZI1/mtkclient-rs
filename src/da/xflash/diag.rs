@@ -18,43 +18,23 @@ use crate::da::xflash::{DAXFlash, EmmcInfo};
 // =============================================================================
 
 impl<'a> DAXFlash<'a> {
-    /// 重新初始化（获取 EMMC/芯片信息 + USB 高速重连）
-    /// 对齐 Python reinit(True)：
-    ///   1. 查询设备信息（RAM/EMMC/chip/DA version）
-    ///   2. get_usb_speed() → 如果 full-speed 且 reconnect=True →
-    ///      set_usb_speed() → reset_device → sleep(2s) → reopen
+    /// 重新初始化（精简版：对齐刷机匣，只发 2 个关键查询 + USB 高速重连）
+    ///
+    /// 刷机匣的"重新初始化DA模式"只发送：
+    ///   1. GET_CHIP_ID (0x010106) — 确认芯片/DA 还活着
+    ///   2. GET_EMMC_INFO (0x01010C) — 获取 EMMC 信息
+    ///   然后直接开始后续命令。
+    ///
+    /// Python reinit() 也发送 GET_RAM_INFO/GET_DA_VERSION 等，但那些是可选的。
+    /// USB 高速重连仍保留（核心提速步骤）。
     pub(crate) fn reinit(&mut self) -> Result<(), String> {
-        // GET_RAM_INFO
-        match self.send_devctrl(0x010107, None) {
-            Ok(data) if data.len() >= 24 => {
-                let sram_type = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                let dram_size = u32::from_le_bytes([data[20], data[21], data[22], data[23]]);
-                info!(
-                    "  SRAM 类型: 0x{:08X}, DRAM 大小: 0x{:08X}",
-                    sram_type, dram_size
-                );
-            }
-            _ => {}
-        }
-
-        // GET_CHIP_ID
+        // GET_CHIP_ID（心跳 + 确认 DA 存活）
         match self.send_devctrl(0x010106, None) {
             Ok(data) if data.len() >= 10 => {
                 let hw_code = u16::from_le_bytes([data[0], data[1]]);
                 info!("  芯片 HW Code: 0x{:04X}", hw_code);
             }
             _ => {}
-        }
-
-        // GET_DA_VERSION
-        if let Ok(data) = self.send_devctrl(0x01010A, None) {
-            let ver = String::from_utf8_lossy(&data);
-            info!("  DA 版本: {}", ver);
-        }
-
-        // GET_RANDOM_ID
-        if let Ok(data) = self.send_devctrl(0x01010B, None) {
-            trace!("  Random ID: {:02X?}", data);
         }
 
         // GET_EMMC_INFO — 委托给 get_emmc_info 统一解析
@@ -69,14 +49,6 @@ impl<'a> DAXFlash<'a> {
         }
 
         // === USB 高速重连（对齐 Python reinit 核心提速步骤）===
-        // Python: speed = self.get_usb_speed()
-        //         if speed == "full-speed" and self.daconfig.reconnect:
-        //             self.set_usb_speed()
-        //             self.mtk.port.close(reset=True)
-        //             time.sleep(2)
-        //             while not self.mtk.port.cdc.connect():
-        //                 time.sleep(0.5)
-        //             self.mtk.port.cdc.set_fast_mode(True)
         self.try_usb_high_speed_reconnect();
 
         Ok(())
