@@ -32,6 +32,25 @@ pub(crate) fn control_index_for_recipient(
     }
 }
 
+pub(crate) fn copy_from_bulk_packet(packet: &[u8], out: &mut [u8], pending: &mut Vec<u8>) -> usize {
+    let copy_len = packet.len().min(out.len());
+    out[..copy_len].copy_from_slice(&packet[..copy_len]);
+    if packet.len() > copy_len {
+        pending.extend_from_slice(&packet[copy_len..]);
+    }
+    copy_len
+}
+
+pub(crate) fn drain_pending_into(pending: &mut Vec<u8>, out: &mut [u8]) -> usize {
+    let copy_len = pending.len().min(out.len());
+    if copy_len == 0 {
+        return 0;
+    }
+    out[..copy_len].copy_from_slice(&pending[..copy_len]);
+    pending.drain(..copy_len);
+    copy_len
+}
+
 /// 获取 IN 端点地址（解决借用检查问题）
 fn 输入端点地址(设备: &USB设备) -> u8 {
     设备.输入端点
@@ -83,6 +102,14 @@ impl USB设备 {
             );
         }
 
+        let pending_copied = drain_pending_into(&mut self.输入暂存, buf);
+        if pending_copied > 0 {
+            if !静默 {
+                trace!("[USB READ] got {} bytes from pending", pending_copied);
+            }
+            return Ok(pending_copied);
+        }
+
         let submit_len = bulk_in_submit_len(buf.len(), self.输入端点最大包大小);
 
         let interface = self.获取interface_mut().ok_or("设备未初始化")?;
@@ -110,8 +137,8 @@ impl USB设备 {
                 if !静默 {
                     trace!("[USB READ] got {} bytes", 实际长度);
                 }
-                let copy_len = 实际长度.min(buf.len());
-                buf[..copy_len].copy_from_slice(&result.buffer[..copy_len]);
+                let copy_len =
+                    copy_from_bulk_packet(&result.buffer[..实际长度], buf, &mut self.输入暂存);
                 if copy_len > 0 {
                     usb_trace("RX", "USB设备::读取", &buf[..copy_len]);
                 }
@@ -147,12 +174,21 @@ impl USB设备 {
 
         let ep_addr = 输入端点地址(self);
         let max_packet_size = self.输入端点最大包大小;
+        let pending_copied = drain_pending_into(&mut self.输入暂存, buf);
+        if pending_copied > 0 {
+            trace!(
+                "[USB READ EXACT] got {} bytes from pending (total: {}/{})",
+                pending_copied,
+                pending_copied,
+                buf.len()
+            );
+        }
         let interface = self.获取interface_mut().ok_or("设备未初始化")?;
         let mut ep_in = interface
             .endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(ep_addr)
             .map_err(|e| format!("获取输入端点失败: {}", e))?;
 
-        let mut 总计 = 0usize;
+        let mut 总计 = pending_copied;
         while 总计 < buf.len() {
             let 剩余 = buf.len() - 总计;
             let submit_len = bulk_in_submit_len(剩余, max_packet_size);
@@ -188,8 +224,11 @@ impl USB设备 {
                         std::hint::spin_loop();
                         continue;
                     }
-                    let copy_len = 实际长度.min(剩余);
-                    buf[总计..总计 + copy_len].copy_from_slice(&result.buffer[..copy_len]);
+                    let copy_len = copy_from_bulk_packet(
+                        &result.buffer[..实际长度],
+                        &mut buf[总计..总计 + 剩余],
+                        &mut self.输入暂存,
+                    );
                     总计 += copy_len;
                 }
                 Err(e) => {
@@ -376,5 +415,30 @@ mod tests {
     #[test]
     fn device_control_transfer_keeps_requested_index() {
         assert_eq!(control_index_for_recipient(0x80, 7, 1), 7);
+    }
+
+    #[test]
+    fn bulk_packet_overread_is_kept_as_pending_bytes() {
+        let packet = [0x12, 0x34, 0x56, 0x78];
+        let mut out = [0u8; 2];
+        let mut pending = Vec::new();
+
+        let copied = copy_from_bulk_packet(&packet, &mut out, &mut pending);
+
+        assert_eq!(copied, 2);
+        assert_eq!(out, [0x12, 0x34]);
+        assert_eq!(pending, vec![0x56, 0x78]);
+    }
+
+    #[test]
+    fn pending_bytes_are_drained_before_new_usb_reads() {
+        let mut pending = vec![0x56, 0x78, 0x9A];
+        let mut out = [0u8; 2];
+
+        let copied = drain_pending_into(&mut pending, &mut out);
+
+        assert_eq!(copied, 2);
+        assert_eq!(out, [0x56, 0x78]);
+        assert_eq!(pending, vec![0x9A]);
     }
 }
