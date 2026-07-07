@@ -85,10 +85,6 @@ pub fn handle_command(
                 dump::cmd_dumppreloader(da, _context)?;
                 return Ok(());
             }
-            "reboot" => {
-                io::cmd_reboot(da, &app_config.cmd_args)?;
-                return Ok(());
-            }
             _ => {}
         }
 
