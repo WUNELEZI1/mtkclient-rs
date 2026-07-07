@@ -1,28 +1,77 @@
-use log::{info, warn};
+use log::info;
 
 use crate::da::DAXFlash;
 
+/// FRP OEM 解锁：修改 frp 分区中 persistent 数据块的 OEM unlock 标志位
+/// OEM unlock 标志位于 frp 分区的最后一个字节：0=锁定(出厂默认), 1=解锁
+/// 同时清除 FRP 账户锁数据（"FactoryResetProtection" 等关键字附近的数据）
 pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
-    info!("FRP 解锁...");
+    info!("FRP OEM 解锁（修改标志位方式）...");
 
-    // 1. 设置 OEM 开关状态为解锁（对齐 C# 版）
-    // set_oem_unlock 内部已包含 drain_pending + xflash_sync + 延迟，无需重复
-    match da.set_oem_unlock(true) {
-        Ok(()) => info!("OEM 开关已设置为解锁"),
-        Err(e) => warn!("设置 OEM 开关失败 (不影响 FRP 解锁): {}", e),
-    }
-
-    // 2. 读取 frp 分区
+    // 1. 读取 frp 分区
     da.读取分区("frp", "frp_backup.bin")?;
-    let frp_data = std::fs::read("frp_backup.bin").map_err(|e| format!("读取备份失败: {}", e))?;
+    let mut frp_data = std::fs::read("frp_backup.bin")
+        .map_err(|e| format!("读取备份失败: {}", e))?;
     info!("frp 分区: {} 字节", frp_data.len());
 
-    // 3. 清零并写回
-    let cleared = vec![0u8; frp_data.len()];
-    std::fs::write("frp_cleared.bin", &cleared).map_err(|e| format!("写入临时文件失败: {}", e))?;
-    da.写入分区("frp", "frp_cleared.bin")?;
+    // 2. 修改 OEM unlock 标志位（分区最后一个字节 → 1 = 解锁）
+    if !frp_data.is_empty() {
+        let last_idx = frp_data.len() - 1;
+        let old_flag = frp_data[last_idx];
+        if old_flag != 1 {
+            frp_data[last_idx] = 1;
+            info!(
+                "  OEM unlock 标志位: 0x{:02X} -> 0x01 (分区末尾 offset 0x{:X})",
+                old_flag, last_idx
+            );
+        } else {
+            info!("  OEM unlock 标志位已经是 0x01（已解锁）");
+        }
+    }
 
-    info!("FRP 已清零");
+    // 3. 清除 FRP 账户锁数据
+    patch_frp_data(&mut frp_data);
+
+    // 4. 写回
+    std::fs::write("frp_unlocked.bin", &frp_data)
+        .map_err(|e| format!("写入临时文件失败: {}", e))?;
+    da.写入分区("frp", "frp_unlocked.bin")?;
+
+    info!("FRP OEM 解锁完成");
+    Ok(())
+}
+
+/// FRP OEM 锁定：恢复 frp 分区的 OEM unlock 标志位为锁定状态
+pub fn frp_lock(da: &mut DAXFlash) -> Result<(), String> {
+    info!("FRP OEM 锁定（修改标志位方式）...");
+
+    // 1. 读取 frp 分区
+    da.读取分区("frp", "frp_backup.bin")?;
+    let mut frp_data = std::fs::read("frp_backup.bin")
+        .map_err(|e| format!("读取备份失败: {}", e))?;
+    info!("frp 分区: {} 字节", frp_data.len());
+
+    // 2. 修改 OEM unlock 标志位（分区最后一个字节 → 0 = 锁定）
+    if !frp_data.is_empty() {
+        let last_idx = frp_data.len() - 1;
+        let old_flag = frp_data[last_idx];
+        if old_flag != 0 {
+            frp_data[last_idx] = 0;
+            info!(
+                "  OEM unlock 标志位: 0x{:02X} -> 0x00 (分区末尾 offset 0x{:X})",
+                old_flag, last_idx
+            );
+        } else {
+            info!("  OEM unlock 标志位已经是 0x00（已锁定）");
+        }
+    }
+
+    // 3. 写回
+    std::fs::write("frp_locked.bin", &frp_data)
+        .map_err(|e| format!("写入临时文件失败: {}", e))?;
+    da.写入分区("frp", "frp_locked.bin")?;
+
+    info!("FRP OEM 锁定完成");
     Ok(())
 }
 
@@ -43,21 +92,12 @@ fn find_frp_partition(da: &mut DAXFlash) -> Result<String, String> {
     Err("未找到 FRP 相关分区 (frp/persistent/config/nvram)".to_string())
 }
 
-fn patch_frp_data(data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut result = data.to_vec();
-
-    // FRP 数据结构分析:
-    // 在 Android 6-10 中, FRP 数据通常位于分区开头
-    // 关键标志位:
-    //   - "FactoryResetProtection" 字符串后的状态标志
-    //   - offset 0x00: 'F' 'R' 'P' 标志
-    //   - offset 0x04: state (0x01=enabled, 0x00=disabled)
-
-    // 方法 1: 查找并修改 state 标志
-    if data.len() >= 5 && &data[0..4] == b"FRP\0" && result[4] == 0x01 {
-        result[4] = 0x00;
-        info!("  修改 FRP 状态标志: 0x01 -> 0x00");
-        return Ok(result);
+/// 清除 FRP 账户锁数据（原地修改）
+fn patch_frp_data(data: &mut [u8]) {
+    // 方法 1: "FRP\0" 魔数 + offset 0x04 状态标志
+    if data.len() >= 5 && &data[0..4] == b"FRP\0" && data[4] == 0x01 {
+        data[4] = 0x00;
+        info!("  清除 FRP 状态标志: 0x01 -> 0x00");
     }
 
     // 方法 2: 查找 "FactoryResetProtection" 字符串
@@ -66,22 +106,19 @@ fn patch_frp_data(data: &[u8]) -> Result<Vec<u8>, String> {
         .position(|w| w == b"FactoryResetProtection")
     {
         let flag_pos = idx + 22;
-        if flag_pos < result.len() && result[flag_pos] != 0x00 {
-            result[flag_pos] = 0x00;
-            info!("  修改 FactoryResetProtection 状态标志");
+        if flag_pos < data.len() && data[flag_pos] != 0x00 {
+            data[flag_pos] = 0x00;
+            info!("  清除 FactoryResetProtection 状态标志");
         }
-        return Ok(result);
     }
 
     // 方法 3: 查找 Google 账号相关数据并清除
-    // 通常包含 "google" 或 "FRP" 关键字
     let patterns: &[&[u8]] = &[b"google", b"FRP", b"android_id", b"device_policy"];
     for pattern in patterns {
         if let Some(idx) = data.windows(pattern.len()).position(|w| w == *pattern) {
-            // 将匹配位置附近的数据清零
             let start = idx.saturating_sub(16);
-            let end = (idx + pattern.len() + 32).min(result.len());
-            for b in &mut result[start..end] {
+            let end = (idx + pattern.len() + 32).min(data.len());
+            for b in &mut data[start..end] {
                 *b = 0;
             }
             info!(
@@ -91,20 +128,4 @@ fn patch_frp_data(data: &[u8]) -> Result<Vec<u8>, String> {
             );
         }
     }
-
-    // 方法 4: 暴力清除前 512 字节中的非零数据
-    // 这是最激进的方法, 适用于未知 FRP 格式
-    let limit = 512.min(result.len());
-    let mut cleared = 0;
-    for b in &mut result[..limit] {
-        if *b != 0 {
-            *b = 0;
-            cleared += 1;
-        }
-    }
-    if cleared > 0 {
-        info!("  清除前 512 字节中 {} 个非零字节", cleared);
-    }
-
-    Ok(result)
 }
