@@ -88,6 +88,13 @@ impl<'a> DAXFlash<'a> {
         // 写入前清空 USB IN pending data，防止读取残留干扰写入
         self.preloader.device.drain_pending();
 
+        // 在 send_devctrl / readflash_data 等操作后，DA 状态机可能偏离。
+        // drain_pending 只能清空主机端数据，无法同步设备端状态。
+        // 发送 SYNC_SIGNAL 帮助 DA 重新同步到已知状态。
+        if let Err(e) = self.xflash_sync() {
+            trace!("[write_flash_data] xflash_sync 失败 (可能 DA 已断开): {}", e);
+        }
+
         self.cmd_write_data(addr, data.len() as u64, storage, parttype)?;
 
         // 写入时跳过 get_packet_length（避免 send_devctrl 干扰 DA 状态）。
@@ -218,28 +225,66 @@ impl<'a> DAXFlash<'a> {
             "[cmd_write_data] addr=0x{:08X} size={} storage={} parttype={}",
             addr, size, storage, parttype
         );
-        // xsend(WRITE_DATA)
-        let pkt = pack3(CMD_MAGIC, 0x01, 4);
-        self.write_with_retry(&pkt, "cmd_write_data xsend")?;
-        self.write_with_retry(&CMD_WRITE_DATA.to_le_bytes(), "cmd_write_data CMD")?;
 
-        let mut st = self.status()?;
-        if st == CMD_WRITE_DATA {
-            warn!("cmd_write_data 读到 WRITE_DATA echo，尝试再读一次 status 进行重同步");
-            st = self.status()?;
+        // 尝试发送 WRITE_DATA 命令，若状态流错位则同步后重试一次
+        for attempt in 0..2 {
+            if attempt > 0 {
+                warn!("[cmd_write_data] 第一次尝试失败，执行 xflash_sync 后重试...");
+                self.preloader.device.drain_pending();
+                let _ = self.xflash_sync();
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+
+            // xsend(WRITE_DATA)
+            let pkt = pack3(CMD_MAGIC, 0x01, 4);
+            if let Err(e) = self.write_with_retry(&pkt, "cmd_write_data xsend") {
+                trace!("[cmd_write_data] write header 失败: {}", e);
+                continue;
+            }
+            if let Err(e) = self.write_with_retry(&CMD_WRITE_DATA.to_le_bytes(), "cmd_write_data CMD") {
+                trace!("[cmd_write_data] write CMD 失败: {}", e);
+                continue;
+            }
+
+            let mut st = match self.status() {
+                Ok(s) => s,
+                Err(e) => {
+                    trace!("[cmd_write_data] status 读取失败: {}", e);
+                    continue;
+                }
+            };
+            if st == CMD_WRITE_DATA {
+                warn!("cmd_write_data 读到 WRITE_DATA echo，尝试再读一次 status 进行重同步");
+                st = match self.status() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        trace!("[cmd_write_data] 二次 status 读取失败: {}", e);
+                        continue;
+                    }
+                };
+            }
+            if st == 0 {
+                trace!("[cmd_write_data] status ok, 发送 56B 参数");
+                let mut param = Vec::with_capacity(56);
+                param.extend_from_slice(&storage.to_le_bytes());
+                param.extend_from_slice(&parttype.to_le_bytes());
+                param.extend_from_slice(&addr.to_le_bytes());
+                param.extend_from_slice(&size.to_le_bytes());
+                param.extend_from_slice(&[0u8; 32]); // NandExtension 全零
+                self.send_param_list_chunked(&[&param], "cmd_write_data param")?;
+                return Ok(true);
+            }
+            warn!(
+                "[cmd_write_data] 尝试 {}/2 失败: status=0x{:08X}",
+                attempt + 1,
+                st
+            );
         }
-        if st == 0 {
-            trace!("[cmd_write_data] status ok, 发送 56B 参数");
-            let mut param = Vec::with_capacity(56);
-            param.extend_from_slice(&storage.to_le_bytes());
-            param.extend_from_slice(&parttype.to_le_bytes());
-            param.extend_from_slice(&addr.to_le_bytes());
-            param.extend_from_slice(&size.to_le_bytes());
-            param.extend_from_slice(&[0u8; 32]); // NandExtension 全零
-            self.send_param_list_chunked(&[&param], "cmd_write_data param")?;
-            return Ok(true);
-        }
-        Err(format_write_status_error("cmd_write_data", st))
+
+        Err(format!(
+            "cmd_write_data 多次尝试后仍然失败。可能原因：DA 状态机未同步，或设备端写入超时。\
+             建议：1) 让设备重新进入 BROM 模式后重试；2) 检查 USB 连接稳定性。"
+        ))
     }
 }
 

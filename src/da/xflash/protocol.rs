@@ -279,8 +279,11 @@ impl<'a> DAXFlash<'a> {
             self.preloader.device.write(p)?;
             let st3 = self.status()?;
             if st3 != 0 {
-                warn!("send_devctrl param 状态: 0x{:08X}", st3);
-                return Ok(vec![]);
+                // param status 非零表示命令执行异常，返回错误以便调用者处理
+                return Err(format!(
+                    "send_devctrl(0x{:06X}) param status: 0x{:08X}",
+                    cmd, st3
+                ));
             }
         } else {
             let resp = self.xread_data()?;
@@ -346,6 +349,12 @@ impl<'a> DAXFlash<'a> {
             "OEM 解锁状态已设置: {}",
             if enable { "解锁" } else { "锁定" }
         );
+        // set_oem_unlock 后排空残留数据并同步 DA 状态，避免影响后续写入命令
+        self.preloader.device.drain_pending();
+        if let Err(e) = self.xflash_sync() {
+            trace!("[set_oem_unlock] xflash_sync 失败: {}", e);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
         Ok(())
     }
 

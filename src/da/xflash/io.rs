@@ -259,6 +259,37 @@ impl<'a> DAXFlash<'a> {
         self.readflash_data_ex(addr, size, 8)
     }
 
+    /// 发送 READ_DATA 命令及 56B 参数（提取公共逻辑，消除重复）
+    fn send_read_data_cmd(
+        &mut self,
+        addr: u64,
+        size: u64,
+        parttype: u32,
+    ) -> Result<(), String> {
+        let pkt = pack3(CMD_MAGIC, 0x01, 4);
+        self.write_with_retry(&pkt, "readflash xsend")?;
+        self.write_with_retry(&CMD_READ_DATA.to_le_bytes(), "readflash CMD")?;
+        let st = self.status()?;
+        if st != 0 {
+            return Err(format!("READ_DATA status=0x{:08X}", st));
+        }
+
+        let mut param = Vec::with_capacity(56);
+        param.extend_from_slice(&1u32.to_le_bytes());
+        param.extend_from_slice(&parttype.to_le_bytes());
+        param.extend_from_slice(&addr.to_le_bytes());
+        param.extend_from_slice(&size.to_le_bytes());
+        param.extend_from_slice(&[0u8; 32]);
+        let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
+        self.write_with_retry(&param_pkt, "readflash param_hdr")?;
+        self.write_with_retry(&param, "readflash param")?;
+        let st2 = self.status()?;
+        if st2 != 0 {
+            return Err(format!("send_param status=0x{:08X}", st2));
+        }
+        Ok(())
+    }
+
     /// 读取 flash 数据到文件（流水线多线程：USB读取与磁盘写入并行）
     ///
     /// 架构（对齐 Python mtkclient 的 writedata 线程）：
@@ -331,29 +362,8 @@ impl<'a> DAXFlash<'a> {
                 warn!("get_packet_length 后 status=0x{:08X}", st_check);
             }
 
-            // cmd_read_data
-            let pkt = pack3(CMD_MAGIC, 0x01, 4);
-            self.write_with_retry(&pkt, "readflash xsend")?;
-            self.write_with_retry(&CMD_READ_DATA.to_le_bytes(), "readflash CMD")?;
-            let st = self.status()?;
-            if st != 0 {
-                return Err(format!("READ_DATA status=0x{:08X}", st));
-            }
-
-            // send_param: 传剩余大小而非总大小，避免 READ_DATA status=0x00010005
-            let mut param = Vec::with_capacity(56);
-            param.extend_from_slice(&1u32.to_le_bytes());
-            param.extend_from_slice(&parttype.to_le_bytes());
-            param.extend_from_slice(&addr.to_le_bytes());
-            param.extend_from_slice(&target_remaining.to_le_bytes());
-            param.extend_from_slice(&[0u8; 32]);
-            let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
-            self.write_with_retry(&param_pkt, "readflash param_hdr")?;
-            self.write_with_retry(&param, "readflash param")?;
-            let st2 = self.status()?;
-            if st2 != 0 {
-                return Err(format!("send_param status=0x{:08X}", st2));
-            }
+            // 发送 READ_DATA 命令及参数
+            self.send_read_data_cmd(addr, target_remaining, parttype)?;
             write_resume_file(
                 output_file,
                 addr,
@@ -549,29 +559,8 @@ impl<'a> DAXFlash<'a> {
             );
         }
 
-        // 2. cmd_read_data
-        let pkt = pack3(CMD_MAGIC, 0x01, 4);
-        self.write_with_retry(&pkt, "readflash xsend")?;
-        self.write_with_retry(&CMD_READ_DATA.to_le_bytes(), "readflash CMD")?;
-        let st = self.status()?;
-        if st != 0 {
-            return Err(format!("READ_DATA status=0x{:08X}", st));
-        }
-
-        // send_param
-        let mut param = Vec::with_capacity(56);
-        param.extend_from_slice(&1u32.to_le_bytes());
-        param.extend_from_slice(&parttype.to_le_bytes());
-        param.extend_from_slice(&addr.to_le_bytes());
-        param.extend_from_slice(&size.to_le_bytes());
-        param.extend_from_slice(&[0u8; 32]);
-        let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
-        self.write_with_retry(&param_pkt, "readflash param_hdr")?;
-        self.write_with_retry(&param, "readflash param")?;
-        let st2 = self.status()?;
-        if st2 != 0 {
-            return Err(format!("send_param status=0x{:08X}", st2));
-        }
+        // 2. 发送 READ_DATA 命令及参数
+        self.send_read_data_cmd(addr, size, parttype)?;
 
         // 3. 数据读取循环（全量到内存）
         let mut buffer = Vec::with_capacity(size as usize);

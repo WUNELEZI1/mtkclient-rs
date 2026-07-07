@@ -85,7 +85,8 @@ impl<'a> DAXFlash<'a> {
         self.last_gpt_data = Some(gpt_data.clone());
 
         // 写入完整原始数据到文件
-        std::fs::write("gpt_full.bin", &gpt_data).expect("写 gpt_full.bin 失败");
+        std::fs::write("gpt_full.bin", &gpt_data)
+            .map_err(|e| format!("写 gpt_full.bin 失败: {}", e))?;
         info!("已写入 gpt_full.bin, {} 字节", gpt_data.len());
 
         // 备份 gpt.bin（对齐 mtkclient 行为）
@@ -251,11 +252,12 @@ impl<'a> DAXFlash<'a> {
         }
 
         // 滑动窗口速度计算（10 秒窗口，每 4MB 采样一次）
+        use std::collections::VecDeque;
         use std::sync::{Arc, Mutex};
         let 速度窗口大小: u64 = 10;
         let 速度采样间隔: u64 = 4 * 1024 * 1024; // 4MB
-        let 速度窗口: Arc<Mutex<Vec<(std::time::Instant, u64)>>> =
-            Arc::new(Mutex::new(Vec::with_capacity(64)));
+        let 速度窗口: Arc<Mutex<VecDeque<(std::time::Instant, u64)>>> =
+            Arc::new(Mutex::new(VecDeque::with_capacity(64)));
         let 上次速度采样: Arc<Mutex<u64>> = Arc::new(Mutex::new(start_offset));
 
         // 流式读取：每个 USB 包写入文件后立即更新进度条
@@ -276,19 +278,19 @@ impl<'a> DAXFlash<'a> {
                     if delta >= 速度采样间隔 || bytes_read == size {
                         {
                             let mut 窗口 = 速度窗口.lock().unwrap();
-                            窗口.push((now, bytes_read));
+                            窗口.push_back((now, bytes_read));
                             *上次速度采样.lock().unwrap() = bytes_read;
 
-                            // 移除过期的采样点
+                            // 移除过期的采样点（VecDeque::pop_front 为 O(1)）
                             let 截止 = now - std::time::Duration::from_secs(速度窗口大小);
-                            while 窗口.len() > 2 && 窗口[0].0 < 截止 {
-                                窗口.remove(0);
+                            while 窗口.len() > 2 && 窗口.front().unwrap().0 < 截止 {
+                                窗口.pop_front();
                             }
 
                             // 计算窗口平均速度
                             if 窗口.len() >= 2 {
-                                let 首次 = &窗口[0];
-                                let 末次 = &窗口[窗口.len() - 1];
+                                let 首次 = 窗口.front().unwrap();
+                                let 末次 = 窗口.back().unwrap();
                                 let 时间差 = 末次.0.duration_since(首次.0).as_secs_f64();
                                 if 时间差 > 0.01 {
                                     let 字节差 = 末次.1.saturating_sub(首次.1);
@@ -310,17 +312,20 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 写入文件到分区（带校验）
+    /// 分块流式校验：避免大分区全量读入内存导致 OOM。
     pub fn 写入分区带校验(
         &mut self, 分区名: &str, 输入文件: &str
     ) -> Result<(), String> {
         // 先写入
         self.写入分区(分区名, 输入文件)?;
 
-        // 读取回来校验
-        info!("  开始校验写入数据...");
-        let 原始数据 = std::fs::read(输入文件).map_err(|e| format!("读取原始文件失败: {}", e))?;
+        // 分块流式校验
+        info!("  开始分块校验写入数据...");
+        use std::io::{BufReader, Read};
+        let file = std::fs::File::open(输入文件)
+            .map_err(|e| format!("读取原始文件失败: {}", e))?;
+        let mut reader = BufReader::new(file);
 
-        // 读取刚写入的数据
         let gpt_data = self
             .last_gpt_data
             .as_ref()
@@ -330,14 +335,28 @@ impl<'a> DAXFlash<'a> {
             .find_partition(分区名)
             .ok_or_else(|| format!("未找到分区: {}", 分区名))?;
 
-        let 验证数据 = self.readflash_data(entry.start_addr, 原始数据.len() as u64)?;
+        const VERIFY_CHUNK: usize = 0x20000; // 128KB 校验块
+        let mut offset = 0u64;
+        let mut buf = vec![0u8; VERIFY_CHUNK];
 
-        if 原始数据 == 验证数据 {
-            info!("  校验通过 ✓");
-            Ok(())
-        } else {
-            Err("校验失败：写入数据与原始数据不匹配".to_string())
+        loop {
+            let n = reader.read(&mut buf).map_err(|e| format!("读取原始文件失败: {}", e))?;
+            if n == 0 {
+                break;
+            }
+            let chunk = &buf[..n];
+            let device_data = self.readflash_data(entry.start_addr + offset, n as u64)?;
+            if device_data != chunk {
+                return Err(format!(
+                    "校验失败 @ offset 0x{:X}: 写入数据与原始数据不匹配",
+                    entry.start_addr + offset
+                ));
+            }
+            offset += n as u64;
         }
+
+        info!("  校验通过 ✓ (共 {} 字节)", offset);
+        Ok(())
     }
 
     /// 写入文件到分区
