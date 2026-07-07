@@ -98,6 +98,15 @@ pub fn handle_command(
                         }
                         Err(e) => {
                             warn!("jump_bl 失败，回退到 DA 加载流程: {}", e);
+                            // TODO: magic_bootloader 备选方案
+                            // 当 jump_bl 不可用或设备不支持时，可通过破坏 boot 分区
+                            // 触发 bootloader 的 recovery boot 自动进入 fastboot：
+                            //   1. 备份当前槽位 boot 分区 -> boot_backup.img
+                            //   2. 向 boot 分区写入等量 0x00（破坏镜像头/签名）
+                            //   3. 通过 misc command=boot-normal 重启到 system
+                            //   4. bootloader 校验 boot 失败 -> 自动进入 fastboot
+                            //   5. 在 fastboot 模式下刷回 boot_backup.img
+                            // 风险：若 fastboot 不可达或刷回失败，设备可能变砖。
                         }
                     }
                 }
