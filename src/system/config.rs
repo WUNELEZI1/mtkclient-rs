@@ -148,6 +148,9 @@ impl AppConfig {
 #[allow(dead_code)] // 预留：芯片能力表，当前机型只会用到其中一部分字段
 pub struct ChipConfig {
     pub hw_code: u16,
+    /// DA 文件内部使用的 hw_code（对齐 Python Chipconfig.dacode）
+    /// BROM 返回 0x0707 但 DA 文件内匹配 0x6768，两者不同
+    pub da_code: u16,
     pub name: &'static str,
     pub description: &'static str,
     pub loader: &'static str,
@@ -187,6 +190,7 @@ pub static CHIP_CONFIGS: &[ChipConfig] = &[
     // MT6768 / MT6769 (Helio P65/G85)
     ChipConfig {
         hw_code: 0x0707,
+        da_code: 0x6768,
         name: "MT6768/MT6769",
         description: "Helio P65/G85 k68v1",
         loader: "mt6768_payload.bin",
@@ -219,6 +223,7 @@ pub static CHIP_CONFIGS: &[ChipConfig] = &[
     // MT6771 (Helio P60/P70)
     ChipConfig {
         hw_code: 0x0788,
+        da_code: 0x0788,
         name: "MT6771",
         description: "Helio P60/P70 k71v1",
         loader: "mt6771_payload.bin",
