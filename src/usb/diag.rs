@@ -163,10 +163,7 @@ pub fn 枚举USB设备() {
         };
 
         if 是联发科 {
-            info!(
-                "  [MediaTek] VID={:04X} PID={:04X} 模式={}",
-                vid, pid, 模式
-            );
+            info!("  [MediaTek] VID={:04X} PID={:04X} 模式={}", vid, pid, 模式);
         } else {
             trace!("  VID={:04X} PID={:04X}", vid, pid);
         }

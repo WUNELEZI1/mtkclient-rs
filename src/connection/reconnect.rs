@@ -35,6 +35,11 @@ impl ConnectionManager {
         loop {
             retry += 1;
 
+            // Ctrl+C 检查：用户取消时退出等待
+            if crate::cancel::requested() {
+                return Err("用户取消等待".to_string());
+            }
+
             for &pid in &pids {
                 match usb::USB设备::按VID_PID打开(context, 0x0E8D, pid) {
                     Ok(device) => {
@@ -236,6 +241,11 @@ impl ConnectionManager {
 
         loop {
             retry_count += 1;
+
+            // Ctrl+C 检查：用户取消时退出等待
+            if crate::cancel::requested() {
+                return Err("用户取消等待".to_string());
+            }
 
             // 1. 枚举 COM 口，找 PID=0x2000 的 Preloader VCOM
             if let Ok(ports) = serialport::available_ports() {

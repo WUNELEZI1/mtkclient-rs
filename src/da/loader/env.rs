@@ -26,7 +26,7 @@ fn boot_to_should_clear_halt_before_write() -> bool {
 }
 
 impl<'a> DAXFlash<'a> {
-    /// 带重试的 USB 写入：clear_halt + 重试 3 次
+    /// 带重试的 USB 写入：第2次起尝试 clear_halt_out 恢复 stalled endpoint
     pub(crate) fn write_with_retry(&mut self, data: &[u8], label: &str) -> Result<(), String> {
         const MAX_RETRY: u32 = 5;
         const RETRY_DELAY_MS: u64 = 100;
@@ -42,6 +42,11 @@ impl<'a> DAXFlash<'a> {
                         "[RETRY] {} write fail (attempt {}/{}): {}",
                         label, attempt, MAX_RETRY, e
                     );
+                    if attempt >= 2 {
+                        // 第2次起尝试 clear_halt_out 恢复 stalled endpoint
+                        trace!("[RETRY] clear_halt_out for {}", label);
+                        let _ = self.preloader.device.clear_halt_out();
+                    }
                     if attempt < MAX_RETRY {
                         sleep(Duration::from_millis(RETRY_DELAY_MS));
                     } else {

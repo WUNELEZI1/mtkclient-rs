@@ -110,9 +110,9 @@ fn set_bootloader_message(da: &mut DAXFlash, mode: &str) -> Result<(), String> {
     let mut msg = vec![0u8; 32 + 32 + 1024]; // 只修改前 1088 字节
 
     let cmd_str = match mode {
-        "fastboot" => "boot-fastboot",
+        "fastboot" => "bootloader",     // 进入 lk bootloader（adb reboot bootloader）
         "recovery" => "boot-recovery",
-        "fastbootd" => "boot-fastboot", // fastbootd 也使用 boot-fastboot
+        "fastbootd" => "boot-fastboot", // 进入 fastbootd（用户空间 fastboot）
         _ => "",
     };
 

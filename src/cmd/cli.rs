@@ -104,10 +104,12 @@ pub struct Cli {
           w <part> <file>       写入文件到分区\n\
           wl <dir>              从目录恢复全部分区 (.bin/.img)\n\
           e <part>              擦除分区\n\
-          zyb vbmeta <mode>     修补 vbmeta (0/1/2/3)\n\
-          zyb seccfg unlock     解锁 Bootloader\n\
-          zyb seccfg lock       锁定 Bootloader\n\
-          frp                   FRP OEM 解锁\n\
+          zyb vbmeta <mode>     修补 vbmeta (0/1/2/3)
+          zyb seccfg unlock     解锁 Bootloader
+          zyb seccfg lock       锁定 Bootloader
+          zyb oem unlock        FRP OEM 解锁（清零 FRP + OEM 开关解锁）
+          zyb oem lock          FRP OEM 回锁（OEM 开关锁定）
+          frp                   FRP OEM 解锁（zyb oem unlock 的别名）
           reboot [system|fastboot|recovery|fastbootd]  重启设备（默认 system）\n\
           slot show/a/b         显示/切换 A/B 槽位\n\
           adb                   在 DA 模式下开启 ADB\n\

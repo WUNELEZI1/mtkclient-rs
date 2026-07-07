@@ -85,6 +85,11 @@ impl ConnectionManager {
 
         // 无限等待设备出现
         loop {
+            // Ctrl+C 检查：用户取消时退出等待
+            if crate::cancel::requested() {
+                return Err("用户取消等待".to_string());
+            }
+
             let detection_result = detect_brom_driver_from_usb_bus();
 
             match detection_result {

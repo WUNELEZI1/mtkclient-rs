@@ -14,8 +14,7 @@ pub fn check_winusb_installed() -> bool {
         Err(_) => return false,
     };
 
-    let found = devices
-        .any(|d| d.vendor_id() == MTK_VID && d.product_id() == MTK_BROM_PID);
+    let found = devices.any(|d| d.vendor_id() == MTK_VID && d.product_id() == MTK_BROM_PID);
 
     if found {
         info!(

@@ -146,7 +146,13 @@ impl<'a> DAXFlash<'a> {
             trace!("[SPEED{}] 跳过 get_sla_status", self.da_x_speed);
         }
 
-        if self.da_x_speed >= 3 {
+        if !self.preloader.device.is_libusb() {
+            // 串口模式：跳过 USB 高速重连，直接执行精简 reinit
+            trace!("[PRELOADER] 串口模式，跳过 USB 高速重连");
+            if let Err(e) = self.reinit() {
+                warn!("reinit 失败: {}", e);
+            }
+        } else if self.da_x_speed >= 3 {
             // 极速模式：跳过设备信息查询，但仍执行 USB 高速重连
             trace!("[SPEED3] 跳过设备信息查询，直接执行 USB 高速重连");
             self.try_usb_high_speed_reconnect();

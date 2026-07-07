@@ -3,11 +3,88 @@
 use clap::Parser;
 use colored::Colorize;
 use log::{error, info, warn};
+use std::io::Write;
+use std::sync::Mutex;
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" {
     fn SetConsoleOutputCP(wCodePageID: u32) -> i32;
     fn SetConsoleCP(wCodePageID: u32) -> i32;
+}
+
+/// 获取本地时间戳字符串 [YYYY/MM/DD HH:MM:SS.mmm]
+fn get_local_timestamp() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        #[repr(C)]
+        struct SystemTime {
+            w_year: u16, w_month: u16, w_day_of_week: u16,
+            w_day: u16, w_hour: u16, w_minute: u16,
+            w_second: u16, w_milliseconds: u16,
+        }
+        unsafe extern "system" {
+            fn GetLocalTime(lpSystemTime: *mut SystemTime);
+        }
+        let mut st = SystemTime {
+            w_year: 0, w_month: 0, w_day_of_week: 0,
+            w_day: 0, w_hour: 0, w_minute: 0,
+            w_second: 0, w_milliseconds: 0,
+        };
+        unsafe { GetLocalTime(&mut st); }
+        format!(
+            "{:04}/{:02}/{:02} {:02}:{:02}:{:02}.{:03}",
+            st.w_year, st.w_month, st.w_day,
+            st.w_hour, st.w_minute, st.w_second, st.w_milliseconds
+        )
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = now.as_secs();
+        let millis = now.subsec_millis();
+        let hours = (secs % 86400) / 3600;
+        let minutes = (secs % 3600) / 60;
+        let seconds = secs % 60;
+        format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
+    }
+}
+
+/// TeeLogger：同时输出到终端（env_logger）和文件（usb_debug.log）
+struct TeeLogger {
+    terminal: env_logger::Logger,
+    file: Mutex<std::fs::File>,
+}
+
+impl log::Log for TeeLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        self.terminal.enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record) {
+        // 1. 终端输出（保持 env_logger 原有格式）
+        self.terminal.log(record);
+
+        // 2. 文件输出（简化格式）
+        let line = format!(
+            "[{}] [{}] [{}] {}\n",
+            get_local_timestamp(),
+            record.level(),
+            record.target(),
+            record.args()
+        );
+        if let Ok(mut f) = self.file.lock() {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+
+    fn flush(&self) {
+        self.terminal.flush();
+        if let Ok(mut f) = self.file.lock() {
+            let _ = f.flush();
+        }
+    }
 }
 
 mod cancel;
@@ -99,7 +176,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         app_config.log_level
     };
 
-    env_logger::builder()
+    let mut builder = env_logger::Builder::new();
+    builder
         .filter_level(log_level)
         .filter_module("mtkclient_rs", log_level) // 明确指定本 crate 的日志级别
         .filter_module("nusb", log::LevelFilter::Warn)
@@ -112,62 +190,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 log::Level::Debug => "DEBUG",
                 log::Level::Trace => "TRACE",
             };
-            // 使用 Windows API 获取本地时间
-            #[cfg(target_os = "windows")]
-            let timestamp = {
-                #[repr(C)]
-                struct SystemTime {
-                    w_year: u16,
-                    w_month: u16,
-                    w_day_of_week: u16,
-                    w_day: u16,
-                    w_hour: u16,
-                    w_minute: u16,
-                    w_second: u16,
-                    w_milliseconds: u16,
-                }
-                unsafe extern "system" {
-                    fn GetLocalTime(lpSystemTime: *mut SystemTime);
-                }
-                let mut st = SystemTime {
-                    w_year: 0,
-                    w_month: 0,
-                    w_day_of_week: 0,
-                    w_day: 0,
-                    w_hour: 0,
-                    w_minute: 0,
-                    w_second: 0,
-                    w_milliseconds: 0,
-                };
-                unsafe {
-                    GetLocalTime(&mut st);
-                }
-                format!(
-                    "{:04}/{:02}/{:02} {:02}:{:02}:{:02}.{:03}",
-                    st.w_year,
-                    st.w_month,
-                    st.w_day,
-                    st.w_hour,
-                    st.w_minute,
-                    st.w_second,
-                    st.w_milliseconds
-                )
-            };
-            #[cfg(not(target_os = "windows"))]
-            let timestamp = {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default();
-                let secs = now.as_secs();
-                let millis = now.subsec_millis();
-                let hours = (secs % 86400) / 3600;
-                let minutes = (secs % 3600) / 60;
-                let seconds = secs % 60;
-                format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
-            };
+            let timestamp = get_local_timestamp();
             writeln!(buf, "[{}] [{}] {}", timestamp, level, record.args())
-        })
-        .init();
+        });
+
+    if cli.usb_log {
+        // TeeLogger：终端 + usb_debug.log（覆盖模式）
+        let terminal_logger = builder.build();
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("usb_debug.log")
+            .map_err(|e| format!("无法创建 usb_debug.log: {}", e))?;
+
+        let tee_logger = TeeLogger {
+            terminal: terminal_logger,
+            file: Mutex::new(file),
+        };
+        log::set_boxed_logger(Box::new(tee_logger))
+            .map_err(|e| format!("设置全局 logger 失败: {}", e))?;
+        log::set_max_level(log_level);
+    } else {
+        builder.init();
+    }
 
     let cmd = app_config.command.as_deref().unwrap_or("");
 
