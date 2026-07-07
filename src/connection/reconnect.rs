@@ -253,6 +253,13 @@ impl ConnectionManager {
                                     let mut preloader = Preloader::new(Box::new(transport));
                                     preloader.is_preloader_mode = true;
                                     preloader.brom_initialized = true;
+                                    // 从 .state 恢复 chip 配置（供后续 save_session_state 使用）
+                                    if let Some(chip) = crate::system::config::CHIP_CONFIGS
+                                        .iter()
+                                        .find(|c| c.hw_code == state.hw_code)
+                                    {
+                                        preloader.chip = Some(*chip);
+                                    }
                                     self.mode = DeviceMode::Preloader;
                                     self.stage = USB阶段::Preloader;
                                     self.port_name = Some(p.port_name.clone());

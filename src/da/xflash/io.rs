@@ -13,6 +13,7 @@
 use log::{info, trace, warn};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::time::Duration;
 
 use crate::da::xflash::DAXFlash;
 use crate::da::xflash::protocol::{CMD_MAGIC, CMD_READ_DATA, pack3};
@@ -338,8 +339,24 @@ impl<'a> DAXFlash<'a> {
                 "检测到活跃读取流，发送 ACK 后从 {} 字节继续接收",
                 start_offset
             );
-            self.ack_silent()
-                .map_err(|e| format!("活跃读取流续接 ACK 失败: {}", e))?;
+            // 续传 ACK 增加重试：设备可能刚恢复，第一次 ACK 可能超时
+            let mut ack_ok = false;
+            for attempt in 0..3 {
+                match self.ack_silent() {
+                    Ok(()) => { ack_ok = true; break; }
+                    Err(e) => {
+                        if attempt < 2 {
+                            warn!("[RESUME] ACK 尝试 {} 失败，200ms 后重试...", attempt + 1);
+                            std::thread::sleep(Duration::from_millis(200));
+                        } else {
+                            return Err(format!("活跃读取流续接 ACK 失败: {}", e));
+                        }
+                    }
+                }
+            }
+            if !ack_ok {
+                return Err("活跃读取流续接 ACK 全部失败".to_string());
+            }
         } else {
             // 对齐 Python readflash：在 cmd_read_data 之前先查询 get_packet_length
             match self.send_devctrl(0x040007, None) {

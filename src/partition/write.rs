@@ -89,14 +89,10 @@ impl<'a> DAXFlash<'a> {
         self.preloader.device.drain_pending();
 
         // 在 send_devctrl / readflash_data 等操作后，DA 状态机可能偏离。
-        // drain_pending 只能清空主机端数据，无法同步设备端状态。
-        // 发送 SYNC_SIGNAL 帮助 DA 重新同步到已知状态。
+        // 发送 SYNC_SIGNAL 帮助 DA 重新同步到已知状态（只发不读，避免超时）。
         if let Err(e) = self.xflash_sync() {
             trace!("[write_flash_data] xflash_sync 失败 (可能 DA 已断开): {}", e);
         }
-
-        // xflash_sync 后再次 drain，清除可能的 SYNC_SIGNAL 响应残留
-        self.preloader.device.drain_pending();
 
         // HACC 等操作后 DA 可能需要额外时间恢复，给予 300ms 缓冲
         std::thread::sleep(std::time::Duration::from_millis(300));
