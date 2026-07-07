@@ -117,6 +117,6 @@ pub struct Cli {
     )]
     pub command: Option<String>,
 
-    #[arg(help = "命令参数")]
+    #[arg(allow_hyphen_values = true, help = "命令参数")]
     pub args: Vec<String>,
 }

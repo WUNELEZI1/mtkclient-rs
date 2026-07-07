@@ -76,9 +76,10 @@ pub(crate) fn build_v4_image_online(
     let digest = Sha256::digest(header);
     let enc_hash = with_backend(da, || sej_hacc_sign(digest.as_slice(), hw_code, None))?;
 
-    // HACC 签名涉及大量 send_devctrl 寄存器读写，超时会导致 DA 状态机卡住。
-    // 无论硬件签名成功或超时回退软件路径，都必须恢复 USB 管道。
-    da.preloader.device.recover_usb_pipes();
+    // 注意：不要在这里调用 recover_usb_pipes / clear_halt。
+    // HACC 签名成功后 DA 状态机是正常的，clear_halt 会发送 USB CLEAR_FEATURE
+    // 控制传输干扰 DA 状态，导致后续 write_flash_data 超时。
+    // Python mtkclient 在 sej_hacc_sign 后没有恢复步骤，直接返回签名结果。
 
     let mut result = header.to_vec();
     result.extend_from_slice(&enc_hash);
