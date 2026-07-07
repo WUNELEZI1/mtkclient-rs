@@ -3,7 +3,6 @@
 //! 流程：读 seccfg 分区 → 识别 V3/V4 → 修改 lock_state → SEJ 签名 → 写回
 
 use log::info;
-use std::time::Duration;
 
 use crate::da::DAXFlash;
 
@@ -34,9 +33,6 @@ pub fn unlock_bootloader(da: &mut DAXFlash) -> Result<(), String> {
         v3.create("unlock", seccfg_data.len())?
     };
 
-    // HACC 签名后 DA 内部状态机需要缓冲时间恢复，避免后续 write_flash_data 超时
-    std::thread::sleep(Duration::from_millis(300));
-
     da.write_flash_data(seccfg_addr, &new_data, 1, 8)?;
     info!("Bootloader 解锁成功");
     Ok(())
@@ -58,9 +54,6 @@ pub fn lock_bootloader(da: &mut DAXFlash) -> Result<(), String> {
         let v3 = SecCfgV3::parse(&seccfg_data)?;
         v3.create("lock", seccfg_data.len())?
     };
-
-    // HACC 签名后 DA 内部状态机需要缓冲时间恢复，避免后续 write_flash_data 超时
-    std::thread::sleep(Duration::from_millis(300));
 
     da.write_flash_data(seccfg_addr, &new_data, 1, 8)?;
     info!("Bootloader 锁定成功");
