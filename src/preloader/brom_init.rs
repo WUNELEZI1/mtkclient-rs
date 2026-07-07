@@ -7,10 +7,11 @@
 //! - `get_hw_code` / `get_target_config` / `get_hw_subcode`
 //! - `flush_input` / `rword` / `rdword` / `rbyte` 基础读工具
 
-use super::core::Preloader;
+use super::core::{DAPreparseResult, Preloader};
 use crate::system::config::{CHIP_CONFIGS, TargetConfig};
 use colored::Colorize;
 use log::trace;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const WATCHDOG_TIMEOUT_SECS: u64 = 3;
@@ -77,6 +78,34 @@ impl Preloader {
             .iter()
             .find(|c| c.hw_code == hw)
             .ok_or_else(|| format!("未知芯片: HW code 0x{:04X}", hw))?;
+
+        // 2.5 启动后台线程预解析 DA 文件：bypass / 发送 DA 期间并行完成，节省 2~4 秒
+        let preparse = Arc::new(Mutex::new(None));
+        let preparse_clone = Arc::clone(&preparse);
+        std::thread::spawn(move || {
+            use crate::system::paths::获取可执行文件相对路径;
+            use std::fs::File;
+            use std::io::Read;
+
+            let da_path = 获取可执行文件相对路径("MTK_DA_V5.bin");
+            let mut file = match File::open(&da_path) {
+                Ok(f) => f,
+                Err(_) => return,
+            };
+            let mut da_data = Vec::new();
+            if file.read_to_end(&mut da_data).is_err() {
+                return;
+            }
+            if let Ok((magic, regions, is_v6)) = crate::da::loader::header::parse_da_header(&da_data, hw) {
+                *preparse_clone.lock().unwrap() = Some(DAPreparseResult {
+                    da_data,
+                    magic,
+                    regions,
+                    is_v6,
+                });
+            }
+        });
+        self.da_preparse = Some(preparse);
 
         // 3. 关闭看门狗（对齐 Python write32 协议）
         trace!("[WD] 开始关闭看门狗流程 (write32协议)");

@@ -95,6 +95,12 @@ impl<'a> DAXFlash<'a> {
             trace!("[write_flash_data] xflash_sync 失败 (可能 DA 已断开): {}", e);
         }
 
+        // xflash_sync 后再次 drain，清除可能的 SYNC_SIGNAL 响应残留
+        self.preloader.device.drain_pending();
+
+        // HACC 等操作后 DA 可能需要额外时间恢复，给予 300ms 缓冲
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
         self.cmd_write_data(addr, data.len() as u64, storage, parttype)?;
 
         // 写入时跳过 get_packet_length（避免 send_devctrl 干扰 DA 状态）。
@@ -232,7 +238,8 @@ impl<'a> DAXFlash<'a> {
                 warn!("[cmd_write_data] 第一次尝试失败，执行 xflash_sync 后重试...");
                 self.preloader.device.drain_pending();
                 let _ = self.xflash_sync();
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                // HACC/SEJ 操作后 DA 状态机恢复较慢，给予 500ms 缓冲
+                std::thread::sleep(std::time::Duration::from_millis(500));
             }
 
             // xsend(WRITE_DATA)

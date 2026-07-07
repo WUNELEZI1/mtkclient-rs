@@ -217,6 +217,11 @@ impl<'a> DAXFlash<'a> {
 impl<'a> DAXFlash<'a> {
     /// XFlash 同步命令
     /// Python: sync() → 只 xsend(CMD_SYNC_SIGNAL)，不读 status 也不读 response
+    /// 
+    /// 注意：发送 SYNC_SIGNAL 后，部分 DA 版本会返回一个 status 响应。
+    /// 如果调用者不读取该响应，残留数据会干扰后续命令的 status() 读取，
+    /// 导致状态机错位（如 cmd_write_data 读到错误的 status）。
+    /// 因此这里在发送后尝试读取并丢弃响应，但不强制要求成功。
     pub(crate) fn xflash_sync(&mut self) -> Result<bool, String> {
         trace!("执行 XFlash 同步命令...");
 
@@ -228,6 +233,19 @@ impl<'a> DAXFlash<'a> {
             .write(&CMD_SYNC_SIGNAL.to_le_bytes())?;
 
         trace!("[SYNC] 已发送 SYNC_SIGNAL (0x434E5953)");
+
+        // 尝试读取并丢弃 DA 的响应，避免残留数据干扰后续操作
+        // 使用短超时：如果 DA 不返回响应，快速返回不阻塞
+        let orig_timeout = self.preloader.device.get_timeout();
+        self.preloader
+            .device
+            .set_timeout(Duration::from_millis(200));
+        match self.status() {
+            Ok(st) => trace!("[SYNC] DA 响应 status=0x{:08X}", st),
+            Err(e) => trace!("[SYNC] DA 无响应或响应异常 (正常): {}", e),
+        }
+        self.preloader.device.set_timeout(orig_timeout);
+
         Ok(true)
     }
 
