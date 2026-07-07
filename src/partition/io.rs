@@ -99,7 +99,11 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 查找分区的物理地址和大小（需要 GPT 数据）
+    /// 如果 GPT 数据未加载，自动尝试从缓存加载或重新读取。
     pub(crate) fn find_partition_addr(&mut self, partition: &str) -> Result<(u64, u64), String> {
+        if self.last_gpt_data.is_none() && !self.try_load_cached_gpt() {
+            self.read_gpt()?;
+        }
         let gpt_data = self
             .last_gpt_data
             .as_ref()
@@ -226,7 +230,7 @@ impl<'a> DAXFlash<'a> {
             0
         };
 
-        // 创建进度条（滑动窗口平均速度，避免瞬时速度波动）
+        // 创建进度条（输出到 stderr，与日志统一流，避免视觉交织）
         let bar = if QUIET_USB_READ.load(Ordering::Relaxed) {
             ProgressBar::hidden()
         } else {

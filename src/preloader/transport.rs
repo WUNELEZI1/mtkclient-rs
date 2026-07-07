@@ -48,6 +48,8 @@ pub trait BromTransport {
         Ok(buf)
     }
     fn cancel_pending_transfers(&mut self) {}
+    /// 清空 USB IN pending data，写入前调用防止读取残留干扰
+    fn drain_pending(&mut self) {}
     fn set_timeout(&mut self, duration: Duration);
     fn get_timeout(&self) -> Duration;
     fn do_handshake(&mut self) -> Result<bool, String>;
@@ -136,8 +138,16 @@ impl SerialPortTransport {
         }
         let port = serialport::new(port_name, baud_rate)
             .timeout(Duration::from_millis(SERIAL_OPEN_TIMEOUT_MS))
+            .data_bits(serialport::DataBits::Eight)
+            .stop_bits(serialport::StopBits::One)
+            .parity(serialport::Parity::None)
+            .flow_control(serialport::FlowControl::None)
             .open()
             .map_err(|e| format!("无法打开串口 {}: {}", port_name, e))?;
+        trace!(
+            "[SERIAL] {} 已打开: baud={}, 8N1, no_flow_control",
+            port_name, baud_rate
+        );
         Ok(SerialPortTransport {
             port,
             timeout: Duration::from_millis(SERIAL_OPEN_TIMEOUT_MS),
@@ -333,6 +343,10 @@ impl BromTransport for USB设备 {
 
     fn cancel_pending_transfers(&mut self) {
         USB设备::取消挂起传输(self)
+    }
+
+    fn drain_pending(&mut self) {
+        USB设备::drain_pending(self)
     }
 
     fn set_timeout(&mut self, duration: Duration) {

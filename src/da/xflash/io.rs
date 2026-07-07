@@ -82,15 +82,31 @@ fn remove_resume_file(output_file: &str) {
 }
 
 fn active_resume_matches(output_file: &str, start_offset: u64) -> bool {
+    // 检查输出文件是否存在
+    let file_size = match std::fs::metadata(output_file) {
+        Ok(m) => m.len(),
+        Err(_) => return false,
+    };
+
     let Ok(content) = std::fs::read_to_string(resume_path_for(output_file)) else {
         return false;
     };
-    content.lines().any(|line| line == "active_read=true")
-        && content
-            .lines()
-            .find_map(|line| line.strip_prefix("written="))
-            .and_then(|value| value.parse::<u64>().ok())
-            == Some(start_offset)
+
+    let has_active_read = content.lines().any(|line| line == "active_read=true");
+    let resume_written = content
+        .lines()
+        .find_map(|line| line.strip_prefix("written="))
+        .and_then(|value| value.parse::<u64>().ok());
+
+    match resume_written {
+        Some(written) => {
+            // 允许 512 字节容差：实际文件大小和 resume 记录可能因对齐有微小差异
+            let size_match = file_size.abs_diff(written) <= 512;
+            let offset_match = start_offset.abs_diff(written) <= 512;
+            has_active_read && size_match && offset_match
+        }
+        None => false,
+    }
 }
 
 fn spawn_dump_writer(
@@ -108,7 +124,7 @@ fn spawn_dump_writer(
     ),
     String,
 > {
-    const CHANNEL_CAP: usize = 64;
+    const CHANNEL_CAP: usize = 128;
     const FLUSH_INTERVAL: u64 = 128 * 1024 * 1024;
     const RESUME_INTERVAL: u64 = 64 * 1024 * 1024;
     const BUF_WRITER_CAP: usize = 64 * 1024 * 1024;
@@ -271,9 +287,13 @@ impl<'a> DAXFlash<'a> {
     where
         F: Fn(u64),
     {
+        trace!(
+            "[readflash_to_file] addr=0x{:08X} size={} parttype={} output={} start_offset={}",
+            addr, size, parttype, output_file, start_offset
+        );
         let _quiet_guard = quiet_usb_reads_temporarily();
 
-        const PROGRESS_INTERVAL: u64 = 16 * 1024 * 1024; // 16MB 进度更新
+        const PROGRESS_INTERVAL: u64 = 4 * 1024 * 1024; // 4MB 进度更新（平衡精度和开销）
         const MAX_PACKET_SIZE: usize = 0x1000000; // 16MB 预分配 buffer
 
         let target_remaining = size - start_offset;
@@ -295,7 +315,7 @@ impl<'a> DAXFlash<'a> {
                 Ok(data) => {
                     packet_len = parse_packet_length(&data);
                     if let Some(packet_len) = packet_len {
-                        info!(
+                        trace!(
                             "DA 读包长度: {} 字节 ({:.2} MiB)",
                             packet_len,
                             packet_len as f64 / 1024.0 / 1024.0
@@ -306,7 +326,10 @@ impl<'a> DAXFlash<'a> {
                 }
                 Err(e) => trace!("获取 DA 读包长度失败: {}", e),
             }
-            let _ = self.status();
+            let st_check = self.status()?;
+            if st_check != 0 {
+                warn!("get_packet_length 后 status=0x{:08X}", st_check);
+            }
 
             // cmd_read_data
             let pkt = pack3(CMD_MAGIC, 0x01, 4);
@@ -317,12 +340,12 @@ impl<'a> DAXFlash<'a> {
                 return Err(format!("READ_DATA status=0x{:08X}", st));
             }
 
-            // send_param
+            // send_param: 传剩余大小而非总大小，避免 READ_DATA status=0x00010005
             let mut param = Vec::with_capacity(56);
             param.extend_from_slice(&1u32.to_le_bytes());
             param.extend_from_slice(&parttype.to_le_bytes());
             param.extend_from_slice(&addr.to_le_bytes());
-            param.extend_from_slice(&size.to_le_bytes());
+            param.extend_from_slice(&target_remaining.to_le_bytes());
             param.extend_from_slice(&[0u8; 32]);
             let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
             self.write_with_retry(&param_pkt, "readflash param_hdr")?;
@@ -466,14 +489,8 @@ impl<'a> DAXFlash<'a> {
                 ));
             }
 
-            if bytes_received < target_remaining {
-                queued_header = self
-                    .preloader
-                    .device
-                    .submit_read_request(12)
-                    .unwrap_or(false);
-            }
-
+            // 优化：先 ACK 再预提交 header
+            // ACK (OUT) → 设备收到后开始准备下一包 → 预提交 header (IN) 顺势捕获
             if let Err(e) = self.ack_silent() {
                 self.preloader.device.cancel_pending_transfers();
                 write_resume_file(
@@ -491,6 +508,13 @@ impl<'a> DAXFlash<'a> {
                 trace!("[readflash] 最后一包 ACK 已发送，等待最终状态");
                 break;
             }
+
+            // ACK 后预提交下一包 header：设备已收到 ACK，正在准备下一包数据
+            queued_header = self
+                .preloader
+                .device
+                .submit_read_request(12)
+                .unwrap_or(false);
         }
 
         self.readflash_final_status()?;
@@ -510,8 +534,20 @@ impl<'a> DAXFlash<'a> {
         parttype: u32,
     ) -> Result<Vec<u8>, String> {
         // 1. get_packet_length + status
-        let _ = self.send_devctrl(0x040007, None);
-        let _ = self.status();
+        let _ = match self.send_devctrl(0x040007, None) {
+            Ok(data) => data,
+            Err(e) => {
+                warn!("readflash_data_ex: get_packet_length 失败: {}", e);
+                return Err(e);
+            }
+        };
+        let st = self.status()?;
+        if st != 0 {
+            warn!(
+                "readflash_data_ex: get_packet_length 后 status=0x{:08X}",
+                st
+            );
+        }
 
         // 2. cmd_read_data
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
@@ -620,10 +656,13 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 静默 ACK（仅发不读），用于 readflash_data 循环中不偷吃下一个包
+    /// 优化：将 12B header + 4B data 合并为单次 USB OUT transfer，减少一次 USB 调用
     fn ack_silent(&mut self) -> Result<(), String> {
         let hdr = pack3(CMD_MAGIC, 0x01, 4);
-        self.write_with_retry(&hdr, "ack_silent hdr")?;
-        self.write_with_retry(&0u32.to_le_bytes(), "ack_silent data")?;
+        let mut buf = [0u8; 16];
+        buf[..12].copy_from_slice(&hdr);
+        buf[12..16].copy_from_slice(&0u32.to_le_bytes());
+        self.write_with_retry(&buf, "ack_silent")?;
         Ok(())
     }
 }

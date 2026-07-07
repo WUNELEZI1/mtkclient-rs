@@ -42,7 +42,9 @@ pub fn print_help() {
     println!("  zyb vbmeta <mode>     修补 vbmeta (0/1/2/3)");
     println!("  zyb seccfg unlock     解锁 Bootloader");
     println!("  zyb seccfg lock       锁定 Bootloader");
-    println!("  frp                   FRP OEM 解锁");
+    println!("  zyb oem unlock        FRP OEM 解锁（清零 FRP + OEM 开关解锁）");
+    println!("  zyb oem lock          FRP OEM 回锁（OEM 开关锁定）");
+    println!("  frp                   FRP OEM 解锁（zyb oem unlock 的别名）");
     println!("  reboot [mode]         重启设备 (system/fastboot/recovery/fastbootd, 默认 system)");
     println!("  slot show/a/b         显示/切换 A/B 槽位");
     println!("  adb                   在 DA 模式下开启 ADB");
@@ -318,6 +320,24 @@ fn handle_zyb_command(
                     info!("{}", "Bootloader 已锁定".green());
                 }
                 _ => return Err("用法: mtkclient zyb seccfg unlock/lock".into()),
+            }
+        }
+        "oem" => {
+            if sub_args.is_empty() {
+                return Err("用法: mtkclient zyb oem unlock/lock".into());
+            }
+            match sub_args[0].as_str() {
+                "unlock" => {
+                    crate::security::frp::frp_unlock(da)
+                        .map_err(|e| format!("FRP OEM 解锁失败: {}", e))?;
+                    info!("{}", "FRP OEM 已解锁".green());
+                }
+                "lock" => {
+                    da.set_oem_unlock(false)
+                        .map_err(|e| format!("OEM 开关锁定失败: {}", e))?;
+                    info!("{}", "OEM 开关已锁定".green());
+                }
+                _ => return Err("用法: mtkclient zyb oem unlock/lock".into()),
             }
         }
         _ => return Err(format!("未知 zyb 子命令: {}", subcmd).into()),

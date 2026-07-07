@@ -87,7 +87,9 @@ pub fn 获取第一个联发科VIDPID() -> Option<(u16, u16, DeviceType)> {
         let 设备类型 = DeviceType::from_vid_pid(vid, pid);
         log::trace!(
             "[USB] 获取第一个联发科VIDPID: 找到 BROM 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
-            vid, pid, 设备类型
+            vid,
+            pid,
+            设备类型
         );
         return Some((vid, pid, 设备类型));
     }

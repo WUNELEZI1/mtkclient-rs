@@ -55,7 +55,13 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// USB 高速重连：检测当前速度，如果是 full-speed 则切换并重连
+    /// 串口模式下自动跳过（无 USB 速度概念）。
     pub(crate) fn try_usb_high_speed_reconnect(&mut self) {
+        if !self.preloader.device.is_libusb() {
+            trace!("[RECONNECT] 串口模式，跳过 USB 高速重连");
+            return;
+        }
+
         let speed = match self.get_usb_speed() {
             Ok(s) => s,
             Err(e) => {

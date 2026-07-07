@@ -1,0 +1,7 @@
+output=12.img
+addr=0x37800000
+size=10737418240
+parttype=8
+written=378470400
+active_read=true
+packet_len=2097152

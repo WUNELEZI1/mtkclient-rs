@@ -347,6 +347,29 @@ impl USB设备 {
         }
     }
 
+    /// 清空 IN pending data，防止读取操作残留数据干扰后续写入操作
+    pub fn drain_pending(&mut self) {
+        self.输入暂存.clear();
+        if let Some(ep_in) = self.输入端点句柄.as_mut() {
+            if ep_in.pending() > 0 {
+                trace!(
+                    "[USB] drain_pending: 取消 {} 个挂起 IN 传输",
+                    ep_in.pending()
+                );
+                ep_in.cancel_all();
+                while ep_in.pending() > 0 {
+                    let _ = ep_in.wait_next_complete(Duration::from_millis(10));
+                }
+            }
+        }
+        // 用短超时读取一次，清除可能的残留 IN 数据
+        let orig_timeout = self.超时;
+        self.超时 = Duration::from_millis(50);
+        let mut tmp = [0u8; 512];
+        let _ = self.读取(&mut tmp);
+        self.超时 = orig_timeout;
+    }
+
     /// USB 总线复位（对齐 Python device.reset()）
     /// 注意：nusb 目前没有直接的 reset_device API，
     /// 这里通过关闭并重新打开来模拟

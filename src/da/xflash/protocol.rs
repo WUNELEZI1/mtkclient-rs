@@ -89,8 +89,11 @@ impl<'a> DAXFlash<'a> {
         let length = u32::from_le_bytes(header[8..12].try_into().unwrap());
 
         if magic != CMD_MAGIC {
+            trace!("[xread] bad magic: 0x{:08X}", magic);
             return Err(format!("XFlash 头 magic 错误: 0x{:08X}", magic));
         }
+
+        trace!("[xread] dt={:08X} len={}", _data_type, length);
 
         // 读取数据
         if length > 0 {
@@ -99,7 +102,9 @@ impl<'a> DAXFlash<'a> {
 
             // 如果数据是 4 字节，返回 u32 值
             if length == 4 {
-                return Ok(u32::from_le_bytes(data[0..4].try_into().unwrap()));
+                let val = u32::from_le_bytes(data[0..4].try_into().unwrap());
+                trace!("[xread] val=0x{:08X}", val);
+                return Ok(val);
             }
         }
 
@@ -111,8 +116,10 @@ impl<'a> DAXFlash<'a> {
         let mut hdr = [0u8; 12];
         self.preloader.device.read_exact(&mut hdr)?;
         let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+        let _data_type = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
         let length = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
         if magic != CMD_MAGIC {
+            trace!("[status] bad magic: 0x{:08X}", magic);
             return Err(format!("status magic error: 0x{:08X}", magic));
         }
         if length > 0 {
@@ -122,13 +129,28 @@ impl<'a> DAXFlash<'a> {
                 let val = u32::from_le_bytes(tmp[..4].try_into().unwrap());
                 // Python 特殊情况：如果 status == 0xFEEEEEEF，返回 0
                 if val == 0xFEEEEEEF {
+                    trace!("[status] 0xFEEEEEEF → 0");
                     return Ok(0);
                 }
+                trace!(
+                    "[status] dt={:08X} len={} val=0x{:08X}",
+                    _data_type, length, val
+                );
                 return Ok(val);
             } else if length == 2 {
-                return Ok(u16::from_le_bytes(tmp[..2].try_into().unwrap()) as u32);
+                let val = u16::from_le_bytes(tmp[..2].try_into().unwrap()) as u32;
+                trace!(
+                    "[status] dt={:08X} len={} val=0x{:04X}",
+                    _data_type, length, val
+                );
+                return Ok(val);
             }
+            trace!(
+                "[status] dt={:08X} len={} (non-u32/u16)",
+                _data_type, length
+            );
         }
+        trace!("[status] dt={:08X} len={} (no payload)", _data_type, length);
         Ok(0)
     }
 
@@ -137,10 +159,13 @@ impl<'a> DAXFlash<'a> {
         let mut hdr = [0u8; 12];
         self.preloader.device.read_exact(&mut hdr)?;
         let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+        let _data_type = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
         let length = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
         if magic != CMD_MAGIC {
+            trace!("[xread_data] bad magic: 0x{:08X}", magic);
             return Err(format!("xread magic error: 0x{:08X}", magic));
         }
+        trace!("[xread_data] dt={:08X} len={}", _data_type, length);
         if length > 0 {
             let mut data = vec![0u8; length as usize];
             self.preloader.device.read_exact(&mut data)?;
@@ -213,6 +238,12 @@ impl<'a> DAXFlash<'a> {
         cmd: u32,
         param: Option<&[u8]>,
     ) -> Result<Vec<u8>, String> {
+        trace!(
+            "[send_devctrl] cmd=0x{:06X} param={}",
+            cmd,
+            param.map_or(0, |p| p.len())
+        );
+
         // xsend(Cmd.DEVICE_CTRL) — DEVICE_CTRL = 0x010009
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
         self.preloader.device.write(&pkt)?;

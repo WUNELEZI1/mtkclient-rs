@@ -5,7 +5,7 @@
 //! - `cmd_write_data`   — 发送写命令
 
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{info, warn};
+use log::{info, trace, warn};
 
 use crate::da::xflash::{CMD_MAGIC, CMD_WRITE_DATA, DAXFlash, pack3};
 
@@ -27,30 +27,53 @@ fn format_write_status_error(stage: &str, status: u32) -> String {
     )
 }
 
+/// 参数分块大小：对齐 Python mtkclient，所有 payload 按 0x200 分块发送。
+/// DA 协议要求严格按此分块，整包发送会导致 device-side 死锁。
 const XFLASH_PARAM_CHUNK: usize = 0x200;
 
 impl<'a> DAXFlash<'a> {
+    /// 发送参数列表，对齐 Python send_param：
+    /// 每个参数都有独立的 12B header，payload 按 0x200 分块发送，
+    /// 整个列表发送完成后读一次 status。
     fn send_param_list_chunked(&mut self, params: &[&[u8]], label: &str) -> Result<(), String> {
+        trace!("[send_param_list] label={} params={}", label, params.len());
         for (param_idx, payload) in params.iter().enumerate() {
+            if crate::cancel::force_requested() || crate::cancel::requested() {
+                self.preloader.device.cancel_pending_transfers();
+                return Err(format!("{} 已取消", label));
+            }
+
             let param_pkt = pack3(CMD_MAGIC, 0x01, payload.len() as u32);
+            trace!(
+                "[send_param_list] 发送 param {} header len={}",
+                param_idx,
+                payload.len()
+            );
             self.write_with_retry(&param_pkt, &format!("{} param {} header", label, param_idx))?;
+
+            // 所有 payload 严格按 0x200 分块（对齐 Python mtkclient）
             for (chunk_idx, chunk) in payload.chunks(XFLASH_PARAM_CHUNK).enumerate() {
-                if crate::cancel::force_requested() || crate::cancel::requested() {
-                    self.preloader.device.cancel_pending_transfers();
-                    return Err(format!("{} 已取消", label));
-                }
                 self.write_with_retry(
                     chunk,
                     &format!("{} param {} chunk {}", label, param_idx, chunk_idx),
                 )?;
             }
         }
-        let status = self.status()?;
+        // status 读取：对齐刷机匣，支持 0x00010004 重试
+        let mut status = self.status()?;
         if status == 0 {
-            Ok(())
-        } else {
-            Err(format_write_status_error(label, status))
+            return Ok(());
         }
+        // 写入时偶发 status=0x00010004，需要 resync + 重读
+        if status == 0x00010004 {
+            warn!("{} status=0x00010004，尝试 resync 后重读", label);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            status = self.status()?;
+            if status == 0 {
+                return Ok(());
+            }
+        }
+        Err(format_write_status_error(label, status))
     }
 
     /// 按原始地址写入一段数据，供分区写入、seccfg/frp 等场景复用。
@@ -62,13 +85,19 @@ impl<'a> DAXFlash<'a> {
         storage: u32,
         parttype: u32,
     ) -> Result<(), String> {
+        // 写入前清空 USB IN pending data，防止读取残留干扰写入
+        self.preloader.device.drain_pending();
+
         self.cmd_write_data(addr, data.len() as u64, storage, parttype)?;
 
-        let write_packet_size = self.get_packet_length()?;
+        // 写入时跳过 get_packet_length（避免 send_devctrl 干扰 DA 状态）。
+        // 使用 128KB 默认值（0x20000），平衡速度和稳定性。
+        // 256KB 在部分 DA 上会导致 param 2 header 超时，128KB 更安全。
+        let write_packet_size = 0x20000usize;
         let total = data.len();
         let start_time = std::time::Instant::now();
 
-        // 创建进度条（indicatif）
+        // 创建进度条（输出到 stderr，与日志统一流，避免视觉交织）
         let bar = ProgressBar::new(total as u64);
         bar.set_style(
             ProgressStyle::with_template(
@@ -94,6 +123,11 @@ impl<'a> DAXFlash<'a> {
                 .iter()
                 .fold(0u32, |sum, &byte| sum.wrapping_add(byte as u32));
 
+            trace!(
+                "[writeflash] chunk offset={} size={} checksum=0x{:08X}",
+                pos, dsize, checksum
+            );
+
             let zero = 0u32.to_le_bytes();
             let checksum_bytes = checksum.to_le_bytes();
             self.send_param_list_chunked(&[&zero, &checksum_bytes, chunk], "writeflash chunk")?;
@@ -104,7 +138,7 @@ impl<'a> DAXFlash<'a> {
             bar.set_position(pos as u64);
         }
 
-        let st = self.status()?;
+        let st = self.read_write_final_status()?;
         if st != 0 {
             bar.abandon_with_message(format!("写入失败: status=0x{:08X}", st));
             return Err(format_write_status_error("writeflash final", st));
@@ -126,6 +160,25 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
+    /// 读取写入最终状态，支持 0x00010004 重试
+    /// 对齐刷机匣：写入完成后偶发 status=0x00010004
+    fn read_write_final_status(&mut self) -> Result<u32, String> {
+        let mut st = self.status()?;
+        if st == 0 {
+            return Ok(st);
+        }
+        // status 0x00010004: resync 后重试
+        if st == 0x00010004 {
+            warn!("writeflash final status=0x00010004，尝试 resync");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            st = self.status()?;
+            if st == 0 {
+                return Ok(st);
+            }
+        }
+        Ok(st)
+    }
+
     /// 获取写包长度（对齐 Python get_packet_length）
     fn get_packet_length(&mut self) -> Result<usize, String> {
         // 发送 GET_PACKET_LENGTH (0x040007) 通过 devctrl
@@ -133,7 +186,7 @@ impl<'a> DAXFlash<'a> {
         if data.len() >= 8 {
             let plen = u32::from_le_bytes(data[..4].try_into().unwrap());
             let read_plen = u32::from_le_bytes(data[4..8].try_into().unwrap());
-            info!(
+            trace!(
                 "DA 写包长度: {} 字节 ({:.2} MiB), 读包长度: {} 字节 ({:.2} MiB)",
                 plen,
                 plen as f64 / 1024.0 / 1024.0,
@@ -161,6 +214,10 @@ impl<'a> DAXFlash<'a> {
         storage: u32,
         parttype: u32,
     ) -> Result<bool, String> {
+        trace!(
+            "[cmd_write_data] addr=0x{:08X} size={} storage={} parttype={}",
+            addr, size, storage, parttype
+        );
         // xsend(WRITE_DATA)
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
         self.write_with_retry(&pkt, "cmd_write_data xsend")?;
@@ -172,6 +229,7 @@ impl<'a> DAXFlash<'a> {
             st = self.status()?;
         }
         if st == 0 {
+            trace!("[cmd_write_data] status ok, 发送 56B 参数");
             let mut param = Vec::with_capacity(56);
             param.extend_from_slice(&storage.to_le_bytes());
             param.extend_from_slice(&parttype.to_le_bytes());
