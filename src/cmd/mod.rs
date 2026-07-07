@@ -85,6 +85,23 @@ pub fn handle_command(
                 dump::cmd_dumppreloader(da, _context)?;
                 return Ok(());
             }
+            "reboot" => {
+                // reboot fastboot: BROM 模式下直接 jump_bl 进入 bootloader，
+                // 比加载 DA + reset 更可靠（对齐 MTK Bypass Tool 行为）
+                if app_config.cmd_args.first().map(|s| s.as_str()) == Some("fastboot") {
+                    info!("BROM 模式直接跳转到 Bootloader (jump_bl)...");
+                    match da.preloader.jump_bl() {
+                        Ok(_) => {
+                            info!("设备已跳转到 Bootloader 模式");
+                            crate::connection::reset_session();
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            warn!("jump_bl 失败，回退到 DA 加载流程: {}", e);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
 
