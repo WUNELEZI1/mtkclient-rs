@@ -1,5 +1,50 @@
 # Temp_Agent.md — ZybFlashTool 会话上下文
 
+## 最近更新 (2026-07-08 v16) — DA 协议修复 + vbmeta 修正 + Preloader Pattern 协议 + 救砖实战
+
+### 关键 bug 修复
+
+- **vbmeta flags 偏移修正 (0x78→0x7C)**：AVB vbmeta header 中 `flags` 字段正确偏移为 `0x7C`（之前 `0x78` 实际写入了 `rollback_index` 高 32 位）。同时将 `algorithm_type` 改为 0 (NONE)，兼容只检查 algorithm 不检查 flags 的 bootloader。此错误曾导致设备无限重启（bootloop）。
+- **DA hw_code 与芯片 hw_code 分离**：BROM 返回的 `hw_code = 0x0707`（芯片标识）≠ AllInOne DA 文件内 `da_code = 0x6768`。`ChipConfig` 新增 `da_code` 字段，后台线程和 fallback 统一使用 `da_code` 匹配 DA 条目，修复 DA 加载失败 (`Error DA 同步: 0x00`)。
+- **send_devctrl 完整 3 步握手**：无论 stage1/stage2 status 是否非零（如 `0x00010009`），都必须完成 cmd→status2→xread_data/param 完整流程。之前 stage1 失败直接返回空导致 DA 状态机卡住，后续任何命令超时。
+- **readflash_data_ex 多余 status() 调用**：`send_devctrl(0x040007, None)` 已完成握手（含 xread_data），之后不应再调 `status()`，否则 DA 无响应导致 `read_exact timeout`。
+- **reboot 命令跳过 DA 加载**：`reboot` 在 `!da.daext && is_brom` 时直接执行（跳过 bypass/preloader dump/EMI/DA 上传），读写 misc/para 分区必然超时。已移除特殊处理，reboot 走完整 DA 流程。
+- **HACC 签名后 recover_usb_pipes 干扰**：`build_v4_image_online` 中 `sej_hacc_sign` 成功后调用 `clear_halt` 发送 USB CLEAR_FEATURE 控制传输，干扰 DA 状态机导致后续 `write_flash_data` 超时。Python mtkclient 在 HACC 签名后无恢复步骤，已对齐移除。
+- **clap `--via` 参数解析**：`args` 字段缺少 `allow_hyphen_values = true`，导致 `--via` 被当成未知顶层参数报错。
+
+### 新功能
+
+- **Preloader 模式 reboot fastboot (Pattern 协议)**：从 MABT (mtk.exe) 逆向 `CMD_BootAsFASTBOOT()` 协议——握手后发送 8 字节反转字符串 Pattern (`"DMHCTIWS"` = "FASTBOOT" reversed)，读取 `"READY"` 确认，发送 Switch Request 参数结构体 (`04 00 00 00 01 00 00 00 01 00 00 00`)，设备重启到 Bootloader。支持 FACTORY (`"MYROTCAF"`)、META (`"ATEM    "`) 等模式。
+- **BROM 模式 reboot fastboot (jump_bl)**：BROM 模式下直接发送 `0xD6` (JUMP_BL) 跳转到 Bootloader，无需加载 DA。回退到 DA 流程时记录 `magic_bootloader` 备选方案注释。
+- **reboot --via para/misc**：重启模式切换支持两种方案。`misc`（默认）通过 Android `bootloader_message` 的 `command` 字段；`para` 通过 MTK BORA 的 `boot_mode` 字段（偏移 0x00，`u32`：0=NORMAL, 1=FACTORY, 2=FTM, 5=BROM）。
+- **zyb detect Preloader 串口探测**：等待 Preloader COM 口，打开后实时抓取所有 UART 数据并解析已知 MTK 命令字节。交互按键支持发送握手、JUMP_BL、JUMP_DA、SEND_DA、EXT_CMD_GATE 等命令用于协议探测。
+- **后台线程预解析 DA header**：`init()` 获取 HW code 后后台线程同时完成文件读取 + `parse_da_header(da_code)` 解析，`upload_da1/upload_da2` 直接取用 `(Vec<u8>, Vec<DaRegion>)`，无需重新解析。
+
+### 救砖实战
+
+- 用户因旧版 vbmeta flags 偏移错误导致 bootloop，通过 `wl` 命令从 TIK 备份刷回全部 6 个 vbmeta 分区（a/b 槽 × vbmeta/vbmeta_system/vbmeta_vendor），设备恢复正常。
+- 备份 zip 中 `.img` 文件为 raw 分区镜像，需用 7z 解压（PowerShell `Expand-Archive` 不支持 Deflate64）。
+
+### 协议发现
+
+- MTK Preloader Pattern 协议模式映射（8 字节反转字符串）：
+  - `"DMHCTIWS"` → FASTBOOT (bootloader)
+  - `"MYROTCAF"` → FACTORY (recovery)
+  - `"ATEM    "` → META (meta mode)
+  - `"ATEMATEM"` → ATE/META
+  - `"ATEMEVDA"` → ATE EvDA
+  - `"FACTFACT"` → ATE Factory
+  - `"SWITCHMD"` → DualTalk Switch
+  - `"MEVDA    "` → Advanced META
+
+### DA 协议时序规则
+
+- **send_devctrl 必须完成完整 3 步握手**：stage1(status) → cmd(xwrite) → stage2(status) → xread_data/param(xread)。任何步骤失败都不能中断后续步骤的执行。
+- **HACC 签名后不做 USB 管道恢复**：`sej_hacc_sign` 成功后 DA 状态机正常，`clear_halt` / `recover_usb_pipes` 会发送控制传输干扰状态机。
+- **DA hw_code ≠ 芯片 hw_code**：对齐 Python Chipconfig，`ChipConfig` 必须同时包含 `hw_code`（BROM 握手用）和 `da_code`（DA 文件匹配用）。
+
+> 最近更新：2026-07-08 v16
+
 ## 最近更新 (2026-07-05 v15) — 写入 checksum 修复与 15MB/s 方向研究
 
 - **版本号规则**：每次提交可运行行为变更后，同步更新 `Cargo.toml` 与 `Cargo.lock` 的 crate 版本。
