@@ -80,17 +80,36 @@ fn patch_vbmeta_data(data: &[u8], mode: u32) -> Result<Vec<u8>, String> {
 
     let mut result = data.to_vec();
 
-    // vbmeta[0x78..0x7C] = vbmode
+    // AVB vbmeta header 布局（对齐 Android AVB 2.0 规范）:
+    //   0x00-0x03: magic "AVB0"
+    //   0x04-0x07: version major
+    //   0x08-0x0B: version minor
+    //   ...
+    //   0x20-0x23: algorithm_type (u32)
+    //   ...
+    //   0x74-0x7B: rollback_index (u64)
+    //   0x7C-0x7F: flags (u32)  <-- 正确偏移
+    //   0x80-0xAF: release_string[48]
+    //
     // mode 含义:
     //   0 = 验证启用 + 校验启用 (默认)
     //   1 = 验证禁用 + 校验启用
     //   2 = 验证启用 + 校验禁用
     //   3 = 验证禁用 + 校验禁用 (完全禁用)
-    let flags_offset = 0x78;
+    let flags_offset = 0x7C;
     let old_flags = u32::from_le_bytes(result[flags_offset..flags_offset + 4].try_into().unwrap());
     result[flags_offset..flags_offset + 4].copy_from_slice(&mode.to_le_bytes());
 
-    info!("  修改 vbmeta flags: 0x{:08X} -> 0x{:08X}", old_flags, mode);
+    // 同时把 algorithm_type 改为 0 (NONE) 以确保兼容性
+    // 部分 bootloader 不检查 flags 只检查 algorithm
+    let algo_offset = 0x20;
+    let old_algo = u32::from_le_bytes(result[algo_offset..algo_offset + 4].try_into().unwrap());
+    result[algo_offset..algo_offset + 4].copy_from_slice(&0u32.to_le_bytes());
+
+    info!(
+        "  修改 vbmeta: algorithm=0x{:08X}->0x00000000, flags=0x{:08X}->0x{:08X}",
+        old_algo, old_flags, mode
+    );
 
     Ok(result)
 }

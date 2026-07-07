@@ -15,7 +15,6 @@ use crate::system::paths::获取可执行文件相对路径;
 use super::header::parse_da_header;
 
 const CMD_SYNC_SIGNAL: u32 = 0x434E5953;
-const DA_HW_CODE_MT6768: u16 = 0x6768;
 const DEFAULT_DA_FILE: &str = "MTK_DA_V5.bin";
 
 impl<'a> DAXFlash<'a> {
@@ -60,10 +59,11 @@ impl<'a> DAXFlash<'a> {
             }
         }
 
-        // Fallback：同步读取 + 解析
+        // Fallback：同步读取 + 解析（使用芯片 da_code 匹配 DA 文件内条目）
         trace!("[DA_PRELOAD] 后台线程未就绪，回退到同步加载");
         let da_data = self.load_da_file()?;
-        let (_magic, regions, _is_v6) = parse_da_header(&da_data, DA_HW_CODE_MT6768)?;
+        let da_code = self.preloader.chip.map(|c| c.da_code).unwrap_or(0x6768);
+        let (_magic, regions, _is_v6) = parse_da_header(&da_data, da_code)?;
         Ok((da_data, regions))
     }
 

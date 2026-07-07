@@ -81,7 +81,8 @@ impl Preloader {
 
         // 2.5 启动后台线程预读取并解析 DA 文件：bypass / 发送 DA 期间并行完成，
         // 节省文件 I/O + header 解析的 2~4 秒
-        let hw_code_for_parse = hw;
+        // 注意：使用 chip.da_code（0x6768）而非 hw_code（0x0707）来匹配 DA 文件内条目
+        let da_code_for_parse = chip.da_code;
         let da_parsed = Arc::new(Mutex::new(None));
         let da_parsed_clone = Arc::clone(&da_parsed);
         std::thread::spawn(move || {
@@ -99,7 +100,7 @@ impl Preloader {
             if file.read_to_end(&mut da_data).is_err() {
                 return;
             }
-            match parse_da_header(&da_data, hw_code_for_parse) {
+            match parse_da_header(&da_data, da_code_for_parse) {
                 Ok((_magic, regions, _is_v6)) => {
                     if let Ok(mut guard) = da_parsed_clone.lock() {
                         *guard = Some((da_data, regions));
