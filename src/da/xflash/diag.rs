@@ -275,10 +275,17 @@ impl<'a> DAXFlash<'a> {
 
 impl<'a> DAXFlash<'a> {
     /// DA 心跳检测：发送轻量级命令检测 DA 是否仍然在线
+    /// 使用 1 秒短超时，避免默认 5 秒超时导致用户等待过久
     /// 返回 true 表示 DA 存活，false 表示 DA 已断开或设备已重启
     pub fn da_heartbeat(&mut self) -> bool {
+        // 临时缩短超时到 1 秒，加快心跳检测速度
+        let orig_timeout = self.preloader.device.get_timeout();
+        self.preloader
+            .device
+            .set_timeout(Duration::from_millis(1000));
+
         // 使用 GET_CHIP_ID (0x010106) 作为心跳命令，数据量小且安全
-        match self.send_devctrl(0x010106, None) {
+        let result = match self.send_devctrl(0x010106, None) {
             Ok(data) if data.len() >= 2 => {
                 trace!("[HEARTBEAT] DA 存活，响应 {} 字节", data.len());
                 true
@@ -291,11 +298,21 @@ impl<'a> DAXFlash<'a> {
                 trace!("[HEARTBEAT] DA 无响应: {}", e);
                 false
             }
-        }
+        };
+
+        self.preloader.device.set_timeout(orig_timeout);
+        result
     }
 
     /// 检查 DA 会话是否有效，如果无效则重置会话状态
+    /// 注意：如果用户按了 Ctrl+C，不视为 DA 失效，避免误清 .state
     pub fn check_da_session(&mut self) -> bool {
+        // 用户主动取消时不做心跳检测，避免 send_devctrl 被中断后误判为 DA 失效
+        if crate::cancel::requested() || crate::cancel::force_requested() {
+            trace!("[DA_SESSION] 用户取消中，跳过心跳检测");
+            return true;
+        }
+
         if self.da_heartbeat() {
             true
         } else {
