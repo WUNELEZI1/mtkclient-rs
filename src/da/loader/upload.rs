@@ -8,6 +8,7 @@ use std::fs::File;
 use std::io::Read;
 use std::time::Duration;
 
+use crate::da::loader::header::DaRegion;
 use crate::da::xflash::DAXFlash;
 use crate::system::paths::获取可执行文件相对路径;
 
@@ -41,13 +42,36 @@ impl<'a> DAXFlash<'a> {
         Ok(da_data)
     }
 
+    /// 尝试从后台预解析结果获取 DA 数据和 regions，未就绪则回退到同步加载
+    fn load_da_with_regions(&mut self) -> Result<(Vec<u8>, Vec<DaRegion>), String> {
+        // 优先使用后台线程预解析结果
+        if let Some(ref preparse_arc) = self.preloader.da_preparse {
+            // 轮询等待后台线程完成（最多 2 秒，通常几百毫秒内完成）
+            for _ in 0..20 {
+                if let Ok(guard) = preparse_arc.lock() {
+                    if let Some(ref result) = *guard {
+                        trace!("[DA_PRELOAD] 使用后台线程预解析结果 ({} 字节, {} regions)",
+                            result.da_data.len(), result.regions.len());
+                        self.da_file_data = Some(result.da_data.clone());
+                        return Ok((result.da_data.clone(), result.regions.clone()));
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            trace!("[DA_PRELOAD] 后台线程未就绪，回退到同步加载");
+        }
+
+        let da_data = self.load_da_file()?;
+        let (_magic, regions, _is_v6) = parse_da_header(&da_data, DA_HW_CODE_MT6768)?;
+        Ok((da_data, regions))
+    }
+
     /// 上传第一阶段 DA
     /// 对照 Python xflash_lib.py:upload_da1
     pub fn upload_da1(&mut self) -> Result<bool, String> {
         trace!("上传 XFlash 阶段 1...");
 
-        let da_data = self.load_da_file()?;
-        let (_magic, regions, _is_v6) = parse_da_header(&da_data, DA_HW_CODE_MT6768)?;
+        let (da_data, regions) = self.load_da_with_regions()?;
 
         if regions.len() < 2 {
             return Err("DA 文件格式错误，无法找到 Stage1 region".to_string());
@@ -134,8 +158,7 @@ impl<'a> DAXFlash<'a> {
     pub fn upload_da2(&mut self) -> Result<bool, String> {
         trace!("上传 XFlash 阶段 2...");
 
-        let da_data = self.load_da_file()?;
-        let (_magic, regions, _is_v6) = parse_da_header(&da_data, DA_HW_CODE_MT6768)?;
+        let (da_data, regions) = self.load_da_with_regions()?;
 
         if regions.len() < 3 {
             return Err("DA 文件格式错误，无法找到 Stage2 region".to_string());
