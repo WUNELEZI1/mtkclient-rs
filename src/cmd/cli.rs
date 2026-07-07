@@ -110,7 +110,7 @@ pub struct Cli {
           zyb oem unlock        FRP OEM 解锁（清零 FRP + OEM 开关解锁）
           zyb oem lock          FRP OEM 回锁（OEM 开关锁定）
           frp                   FRP OEM 解锁（zyb oem unlock 的别名）
-          reboot [system|fastboot|recovery|fastbootd]  重启设备（默认 system）\n\
+          reboot [system|fastboot|recovery|fastbootd] [--via misc|para]  重启设备（默认 system，via 默认 misc）\n\
           slot show/a/b         显示/切换 A/B 槽位\n\
           adb                   在 DA 模式下开启 ADB\n\
           multi \"<cmds>\"         一次 DA 会话执行多个命令 (分号分隔)"
