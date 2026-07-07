@@ -42,26 +42,34 @@ impl<'a> DAXFlash<'a> {
         Ok(da_data)
     }
 
-    /// 尝试从后台预解析结果获取 DA 数据和 regions，未就绪则回退到同步加载
+    /// 尝试从后台预读取结果获取 DA 数据，然后用正确的 hw code 解析 header
     fn load_da_with_regions(&mut self) -> Result<(Vec<u8>, Vec<DaRegion>), String> {
-        // 优先使用后台线程预解析结果
-        if let Some(ref preparse_arc) = self.preloader.da_preparse {
-            // 轮询等待后台线程完成（最多 2 秒，通常几百毫秒内完成）
+        let da_data = if let Some(ref preloaded_arc) = self.preloader.da_preloaded {
+            // 轮询等待后台线程完成文件读取（最多 2 秒）
+            let mut found = false;
             for _ in 0..20 {
-                if let Ok(guard) = preparse_arc.lock() {
-                    if let Some(ref result) = *guard {
-                        trace!("[DA_PRELOAD] 使用后台线程预解析结果 ({} 字节, {} regions)",
-                            result.da_data.len(), result.regions.len());
-                        self.da_file_data = Some(result.da_data.clone());
-                        return Ok((result.da_data.clone(), result.regions.clone()));
+                if let Ok(guard) = preloaded_arc.lock() {
+                    if let Some(ref data) = *guard {
+                        trace!("[DA_PRELOAD] 使用后台线程预读取的 DA 数据 ({} 字节)", data.len());
+                        self.da_file_data = Some(data.clone());
+                        found = true;
+                        break;
                     }
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
-            trace!("[DA_PRELOAD] 后台线程未就绪，回退到同步加载");
-        }
+            if found {
+                // 从缓存取用
+                self.da_file_data.as_ref().unwrap().clone()
+            } else {
+                trace!("[DA_PRELOAD] 后台线程未就绪，回退到同步加载");
+                self.load_da_file()?
+            }
+        } else {
+            self.load_da_file()?
+        };
 
-        let da_data = self.load_da_file()?;
+        // 用正确的 hw code 解析 header（不在后台线程中做，因为 init 时 hw code 可能不准确）
         let (_magic, regions, _is_v6) = parse_da_header(&da_data, DA_HW_CODE_MT6768)?;
         Ok((da_data, regions))
     }
