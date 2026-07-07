@@ -560,7 +560,8 @@ impl<'a> DAXFlash<'a> {
         size: u64,
         parttype: u32,
     ) -> Result<Vec<u8>, String> {
-        // 1. get_packet_length + status
+        // 1. get_packet_length — send_devctrl 内部已完成完整握手，
+        // 无需再调用 status()，否则 DA 可能无响应导致超时
         let _ = match self.send_devctrl(0x040007, None) {
             Ok(data) => data,
             Err(e) => {
@@ -568,13 +569,6 @@ impl<'a> DAXFlash<'a> {
                 return Err(e);
             }
         };
-        let st = self.status()?;
-        if st != 0 {
-            warn!(
-                "readflash_data_ex: get_packet_length 后 status=0x{:08X}",
-                st
-            );
-        }
 
         // 2. 发送 READ_DATA 命令及参数
         self.send_read_data_cmd(addr, size, parttype)?;

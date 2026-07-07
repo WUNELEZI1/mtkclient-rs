@@ -79,12 +79,13 @@ impl Preloader {
             .find(|c| c.hw_code == hw)
             .ok_or_else(|| format!("未知芯片: HW code 0x{:04X}", hw))?;
 
-        // 2.5 启动后台线程预读取 DA 文件：bypass / 发送 DA 期间并行完成文件 I/O，节省 2~4 秒
-        // 注意：只做文件读取，不做 header 解析（因为 hw code 在此阶段可能不准确，
-        //       解析需要等 upload_da1/da2 时用正确的 hw code）
-        let preloaded = Arc::new(Mutex::new(None));
-        let preloaded_clone = Arc::clone(&preloaded);
+        // 2.5 启动后台线程预读取并解析 DA 文件：bypass / 发送 DA 期间并行完成，
+        // 节省文件 I/O + header 解析的 2~4 秒
+        let hw_code_for_parse = hw;
+        let da_parsed = Arc::new(Mutex::new(None));
+        let da_parsed_clone = Arc::clone(&da_parsed);
         std::thread::spawn(move || {
+            use crate::da::loader::header::parse_da_header;
             use crate::system::paths::获取可执行文件相对路径;
             use std::fs::File;
             use std::io::Read;
@@ -95,11 +96,21 @@ impl Preloader {
                 Err(_) => return,
             };
             let mut da_data = Vec::new();
-            if file.read_to_end(&mut da_data).is_ok() {
-                *preloaded_clone.lock().unwrap() = Some(da_data);
+            if file.read_to_end(&mut da_data).is_err() {
+                return;
+            }
+            match parse_da_header(&da_data, hw_code_for_parse) {
+                Ok((_magic, regions, _is_v6)) => {
+                    if let Ok(mut guard) = da_parsed_clone.lock() {
+                        *guard = Some((da_data, regions));
+                    }
+                }
+                Err(e) => {
+                    trace!("[DA_PRELOAD] 后台解析 DA header 失败: {}", e);
+                }
             }
         });
-        self.da_preloaded = Some(preloaded);
+        self.da_parsed = Some(da_parsed);
 
         // 3. 关闭看门狗（对齐 Python write32 协议）
         trace!("[WD] 开始关闭看门狗流程 (write32协议)");

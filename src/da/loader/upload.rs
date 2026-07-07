@@ -42,34 +42,27 @@ impl<'a> DAXFlash<'a> {
         Ok(da_data)
     }
 
-    /// 尝试从后台预读取结果获取 DA 数据，然后用正确的 hw code 解析 header
+    /// 尝试从后台预解析结果获取 DA 数据和 regions
+    /// init() 中已用正确 hw code 完成解析，upload_da 时直接取用，无需重新解析
     fn load_da_with_regions(&mut self) -> Result<(Vec<u8>, Vec<DaRegion>), String> {
-        let da_data = if let Some(ref preloaded_arc) = self.preloader.da_preloaded {
-            // 轮询等待后台线程完成文件读取（最多 2 秒）
-            let mut found = false;
-            for _ in 0..20 {
-                if let Ok(guard) = preloaded_arc.lock() {
-                    if let Some(ref data) = *guard {
-                        trace!("[DA_PRELOAD] 使用后台线程预读取的 DA 数据 ({} 字节)", data.len());
-                        self.da_file_data = Some(data.clone());
-                        found = true;
-                        break;
-                    }
+        // 优先使用后台线程预解析结果（含 header 解析）
+        if let Some(ref parsed_arc) = self.preloader.da_parsed {
+            if let Ok(guard) = parsed_arc.lock() {
+                if let Some((data, regions)) = guard.as_ref() {
+                    trace!(
+                        "[DA_PRELOAD] 使用后台线程预解析的 DA 数据 ({} 字节, {} regions)",
+                        data.len(),
+                        regions.len()
+                    );
+                    self.da_file_data = Some(data.clone());
+                    return Ok((data.clone(), regions.clone()));
                 }
-                std::thread::sleep(Duration::from_millis(100));
             }
-            if found {
-                // 从缓存取用
-                self.da_file_data.as_ref().unwrap().clone()
-            } else {
-                trace!("[DA_PRELOAD] 后台线程未就绪，回退到同步加载");
-                self.load_da_file()?
-            }
-        } else {
-            self.load_da_file()?
-        };
+        }
 
-        // 用正确的 hw code 解析 header（不在后台线程中做，因为 init 时 hw code 可能不准确）
+        // Fallback：同步读取 + 解析
+        trace!("[DA_PRELOAD] 后台线程未就绪，回退到同步加载");
+        let da_data = self.load_da_file()?;
         let (_magic, regions, _is_v6) = parse_da_header(&da_data, DA_HW_CODE_MT6768)?;
         Ok((da_data, regions))
     }

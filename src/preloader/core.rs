@@ -17,6 +17,7 @@
 //! - `BROM初始化.rs` 中也包含 read32_brom（因与 rword 等基础读取紧密相关）
 
 use super::transport::BromTransport;
+use crate::da::loader::header::DaRegion;
 use crate::system::config::ChipConfig;
 use std::sync::{Arc, Mutex};
 
@@ -27,7 +28,9 @@ pub struct Preloader {
     /// BROM 初始化是否完成（init 成功后为 true）
     pub brom_initialized: bool,
     /// 后台线程预读取的 DA 文件原始数据（init 启动线程，upload_da 时取用）
-    pub da_preloaded: Option<Arc<Mutex<Option<Vec<u8>>>>>,
+    pub da_preloaded: Option<Arc<Mutex<Option<Vec<u8>>>>>, 
+    /// 后台线程预解析的 DA 文件（含 header 解析结果）
+    pub da_parsed: Option<Arc<Mutex<Option<(Vec<u8>, Vec<DaRegion>)>>>>,
 }
 
 impl Preloader {
@@ -38,6 +41,7 @@ impl Preloader {
             chip: None,
             brom_initialized: false,
             da_preloaded: None,
+            da_parsed: None,
         }
     }
 }
