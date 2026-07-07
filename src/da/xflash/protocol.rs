@@ -238,6 +238,10 @@ impl<'a> DAXFlash<'a> {
 
     /// 发送 devctrl 命令
     /// Python: 任何阶段都返回 b""，不抛异常
+    /// 
+    /// 关键修复：即使 status 非零（如 0x00010009）也必须完成完整的 3 步握手
+    ///（DEVICE_CTRL → cmd → param/status），否则 DA 状态机卡在等待阶段，
+    /// 后续任何命令都会超时。
     pub(crate) fn send_devctrl(
         &mut self,
         cmd: u32,
@@ -255,49 +259,63 @@ impl<'a> DAXFlash<'a> {
         self.preloader.device.write(&0x010009u32.to_le_bytes())?;
 
         let st = self.status()?;
-        if st != 0 {
+        let stage1_ok = st == 0;
+        if !stage1_ok {
             // 已知正常状态码：静默处理
             // 0x00010009 = DEVICE_CTRL 不支持（部分设备/DA版本）
             // 0xC0010004 = 命令不支持
             if st != 0xC0010004 && st != 0x00010009 {
                 warn!("send_devctrl DEVICE_CTRL 阶段1 状态: 0x{:08X}", st);
             }
-            return Ok(vec![]);
+            trace!("[send_devctrl] stage1 status=0x{:08X}, 继续完成握手...", st);
         }
 
-        // xsend(cmd)
+        // xsend(cmd) — 无论 stage1 是否成功都必须发送，否则 DA 状态机卡住
         let pkt2 = pack3(CMD_MAGIC, 0x01, 4);
         self.preloader.device.write(&pkt2)?;
         self.preloader.device.write(&cmd.to_le_bytes())?;
 
         let st2 = self.status()?;
-        if st2 != 0 {
+        let stage2_ok = st2 == 0;
+        if !stage2_ok {
             if st2 != 0xC0010004 && st2 != 0x00010009 {
-                warn!("send_devctrl(0x{:06X}) 状态: 0x{:08X}", cmd, st2);
+                warn!("send_devctrl(0x{:06X}) 阶段2 状态: 0x{:08X}", cmd, st2);
             }
-            return Ok(vec![]);
+            trace!("[send_devctrl] stage2 status=0x{:08X}, 继续完成握手...", st2);
         }
 
-        if let Some(p) = param {
-            let pkt3 = pack3(CMD_MAGIC, 0x01, p.len() as u32);
-            self.preloader.device.write(&pkt3)?;
-            self.preloader.device.write(p)?;
-            let st3 = self.status()?;
-            if st3 != 0 {
-                // param status 非零表示命令执行异常，返回错误以便调用者处理
-                return Err(format!(
-                    "send_devctrl(0x{:06X}) param status: 0x{:08X}",
-                    cmd, st3
-                ));
+        // 只有 stage1 和 stage2 都成功时才处理 param / xread
+        if stage1_ok && stage2_ok {
+            if let Some(p) = param {
+                let pkt3 = pack3(CMD_MAGIC, 0x01, p.len() as u32);
+                self.preloader.device.write(&pkt3)?;
+                self.preloader.device.write(p)?;
+                let st3 = self.status()?;
+                if st3 != 0 {
+                    // param status 非零表示命令执行异常，返回错误以便调用者处理
+                    return Err(format!(
+                        "send_devctrl(0x{:06X}) param status: 0x{:08X}",
+                        cmd, st3
+                    ));
+                }
+            } else {
+                let resp = self.xread_data()?;
+                trace!(
+                    "[send_devctrl] cmd=0x{:06X} xread returned {} bytes",
+                    cmd,
+                    resp.len()
+                );
+                return Ok(resp);
             }
         } else {
-            let resp = self.xread_data()?;
-            trace!(
-                "[send_devctrl] cmd=0x{:06X} xread returned {} bytes",
-                cmd,
-                resp.len()
-            );
-            return Ok(resp);
+            // stage1/stage2 失败：如果是 param 模式，仍需发送 param 以完成握手
+            if let Some(p) = param {
+                let pkt3 = pack3(CMD_MAGIC, 0x01, p.len() as u32);
+                let _ = self.preloader.device.write(&pkt3);
+                let _ = self.preloader.device.write(p);
+                let _ = self.status(); // 读取并丢弃 status3，完成握手
+            }
+            // read 模式且 stage 失败：无需读取 xread_data
         }
 
         Ok(vec![])
