@@ -78,6 +78,17 @@ impl ConnectionManager {
             return self.smart_init_preloader(context);
         }
 
+        if 工作模式 == 工作模式::Auto {
+            info!("[AUTO] 自动检测模式：优先尝试 Preloader 串口...");
+            match self.smart_init_preloader(context) {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    warn!("[AUTO] Preloader 模式不可用: {}，回退到 BROM 模式", e);
+                    crate::connection::reset_session();
+                }
+            }
+        }
+
         info!("等待设备连接 (BROM: Vol+ + Vol- + Power)");
 
         // 连续握手失败计数器：用于检测 DA 会话失效

@@ -245,39 +245,40 @@ impl<'a> DAXFlash<'a> {
     ///
     /// 如果获取 VID/PID 或 HW code 失败，会静默忽略（不影响 DA 加载成功的结果）
     pub(crate) fn save_session_state(&mut self) {
-        let vid = self.preloader.device.get_vid();
-        let pid = self.preloader.device.get_pid();
+        let (vid, pid) = match (self.preloader.device.get_vid(), self.preloader.device.get_pid()) {
+            (Some(v), Some(p)) => (v, p),
+            _ => {
+                // 串口模式：get_vid/pid 返回 None，使用 MTK 默认 VID/PID
+                trace!("save_session_state: 串口模式，使用默认 VID/PID");
+                (0x0E8D, 0x2000)
+            }
+        };
 
-        // 如果 transport 不是 USB（例如 COM 口），无法记录 VID/PID，跳过保存
-        if let (Some(vid), Some(pid)) = (vid, pid) {
-            // 获取 HW code（从 chip 配置中读取，避免再次发送 USB 命令）
-            let hw_code_result = self
-                .preloader
-                .chip
-                .map(|c| c.hw_code)
-                .ok_or_else(|| "chip not set".to_string());
+        // 获取 HW code（从 chip 配置中读取，避免再次发送 USB 命令）
+        let hw_code_result = self
+            .preloader
+            .chip
+            .map(|c| c.hw_code)
+            .ok_or_else(|| "chip not set".to_string());
 
-            // 获取 target_config（直接读取本地状态，不发送 USB 命令）
-            // 实际实现中 target_config 在 init() 时已读入 chip 配置
-            let target_config = 0u32; // 占位 — session.rs 的 target_config 字段当前不参与复用判断
+        // 获取 target_config（直接读取本地状态，不发送 USB 命令）
+        // 实际实现中 target_config 在 init() 时已读入 chip 配置
+        let target_config = 0u32; // 占位 — session.rs 的 target_config 字段当前不参与复用判断
 
-            if let Ok(hw_code) = hw_code_result {
-                let preloader_path = self.preloader_path.as_deref();
-                crate::connection::save_da_session(
-                    vid,
-                    pid,
-                    hw_code,
-                    target_config,
-                    preloader_path,
-                );
-                for name in &self.optional_query_failures {
-                    crate::connection::session::mark_optional_query_failed(name);
-                }
-            } else {
-                warn!("save_session_state: chip 未初始化，跳过 .state 保存");
+        if let Ok(hw_code) = hw_code_result {
+            let preloader_path = self.preloader_path.as_deref();
+            crate::connection::save_da_session(
+                vid,
+                pid,
+                hw_code,
+                target_config,
+                preloader_path,
+            );
+            for name in &self.optional_query_failures {
+                crate::connection::session::mark_optional_query_failed(name);
             }
         } else {
-            trace!("save_session_state: 当前 transport 不是 USB，跳过 .state 保存");
+            warn!("save_session_state: chip 未初始化，跳过 .state 保存");
         }
     }
 }
@@ -318,11 +319,34 @@ impl<'a> DAXFlash<'a> {
         }
     }
 
-    /// DA 会话恢复：关闭死 USB 连接 → 重新打开 → sync
-    /// 用于 Ctrl+C 中断后设备未重启的场景（DA 仍在运行，只是 USB 管道断了）
+    /// DA 会话恢复：关闭死连接 → 重新打开 → sync
+    /// 用于 Ctrl+C 中断后设备未重启的场景（DA 仍在运行，只是管道断了）
+    /// 支持 USB 和串口两种传输层。
     pub(crate) fn reconnect_usb(
         &mut self, context: &crate::usb::USB上下文
     ) -> Result<(), String> {
+        if !self.preloader.device.is_libusb() {
+            // 串口模式：关闭并重新打开串口
+            info!("[RECONNECT_USB] 串口模式，关闭并重新打开串口...");
+            self.preloader.device.close_device()?;
+            std::thread::sleep(Duration::from_millis(500));
+
+            // fallback: 扫描 Preloader COM 口
+            let port_name = crate::preloader::SerialPortTransport::find_brom_port_with_timeout(3000)
+                .and_then(|result| match result {
+                    crate::preloader::BromPortResult::SerialPort(p) => Some(p),
+                    _ => None,
+                })
+                .ok_or("无法找到 Preloader 串口端口")?;
+
+            info!("[RECONNECT_USB] 重新打开串口 {}...", port_name);
+            let transport = crate::preloader::SerialPortTransport::new(&port_name, 115200)
+                .map_err(|e| format!("重新打开串口失败: {}", e))?;
+            self.preloader.device = Box::new(transport);
+            info!("[RECONNECT_USB] 串口重新连接成功");
+            return Ok(());
+        }
+
         info!("[RECONNECT_USB] 关闭死 USB 连接...");
         self.preloader.device.close_device()?;
 

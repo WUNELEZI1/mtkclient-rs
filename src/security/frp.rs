@@ -6,6 +6,7 @@ pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
     info!("FRP 解锁...");
 
     // 1. 设置 OEM 开关状态为解锁（对齐 C# 版）
+    // set_oem_unlock 内部已包含 drain_pending + xflash_sync + 延迟，无需重复
     match da.set_oem_unlock(true) {
         Ok(()) => info!("OEM 开关已设置为解锁"),
         Err(e) => warn!("设置 OEM 开关失败 (不影响 FRP 解锁): {}", e),

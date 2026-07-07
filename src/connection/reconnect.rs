@@ -63,9 +63,8 @@ impl ConnectionManager {
             if retry % 50 == 0 && !context_refreshed {
                 trace!("[RECONNECT] 尝试刷新 libusb context...");
                 if let Ok(new_ctx) = USB上下文::新建() {
-                    let ctx_ref: &'static USB上下文 = Box::leak(Box::new(new_ctx));
                     for &pid in &pids {
-                        if let Ok(device) = usb::USB设备::按VID_PID打开(ctx_ref, 0x0E8D, pid) {
+                        if let Ok(device) = usb::USB设备::按VID_PID打开(&new_ctx, 0x0E8D, pid) {
                             info!("[RECONNECT] 使用新 context 成功连接 (attempt {})", retry);
                             return Ok(device);
                         }
@@ -235,6 +234,40 @@ impl ConnectionManager {
         context: &USB上下文,
     ) -> Result<(Preloader, DeviceMode), String> {
         info!("等待 Preloader VCOM 设备连接 (PID=0x2000)，无需按任何按键...");
+
+        // 0. 尝试复用已有 DA 会话（设备已在 DA 模式，跳过 BROM 握手）
+        if let Some(state) = crate::connection::session::SessionState::load() {
+            if state.da_loaded && (state.usb_pid == 0x2000 || state.usb_pid == 0x2001) {
+                if let Ok(ports) = serialport::available_ports() {
+                    for p in &ports {
+                        if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
+                            && info.vid == 0x0E8D
+                            && (info.pid == 0x2000 || info.pid == 0x2001)
+                        {
+                            info!(
+                                "[PRELOADER] 发现 Preloader COM 口: {} (VID={:04X} PID={:04X})，尝试 DA 会话复用",
+                                p.port_name, info.vid, info.pid
+                            );
+                            match SerialPortTransport::new(&p.port_name, 115200) {
+                                Ok(transport) => {
+                                    let mut preloader = Preloader::new(Box::new(transport));
+                                    preloader.is_preloader_mode = true;
+                                    preloader.brom_initialized = true;
+                                    self.mode = DeviceMode::Preloader;
+                                    self.stage = USB阶段::Preloader;
+                                    self.port_name = Some(p.port_name.clone());
+                                    info!("[PRELOADER] DA 会话复用：跳过 BROM 握手，直接返回");
+                                    return Ok((preloader, DeviceMode::Preloader));
+                                }
+                                Err(e) => {
+                                    warn!("[PRELOADER] 复用会话时打开串口失败: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         let mut retry_count = 0u32;
         const PRELOADER_MAX_RETRY: u32 = 50; // 约 10 秒 (50 * 200ms)
