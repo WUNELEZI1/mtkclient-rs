@@ -11,9 +11,8 @@
 //! - `handle_command`   — 单命令执行入口（处理 Phase1 dump/bypass + Phase2 DA 命令）
 
 pub mod cli;
-#[path = "dump.rs"]
+pub mod detect;
 pub mod dump;
-#[path = "io.rs"]
 pub mod io;
 pub mod multi;
 pub mod partition_table;

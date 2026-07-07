@@ -222,6 +222,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // zyb detect 不需要设备连接，直接进入 Preloader 串口探测
+    if cmd == "zyb" && app_config.cmd_args.first().map(|s| s.as_str()) == Some("detect") {
+        return cmd::detect::cmd_detect().map_err(|e| e.to_string().into());
+    }
+
     let usb_context = USB上下文::新建().inspect_err(|e| {
         error!("{}", e);
     })?;
