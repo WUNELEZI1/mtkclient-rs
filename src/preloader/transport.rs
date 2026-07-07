@@ -50,6 +50,8 @@ pub trait BromTransport {
     fn cancel_pending_transfers(&mut self) {}
     /// 清空 USB IN pending data，写入前调用防止读取残留干扰
     fn drain_pending(&mut self) {}
+    /// USB 管道恢复：循环排空 IN 残留 + clear_halt 双端点（HACC 超时后使用）
+    fn recover_usb_pipes(&mut self) {}
     fn set_timeout(&mut self, duration: Duration);
     fn get_timeout(&self) -> Duration;
     fn do_handshake(&mut self) -> Result<bool, String>;
@@ -347,6 +349,10 @@ impl BromTransport for USB设备 {
 
     fn drain_pending(&mut self) {
         USB设备::drain_pending(self)
+    }
+
+    fn recover_usb_pipes(&mut self) {
+        USB设备::recover_usb_pipes(self)
     }
 
     fn set_timeout(&mut self, duration: Duration) {

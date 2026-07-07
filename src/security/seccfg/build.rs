@@ -76,6 +76,10 @@ pub(crate) fn build_v4_image_online(
     let digest = Sha256::digest(header);
     let enc_hash = with_backend(da, || sej_hacc_sign(digest.as_slice(), hw_code, None))?;
 
+    // HACC 签名涉及大量 send_devctrl 寄存器读写，超时会导致 DA 状态机卡住。
+    // 无论硬件签名成功或超时回退软件路径，都必须恢复 USB 管道。
+    da.preloader.device.recover_usb_pipes();
+
     let mut result = header.to_vec();
     result.extend_from_slice(&enc_hash);
     while !result.len().is_multiple_of(0x200) {
