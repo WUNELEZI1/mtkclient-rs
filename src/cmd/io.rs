@@ -53,9 +53,37 @@ pub fn cmd_erase(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::
 }
 
 /// 重启设备
-/// 支持模式: system(默认), fastboot, recovery, fastbootd
+/// 用法:
+///   reboot                     → 正常重启到 system
+///   reboot fastboot            → 通过 misc 重启到 lk bootloader
+///   reboot recovery            → 通过 misc 重启到 recovery
+///   reboot fastbootd           → 通过 misc 重启到 fastbootd
+///   reboot fastboot --via para → 通过 para 分区重启（方案2）
 pub fn cmd_reboot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let mode = args.first().map(|s| s.as_str()).unwrap_or("system");
+    // 解析参数：reboot [mode] [--via misc/para]
+    let mut mode = "system";
+    let mut via = "misc";
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--via" => {
+                via = args.get(i + 1).map(|s| s.as_str()).unwrap_or("misc");
+                i += 2;
+            }
+            "system" | "fastboot" | "recovery" | "fastbootd" => {
+                mode = args[i].as_str();
+                i += 1;
+            }
+            _ => {
+                return Err(format!(
+                    "未知重启参数: {}。用法: reboot [system|fastboot|recovery|fastbootd] [--via misc|para]",
+                    args[i]
+                )
+                .into());
+            }
+        }
+    }
 
     match mode {
         "system" => {
@@ -63,18 +91,14 @@ pub fn cmd_reboot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std:
             do_reboot(da, "system")?;
         }
         "fastboot" | "recovery" | "fastbootd" => {
-            // 重启到指定模式：修改 misc 分区的 bootloader_message，然后正常重启
-            info!("准备重启到 {} 模式...", mode);
-            set_bootloader_message(da, mode)?;
+            info!("准备重启到 {} 模式 (via {})...", mode, via);
+            match via {
+                "para" => set_boot_mode_via_para(da, mode)?,
+                _ => set_bootloader_message(da, mode)?,
+            }
             do_reboot(da, mode)?;
         }
-        _ => {
-            return Err(format!(
-                "未知重启模式: {}。支持: system, fastboot, recovery, fastbootd",
-                mode
-            )
-            .into());
-        }
+        _ => unreachable!(),
     }
 
     Ok(())
@@ -143,6 +167,58 @@ fn set_bootloader_message(da: &mut DAXFlash, mode: &str) -> Result<(), String> {
         .map_err(|e| format!("写入 misc 分区失败: {}", e))?;
 
     info!("misc 分区已更新");
+    Ok(())
+}
+
+/// 通过 para 分区（BORA: Boot Option Recovery Area）设置启动模式
+///
+/// MTK para 分区结构：
+///   偏移 0x00: boot_mode (u32) — 控制下一次启动模式
+///   0 = NORMAL (system)
+///   1 = FACTORY (recovery)
+///   2 = FTM (fastbootd)
+///   3 = META (meta mode)
+///   4 = ATE (factory test)
+///   5 = BROM (download mode)
+///
+/// 这是 misc 分区之外的第二种方案，部分设备的 LK 只识别 para
+fn set_boot_mode_via_para(da: &mut DAXFlash, mode: &str) -> Result<(), String> {
+    let boot_mode: u32 = match mode {
+        "fastboot" => 5,  // BROM download mode，等同于 bootloader
+        "recovery" => 1,
+        "fastbootd" => 2,
+        _ => return Err(format!("para 不支持的启动模式: {}", mode)),
+    };
+
+    // 读取 para 分区
+    let para_data = match da.读取分区("para", "para_reboot_tmp_read.bin") {
+        Ok(_) => std::fs::read("para_reboot_tmp_read.bin")
+            .unwrap_or_else(|_| vec![0u8; 0x2000]),
+        Err(e) => {
+            warn!("读取 para 分区失败 ({})，回退到 misc", e);
+            return set_bootloader_message(da, mode);
+        }
+    };
+
+    let mut new_para = para_data;
+    // para 分区通常至少 4KB，确保能容纳 boot_mode
+    if new_para.len() < 4 {
+        new_para.resize(4, 0);
+    }
+
+    let old_mode = u32::from_le_bytes([
+        new_para[0], new_para[1], new_para[2], new_para[3],
+    ]);
+    new_para[0..4].copy_from_slice(&boot_mode.to_le_bytes());
+
+    std::fs::write("para_reboot_tmp.bin", &new_para).map_err(|e| e.to_string())?;
+    da.写入分区("para", "para_reboot_tmp.bin")
+        .map_err(|e| format!("写入 para 分区失败: {}", e))?;
+
+    info!(
+        "para 分区已更新: boot_mode 0x{:X} -> 0x{:X} ({})",
+        old_mode, boot_mode, mode
+    );
     Ok(())
 }
 
