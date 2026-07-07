@@ -88,15 +88,6 @@ impl<'a> DAXFlash<'a> {
         // 写入前清空 USB IN pending data，防止读取残留干扰写入
         self.preloader.device.drain_pending();
 
-        // 在 send_devctrl / readflash_data 等操作后，DA 状态机可能偏离。
-        // 发送 SYNC_SIGNAL 帮助 DA 重新同步到已知状态（只发不读，避免超时）。
-        if let Err(e) = self.xflash_sync() {
-            trace!("[write_flash_data] xflash_sync 失败 (可能 DA 已断开): {}", e);
-        }
-
-        // HACC 等操作后 DA 可能需要额外时间恢复，给予 300ms 缓冲
-        std::thread::sleep(std::time::Duration::from_millis(300));
-
         self.cmd_write_data(addr, data.len() as u64, storage, parttype)?;
 
         // 写入时跳过 get_packet_length（避免 send_devctrl 干扰 DA 状态）。
@@ -231,11 +222,9 @@ impl<'a> DAXFlash<'a> {
         // 尝试发送 WRITE_DATA 命令，若状态流错位则同步后重试一次
         for attempt in 0..2 {
             if attempt > 0 {
-                warn!("[cmd_write_data] 第一次尝试失败，执行 xflash_sync 后重试...");
+                warn!("[cmd_write_data] 第一次尝试失败，执行 drain + 重试...");
                 self.preloader.device.drain_pending();
-                let _ = self.xflash_sync();
-                // HACC/SEJ 操作后 DA 状态机恢复较慢，给予 500ms 缓冲
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                std::thread::sleep(std::time::Duration::from_millis(200));
             }
 
             // xsend(WRITE_DATA)
