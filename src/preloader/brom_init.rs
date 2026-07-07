@@ -155,8 +155,15 @@ impl Preloader {
     /// 设备在上传 DA 后可能输出调试信息，echo 读取时会遇到残留数据。
     /// 这里容忍最多 32 字节的残留数据，继续读取直到找到真正的 echo。
     pub fn echo_1byte(&mut self, cmd: u8) -> Result<bool, String> {
+        let orig_timeout = self.device.get_timeout();
         self.device
             .set_timeout(Duration::from_millis(ECHO_TIMEOUT_MS));
+        let result = self.echo_1byte_impl(cmd);
+        self.device.set_timeout(orig_timeout);
+        result
+    }
+
+    fn echo_1byte_impl(&mut self, cmd: u8) -> Result<bool, String> {
         if let Err(e) = self.device.write(&[cmd]) {
             // PIPE 错误（端点 STALL）：clear_halt 后重试一次
             if e.contains("err -7") {
