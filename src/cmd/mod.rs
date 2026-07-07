@@ -13,6 +13,7 @@
 pub mod cli;
 pub mod detect;
 pub mod dump;
+pub mod preloader_boot_mode;
 pub mod io;
 pub mod multi;
 pub mod partition_table;
@@ -214,6 +215,29 @@ pub fn handle_command(
     if cmd == "multi" {
         multi::cmd_multi(da, args, app_config, log_level)?;
         return Ok(());
+    }
+
+    // Preloader 模式下 reboot fastboot: 直接通过串口发送 Pattern 协议
+    // 对齐 MABT (MTK Auth Bypass Tool) 的 BootAsFASTBOOT 行为
+    if !is_brom && cmd == "reboot" {
+        if let Some(mode) = args.first().map(|s| s.as_str()) {
+            if mode == "fastboot" {
+                info!("Preloader 模式直接发送 BootAsFASTBOOT Pattern...");
+                match preloader_boot_mode::send_boot_pattern(
+                    &mut *da.preloader.device,
+                    preloader_boot_mode::BootMode::Fastboot,
+                ) {
+                    Ok(_) => {
+                        info!("设备已通过 Preloader 模式重启到 Bootloader");
+                        crate::connection::reset_session();
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        warn!("Preloader BootAsFASTBOOT 失败: {}，回退到 DA 流程", e);
+                    }
+                }
+            }
+        }
     }
 
     execute_single_command(da, cmd, args, verify, log_level, app_config)?;
