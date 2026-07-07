@@ -18,38 +18,24 @@ use crate::da::xflash::{DAXFlash, EmmcInfo};
 // =============================================================================
 
 impl<'a> DAXFlash<'a> {
-    /// 重新初始化（精简版：对齐刷机匣，只发 2 个关键查询 + USB 高速重连）
+    /// 重新初始化（DA 复用路径：只做心跳，不做任何可能改变 DA 状态的操作）
     ///
-    /// 刷机匣的"重新初始化DA模式"只发送：
-    ///   1. GET_CHIP_ID (0x010106) — 确认芯片/DA 还活着
-    ///   2. GET_EMMC_INFO (0x01010C) — 获取 EMMC 信息
-    ///   然后直接开始后续命令。
-    ///
-    /// Python reinit() 也发送 GET_RAM_INFO/GET_DA_VERSION 等，但那些是可选的。
-    /// USB 高速重连仍保留（核心提速步骤）。
+    /// DA 复用时设备已经处于完全初始化状态，reinit 的唯一目的是确认 DA 还活着。
+    /// 发送 GET_CHIP_ID 作为心跳，不发送 GET_EMMC_INFO 或其他可能改变状态的命令。
+    /// USB 高速重连已完全移除（只在 upload_da2 初始化时执行一次）。
     pub(crate) fn reinit(&mut self) -> Result<(), String> {
-        // GET_CHIP_ID（心跳 + 确认 DA 存活）
+        // 只做心跳：GET_CHIP_ID（确认 DA 存活）
         match self.send_devctrl(0x010106, None) {
             Ok(data) if data.len() >= 10 => {
                 let hw_code = u16::from_le_bytes([data[0], data[1]]);
                 info!("  芯片 HW Code: 0x{:04X}", hw_code);
             }
-            _ => {}
+            Ok(_) => trace!("[reinit] GET_CHIP_ID 返回空数据"),
+            Err(e) => trace!("[reinit] GET_CHIP_ID 失败 (可能不支持): {}", e),
         }
 
-        // GET_EMMC_INFO — 委托给 get_emmc_info 统一解析
-        if let Ok(info) = self.get_emmc_info() {
-            info!(
-                "  EMMC 类型: {}, block_size: 0x{:08X}, user_size: {} ({} MB)",
-                info.emmc_type,
-                info.block_size,
-                info.user_size,
-                info.user_size_mb()
-            );
-        }
-
-        // === USB 高速重连（对齐 Python reinit 核心提速步骤）===
-        self.try_usb_high_speed_reconnect();
+        // 注意：不发送 GET_EMMC_INFO，因为 DA 复用时 emmc_info 已从 .state 恢复，
+        // 重新查询可能干扰 DA 状态机。
 
         Ok(())
     }

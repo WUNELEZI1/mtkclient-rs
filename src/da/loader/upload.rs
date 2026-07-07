@@ -142,6 +142,9 @@ impl<'a> DAXFlash<'a> {
         // Python: self.setup_env()
         self.setup_env()?;
 
+        // DA1 刚跳转完成，设备需要时间准备，给予 100ms 缓冲（release 模式优化后可能过快）
+        std::thread::sleep(Duration::from_millis(100));
+
         // Python: self.setup_hw_init()
         self.setup_hw_init()?;
 
