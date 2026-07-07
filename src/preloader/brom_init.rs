@@ -7,7 +7,7 @@
 //! - `get_hw_code` / `get_target_config` / `get_hw_subcode`
 //! - `flush_input` / `rword` / `rdword` / `rbyte` 基础读工具
 
-use super::core::{DAPreparseResult, Preloader};
+use super::core::Preloader;
 use crate::system::config::{CHIP_CONFIGS, TargetConfig};
 use colored::Colorize;
 use log::trace;
@@ -79,9 +79,11 @@ impl Preloader {
             .find(|c| c.hw_code == hw)
             .ok_or_else(|| format!("未知芯片: HW code 0x{:04X}", hw))?;
 
-        // 2.5 启动后台线程预解析 DA 文件：bypass / 发送 DA 期间并行完成，节省 2~4 秒
-        let preparse = Arc::new(Mutex::new(None));
-        let preparse_clone = Arc::clone(&preparse);
+        // 2.5 启动后台线程预读取 DA 文件：bypass / 发送 DA 期间并行完成文件 I/O，节省 2~4 秒
+        // 注意：只做文件读取，不做 header 解析（因为 hw code 在此阶段可能不准确，
+        //       解析需要等 upload_da1/da2 时用正确的 hw code）
+        let preloaded = Arc::new(Mutex::new(None));
+        let preloaded_clone = Arc::clone(&preloaded);
         std::thread::spawn(move || {
             use crate::system::paths::获取可执行文件相对路径;
             use std::fs::File;
@@ -93,19 +95,11 @@ impl Preloader {
                 Err(_) => return,
             };
             let mut da_data = Vec::new();
-            if file.read_to_end(&mut da_data).is_err() {
-                return;
-            }
-            if let Ok((magic, regions, is_v6)) = crate::da::loader::header::parse_da_header(&da_data, hw) {
-                *preparse_clone.lock().unwrap() = Some(DAPreparseResult {
-                    da_data,
-                    magic,
-                    regions,
-                    is_v6,
-                });
+            if file.read_to_end(&mut da_data).is_ok() {
+                *preloaded_clone.lock().unwrap() = Some(da_data);
             }
         });
-        self.da_preparse = Some(preparse);
+        self.da_preloaded = Some(preloaded);
 
         // 3. 关闭看门狗（对齐 Python write32 协议）
         trace!("[WD] 开始关闭看门狗流程 (write32协议)");
