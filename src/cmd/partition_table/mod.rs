@@ -28,21 +28,35 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
 
             // 尝试加载 super 动态分区元数据（用于 printgpt 展示 logical partition）
             if da.super_metadata.is_none() {
-                if let Ok((super_addr, super_size)) = da.find_partition_addr("super") {
-                    let meta_size = std::cmp::min(super_size, 1024 * 1024);
-                    match da.readflash_data(super_addr, meta_size) {
-                        Ok(super_data) => {
-                            match crate::partition::lp::SuperMetadata::parse(&super_data) {
-                                Ok(meta) => {
-                                    info!("Super 动态分区: {} 个 logical partition", meta.partitions.len());
-                                    da.super_metadata = Some(meta);
+                info!("正在尝试加载 super 动态分区元数据...");
+                match da.find_partition_addr("super") {
+                    Ok((super_addr, super_size)) => {
+                        let meta_size = std::cmp::min(super_size, 1024 * 1024);
+                        info!("super 分区地址=0x{:08X}, 大小={}, 将读取前 {} 字节解析元数据", super_addr, super_size, meta_size);
+                        match da.readflash_data(super_addr, meta_size) {
+                            Ok(super_data) => {
+                                info!("成功读取 super 前 {} 字节", super_data.len());
+                                match crate::partition::lp::SuperMetadata::parse(&super_data) {
+                                    Ok(meta) => {
+                                        info!("Super 动态分区解析成功: {} 个 logical partition", meta.partitions.len());
+                                        da.super_metadata = Some(meta);
+                                    }
+                                    Err(e) => {
+                                        warn!("Super 动态分区解析失败: {}", e);
+                                    }
                                 }
-                                Err(_) => {}
+                            }
+                            Err(e) => {
+                                warn!("读取 super 分区失败: {}", e);
                             }
                         }
-                        Err(_) => {}
+                    }
+                    Err(e) => {
+                        warn!("查找 super 分区失败: {}", e);
                     }
                 }
+            } else {
+                info!("super 元数据已缓存，跳过加载");
             }
 
             // 输出完整 EMMC 信息
