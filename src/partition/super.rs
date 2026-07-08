@@ -210,14 +210,19 @@ impl SuperMetadata {
     }
 
     fn find_geometry(data: &[u8]) -> Result<LpMetadataGeometry, String> {
-        // 扫描 0x1000 倍数偏移
-        let max_scan = std::cmp::min(data.len(), 0x40000); // 扫描前 256KB
-        for offset in (0..max_scan).step_by(0x1000) {
+        // 扫描前 256KB，步长 512 字节（比 4096 更细，兼容不同对齐）
+        let max_scan = std::cmp::min(data.len(), 0x40000);
+        trace!("find_geometry: 扫描前 {} 字节，步长 512，查找 magic=0x{:08X}", max_scan, LP_METADATA_GEOMETRY_MAGIC);
+        // 打印前 32 字节用于调试
+        let preview = data.iter().take(32).map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+        trace!("find_geometry: 数据前 32 字节: {}", preview);
+        for offset in (0..max_scan).step_by(512) {
             if offset + 16 > data.len() {
                 break;
             }
             let magic = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
             if magic == LP_METADATA_GEOMETRY_MAGIC {
+                trace!("find_geometry: 在偏移 0x{:04X} 找到 magic", offset);
                 return Ok(LpMetadataGeometry {
                     magic,
                     major_version: u16::from_le_bytes(data[offset + 4..offset + 6].try_into().unwrap()),
@@ -227,7 +232,7 @@ impl SuperMetadata {
                 });
             }
         }
-        Err("未找到 LP_METADATA_GEOMETRY (magic=0x414C4147)，可能不是动态分区".to_string())
+        Err(format!("未找到 LP_METADATA_GEOMETRY (magic=0x{:08X})，扫描范围 0..0x{:04X}，步长 512。可能不是动态分区或数据损坏", LP_METADATA_GEOMETRY_MAGIC, max_scan))
     }
 
     fn parse_header(data: &[u8], offset: usize) -> Result<LpMetadataHeader, String> {
