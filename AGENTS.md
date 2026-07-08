@@ -25,40 +25,99 @@
 - 用户因旧版 vbmeta flags 偏移错误导致 bootloop，通过 `wl` 命令从 TIK 备份刷回全部 6 个 vbmeta 分区（a/b 槽 × vbmeta/vbmeta_system/vbmeta_vendor），设备恢复正常。
 - 备份 zip 中 `.img` 文件为 raw 分区镜像，需用 7z 解压（PowerShell `Expand-Archive` 不支持 Deflate64）。
 
-### 刷机匣日志分析（GeekFlashTool / UltimateRipple，51 个日志文件）
+### 理论架构对比：Rust ZybClient vs Python mtkclient
 
-测试设备全部是 **MT6768/MT6769**（54 次出现）。
+基于 mtkclient-2.1.4.1 源码、刷机匣 51 个日志文件、scatter.txt 的完整分析。
 
-**操作统计**：
-| 操作 | 次数 | 说明 |
-|------|------|------|
-| printgpt | 15 | GPT 分区表读取 |
-| r (read) | 12 | 分区读取（preloader、boot、seccfg、para、super 等）|
-| reset | 9 | 设备重启 |
-| dumppreloader | 7 | Preloader dump |
-| w (write) | 4 | 分区写入（super、vbmeta、boot、frp、misc、para）|
-| da | 3 | DA 模式操作 |
-| e (erase) | 1 | 擦除 |
+#### 1. 连接层架构对比
 
-**写入过的分区**：super (8GB+)、vbmeta_a/b、vbmeta_system_a/b、vbmeta_vendor_a/b、boot_b、frp、misc、para。
+| 维度 | Python mtkclient | Rust ZybClient | Rust 优势 |
+|------|-----------------|----------------|-----------|
+| USB 库 | pyusb (libusb0/libusb1) + 自定义 CDC | nusb (纯 Rust) + WinUSB 直连 | 无 libusb 驱动依赖，Windows 原生 WinUSB |
+| 传输模式 | 控制传输 + 批量传输 | 批量传输为主，控制传输为辅 | nusb 的 `Queue` API 支持零拷贝批量传输 |
+| 并发模型 | GIL 单线程 + Queue/Thread | async/await + 真正的多线程 | 无 GIL 锁，USB I/O 和文件 I/O 可真正并行 |
+| 错误处理 | Exception 满天飞 | Result 类型安全传播 | 编译期保证错误处理，不会出现未捕获异常 |
 
-**错误模式统计**：
-| 错误 | 次数 | 说明 |
-|------|------|------|
-| `0x10009` (send DEV CTRL) | 2 | DA 状态机 stage1 status = 0x00010009，send_devctrl 未完整握手导致后续命令超时 |
-| `0xC0070004` (DA hash mismatch) | 1 | DA2 哈希校验失败，DA patch 不完整或 DA 版本不匹配 |
-| "设备已经解锁" | 2 | seccfg 已经是解锁状态，重复解锁报错 |
-| "无法在super动态分区中找到system分区" | 多次 | 动态分区解析问题，super 分区内的 logical partition 查找失败 |
-| "buildProp为空字符串" | 多次 | 读取 build.prop 失败，设备未正常启动或分区损坏 |
-| "ConfigureDa失败" | 2 | DA 配置失败，可能 preloader/EMI 数据不匹配 |
-| Kamakiri Payload 运行出错 | 1 | bypass 失败，payload 执行异常 |
+**关键差异**：mtkclient 的 `UsbClass` 自行实现了完整的 CDC ACM 协议栈（SET_LINE_CODING、SEND_BREAK 等），而 ZybClient 直接走 WinUSB 批量端点，跳过 CDC 抽象层，减少了一层协议转换。
 
-**关键发现**：
-- **DA Patch 流程对齐**：所有成功操作都经过 `Patching DA1 ... Patching DA2 ...` → `DA扩展已成功被接收`，对应我们的 DA patch 流程（hash_check、get_vfy_policy、hash binding、SBC、register read/write）。
-- **Kamakiri2 Bypass 参数**：Brom Payload 地址 `0x100A00`，DA Payload 地址 `0x201000`，使用 `mt6768_payload.bin` (612 字节)。部分日志使用 `generic_preloader_dump_payload.bin` (592 字节)。
-- **seccfg 操作**：主要执行 `r seccfg` 读取，没有看到明确的 lock/unlock 成功记录（日志中只看到"设备已经解锁"错误）。
-- **para 分区**：多次写入 para 分区用于重启模式切换，`r para para.bin` 用于备份。
-- **0xC0070004 出现在 DA2 代码中**：hex 模式 `0C0002C0070004` 和 `080003C0070004`，是 DA2 的 `hash_check` 相关指令序列，DA patch 必须正确 patch 这些位置。
+#### 2. 内存管理对比（大文件场景）
+
+| 操作 | Python mtkclient | Rust ZybClient (当前) | 理论最优 (Rust) |
+|------|-----------------|----------------------|----------------|
+| readflash (8GB super) | **流式**：Queue + Thread 边读边写文件 | **全量**：`Vec<u8>` 载入内存再写文件 | `BufReader` + `BufWriter` 管道，固定 128KB 环形缓冲区 |
+| writeflash (8GB super) | **流式**：`fh.read(dsize)` 分块读取文件 | **全量**：`std::fs::read` 全量载入内存 | `mmap` + 零拷贝发送，或 `BufReader` 流式分块 |
+| 内存峰值 | ~128KB (write_packet_size) | **文件大小** (8GB+) | ~128KB (固定缓冲区) |
+
+**刷机匣日志佐证**：日志中 super 分区写入 8GB+，Python mtkclient 的 `writeflash` 使用 `fh.read(dsize)` 直接从文件流式读取，内存占用恒定。ZybClient 当前 `std::fs::read` 会一次性读入 8GB，必然 OOM。
+
+**Rust 优势凸显**：Rust 的 `std::io::copy` + `BufReader`/`BufWriter` 可以在不引入任何 unsafe 的情况下实现零内存拷贝的流式传输。配合 nusb 的 `Queue` API，可以实现"文件 → 缓冲区 → USB" 的管道化，CPU 缓存友好。
+
+#### 3. 协议状态机对比
+
+**mtkclient 的 send_devctrl 实现**（`xflash_lib.py`）：
+```python
+def send_devctrl(self, cmd, param=None):
+    # 1. send control packet (12 bytes: magic + type + length)
+    # 2. read status (4 bytes)
+    # 3. if status != 0: error
+    # 4. if param: send param
+    # 5. read response data
+```
+
+**ZybClient 的 send_devctrl 实现**（`src/da/xflash/io.rs`）：
+```rust
+// 1. xwrite_data(cmd_bytes) — 发送控制包
+// 2. status() — 读取 stage1 status
+// 3. xread_data(param_len) — 读取参数
+// 4. status() — 读取 stage2 status
+// 5. xread_data(data_len) — 读取响应数据
+```
+
+**关键差异**：mtkclient 的 `status()` 在 stage1 失败时直接返回错误，不继续读取后续数据。而 ZybClient 的修复版本要求**无论 stage1 status 是否非零，都必须完成完整的 3 步握手**。这是从刷机匣日志中 `0x10009` 错误总结出的规则。
+
+#### 4. 功能差距分析（基于日志）
+
+| 功能 | mtkclient 支持 | ZybClient 支持 | 刷机匣日志中的使用频率 | 优先级 |
+|------|---------------|---------------|----------------------|--------|
+| 动态分区解析（super → system/vendor）| ✅ `Partition` 类 | ❌ 仅 GPT 物理分区 | **高频错误**（多次"找不到system分区"） | **P0** |
+| 大文件流式读写 | ✅ Queue + Thread | ❌ 全量内存 | **高频**（super 8GB+） | **P0** |
+| build.prop 读取 | ✅ 通过 ext4 解析 | ❌ | 中频（buildProp 为空） | P1 |
+| para 分区独立操作 | ✅ 独立命令 | ❌ 仅 reboot --via para | 中频（多次 r/w para） | P1 |
+| seccfg 回读校验 | ❌ | ❌ | 低频（无成功解锁记录） | P2 |
+| sparse 镜像支持 | ✅ | ❌ | 低频（刷机匣未明确使用） | P2 |
+| RPMB 操作 | ✅ `xflash_lib.py` | ❌ | 未使用 | P3 |
+
+#### 5. 理论改进路线图
+
+**阶段 1：流式 I/O（解决 OOM）**
+- 修改 `write_flash_data` 签名：接受 `&mut impl Read` 而非 `&[u8]`
+- 修改 `读取分区`/`写入分区`：使用 `BufReader`/`BufWriter` 管道
+- 读取也改为流式：边从 USB 读边写入文件，避免 `Vec<u8>` 全量缓冲
+- **Rust 优势**：`std::io::copy` 在 Rust 中是零分配的，`BufReader` 的环形缓冲区可以复用，避免 Python 的 `bytearray.extend` 动态扩容开销
+
+**阶段 2：动态分区支持**
+- 解析 `LP_METADATA_GEOMETRY`（super 分区头部，偏移 0x1000 倍数）
+- `LpMetadata` 结构：包含 logical partition 的名称、起始块、大小
+- 在 `find_partition_addr` 中增加 fallback：GPT 找不到 → 检查 super → 解析 logical partition
+- **Rust 优势**：`#[repr(C)]` + `zerocopy` crate 可以安全地零拷贝解析二进制结构，无需 Python 的 `unpack` 手动偏移计算
+
+**阶段 3：build.prop 读取**
+- 方案 A（轻量）：直接从 super 分区内的 system logical partition 读取原始数据，搜索 `"ro.product.model="` 字符串
+- 方案 B（完整）：引入 `ext4-rs` 或 `erofs-rs` crate，真正挂载文件系统
+- **Rust 优势**：`memchr` crate 的 SIMD 字符串搜索比 Python 的 `str.find` 快 10-100 倍，适合在大分区中搜索 key=value
+
+**阶段 4：Rust 特有的优化**
+- **SIMD checksum**：Python mtkclient 的 checksum 是 `sum(data) & 0xFFFF`（纯 Python 循环），Rust 可以用 `std::simd` 或 `fastsum` crate 加速 10 倍以上
+- **零拷贝 DA patch**：Python 的 `bytearray` patch 需要多次 `extend`/`replace`，Rust 可以用 `Vec::splice` 或 `bytes` crate 的 `BytesMut` 实现真正的零拷贝修改
+- **编译期配置**：`brom_config.rs` 的 `ChipConfig` 可以用 `const fn` 在编译期初始化，而非 Python 的运行期字典查找
+
+#### 6. 刷机匣日志的关键协议发现
+
+- **DA Patch 流程**：所有成功操作都经过 `Patching DA1 ... Patching DA2 ...` → `DA扩展已成功被接收`。对应我们的 DA patch（hash_check、get_vfy_policy、hash binding、SBC、register read/write）。
+- **Kamakiri2 Bypass 参数**：Brom Payload `0x100A00`，DA Payload `0x201000`，`mt6768_payload.bin` (612 字节)。
+- **0xC0070004 模式**：DA2 中的 `hash_check` 指令序列（`0C0002C0070004`、`080003C0070004`），DA patch 必须正确覆盖。
+- **para 分区**：多次写入用于重启模式切换，`r para para.bin` 用于备份。
+- **seccfg 操作**：以读取为主，未看到 lock/unlock 成功记录。
 
 ### 协议发现
 
