@@ -27,28 +27,65 @@ use std::time::Duration;
 use crate::preloader::transport::BromTransport;
 
 /// 支持的启动模式
+///
+/// 对齐 MTK Preloader Pattern 协议文档中全部 9 种模式。
+/// Pattern 为 8 字节 ASCII 字符串（目标模式名称的反转或特定编码）。
 #[derive(Debug, Clone, Copy)]
 pub enum BootMode {
-    Fastboot,   // bootloader (lk)
-    Factory,    // recovery
-    Meta,       // meta mode
+    Fastboot,       // bootloader (lk) — DMHCTIWS
+    Factory,        // recovery — MYROTCAF
+    Meta,           // meta mode — ATEM (padded)
+    AteMeta,        // ATE / META 组合模式 — ATEMATEM
+    AteEvda,        // ATE 工程验证下载代理 — ATEMEVDA
+    AteEvdx,        // ATE 工程验证调试 — ATEMEVDX
+    AdvancedMeta,    // 高级 META — ADVEMETA
+    AteFactory,     // ATE 工厂 — FACTFACT
+    DualTalkSwitch, // 双卡切换 — SWITCHMD
 }
 
 impl BootMode {
     /// 返回 8 字节 Pattern（反转字符串）
     fn pattern(&self) -> &[u8] {
         match self {
-            BootMode::Fastboot => b"DMHCTIWS",   // "FASTBOOT" reversed
-            BootMode::Factory  => b"MYROTCAF",   // "FACTORYM" reversed
-            BootMode::Meta     => b"ATEM    ",   // "META" padded
+            BootMode::Fastboot       => b"DMHCTIWS",   // "FASTBOOT" reversed
+            BootMode::Factory        => b"MYROTCAF",   // "FACTORYM" reversed
+            BootMode::Meta           => b"ATEM    ",   // "META" padded to 8
+            BootMode::AteMeta        => b"ATEMATEM",   // "ATEMATEM"
+            BootMode::AteEvda        => b"ATEMEVDA",   // "ATEMEVDA"
+            BootMode::AteEvdx        => b"ATEMEVDX",   // "ATEMEVDX"
+            BootMode::AdvancedMeta   => b"ADVEMETA",   // "ADVEMETA"
+            BootMode::AteFactory     => b"FACTFACT",   // "FACTFACT"
+            BootMode::DualTalkSwitch => b"SWITCHMD",   // "SWITCHMD"
         }
     }
 
     fn name(&self) -> &'static str {
         match self {
-            BootMode::Fastboot => "FASTBOOT",
-            BootMode::Factory  => "FACTORY",
-            BootMode::Meta     => "META",
+            BootMode::Fastboot       => "FASTBOOT",
+            BootMode::Factory        => "FACTORY",
+            BootMode::Meta           => "META",
+            BootMode::AteMeta        => "ATE_META",
+            BootMode::AteEvda        => "ATE_EVDA",
+            BootMode::AteEvdx        => "ATE_EVDX",
+            BootMode::AdvancedMeta   => "ADVANCED_META",
+            BootMode::AteFactory     => "ATE_FACTORY",
+            BootMode::DualTalkSwitch => "DUALTALK_SWITCH",
+        }
+    }
+
+    /// 从用户输入的字符串解析 BootMode
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "fastboot" | "bootloader" | "lk"         => Some(BootMode::Fastboot),
+            "factory" | "recovery"                     => Some(BootMode::Factory),
+            "meta"                                     => Some(BootMode::Meta),
+            "ate_meta" | "atemeta"                    => Some(BootMode::AteMeta),
+            "ate_evda" | "ateevda"                    => Some(BootMode::AteEvda),
+            "ate_evdx" | "ateevdx"                    => Some(BootMode::AteEvdx),
+            "advanced_meta" | "advmeta" | "advemeta"  => Some(BootMode::AdvancedMeta),
+            "ate_factory" | "atefactory" | "factfact" => Some(BootMode::AteFactory),
+            "dualtalk_switch" | "dualtalk" | "switchmd" => Some(BootMode::DualTalkSwitch),
+            _ => None,
         }
     }
 }

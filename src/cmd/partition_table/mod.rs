@@ -26,10 +26,27 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
             let mut boot1_size: u64 = 0;
             let mut boot2_size: u64 = 0;
 
+            // 尝试加载 super 动态分区元数据（用于 printgpt 展示 logical partition）
+            if da.super_metadata.is_none() {
+                if let Ok((super_addr, super_size)) = da.find_partition_addr("super") {
+                    let meta_size = std::cmp::min(super_size, 1024 * 1024);
+                    match da.readflash_data(super_addr, meta_size) {
+                        Ok(super_data) => {
+                            match crate::partition::lp::SuperMetadata::parse(&super_data) {
+                                Ok(meta) => {
+                                    info!("Super 动态分区: {} 个 logical partition", meta.partitions.len());
+                                    da.super_metadata = Some(meta);
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
+
             // 输出完整 EMMC 信息
             if let Ok(emmc_info) = da.get_emmc_info() {
-                boot1_size = emmc_info.boot1_size;
-                boot2_size = emmc_info.boot2_size;
                 emmc::print_emmc_info(&emmc_info);
             } else {
                 // 失败时降级到读 boot1/boot2
@@ -71,7 +88,7 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
             }
 
             if let Ok(data) = da.get_last_gpt_data() {
-                table::print_gpt_table(data, boot1_size, boot2_size);
+                table::print_gpt_table(data, boot1_size, boot2_size, da.super_metadata.as_ref());
             }
 
             info!("{}", "GPT 读取成功".green());
@@ -117,7 +134,7 @@ pub fn cmd_read_gpt(
     );
 
     if log_level >= 2 {
-        table::print_gpt_table(gpt_data, 0, 0);
+        table::print_gpt_table(gpt_data, 0, 0, None);
     }
 
     Ok(())
