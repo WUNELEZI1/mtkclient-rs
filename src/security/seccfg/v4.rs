@@ -95,11 +95,11 @@ impl SecCfgV4 {
         }
 
         if hwtype.is_empty() {
+            // SW 解密失败，说明硬件加密（V2/V3/V4）。
+            // 具体区分 V2/V3/V4 需要额外信息（如芯片类型），实际使用中 MT6768 系列
+            // 主要是 V4。这里标记为 V4 作为默认值，在线签名时走 HACC 硬件路径。
+            // 如果 HACC 不可用，sej_hacc_sign 会自动回退到软件路径。
             hwtype = "V4".to_string();
-        }
-
-        if hwtype.is_empty() {
-            return Err("无法识别 seccfg hwtype".to_string());
         }
 
         info!(
