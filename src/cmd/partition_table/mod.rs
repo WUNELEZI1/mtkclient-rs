@@ -47,6 +47,8 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
 
             // 输出完整 EMMC 信息
             if let Ok(emmc_info) = da.get_emmc_info() {
+                boot1_size = emmc_info.boot1_size;
+                boot2_size = emmc_info.boot2_size;
                 emmc::print_emmc_info(&emmc_info);
             } else {
                 // 失败时降级到读 boot1/boot2
