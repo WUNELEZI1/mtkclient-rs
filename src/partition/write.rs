@@ -76,29 +76,29 @@ impl<'a> DAXFlash<'a> {
         Err(format_write_status_error(label, status))
     }
 
-    /// 按原始地址写入一段数据，供分区写入、seccfg/frp 等场景复用。
+    /// 按原始地址流式写入数据，供分区写入、seccfg/frp 等场景复用。
+    /// 接受任意 `Read` 实现（文件、内存缓冲区等），避免大文件全量载入内存。
     /// 带进度条显示：使用 indicatif 实时更新进度，最后输出总耗时和速度。
-    pub(crate) fn write_flash_data(
+    pub(crate) fn write_flash_data_stream(
         &mut self,
         addr: u64,
-        data: &[u8],
+        reader: &mut dyn std::io::Read,
+        total: u64,
         storage: u32,
         parttype: u32,
     ) -> Result<(), String> {
         // 写入前清空 USB IN pending data，防止读取残留干扰写入
         self.preloader.device.drain_pending();
 
-        self.cmd_write_data(addr, data.len() as u64, storage, parttype)?;
+        self.cmd_write_data(addr, total, storage, parttype)?;
 
         // 写入时跳过 get_packet_length（避免 send_devctrl 干扰 DA 状态）。
         // 使用 128KB 默认值（0x20000），平衡速度和稳定性。
-        // 256KB 在部分 DA 上会导致 param 2 header 超时，128KB 更安全。
         let write_packet_size = 0x20000usize;
-        let total = data.len();
         let start_time = std::time::Instant::now();
 
-        // 创建进度条（输出到 stderr，与日志统一流，避免视觉交织）
-        let bar = ProgressBar::new(total as u64);
+        // 创建进度条
+        let bar = ProgressBar::new(total);
         bar.set_style(
             ProgressStyle::with_template(
                 "  {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] \
@@ -110,32 +110,36 @@ impl<'a> DAXFlash<'a> {
         );
         bar.set_message(format!("写入: 0x{:08X}", addr));
 
-        let mut pos = 0;
+        let mut pos = 0u64;
+        let mut chunk_buf = vec![0u8; write_packet_size];
         while pos < total {
             if crate::cancel::force_requested() || crate::cancel::requested() {
                 self.preloader.device.cancel_pending_transfers();
                 bar.abandon_with_message("写入已取消");
                 return Err("写入已取消".to_string());
             }
-            let dsize = std::cmp::min(write_packet_size, total - pos);
-            let chunk = &data[pos..pos + dsize];
+            let to_read = std::cmp::min(write_packet_size as u64, total - pos) as usize;
+            let n = reader.read(&mut chunk_buf[..to_read])
+                .map_err(|e| format!("读取文件失败: {}", e))?;
+            if n == 0 {
+                return Err(format!("文件提前结束: 期望 {} 字节，实际 {} 字节", total, pos));
+            }
+            let chunk = &chunk_buf[..n];
             let checksum: u32 = chunk
                 .iter()
                 .fold(0u32, |sum, &byte| sum.wrapping_add(byte as u32));
 
             trace!(
                 "[writeflash] chunk offset={} size={} checksum=0x{:08X}",
-                pos, dsize, checksum
+                pos, n, checksum
             );
 
             let zero = 0u32.to_le_bytes();
             let checksum_bytes = checksum.to_le_bytes();
             self.send_param_list_chunked(&[&zero, &checksum_bytes, chunk], "writeflash chunk")?;
 
-            pos += dsize;
-
-            // 更新进度条
-            bar.set_position(pos as u64);
+            pos += n as u64;
+            bar.set_position(pos);
         }
 
         let st = self.read_write_final_status()?;
@@ -158,6 +162,18 @@ impl<'a> DAXFlash<'a> {
             total, elapsed, speed
         );
         Ok(())
+    }
+
+    /// 按原始地址写入内存中的数据（向后兼容）。
+    /// 内部转接到流式实现，统一代码路径。
+    pub(crate) fn write_flash_data(
+        &mut self,
+        addr: u64,
+        data: &[u8],
+        storage: u32,
+        parttype: u32,
+    ) -> Result<(), String> {
+        self.write_flash_data_stream(addr, &mut data.as_ref(), data.len() as u64, storage, parttype)
     }
 
     /// 读取写入最终状态，支持 0x00010004 重试

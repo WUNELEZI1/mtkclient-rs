@@ -11,6 +11,8 @@ pub mod gpt;
 pub mod io;
 #[path = "partition_table.rs"]
 pub mod partition_table;
+#[path = "super.rs"]
+pub mod lp;
 #[path = "write.rs"]
 pub(crate) mod write;
 

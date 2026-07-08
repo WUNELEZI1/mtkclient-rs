@@ -7,13 +7,55 @@
 //! - `erase_partition` — 擦除分区
 //! - `write_flash_data` / `cmd_write_data` / `get_packet_length` — 底层写入原语
 
-use log::{info, warn};
+use log::{debug, info, warn};
+use std::io::Read;
 use std::sync::atomic::Ordering;
 
 use crate::da::xflash::{CMD_FORMAT, CMD_MAGIC, DAXFlash, pack3};
 use crate::usb::log::QUIET_USB_READ;
 
 use super::gpt::GptInfo;
+
+/// 在文件末尾填充零字节的 Reader 包装器，用于 512 字节对齐。
+struct PaddedReader<R: Read> {
+    inner: R,
+    remaining: u64, // 剩余需要读取的总字节数（包含填充）
+}
+
+impl<R: Read> PaddedReader<R> {
+    fn new(inner: R, file_size: u64, pad_to: u64) -> Self {
+        let padded = if file_size % pad_to != 0 {
+            file_size + (pad_to - file_size % pad_to)
+        } else {
+            file_size
+        };
+        Self {
+            inner,
+            remaining: padded,
+        }
+    }
+}
+
+impl<R: Read> Read for PaddedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Ok(0);
+        }
+        let to_read = std::cmp::min(buf.len() as u64, self.remaining) as usize;
+        let n = self.inner.read(&mut buf[..to_read])?;
+        if n == 0 {
+            // 文件已读完，填充零字节
+            let fill = std::cmp::min(buf.len(), self.remaining as usize);
+            for b in &mut buf[..fill] {
+                *b = 0;
+            }
+            self.remaining -= fill as u64;
+            return Ok(fill);
+        }
+        self.remaining -= n as u64;
+        Ok(n)
+    }
+}
 
 const GPT_CACHE_FILE: &str = "gpt.bin";
 
@@ -113,10 +155,45 @@ impl<'a> DAXFlash<'a> {
         let gpt_info = GptInfo::parse(gpt_data)?;
 
         if let Some(entry) = gpt_info.find_partition(partition) {
-            Ok((entry.start_addr, entry.size))
-        } else {
-            Err(format!("未找到分区: {}", partition))
+            return Ok((entry.start_addr, entry.size));
         }
+
+        // GPT 中未找到，尝试从 super 动态分区解析 logical partition
+        if partition != "super" {
+            if let Ok((super_addr, super_size)) = self.find_partition_addr("super") {
+                // 如果缓存中没有 super 元数据，读取并解析
+                if self.super_metadata.is_none() {
+                    info!("GPT 中未找到 {}，尝试从 super 动态分区解析...", partition);
+                    // 元数据通常在 super 分区前 1MB 内，不需要读取整个分区
+                    let meta_size = std::cmp::min(super_size, 1024 * 1024);
+                    match self.readflash_data(super_addr, meta_size) {
+                        Ok(super_data) => {
+                            match crate::partition::lp::SuperMetadata::parse(&super_data) {
+                                Ok(meta) => {
+                                    info!("Super 动态分区解析成功: {} 个 logical partition", meta.partitions.len());
+                                    self.super_metadata = Some(meta);
+                                }
+                                Err(e) => {
+                                    debug!("Super 动态分区解析失败: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            debug!("读取 super 分区失败: {}", e);
+                        }
+                    }
+                }
+
+                if let Some(ref meta) = self.super_metadata {
+                    if let Some((offset, size)) = meta.find_partition(partition) {
+                        info!("从 super 动态分区中找到 {}: 偏移 0x{:08X}, 大小 0x{:08X}", partition, offset, size);
+                        return Ok((super_addr + offset, size));
+                    }
+                }
+            }
+        }
+
+        Err(format!("未找到分区: {}", partition))
     }
 
     /// 解析特殊分区名（boot1/boot2/rpmb 等），返回 (parttype, addr, size)
@@ -359,16 +436,19 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
-    /// 写入文件到分区
+    /// 写入文件到分区（流式，避免大文件 OOM）
     /// 对齐 Python writeflash (xflash_lib.py:writeflash)
     /// 协议: cmd_write_data → 循环分包写入 [0x0(4B)][checksum(4B)][data] → CC_OPTIONAL_DOWNLOAD_ACT → status
     /// 增加校验：文件大小不能超过分区大小，超过时报错。
     pub fn 写入分区(&mut self, 分区名: &str, 输入文件: &str) -> Result<(), String> {
         info!("写入文件 {} 到分区 {}...", 输入文件, 分区名);
 
-        // 读取文件
-        let 文件数据 = std::fs::read(输入文件).map_err(|e| format!("无法读取文件: {}", e))?;
-        let 文件大小 = 文件数据.len();
+        // 打开文件（流式读取，避免全量载入内存）
+        let file = std::fs::File::open(输入文件)
+            .map_err(|e| format!("无法打开文件: {}", e))?;
+        let 文件元数据 = file.metadata()
+            .map_err(|e| format!("无法获取文件元数据: {}", e))?;
+        let 文件大小 = 文件元数据.len();
 
         // 先尝试解析特殊分区（boot1/boot2/rpmb）
         let (parttype, 地址, 分区大小) =
@@ -386,29 +466,29 @@ impl<'a> DAXFlash<'a> {
             };
 
         // 校验：文件大小不能超过分区大小
-        if 文件大小 as u64 > 分区大小 {
+        if 文件大小 > 分区大小 {
             return Err(format!(
                 "文件大小 ({}) 超过分区 {} 容量 ({} 字节)，写入被拒绝",
                 文件大小, 分区名, 分区大小
             ));
         }
-        if 文件大小 as u64 == 分区大小 {
+        if 文件大小 == 分区大小 {
             info!("  文件大小与分区容量完全匹配");
         } else {
             info!("  文件大小: {} 字节, 分区容量: {} 字节", 文件大小, 分区大小);
         }
 
-        let mut 数据 = 文件数据;
-        // 对齐到 512 字节（Python: 如果长度不是 512 的倍数，补零）
-        let 填充 = if 数据.len() % 512 != 0 {
-            512 - (数据.len() % 512)
+        // 使用 PaddedReader 自动处理 512 字节对齐填充
+        let padded_reader = PaddedReader::new(file, 文件大小, 512);
+        let 写入大小 = if 文件大小 % 512 != 0 {
+            文件大小 + (512 - 文件大小 % 512)
         } else {
-            0
+            文件大小
         };
-        if 填充 > 0 {
-            数据.resize(数据.len() + 填充, 0);
-        }
-        self.write_flash_data(地址, &数据, 1, parttype)?;
+
+        // 使用 BufReader 流式读取 + write_flash_data_stream
+        let mut reader = std::io::BufReader::new(padded_reader);
+        self.write_flash_data_stream(地址, &mut reader, 写入大小, 1, parttype)?;
 
         info!("  写入完成: {} 字节写入分区 {}", 文件大小, 分区名);
         Ok(())

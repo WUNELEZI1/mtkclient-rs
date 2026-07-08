@@ -83,6 +83,8 @@ pub struct DAXFlash<'a> {
     pub(crate) preloader_path: Option<String>,
     /// 当前进程内记录的可选 DA 查询失败项，DA 会话保存后同步到 .state
     pub(crate) optional_query_failures: Vec<String>,
+    /// 动态分区 (super) 元数据缓存
+    pub(crate) super_metadata: Option<crate::partition::lp::SuperMetadata>,
 }
 
 impl<'a> DAXFlash<'a> {
@@ -95,6 +97,7 @@ impl<'a> DAXFlash<'a> {
             da2_base_addr: 0x40000000,
             daext: false,
             last_gpt_data: None,
+            super_metadata: None,
             patch_da: true,
             da_x_speed: 1,
             da_file_data: None,
