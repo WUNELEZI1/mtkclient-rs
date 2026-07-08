@@ -11,6 +11,7 @@
 //! - `handle_command`   — 单命令执行入口（处理 Phase1 dump/bypass + Phase2 DA 命令）
 
 pub mod cli;
+pub mod buildprop;
 pub mod detect;
 pub mod dump;
 pub mod preloader_boot_mode;
@@ -316,6 +317,7 @@ pub fn execute_single_command(
             da.enable_adb_and_reboot()?;
             info!("{}", "ADB 已启用，设备正在重启进入系统".green());
         }
+        "buildprop" => buildprop::cmd_buildprop(da, args)?,
         _ => {
             error!("{}", format!("未知命令: {}", cmd).red());
             print_help();

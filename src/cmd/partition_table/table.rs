@@ -185,13 +185,22 @@ pub fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64, super_meta
             );
             for lp in &meta.partitions {
                 let (off, size) = meta.find_partition(&lp.name).unwrap_or((0, 0));
+                let ab_tag = if lp.is_slot_suffixed() {
+                    let suffix = if lp.name.ends_with("_a") { " [A-slot]".cyan() }
+                               else if lp.name.ends_with("_b") { " [B-slot]".magenta() }
+                               else { "".into() };
+                    suffix
+                } else {
+                    "".into()
+                };
                 let lp_line = format!(
-                    "  {} {:<20}  offset=0x{:08X}  size=0x{:08X} ({})",
+                    "  {} {:<20}  offset=0x{:08X}  size=0x{:08X} ({}){}",
                     "│  ".cyan(),
                     lp.name,
                     off,
                     size,
                     emmc::format_size(size),
+                    ab_tag,
                 );
                 println!("{}", lp_line.dimmed());
             }

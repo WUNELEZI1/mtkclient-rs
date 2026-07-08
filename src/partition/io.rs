@@ -406,16 +406,16 @@ impl<'a> DAXFlash<'a> {
             self.super_metadata = Some(meta);
         }
 
-        // 3. 在 super 元数据中查找逻辑分区
+        // 3. 在 super 元数据中查找逻辑分区（自动处理 A/B 槽位）
         let meta = self.super_metadata.as_ref()
             .ok_or("super 元数据不可用")?;
-        let (logical_offset, logical_size) = meta.find_partition(逻辑分区名)
+        let (actual_name, logical_offset, logical_size) = meta.find_partition_smart(逻辑分区名)
             .ok_or_else(|| format!("在 super 中未找到逻辑分区: {}", 逻辑分区名))?;
 
         let 物理地址 = super_addr + logical_offset;
         info!(
-            "读取动态分区 {}: super[0x{:08X}] + offset[0x{:08X}] = 物理地址 0x{:08X}, 大小 {} 字节",
-            逻辑分区名, super_addr, logical_offset, 物理地址, logical_size
+            "读取动态分区 {}[{}]: super[0x{:08X}] + offset[0x{:08X}] = 物理地址 0x{:08X}, 大小 {} 字节",
+            逻辑分区名, actual_name, super_addr, logical_offset, 物理地址, logical_size
         );
 
         // 4. 流式读取到文件（使用空回调，进度由内部进度条显示）
