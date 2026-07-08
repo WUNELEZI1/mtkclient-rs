@@ -112,9 +112,8 @@ impl SuperMetadata {
         let geometry = Self::find_geometry(data)?;
         trace!("Super geometry found: {:?}", geometry);
 
-        // geometry 之后是 header（偏移通常是 geometry.header_size 之后）
-        // 实际上 geometry 只占前 4096 字节，header 在 4096 偏移处
-        let header_offset = 4096usize;
+        // geometry 之后是 header，偏移由 geometry.header_size 指定
+        let header_offset = geometry.header_size as usize;
         let header = Self::parse_header(data, header_offset)?;
         trace!("Super header: {:?}", header);
 

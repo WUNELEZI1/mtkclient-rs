@@ -55,7 +55,7 @@ impl BootMode {
             BootMode::AteEvdx        => b"ATEMEVDX",   // "ATEMEVDX"
             BootMode::AdvancedMeta   => b"ADVEMETA",   // "ADVEMETA"
             BootMode::AteFactory     => b"FACTFACT",   // "FACTFACT"
-            BootMode::DualTalkSwitch => b"SWITCHMD",   // "SWITCHMD"
+            BootMode::DualTalkSwitch => b"MDHCTIWS",   // "SWITCHMD" reversed
         }
     }
 
