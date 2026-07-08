@@ -165,6 +165,28 @@ pub fn handle_command(
         }
     }
 
+    // Preloader 模式下 reboot fastboot: 直接通过串口发送 Pattern 协议
+    // 对齐 MABT (MTK Auth Bypass Tool) 的 BootAsFASTBOOT 行为
+    // 不需要 DA 加载，直接走 Preloader COM 口通信
+    if !is_brom && cmd == "reboot" {
+        if app_config.cmd_args.first().map(|s| s.as_str()) == Some("fastboot") {
+            info!("Preloader 模式直接发送 BootAsFASTBOOT Pattern...");
+            match preloader_boot_mode::send_boot_pattern(
+                &mut *da.preloader.device,
+                preloader_boot_mode::BootMode::Fastboot,
+            ) {
+                Ok(_) => {
+                    info!("设备已通过 Preloader 模式重启到 Bootloader");
+                    crate::connection::reset_session();
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!("Preloader BootAsFASTBOOT 失败: {}，回退到 DA 流程", e);
+                }
+            }
+        }
+    }
+
     // Preloader 模式下 DRAM 已由 preloader 初始化，EMI 数据可选
     let effective_preloader = if !preloader_file.is_empty() {
         Some(preloader_file.to_string())
@@ -224,29 +246,6 @@ pub fn handle_command(
     if cmd == "multi" {
         multi::cmd_multi(da, args, app_config, log_level)?;
         return Ok(());
-    }
-
-    // Preloader 模式下 reboot fastboot: 直接通过串口发送 Pattern 协议
-    // 对齐 MABT (MTK Auth Bypass Tool) 的 BootAsFASTBOOT 行为
-    if !is_brom && cmd == "reboot" {
-        if let Some(mode) = args.first().map(|s| s.as_str()) {
-            if mode == "fastboot" {
-                info!("Preloader 模式直接发送 BootAsFASTBOOT Pattern...");
-                match preloader_boot_mode::send_boot_pattern(
-                    &mut *da.preloader.device,
-                    preloader_boot_mode::BootMode::Fastboot,
-                ) {
-                    Ok(_) => {
-                        info!("设备已通过 Preloader 模式重启到 Bootloader");
-                        crate::connection::reset_session();
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        warn!("Preloader BootAsFASTBOOT 失败: {}，回退到 DA 流程", e);
-                    }
-                }
-            }
-        }
     }
 
     execute_single_command(da, cmd, args, verify, log_level, app_config)?;

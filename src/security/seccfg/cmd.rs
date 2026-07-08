@@ -33,6 +33,8 @@ pub fn unlock_bootloader(da: &mut DAXFlash) -> Result<(), String> {
         v3.create("unlock", seccfg_data.len())?
     };
 
+    // HACC 签名后 DA 状态机需要时间恢复，300ms 延迟确保 write_flash_data 不会超时
+    std::thread::sleep(std::time::Duration::from_millis(300));
     da.write_flash_data(seccfg_addr, &new_data, 1, 8)?;
     info!("Bootloader 解锁成功");
     Ok(())
@@ -55,6 +57,8 @@ pub fn lock_bootloader(da: &mut DAXFlash) -> Result<(), String> {
         v3.create("lock", seccfg_data.len())?
     };
 
+    // HACC 签名后 DA 状态机需要时间恢复，300ms 延迟确保 write_flash_data 不会超时
+    std::thread::sleep(std::time::Duration::from_millis(300));
     da.write_flash_data(seccfg_addr, &new_data, 1, 8)?;
     info!("Bootloader 锁定成功");
     Ok(())
