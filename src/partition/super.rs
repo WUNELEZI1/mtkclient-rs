@@ -46,6 +46,42 @@ pub struct LpMetadataPartition {
     pub group_index: u64,
 }
 
+/// AOSP LP_PARTITION_ATTR 位定义
+pub const LP_PARTITION_ATTR_READONLY: u32 = 0x00000001;
+/// 此分区名会附加当前槽位后缀（如 system → system_a）
+pub const LP_PARTITION_ATTR_SLOT_SUFFIXED: u32 = 0x00000002;
+/// 此分区在所有槽位中唯一（不需要后缀）
+pub const LP_PARTITION_ATTR_UPDATED: u32 = 0x00000004;
+
+impl LpMetadataPartition {
+    /// 是否带有槽位后缀（A/B 分区）
+    pub fn is_slot_suffixed(&self) -> bool {
+        (self.attributes & LP_PARTITION_ATTR_SLOT_SUFFIXED) != 0
+    }
+
+    /// 提取基础名称（去掉 _a/_b 后缀）
+    /// 例如: "system_a" → "system", "vendor_b" → "vendor"
+    /// 如果名称不以 _a 或 _b 结尾，返回原始名称
+    pub fn base_name(&self) -> &str {
+        let name = self.name.as_str();
+        if let Some(base) = name.strip_suffix("_a") {
+            base
+        } else if let Some(base) = name.strip_suffix("_b") {
+            base
+        } else {
+            name
+        }
+    }
+}
+
+/// Super Group 条目（定义动态分区组）
+#[derive(Debug, Clone)]
+pub struct LpMetadataGroup {
+    pub name: String,
+    pub maximum_size: u64,
+    pub flags: u32,
+}
+
 /// Extent 条目（描述数据在物理设备上的位置）
 #[derive(Debug, Clone)]
 pub struct LpMetadataExtent {
@@ -62,6 +98,7 @@ pub struct SuperMetadata {
     pub header: LpMetadataHeader,
     pub partitions: Vec<LpMetadataPartition>,
     pub extents: Vec<LpMetadataExtent>,
+    pub groups: Vec<LpMetadataGroup>,
     pub block_size: u32, // 通常为 4096
 }
 
@@ -95,6 +132,11 @@ impl SuperMetadata {
             + header.partitions_count as usize * 256; // partition entry size = 256
         let extents = Self::parse_extents(data, extents_offset, header.extents_count)?;
 
+        // group table 紧随 extent table 之后
+        let _group_entry_size = 144usize; // AOSP LpMetadataGroup 大小
+        let groups_offset = extents_offset + header.extents_count as usize * 32;
+        let groups = Self::parse_groups(data, groups_offset, header.groups_count);
+
         // block size 默认 4096
         let block_size = 4096u32;
 
@@ -103,6 +145,7 @@ impl SuperMetadata {
             header,
             partitions,
             extents,
+            groups,
             block_size,
         })
     }
@@ -143,6 +186,28 @@ impl SuperMetadata {
                 (p.name.clone(), off, size)
             })
             .collect()
+    }
+
+    /// 智能查找分区，自动处理 A/B 槽位
+    ///
+    /// 优先匹配精确名称，若找不到则尝试添加 _a/_b 后缀：
+    ///   "system" → 先找 "system"，再找 "system_a"、"system_b"
+    /// 返回 (实际分区名, 起始偏移, 大小)
+    pub fn find_partition_smart(&self, name: &str) -> Option<(String, u64, u64)> {
+        // 1. 精确匹配
+        if let Some((off, size)) = self.find_partition(name) {
+            return Some((name.to_string(), off, size));
+        }
+
+        // 2. 尝试 _a / _b 后缀
+        for suffix in &["_a", "_b"] {
+            let slot_name = format!("{}{}", name, suffix);
+            if let Some((off, size)) = self.find_partition(&slot_name) {
+                return Some((slot_name, off, size));
+            }
+        }
+
+        None
     }
 
     fn find_geometry(data: &[u8]) -> Result<LpMetadataGeometry, String> {
@@ -289,5 +354,33 @@ impl SuperMetadata {
         }
 
         Ok(extents)
+    }
+
+    fn parse_groups(
+        data: &[u8],
+        offset: usize,
+        count: u32,
+    ) -> Vec<LpMetadataGroup> {
+        let mut groups = Vec::with_capacity(count as usize);
+        let entry_size = 144usize; // AOSP LpMetadataGroup 大小
+        // 结构: name(36) + maximum_size(8) + flags(4) + reserved(96)
+        for i in 0..count {
+            let entry_offset = offset + i as usize * entry_size;
+            if entry_offset + entry_size > data.len() {
+                break;
+            }
+            let name_bytes = &data[entry_offset..entry_offset + 36];
+            let name = String::from_utf8_lossy(name_bytes)
+                .trim_end_matches('\0')
+                .to_string();
+            let maximum_size = u64::from_le_bytes(
+                data[entry_offset + 36..entry_offset + 44].try_into().unwrap(),
+            );
+            let flags = u32::from_le_bytes(
+                data[entry_offset + 44..entry_offset + 48].try_into().unwrap(),
+            );
+            groups.push(LpMetadataGroup { name, maximum_size, flags });
+        }
+        groups
     }
 }

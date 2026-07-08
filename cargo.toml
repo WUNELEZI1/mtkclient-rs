@@ -39,6 +39,8 @@ is_elevated = "0.1"
 indicatif = "0.18"
 # Ctrl+C 优雅中断
 ctrlc = "3.5"
+# SIMD 字节搜索（build.prop 属性提取）
+memchr = "2.7"
 
 [profile.dev]
 # 开发模式：编译最快，不优化，保留完整调试信息
