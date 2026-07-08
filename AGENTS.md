@@ -25,6 +25,41 @@
 - 用户因旧版 vbmeta flags 偏移错误导致 bootloop，通过 `wl` 命令从 TIK 备份刷回全部 6 个 vbmeta 分区（a/b 槽 × vbmeta/vbmeta_system/vbmeta_vendor），设备恢复正常。
 - 备份 zip 中 `.img` 文件为 raw 分区镜像，需用 7z 解压（PowerShell `Expand-Archive` 不支持 Deflate64）。
 
+### 刷机匣日志分析（GeekFlashTool / UltimateRipple，51 个日志文件）
+
+测试设备全部是 **MT6768/MT6769**（54 次出现）。
+
+**操作统计**：
+| 操作 | 次数 | 说明 |
+|------|------|------|
+| printgpt | 15 | GPT 分区表读取 |
+| r (read) | 12 | 分区读取（preloader、boot、seccfg、para、super 等）|
+| reset | 9 | 设备重启 |
+| dumppreloader | 7 | Preloader dump |
+| w (write) | 4 | 分区写入（super、vbmeta、boot、frp、misc、para）|
+| da | 3 | DA 模式操作 |
+| e (erase) | 1 | 擦除 |
+
+**写入过的分区**：super (8GB+)、vbmeta_a/b、vbmeta_system_a/b、vbmeta_vendor_a/b、boot_b、frp、misc、para。
+
+**错误模式统计**：
+| 错误 | 次数 | 说明 |
+|------|------|------|
+| `0x10009` (send DEV CTRL) | 2 | DA 状态机 stage1 status = 0x00010009，send_devctrl 未完整握手导致后续命令超时 |
+| `0xC0070004` (DA hash mismatch) | 1 | DA2 哈希校验失败，DA patch 不完整或 DA 版本不匹配 |
+| "设备已经解锁" | 2 | seccfg 已经是解锁状态，重复解锁报错 |
+| "无法在super动态分区中找到system分区" | 多次 | 动态分区解析问题，super 分区内的 logical partition 查找失败 |
+| "buildProp为空字符串" | 多次 | 读取 build.prop 失败，设备未正常启动或分区损坏 |
+| "ConfigureDa失败" | 2 | DA 配置失败，可能 preloader/EMI 数据不匹配 |
+| Kamakiri Payload 运行出错 | 1 | bypass 失败，payload 执行异常 |
+
+**关键发现**：
+- **DA Patch 流程对齐**：所有成功操作都经过 `Patching DA1 ... Patching DA2 ...` → `DA扩展已成功被接收`，对应我们的 DA patch 流程（hash_check、get_vfy_policy、hash binding、SBC、register read/write）。
+- **Kamakiri2 Bypass 参数**：Brom Payload 地址 `0x100A00`，DA Payload 地址 `0x201000`，使用 `mt6768_payload.bin` (612 字节)。部分日志使用 `generic_preloader_dump_payload.bin` (592 字节)。
+- **seccfg 操作**：主要执行 `r seccfg` 读取，没有看到明确的 lock/unlock 成功记录（日志中只看到"设备已经解锁"错误）。
+- **para 分区**：多次写入 para 分区用于重启模式切换，`r para para.bin` 用于备份。
+- **0xC0070004 出现在 DA2 代码中**：hex 模式 `0C0002C0070004` 和 `080003C0070004`，是 DA2 的 `hash_check` 相关指令序列，DA patch 必须正确 patch 这些位置。
+
 ### 协议发现
 
 - MTK Preloader Pattern 协议模式映射（8 字节反转字符串）：
