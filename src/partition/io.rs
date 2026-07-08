@@ -388,6 +388,42 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
+    /// 读取 super 分区内的动态分区（logical partition）
+    ///
+    /// 用法: 读取动态分区 "system" 到 "system.img"
+    /// 内部通过 super 元数据解析逻辑分区的物理偏移。
+    pub fn 读取动态分区(&mut self, 逻辑分区名: &str, 输出文件: &str) -> Result<(), String> {
+        // 1. 找到 super 物理分区地址
+        let (super_addr, _super_size) = self.find_partition_addr("super")?;
+
+        // 2. 如果缓存中没有 super 元数据，读取并解析
+        if self.super_metadata.is_none() {
+            let meta_size = std::cmp::min(_super_size, 1024 * 1024);
+            let super_data = self.readflash_data(super_addr, meta_size)?;
+            let meta = crate::partition::lp::SuperMetadata::parse(&super_data)
+                .map_err(|e| format!("解析 super 元数据失败: {}", e))?;
+            info!("Super 动态分区: {} 个 logical partition", meta.partitions.len());
+            self.super_metadata = Some(meta);
+        }
+
+        // 3. 在 super 元数据中查找逻辑分区
+        let meta = self.super_metadata.as_ref()
+            .ok_or("super 元数据不可用")?;
+        let (logical_offset, logical_size) = meta.find_partition(逻辑分区名)
+            .ok_or_else(|| format!("在 super 中未找到逻辑分区: {}", 逻辑分区名))?;
+
+        let 物理地址 = super_addr + logical_offset;
+        info!(
+            "读取动态分区 {}: super[0x{:08X}] + offset[0x{:08X}] = 物理地址 0x{:08X}, 大小 {} 字节",
+            逻辑分区名, super_addr, logical_offset, 物理地址, logical_size
+        );
+
+        // 4. 流式读取到文件（使用空回调，进度由内部进度条显示）
+        self.readflash_to_file(物理地址, logical_size, 8, 输出文件, 0, |_offset: u64| {})?;
+        info!("  动态分区 {} 已保存到: {}", 逻辑分区名, 输出文件);
+        Ok(())
+    }
+
     /// 写入文件到分区（带校验）
     /// 分块流式校验：避免大分区全量读入内存导致 OOM。
     pub fn 写入分区带校验(

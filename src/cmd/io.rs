@@ -12,10 +12,39 @@ use log::{info, warn};
 use crate::da::DAXFlash;
 
 /// 读取分区数据到文件
+///
+/// 用法：
+///   mtkclient r <part> <file>                     → 读取物理/逻辑分区
+///   mtkclient r super --dp <logical_part> <file>   → 读取 super 内的动态分区
+///
+/// --dp 示例：
+///   mtkclient r super --dp system system.img       → 读取 super 内的 system
+///   mtkclient r super --dp vendor vendor.img       → 读取 super 内的 vendor
 pub fn cmd_read(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 2 {
-        return Err("用法: mtkclient r <part> <file>".into());
+        return Err("用法: mtkclient r <part> <file> 或 mtkclient r super --dp <logical_part> <file>".into());
     }
+
+    // 解析 --dp 参数：r super --dp system output.img
+    let dp_idx = args.iter().position(|s| s == "--dp");
+    if let Some(idx) = dp_idx {
+        // 动态分区模式
+        if args[0].to_lowercase() != "super" {
+            return Err("--dp 只能与 super 分区一起使用".into());
+        }
+        let logical_name = args.get(idx + 1)
+            .ok_or("--dp 后缺少逻辑分区名")?;
+        let output_file = args.get(idx + 2)
+            .ok_or("缺少输出文件名")?;
+
+        info!("读取 super 内的动态分区: {} → {}", logical_name, output_file);
+        da.读取动态分区(logical_name, output_file)
+            .map_err(|e| format!("读取动态分区失败: {}", e))?;
+        info!("{}", format!("super[{}] -> {}", logical_name, output_file).green());
+        return Ok(());
+    }
+
+    // 普通分区读取
     da.读取分区(&args[0], &args[1])
         .map_err(|e| format!("读取失败: {}", e))?;
     info!("{}", format!("{} -> {}", args[0], args[1]).green());
