@@ -82,7 +82,7 @@ pub fn cmd_multi(
                 app_config,
             ),
             "frp" => crate::security::frp::frp_unlock(da).map_err(|e| e.into()),
-            "reboot" => super::io::cmd_reboot(da, sub_args),
+            "reboot" => super::io::cmd_reboot(da, sub_args, !da.preloader.is_preloader_mode),
             "slot" => super::io::cmd_slot(da, sub_args),
             "adb" => {
                 da.enable_adb_and_reboot()

@@ -10,6 +10,8 @@ use colored::Colorize;
 use log::{info, warn};
 
 use crate::da::DAXFlash;
+use crate::da::xflash::protocol::ShutdownBootMode;
+use crate::preloader::transport::BromTransport;
 
 /// 读取分区数据到文件
 ///
@@ -81,15 +83,57 @@ pub fn cmd_erase(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::
     Ok(())
 }
 
+/// 清除用户数据（恢复出厂设置）
+///
+/// 擦除 userdata、md_udc、metadata 三个分区。
+/// 刷入新系统后需要执行此命令才能正常开机。
+///
+/// 注意：
+///   - metadata 分区存储动态分区元数据，擦除后 super_metadata 缓存被清除。
+///   - 下次需要动态分区读操作时，将从设备重新读取 metadata。
+///   - 设备重启后 bootloader 会自动重建 metadata 分区。
+///   - 擦除顺序：userdata → md_udc → metadata（metadata 最后擦除）。
+pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error>> {
+    let partitions = ["userdata", "md_udc", "metadata"];
+
+    warn!("{}", "═══════════════════════════════════════════════".yellow().bold());
+    warn!("{}", "  即将执行恢复出厂设置！".yellow().bold());
+    warn!("{}", "  将擦除: userdata, md_udc, metadata".yellow().bold());
+    warn!("{}", "  metadata 擦除后，super_metadata 缓存将被清除".yellow().bold());
+    warn!("{}", "  设备重启后 bootloader 会自动重建 metadata".yellow().bold());
+    warn!("{}", "═══════════════════════════════════════════════".yellow().bold());
+
+    for &part in &partitions {
+        info!("正在擦除 {}...", part);
+        da.擦除分区(part)
+            .map_err(|e| format!("擦除 {} 失败: {}", part, e))?;
+        info!("{}", format!("{} 已擦除", part).green());
+    }
+
+    // metadata 擦除后，清除 super_metadata 缓存，下次需要时重新读取
+    da.super_metadata = None;
+    info!("{}", "super_metadata 缓存已清除（下次需要时自动重新读取）".dimmed());
+
+    info!("{}", "恢复出厂设置完成！请重启设备。".green().bold());
+    info!("提示: 重启后执行 reboot 命令让设备进入系统");
+    Ok(())
+}
+
 /// 重启设备
 /// 用法:
-///   reboot                     → 正常重启到 system
-///   reboot fastboot            → 通过 misc 重启到 lk bootloader
-///   reboot recovery            → 通过 misc 重启到 recovery
-///   reboot fastbootd           → 通过 misc 重启到 fastbootd
-///   reboot fastboot --via para → 通过 para 分区重启（方案2）
-pub fn cmd_reboot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    // 解析参数：reboot [mode] [--via misc/para]
+///   reboot                          → 正常重启到系统
+///   reboot fastboot                 → 重启到 Bootloader（lk fastboot）
+///   reboot recovery                 → 重启到 Recovery
+///   reboot fastbootd                → 重启到 fastbootd（userspace fastboot）
+///   reboot fastboot --via para      → 通过 para 分区设置 boot_mode=5（DA模式）
+///   reboot fastboot --via da        → 通过 XFlash DA SHUTDOWN bootmode=2 直接重启
+///   reboot fastboot --via xml       → 通过 XML DA SET-BOOT-MODE 重启（新平台）
+pub fn cmd_reboot(
+    da: &mut DAXFlash,
+    args: &[String],
+    is_brom: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // 解析参数：reboot [mode] [--via misc/para/da/xml]
     let mut mode = "system";
     let mut via = "misc";
 
@@ -100,13 +144,13 @@ pub fn cmd_reboot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std:
                 via = args.get(i + 1).map(|s| s.as_str()).unwrap_or("misc");
                 i += 2;
             }
-            "system" | "fastboot" | "recovery" | "fastbootd" => {
+            "system" | "fastboot" | "recovery" | "fastbootd" | "meta" => {
                 mode = args[i].as_str();
                 i += 1;
             }
             _ => {
                 return Err(format!(
-                    "未知重启参数: {}。用法: reboot [system|fastboot|recovery|fastbootd] [--via misc|para]",
+                    "未知重启参数: {}。用法: reboot [system|fastboot|recovery|fastbootd|meta] [--via misc|para|da|xml]",
                     args[i]
                 )
                 .into());
@@ -116,12 +160,97 @@ pub fn cmd_reboot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std:
 
     match mode {
         "system" => {
-            // 正常重启：直接发送 reset 命令
+            // 正常重启：通过 DA SHUTDOWN(bootmode=REBOOT)
             do_reboot(da, "system")?;
         }
-        "fastboot" | "recovery" | "fastbootd" => {
+        "fastboot" => {
+            // BROM 模式下：先 jump_bl 重启到 bootloader，然后尝试 Preloader Pattern
+            if is_brom {
+                info!("BROM 模式下重启到 fastboot：执行 jump_bl...");
+                match da.preloader.jump_bl() {
+                    Ok(_) => {
+                        info!("jump_bl 成功，设备正在重启到 Bootloader...");
+                        crate::connection::reset_session();
+                        // 等待设备重新枚举
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        // 尝试连接 Preloader 串口并发送 Pattern
+                        match try_preloader_pattern_reboot() {
+                            Ok(_) => {
+                                info!("{}", "设备已通过 Preloader Pattern 重启到 Bootloader".green());
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                warn!("Preloader Pattern 发送失败: {}，设备可能已进入 Bootloader", e);
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("jump_bl 失败: {}，回退到 misc 分区方式", e);
+                        set_bootloader_message(da, mode)?;
+                        do_reboot(da, mode)?;
+                    }
+                }
+            } else {
+                // DA 模式下：根据 --via 选择重启方式
+                match via {
+                    "da" => {
+                        // Layer 2: XFlash DA SHUTDOWN bootmode=2
+                        info!("通过 DA SHUTDOWN 直接重启到 fastboot...");
+                        da.da_reboot_fastboot()
+                            .map_err(|e| format!("DA SHUTDOWN fastboot 失败: {}", e))?;
+                        info!("{}", "设备已通过 DA SHUTDOWN 重启到 fastboot".green());
+                        crate::connection::reset_session();
+                        return Ok(());
+                    }
+                    "xml" => {
+                        // Layer 3: XML DA SET-BOOT-MODE + REBOOT
+                        info!("通过 XML DA 协议重启到 fastboot...");
+                        da.da_xml_reboot_fastboot()
+                            .map_err(|e| format!("XML DA fastboot 失败: {}", e))?;
+                        info!("{}", "设备已通过 XML DA 重启到 fastboot".green());
+                        crate::connection::reset_session();
+                        return Ok(());
+                    }
+                    "para" => set_boot_mode_via_para(da, mode)?,
+                    _ => set_bootloader_message(da, mode)?,
+                }
+                do_reboot(da, mode)?;
+            }
+        }
+        "recovery" | "fastbootd" => {
             info!("准备重启到 {} 模式 (via {})...", mode, via);
             match via {
+                "da" => {
+                    // DA 模式下 fastbootd/recovery 仍通过 misc 分区设置
+                    // 因为 SHUTDOWN bootmode 只支持 0/1/2，没有 recovery/fastbootd
+                    set_bootloader_message(da, mode)?;
+                    do_reboot(da, mode)?;
+                }
+                "para" => set_boot_mode_via_para(da, mode)?,
+                _ => set_bootloader_message(da, mode)?,
+            }
+            do_reboot(da, mode)?;
+        }
+        "meta" => {
+            info!("准备重启到 {} 模式 (via {})...", mode, via);
+            match via {
+                "da" => {
+                    // DA 模式下 meta 通过 SET_META_BOOT_MODE devctrl
+                    info!("通过 DA SET_META_BOOT_MODE 重启到 meta...");
+                    if let Err(e) = da.set_meta_boot_mode(1) {
+                        warn!("SET_META_BOOT_MODE 失败: {}，回退到 misc", e);
+                        set_bootloader_message(da, mode)?;
+                    }
+                    do_reboot(da, mode)?;
+                }
+                "xml" => {
+                    da.da_xml_reboot_meta()
+                        .map_err(|e| format!("XML DA meta 失败: {}", e))?;
+                    info!("{}", "设备已通过 XML DA 重启到 meta".green());
+                    crate::connection::reset_session();
+                    return Ok(());
+                }
                 "para" => set_boot_mode_via_para(da, mode)?,
                 _ => set_bootloader_message(da, mode)?,
             }
@@ -133,16 +262,70 @@ pub fn cmd_reboot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std:
     Ok(())
 }
 
-/// 执行实际重启
+/// 尝试连接 Preloader 串口并发送 Fastboot Pattern
+fn try_preloader_pattern_reboot() -> Result<(), String> {
+    use std::time::Duration;
+    use crate::preloader::SerialPortTransport;
+    use crate::cmd::preloader_boot_mode;
+
+    info!("等待 Preloader COM 口出现（最多 15 秒）...");
+
+    // 最多等待 15 秒，每 200ms 扫描一次
+    let max_wait_ms = 15000u64;
+    let interval_ms = 200u64;
+    let max_retries = max_wait_ms / interval_ms;
+
+    for _retry in 0..max_retries {
+        if let Some(port_result) = SerialPortTransport::find_brom_port_with_timeout(interval_ms) {
+            match port_result {
+                crate::preloader::BromPortResult::SerialPort(port_name) => {
+                    info!("发现 Preloader COM 口: {}", port_name);
+                    // 打开串口
+                    let mut transport = SerialPortTransport::new(&port_name, 115200)
+                        .map_err(|e| format!("打开串口失败: {}", e))?;
+                    // 设置超时
+                    transport.set_timeout(Duration::from_millis(2000));
+
+                    // 尝试握手（部分 Preloader 需要）
+                    info!("尝试 Preloader 握手...");
+                    if let Err(e) = transport.do_handshake() {
+                        warn!("握手失败（可能不需要）: {}", e);
+                    }
+
+                    // 发送 Fastboot Pattern
+                    info!("发送 Fastboot Pattern...");
+                    preloader_boot_mode::send_boot_pattern(
+                        &mut transport,
+                        preloader_boot_mode::BootMode::Fastboot,
+                    )?;
+                    return Ok(());
+                }
+                _ => {
+                    // WinUsbDevice 或其他结果，不是串口
+                    continue;
+                }
+            }
+        }
+    }
+
+    Err("未在 15 秒内找到 Preloader COM 口".to_string())
+}
+
+/// 执行实际重启（使用 XFlash DA SHUTDOWN 协议）
 fn do_reboot(da: &mut DAXFlash, mode: &str) -> Result<(), Box<dyn std::error::Error>> {
-    match da.reset_device() {
+    let bootmode = match mode {
+        "system" => ShutdownBootMode::Reboot,
+        _ => ShutdownBootMode::Reboot,
+    };
+
+    match da.da_shutdown(bootmode) {
         Ok(()) => {
-            info!("{}", format!("设备已重启到 {} 模式", mode).green());
+            info!("{}", format!("设备已重启到 {} 模式 (DA SHUTDOWN)", mode).green());
             crate::connection::reset_session();
             Ok(())
         }
         Err(e) => {
-            warn!("DA 重启失败，回退到 BROM jump_bl: {}", e);
+            warn!("DA SHUTDOWN 失败: {}，回退到 jump_bl", e);
             da.close_device(true);
             crate::connection::reset_session();
             info!("{}", format!("设备已重启到 {} 模式", mode).green());

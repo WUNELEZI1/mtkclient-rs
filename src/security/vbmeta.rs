@@ -69,47 +69,43 @@ pub fn vbmeta_disable(da: &mut DAXFlash, mode: u32) -> Result<(), String> {
 }
 
 fn patch_vbmeta_data(data: &[u8], mode: u32) -> Result<Vec<u8>, String> {
-    if data.len() < 0x7C {
+    // AVB vbmeta header 完整大小 = 0x80 + 48(release_string) = 0xB0
+    // 我们只修改 flags 字段(0x78)，最少需要 0x7C 字节
+    // 使用 0x80 留 4 字节余量
+    if data.len() < 0x80 {
         return Err("vbmeta 数据太小".to_string());
     }
 
-    // 验证 vbmeta 签名
     if &data[0..4] != b"AVB0" {
         return Err("非 vbmeta 格式 (缺少 AVB0 签名)".to_string());
     }
 
     let mut result = data.to_vec();
 
-    // AVB vbmeta header 布局（对齐 Android AVB 2.0 规范）:
-    //   0x00-0x03: magic "AVB0"
-    //   0x04-0x07: version major
-    //   0x08-0x0B: version minor
-    //   ...
-    //   0x20-0x23: algorithm_type (u32)
-    //   ...
-    //   0x74-0x7B: rollback_index (u64)
-    //   0x7C-0x7F: flags (u32)  <-- 正确偏移
-    //   0x80-0xAF: release_string[48]
+    // flags 位于偏移 0x78（u32），紧接 rollback_index(0x70, u64) 之后
     //
-    // mode 含义:
-    //   0 = 验证启用 + 校验启用 (默认)
-    //   1 = 验证禁用 + 校验启用
-    //   2 = 验证启用 + 校验禁用
-    //   3 = 验证禁用 + 校验禁用 (完全禁用)
-    let flags_offset = 0x7C;
-    let old_flags = u32::from_le_bytes(result[flags_offset..flags_offset + 4].try_into().unwrap());
-    result[flags_offset..flags_offset + 4].copy_from_slice(&mode.to_le_bytes());
-
-    // 同时把 algorithm_type 改为 0 (NONE) 以确保兼容性
-    // 部分 bootloader 不检查 flags 只检查 algorithm
-    let algo_offset = 0x20;
-    let old_algo = u32::from_le_bytes(result[algo_offset..algo_offset + 4].try_into().unwrap());
-    result[algo_offset..algo_offset + 4].copy_from_slice(&0u32.to_le_bytes());
+    // AVB flags 位定义 (avb_vbmeta_image.h):
+    //   bit 0 (0x01) = AVB_VBMETA_IMAGE_FLAGS_HASHTREE_DISABLED
+    //   bit 1 (0x02) = AVB_VBMETA_IMAGE_FLAGS_VERIFICATION_DISABLED
+    //
+    // mode 作为 flags 直接写入：
+    //   0 = 0x00: 全部启用
+    //   1 = 0x01: hashtree 校验禁用（dm-verity off），签名验证保留
+    //   2 = 0x02: 签名验证禁用，hashtree 校验保留
+    //   3 = 0x03: 全部禁用（推荐刷机场景）
+    let flags_offset = 0x78;
+    let old_flags = u32::from_le_bytes(
+        result[flags_offset..flags_offset + 4].try_into().unwrap(),
+    );
+    result[flags_offset..flags_offset + 4]
+        .copy_from_slice(&mode.to_le_bytes());
 
     info!(
-        "  修改 vbmeta: algorithm=0x{:08X}->0x00000000, flags=0x{:08X}->0x{:08X}",
-        old_algo, old_flags, mode
+        "  vbmeta: flags @0x78 = 0x{:08X} -> 0x{:08X}",
+        old_flags, mode
     );
+
+    // algorithm_type(0x1C) 和 hash_offset(0x20) 不动
 
     Ok(result)
 }

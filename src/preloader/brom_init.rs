@@ -23,7 +23,7 @@ const FLUSH_INPUT_TIMEOUT_MS: u64 = 200;
 const FLUSH_INPUT_CHUNK: usize = 1024;
 const FLUSH_INPUT_MAX_ITER: usize = 20;
 const POST_FLUSH_TIMEOUT_MS: u64 = 5000;
-const WDT_MAGIC: u32 = 0x22000064;
+const WDT_MAGIC: u32 = 0x22000000;
 
 impl Preloader {
     /// 判断是否已经进入 BROM 模式
@@ -36,11 +36,15 @@ impl Preloader {
     pub fn sync_brom(&mut self) -> Result<(), String> {
         trace!("开始 BROM 同步序列...");
 
-        // 1. BROM sync: echo(0xFE) -> 读 FE
-        if !self.echo_1byte(0xFE)? {
-            return Err("BROM sync FE 失败".into());
-        }
-        trace!("BROM sync (0xFE) OK");
+        // 1. BROM sync: FE 不做同字节回显（刷机匣日志：写 FE → 读 0x03）
+        self.device
+            .write(&[0xFE])
+            .map_err(|e| format!("BROM sync FE write: {}", e))?;
+        let mut fe_resp = [0u8; 1];
+        self.device
+            .read_exact(&mut fe_resp)
+            .map_err(|e| format!("BROM sync FE read: {}", e))?;
+        trace!("BROM sync FE 响应: 0x{:02X}", fe_resp[0]);
 
         // 2. BROM FF: echo(0xFF) -> 读响应
         self.device
@@ -370,14 +374,7 @@ impl Preloader {
             return Err(format!("Get Target Config Error: status=0x{:04X}", status));
         }
 
-        // 读取硬件码并匹配芯片（Python init() 中在 get_target_config 之后调用）
-        let hw = self.get_hw_code()?;
-        let chip = CHIP_CONFIGS
-            .iter()
-            .find(|c| c.hw_code == hw)
-            .ok_or_else(|| format!("未知 HW code: {:04X}", hw))?;
-        self.chip = Some(*chip);
-
+        // chip 已在 init() step 2 设置，不再重复调用
         Ok(TargetConfig::from_raw(target_config))
     }
 

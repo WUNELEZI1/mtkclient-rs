@@ -31,7 +31,163 @@ pub const CMD_READ_DATA: u32 = 0x010005; // XFlash 读分区命令
 pub const CMD_WRITE_DATA: u32 = 0x010004; // 写入数据命令
 
 pub const CMD_FORMAT: u32 = 0x010003; // 格式化命令
-pub const SET_META_BOOT_MODE: u32 = 0x020006;
+
+// =============================================================================
+// XFlash DA 完整命令码表（对齐 MTKAuthPass.exe + mtkclient xflash_lib.py）
+// =============================================================================
+
+// --- 基础命令 (0x01xxxx) ---
+pub const CMD_DOWNLOAD: u32 = 0x010001;        // 下载
+pub const CMD_UPLOAD: u32 = 0x010002;          // 上传
+pub const CMD_FORMAT_PART: u32 = 0x010006;     // 格式化分区
+pub const CMD_SHUTDOWN: u32 = 0x010007;        // ★ 关机/reboot（含 bootmode 参数）
+pub const CMD_DEVICE_CTRL: u32 = 0x010009;     // 设备控制（总入口，子命令通过此发送）
+pub const CMD_SWITCH_USB: u32 = 0x01000B;       // 切换 USB 速度
+pub const CMD_READ_OTP: u32 = 0x01000C;         // 读 OTP
+pub const CMD_WRITE_OTP: u32 = 0x01000D;        // 写 OTP
+pub const CMD_WRITE_EFUSE: u32 = 0x01000E;      // 写 eFuse
+pub const CMD_READ_EFUSE: u32 = 0x01000F;       // 读 eFuse
+pub const CMD_NAND_BMT: u32 = 0x010010;         // NAND BMT
+
+// --- 设备控制子命令 (0x02xxxx) — 通过 CMD_DEVICE_CTRL 发送 ---
+pub const SET_BMT: u32 = 0x020001;              // 设置 BMT 百分比
+pub const SET_BATTERY: u32 = 0x020002;          // 设置电池优化
+pub const SET_CHECKSUM: u32 = 0x020003;         // 设置校验级别
+pub const SET_RESET_KEY: u32 = 0x020004;        // 设置 Reset Key
+pub const SET_HOST_INFO: u32 = 0x020005;        // 设置主机信息
+pub const SET_META_BOOT_MODE: u32 = 0x020006;   // ★ 设置 Meta Boot Mode
+pub const SET_EMMC_RST: u32 = 0x020007;         // 设置 eMMC HW Reset
+pub const SET_GEN_GPX: u32 = 0x020008;          // 设置生成 GPX
+pub const SET_REG_VAL: u32 = 0x020009;          // 设置寄存器值
+pub const SET_EXT_SIG: u32 = 0x02000A;          // 设置外部签名
+pub const SET_SEC_POL: u32 = 0x02000B;          // ★ 设置远程安全策略 (SLA)
+pub const SET_AIO_SIG: u32 = 0x02000C;          // 设置一体化签名
+pub const SET_RSC_INFO: u32 = 0x02000D;         // 设置 RSC 信息
+pub const SET_UPDATE_FW: u32 = 0x020010;        // 设置更新固件
+pub const SET_UFS_CFG: u32 = 0x020011;          // 设置 UFS 配置
+
+// --- 信息获取子命令 (0x04xxxx) ---
+pub const GET_EMMC_INFO: u32 = 0x040001;        // 获取 eMMC 信息
+pub const GET_NAND_INFO: u32 = 0x040002;        // 获取 NAND 信息
+pub const GET_NOR_INFO: u32 = 0x040003;         // 获取 NOR 信息
+pub const GET_UFS_INFO: u32 = 0x040004;         // 获取 UFS 信息
+pub const GET_DA_VER: u32 = 0x040005;           // 获取 DA 版本
+pub const GET_EXPIRE: u32 = 0x040006;           // 获取过期日期
+pub const GET_PKT_LEN: u32 = 0x040007;          // 获取包长度
+pub const GET_RANDOM_ID: u32 = 0x040008;        // 获取随机 ID
+pub const GET_PART_TBL: u32 = 0x040009;          // 获取分区表
+pub const GET_CONN: u32 = 0x04000A;             // 获取连接代理
+pub const GET_USB_SPD: u32 = 0x04000B;          // 获取 USB 速度
+pub const GET_RAM_INFO: u32 = 0x04000C;         // 获取 RAM 信息
+pub const GET_CHIP_ID: u32 = 0x04000D;          // 获取芯片 ID
+pub const GET_OTP_LOCK: u32 = 0x04000E;        // 获取 OTP 锁定状态
+pub const GET_BATT_VOLT: u32 = 0x04000F;        // 获取电池电压
+pub const GET_RPMB: u32 = 0x040010;             // 获取 RPMB 状态
+pub const GET_EXPIRE_DT: u32 = 0x040011;        // 获取过期日期
+pub const GET_DRAM_TYPE: u32 = 0x040012;        // 获取 DRAM 类型
+pub const GET_DEV_FW: u32 = 0x040013;           // 获取设备固件信息
+pub const GET_HRID: u32 = 0x040014;             // 获取 HRID
+pub const GET_ERR_DET: u32 = 0x040015;          // 获取错误详情
+pub const SLA_ENABLED: u32 = 0x040016;          // SLA 启用状态
+
+// --- 下载信息 (0x08xxxx) ---
+pub const START_DL_INFO: u32 = 0x080001;        // 开始下载信息
+pub const END_DL_INFO: u32 = 0x080002;          // 结束下载信息
+
+// =============================================================================
+// Shutdown bootmode 枚举（对齐 xflash_lib.py ShutDownModes）
+// =============================================================================
+
+/// DA Shutdown 命令的 bootmode 参数
+#[derive(Debug, Clone, Copy)]
+pub enum ShutdownBootMode {
+    /// 关机
+    Normal = 0,
+    /// 重启到 home screen (系统)
+    Reboot = 1,
+    /// ★ 重启到 fastboot
+    Fastboot = 2,
+}
+
+// =============================================================================
+// XML DA 命令协议（Layer 3，新平台 MT6789+）
+// =============================================================================
+
+/// XML DA 命令的 BootMode 枚举
+#[derive(Debug, Clone, Copy)]
+pub enum XmlBootMode {
+    Fastboot = 0,
+    Meta = 1,
+    TestMode = 2,
+}
+
+impl XmlBootMode {
+    fn as_str(&self) -> &'static str {
+        match self {
+            XmlBootMode::Fastboot => "FASTBOOT",
+            XmlBootMode::Meta => "META",
+            XmlBootMode::TestMode => "ANDROID-TEST-MODE",
+        }
+    }
+}
+
+/// 构建 XML DA 命令包
+///
+/// XML 协议格式（新平台 MT6789+ 使用）：
+/// ```xml
+/// <?xml version="1.0" encoding="utf-8"?>
+/// <da>
+///   <version>1.0</version>
+///   <command>CMD:{命令名}</command>
+///   <arg>{参数XML}</arg>
+/// </da>
+/// ```
+fn build_xml_command(cmd_name: &str, arg_content: &str) -> Vec<u8> {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
+         <da>\r\n\
+         <version>1.0</version>\r\n\
+         <command>CMD:{}</command>\r\n\
+         <arg>\r\n\
+         {}\r\n\
+         </arg>\r\n\
+         </da>",
+        cmd_name, arg_content
+    )
+    .into_bytes()
+}
+
+/// 构建 SET-BOOT-MODE XML 命令
+///
+/// 对齐 mtkclient da_cmd.py cmd_set_boot_mode：
+/// ```xml
+/// <mode>FASTBOOT</mode>
+/// <connect_type>USB</connect_type>
+/// <mobile_log>ON</mobile_log>
+/// <adb>ON</adb>
+/// ```
+pub fn xml_set_boot_mode(mode: XmlBootMode) -> Vec<u8> {
+    let arg = format!(
+        "<mode>{}</mode>\r\n\
+         <connect_type>USB</connect_type>\r\n\
+         <mobile_log>ON</mobile_log>\r\n\
+         <adb>ON</adb>",
+        mode.as_str()
+    );
+    build_xml_command("SET-BOOT-MODE", &arg)
+}
+
+/// 构建 REBOOT XML 命令
+///
+/// 对齐 mtkclient da_cmd.py cmd_reboot：
+/// ```xml
+/// <action>IMMEDIATE</action>
+/// ```
+pub fn xml_reboot(disconnect: bool) -> Vec<u8> {
+    let action = if disconnect { "DISCONNECT" } else { "IMMEDIATE" };
+    let arg = format!("<action>{}</action>", action);
+    build_xml_command("REBOOT", &arg)
+}
 
 // =============================================================================
 // 包头工具
@@ -299,7 +455,11 @@ impl<'a> DAXFlash<'a> {
                     ));
                 }
             } else {
+                // xread 模式：对齐 Python mtkclient，send_devctrl(cmd, None)
+                // 在 xread() 后还需读取一次 status（DA 协议规定）。
+                // 如果不读，USB 缓冲区会残留 status 包，导致后续命令状态流错位。
                 let resp = self.xread_data()?;
+                let _ = self.status(); // 消费 DA 发送的额外 status 包
                 trace!(
                     "[send_devctrl] cmd=0x{:06X} xread returned {} bytes",
                     cmd,
@@ -329,6 +489,87 @@ impl<'a> DAXFlash<'a> {
             return Err("get_connection_agent returned empty".to_string());
         }
         Ok(String::from_utf8_lossy(&data).to_string())
+    }
+
+    /// DA 扩展命令：CUSTOM_READREGISTER (0x0F0002)
+    /// 对齐 Python xflash.py: custom_readregister(addr)
+    /// 流程: cmd(0x0F0002) → xsend(addr) → xread() → status()
+    pub(crate) fn custom_readregister(&mut self, addr: u32) -> Result<u32, String> {
+        // step 1: cmd(0x0F0002) — send DEVICE_CTRL + CUSTOM_READREGISTER
+        let pkt = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&pkt)?;
+        self.preloader.device.write(&0x010009u32.to_le_bytes())?;
+        let st1 = self.status()?;
+        if st1 != 0 {
+            return Err(format!("custom_readregister: DEVICE_CTRL status=0x{:08X}", st1));
+        }
+
+        let pkt2 = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&pkt2)?;
+        self.preloader.device.write(&0x0F0002u32.to_le_bytes())?;
+        let st2 = self.status()?;
+        if st2 != 0 {
+            return Err(format!("custom_readregister: CUSTOM_READREGISTER status=0x{:08X}", st2));
+        }
+
+        // step 2: xsend(addr)
+        let pkt3 = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&pkt3)?;
+        self.preloader.device.write(&addr.to_le_bytes())?;
+
+        // step 3: xread() — read 4-byte register value
+        let data = self.xread_data()?;
+
+        // step 4: status()
+        let st3 = self.status()?;
+        if st3 != 0 {
+            return Err(format!("custom_readregister: read status=0x{:08X}", st3));
+        }
+
+        if data.len() < 4 {
+            return Err(format!("custom_readregister: response too short: {} bytes", data.len()));
+        }
+        Ok(u32::from_le_bytes(data[0..4].try_into().unwrap()))
+    }
+
+    /// DA 扩展命令：CUSTOM_WRITEREGISTER (0x0F0004)
+    /// 对齐 Python xflash.py: custom_writeregister(addr, data)
+    /// 流程: cmd(0x0F0004) → xsend(addr) → xsend(data) → status()
+    pub(crate) fn custom_writeregister(&mut self, addr: u32, value: u32) -> Result<(), String> {
+        // step 1: cmd(0x0F0004) — send DEVICE_CTRL + CUSTOM_WRITEREGISTER
+        let pkt = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&pkt)?;
+        self.preloader.device.write(&0x010009u32.to_le_bytes())?;
+        let st1 = self.status()?;
+        if st1 != 0 {
+            return Err(format!("custom_writeregister: DEVICE_CTRL status=0x{:08X}", st1));
+        }
+
+        let pkt2 = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&pkt2)?;
+        self.preloader.device.write(&0x0F0004u32.to_le_bytes())?;
+        let st2 = self.status()?;
+        if st2 != 0 {
+            return Err(format!("custom_writeregister: CUSTOM_WRITEREGISTER status=0x{:08X}", st2));
+        }
+
+        // step 2: xsend(addr)
+        let pkt3 = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&pkt3)?;
+        self.preloader.device.write(&addr.to_le_bytes())?;
+
+        // step 3: xsend(value)
+        let pkt4 = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&pkt4)?;
+        self.preloader.device.write(&value.to_le_bytes())?;
+
+        // step 4: status()
+        let st3 = self.status()?;
+        if st3 != 0 {
+            return Err(format!("custom_writeregister: write status=0x{:08X}", st3));
+        }
+
+        Ok(())
     }
 
     /// 设置重置键
@@ -381,6 +622,14 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
+    /// 设置 Meta Boot Mode（对齐 Python set_meta_boot_mode）
+    /// 命令: CMD_DEVICE_CTRL(0x010009) + SET_META_BOOT_MODE(0x020006)
+    /// 参数: boot_mode (u32, 0=fastboot, 1=meta)
+    pub(crate) fn set_meta_boot_mode(&mut self, boot_mode: u32) -> Result<(), String> {
+        self.send_devctrl(0x020006, Some(&boot_mode.to_le_bytes()))?;
+        Ok(())
+    }
+
     /// 查询当前 USB 速度（对齐 Python get_usb_speed）
     /// 返回 "full-speed" / "high-speed" / "hyper-speed" 或空字符串
     pub(crate) fn get_usb_speed(&mut self) -> Result<String, String> {
@@ -417,6 +666,156 @@ impl<'a> DAXFlash<'a> {
         info!("已发送 USB 速度切换命令");
         Ok(())
     }
+}
+
+// =============================================================================
+// 协议原语 — 块 4: SHUTDOWN / XML DA 命令 (Layer 2 + Layer 3)
+// =============================================================================
+
+impl<'a> DAXFlash<'a> {
+    /// Layer 2: XFlash DA SHUTDOWN 命令（对齐 xflash_lib.py shutdown）
+    ///
+    /// 通过 XFlash 二进制协议发送 SHUTDOWN 命令，指定 bootmode 控制重启行为。
+    ///
+    /// 命令格式：
+    ///   头: MAGIC(4) + SHUTDOWN_CMD(4) = 8 字节
+    ///   参数体: 32 字节（hasflags + enablewdt + async_mode + bootmode + 保留）
+    ///   响应: status(4)
+    ///
+    /// bootmode 枚举：
+    ///   0 = 关机 (NORMAL)
+    ///   1 = 重启到系统 (REBOOT)
+    ///   2 = ★ 重启到 fastboot (FASTBOOT)
+    pub fn da_shutdown(&mut self, bootmode: ShutdownBootMode) -> Result<(), String> {
+        let mode_name = match bootmode {
+            ShutdownBootMode::Normal => "关机",
+            ShutdownBootMode::Reboot => "重启到系统",
+            ShutdownBootMode::Fastboot => "重启到 fastboot",
+        };
+        info!("[DA SHUTDOWN] bootmode={} ({})", bootmode as u32, mode_name);
+
+        // 发送命令头: MAGIC + CMD_SHUTDOWN
+        let hdr = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&hdr)
+            .map_err(|e| format!("SHUTDOWN write hdr: {}", e))?;
+        self.preloader.device.write(&CMD_SHUTDOWN.to_le_bytes())
+            .map_err(|e| format!("SHUTDOWN write cmd: {}", e))?;
+
+        // 读取阶段 1 status
+        let st = self.status()?;
+        if st != 0 {
+            return Err(format!("SHUTDOWN 命令状态: 0x{:08X}", st));
+        }
+
+        // 构建 32 字节参数体
+        // 偏移   大小   Fastboot    Normal    Reboot    含义
+        // 0x00   4B    0x00000001  0x00000001  0x00000001  hasflags
+        // 0x04   4B    0x00000001  0x00000001  0x00000001  enable watchdog
+        // 0x08   4B    0x00000000  0x00000000  0x00000000  async_mode
+        // 0x0C   4B    0x00000002  0x00000000  0x00000001  bootmode
+        // 0x10   4B    0x00000000  0x00000000  0x00000000  dl_bit
+        // 0x14   4B    0x00000000  0x00000000  0x00000000  reserved
+        // 0x18   4B    0x00000000  0x00000000  0x00000000  reserved
+        // 0x1C   4B    0x00000000  0x00000000  0x00000000  reserved
+        let mut param = [0u8; 32];
+        param[0x00..0x04].copy_from_slice(&1u32.to_le_bytes()); // hasflags
+        param[0x04..0x08].copy_from_slice(&1u32.to_le_bytes()); // enablewdt
+        param[0x08..0x0C].copy_from_slice(&0u32.to_le_bytes()); // async_mode
+        param[0x0C..0x10].copy_from_slice(&(bootmode as u32).to_le_bytes()); // bootmode
+        // 0x10-0x1C: zeros (dl_bit + reserved)
+
+        trace!("[DA SHUTDOWN] param: {}", hex_str(&param));
+
+        // 发送参数体
+        let param_pkt = pack3(CMD_MAGIC, 0x01, 32);
+        self.preloader.device.write(&param_pkt)
+            .map_err(|e| format!("SHUTDOWN write param hdr: {}", e))?;
+        self.preloader.device.write(&param)
+            .map_err(|e| format!("SHUTDOWN write param: {}", e))?;
+
+        // 读取阶段 2 status
+        let st2 = self.status()?;
+        if st2 != 0 {
+            return Err(format!("SHUTDOWN 参数状态: 0x{:08X}", st2));
+        }
+
+        info!("[DA SHUTDOWN] 成功 (bootmode={})", bootmode as u32);
+        Ok(())
+    }
+
+    /// Layer 2: 通过 XFlash SHUTDOWN 重启到 fastboot
+    ///
+    /// 发送 SHUTDOWN(bootmode=FASTBOOT) → 设备重启到 fastboot
+    pub fn da_reboot_fastboot(&mut self) -> Result<(), String> {
+        self.da_shutdown(ShutdownBootMode::Fastboot)
+    }
+
+    /// Layer 2: 通过 XFlash SHUTDOWN 正常重启到系统
+    pub fn da_reboot_system(&mut self) -> Result<(), String> {
+        self.da_shutdown(ShutdownBootMode::Reboot)
+    }
+
+    /// Layer 2: 通过 XFlash SHUTDOWN 关机
+    pub fn da_power_off(&mut self) -> Result<(), String> {
+        self.da_shutdown(ShutdownBootMode::Normal)
+    }
+
+    /// Layer 3: 发送 XML DA 命令（新平台 MT6789+）
+    ///
+    /// XML 协议通过 USB Bulk 传输 XML 格式命令包。
+    /// 发送后读取 status 响应。
+    fn send_xml_command(&mut self, xml_data: &[u8]) -> Result<(), String> {
+        trace!("[XML DA] 发送 {} 字节 XML 命令", xml_data.len());
+
+        // 发送 XML 数据（按 XFlash 格式打包）
+        let pkt = pack3(CMD_MAGIC, 0x01, xml_data.len() as u32);
+        self.preloader.device.write(&pkt)
+            .map_err(|e| format!("XML cmd write hdr: {}", e))?;
+        self.preloader.device.write(xml_data)
+            .map_err(|e| format!("XML cmd write data: {}", e))?;
+
+        // 读取 status
+        let st = self.status()?;
+        if st != 0 {
+            return Err(format!("XML 命令状态: 0x{:08X}", st));
+        }
+
+        Ok(())
+    }
+
+    /// Layer 3: 通过 XML DA 协议重启到 fastboot（新平台 MT6789+）
+    ///
+    /// 流程：先发送 SET-BOOT-MODE(FASTBOOT)，再发送 REBOOT(IMMEDIATE)
+    pub fn da_xml_reboot_fastboot(&mut self) -> Result<(), String> {
+        info!("[XML DA] SET-BOOT-MODE: FASTBOOT");
+        let xml_cmd = xml_set_boot_mode(XmlBootMode::Fastboot);
+        self.send_xml_command(&xml_cmd)?;
+
+        info!("[XML DA] REBOOT: IMMEDIATE");
+        let xml_reboot_cmd = xml_reboot(false);
+        self.send_xml_command(&xml_reboot_cmd)?;
+
+        info!("[XML DA] 设备将重启到 fastboot");
+        Ok(())
+    }
+
+    /// Layer 3: 通过 XML DA 协议重启到 meta（新平台）
+    pub fn da_xml_reboot_meta(&mut self) -> Result<(), String> {
+        info!("[XML DA] SET-BOOT-MODE: META");
+        let xml_cmd = xml_set_boot_mode(XmlBootMode::Meta);
+        self.send_xml_command(&xml_cmd)?;
+
+        info!("[XML DA] REBOOT: IMMEDIATE");
+        let xml_reboot_cmd = xml_reboot(false);
+        self.send_xml_command(&xml_reboot_cmd)?;
+
+        info!("[XML DA] 设备将重启到 meta");
+        Ok(())
+    }
+}
+
+fn hex_str(data: &[u8]) -> String {
+    data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
 }
 
 // =============================================================================

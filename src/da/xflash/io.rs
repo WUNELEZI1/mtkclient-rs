@@ -355,10 +355,13 @@ impl<'a> DAXFlash<'a> {
                 }
             }
             if !ack_ok {
+                // ACK 全部失败：设备可能已断开，清理 resume 文件避免无限死循环
+                remove_resume_file(output_file);
                 return Err("活跃读取流续接 ACK 全部失败".to_string());
             }
         } else {
             // 对齐 Python readflash：在 cmd_read_data 之前先查询 get_packet_length
+            // send_devctrl 内部已包含完整的 xread + status 握手
             match self.send_devctrl(0x040007, None) {
                 Ok(data) => {
                     packet_len = parse_packet_length(&data);
@@ -373,10 +376,6 @@ impl<'a> DAXFlash<'a> {
                     }
                 }
                 Err(e) => trace!("获取 DA 读包长度失败: {}", e),
-            }
-            let st_check = self.status()?;
-            if st_check != 0 {
-                warn!("get_packet_length 后 status=0x{:08X}", st_check);
             }
 
             // 发送 READ_DATA 命令及参数
@@ -560,8 +559,7 @@ impl<'a> DAXFlash<'a> {
         size: u64,
         parttype: u32,
     ) -> Result<Vec<u8>, String> {
-        // 1. get_packet_length — send_devctrl 内部已完成完整握手，
-        // 无需再调用 status()，否则 DA 可能无响应导致超时
+        // 1. get_packet_length — send_devctrl 内部已包含完整的 xread + status 握手
         let _ = match self.send_devctrl(0x040007, None) {
             Ok(data) => data,
             Err(e) => {

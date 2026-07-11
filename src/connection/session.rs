@@ -7,6 +7,9 @@ use std::path::Path;
 /// DA 会话状态文件路径
 const STATE_FILE: &str = ".state";
 
+/// DA 会话最大存活时间（秒），超过此时间 .state 视为过期
+const SESSION_MAX_AGE_SECS: u64 = 300; // 5 分钟
+
 /// 会话状态（对齐 Python .state 文件机制）
 #[derive(Debug, Clone)]
 pub struct SessionState {
@@ -23,14 +26,16 @@ pub struct SessionState {
     pub gpt_cache_path: Option<String>,
     /// 当前 DA 会话中已知失败的可选查询，避免每次命令重复等待 timeout
     pub optional_query_failures: Vec<String>,
+    /// 会话创建的 unix 时间戳（秒）
+    pub created_at: u64,
 }
 
 impl fmt::Display for SessionState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "usb_vid=0x{:04X}\nusb_pid=0x{:04X}\nhw_code=0x{:04X}\ntarget_config=0x{:08X}\nda_loaded={}",
-            self.usb_vid, self.usb_pid, self.hw_code, self.target_config, self.da_loaded
+            "usb_vid=0x{:04X}\nusb_pid=0x{:04X}\nhw_code=0x{:04X}\ntarget_config=0x{:08X}\nda_loaded={}\ncreated_at={}",
+            self.usb_vid, self.usb_pid, self.hw_code, self.target_config, self.da_loaded, self.created_at
         )?;
         if let Some(ref path) = self.preloader_path {
             write!(f, "\npreloader_path={}", path)?;
@@ -84,12 +89,21 @@ impl SessionState {
             device_fingerprint: map.get("device_fingerprint").map(|s| s.to_string()),
             gpt_cache_path: map.get("gpt_cache_path").map(|s| s.to_string()),
             optional_query_failures,
+            created_at: map
+                .get("created_at")
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0), // 兼容旧版无此字段的 .state 文件
         })
     }
 
-    /// 写入 .state 文件
+    /// 写入 .state 文件（原子写入：先写临时文件再 rename）
     pub fn save(&self) -> Result<(), String> {
-        fs::write(STATE_FILE, self.to_string()).map_err(|e| format!("写入 .state 失败: {}", e))
+        let tmp = format!("{}.tmp", STATE_FILE);
+        fs::write(&tmp, self.to_string())
+            .map_err(|e| format!("写入 .state.tmp 失败: {}", e))?;
+        fs::rename(&tmp, STATE_FILE)
+            .map_err(|e| format!("rename .state.tmp 失败: {}", e))?;
+        Ok(())
     }
 
     /// 读取 .state 文件
@@ -169,15 +183,36 @@ where
 }
 
 /// 尝试复用现有 DA 会话
-/// 如果 .state 存在且 da_loaded=true，跳过 BROM→DA 流程。
+/// 如果 .state 存在且 da_loaded=true 且未过期，跳过 BROM→DA 流程。
 /// 真正的 DA 模式验证由后续的 check_da_session / reinit 完成（心跳检测），
 /// 不在此处通过 PID 过滤，因为 MTK 设备在 BROM/DA 模式下通常都使用 PID=0x0003。
 pub fn try_reuse_da_session(vid: u16, pid: u16) -> bool {
     if let Some(state) = SessionState::load() {
+        // 时效检查：超过 SESSION_MAX_AGE_SECS 视为过期
+        if state.created_at > 0 {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let age = now.saturating_sub(state.created_at);
+            if age > SESSION_MAX_AGE_SECS {
+                info!(
+                    "[session] .state 已过期（{}秒 > {}秒），重新初始化",
+                    age, SESSION_MAX_AGE_SECS
+                );
+                SessionState::remove();
+                return false;
+            }
+        }
+
         if state.da_loaded && state.device_online(vid, pid) {
             info!(
-                "[session] 复用 DA 会话（hw_code=0x{:04X}，设备在线）",
-                state.hw_code
+                "[session] 复用 DA 会话（hw_code=0x{:04X}，设备在线，age={}秒）",
+                state.hw_code,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs().saturating_sub(state.created_at))
+                    .unwrap_or(0)
             );
             return true;
         } else {
@@ -203,6 +238,10 @@ pub fn save_da_session(
         .and_then(|state| state.device_fingerprint.as_ref())
         .map(|fingerprint| fingerprint == &device_fingerprint)
         .unwrap_or(false);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let state = SessionState {
         usb_vid: vid,
         usb_pid: pid,
@@ -225,6 +264,7 @@ pub fn save_da_session(
         } else {
             Vec::new()
         },
+        created_at: now,
     };
     if let Err(e) = state.save() {
         warn!("[session] 保存 .state 失败: {}", e);
@@ -295,6 +335,7 @@ mod tests {
                 "get_connection_agent".to_string(),
                 "get_sla_status".to_string(),
             ],
+            created_at: 1700000000,
         };
 
         let parsed = SessionState::from_string(&state.to_string()).unwrap();

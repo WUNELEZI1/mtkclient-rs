@@ -346,7 +346,19 @@ impl<'a> DAXFlash<'a> {
             let transport = crate::preloader::SerialPortTransport::new(&port_name, 115200)
                 .map_err(|e| format!("重新打开串口失败: {}", e))?;
             self.preloader.device = Box::new(transport);
-            info!("[RECONNECT_USB] 串口重新连接成功");
+
+            // 串口重连后同样需要排空残留 + 协议同步 + 确认 DA 存活
+            self.preloader.device.drain_pending();
+            if let Err(e) = self.xflash_sync() {
+                warn!("[RECONNECT_USB] 串口 sync 失败: {}，DA 可能已掉线", e);
+                return Err(format!("串口重连后 sync 失败: {}", e));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            if !self.da_heartbeat() {
+                return Err("串口重连后 DA 心跳失败，可能需要重新加载 DA".to_string());
+            }
+
+            info!("[RECONNECT_USB] 串口重新连接成功（协议同步完成）");
             return Ok(());
         }
 
@@ -363,6 +375,19 @@ impl<'a> DAXFlash<'a> {
             match self.preloader.device.reopen_device(context) {
                 Ok(_) => {
                     info!("[RECONNECT_USB] 重新连接成功 (第 {} 次尝试)", attempt);
+
+                    // 重连后：清空 USB 管道残留 → 协议同步 → 确认 DA 存活
+                    self.preloader.device.drain_pending();
+                    if let Err(e) = self.xflash_sync() {
+                        warn!("[RECONNECT_USB] sync 失败: {}，DA 可能已掉线", e);
+                        return Err(format!("重连后 sync 失败: {}", e));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                    if !self.da_heartbeat() {
+                        return Err("重连后 DA 心跳失败，可能需要重新加载 DA".to_string());
+                    }
+                    info!("[RECONNECT_USB] 重连后协议同步完成，DA 存活");
+
                     return Ok(());
                 }
                 Err(e) => {

@@ -202,15 +202,14 @@ impl<'a> DAXFlash<'a> {
         // boot_to 已等待响应，只需极短缓冲给设备切换上下文
         std::thread::sleep(Duration::from_millis(20));
         if let Ok(ack) = self.send_devctrl(DA_EXTENSIONS_DEVCTRL_ACK, None) {
-            // Python 第 1252 行：send_devctrl 后还要读一次 status
-            let status = self.status();
-            let status_ok = match status {
-                Ok(s) => s == 0,
-                Err(_) => false,
-            };
+            // send_devctrl 内部已消费 xread 后的 status 包（DA 协议 4 包：
+            //   stage1_status → stage2_status → xread_data → status_after_data）
+            // 不再重复读取 status——否则第 5 个包不存在，5s 超时导致：
+            //   DA Extensions 未启用 → HACC 软件回退 → DA 状态机失步 → 写入超时
+            // magic 匹配即认为成功（DA 返回 0xA1A2A3A4 时 status 必为 0）
             if ack.len() >= 4 {
                 let magic = u32::from_le_bytes([ack[0], ack[1], ack[2], ack[3]]);
-                if status_ok && magic == DA_EXTENSIONS_ACK_MAGIC {
+                if magic == DA_EXTENSIONS_ACK_MAGIC {
                     // Python 第 1256 行：CUSTOM_ACK 成功后立即调用 custom_set_storage
                     // CUSTOM_SET_STORAGE 参数：0=eMMC, 1=UFS
                     if self
@@ -225,8 +224,8 @@ impl<'a> DAXFlash<'a> {
                     }
                 } else {
                     warn!(
-                        "DA extensions CUSTOM_ACK 验证失败 (status={:?}, magic=0x{:08X})",
-                        status, magic
+                        "DA extensions CUSTOM_ACK 验证失败 (magic=0x{:08X}, 期望=0x{:08X})",
+                        magic, DA_EXTENSIONS_ACK_MAGIC
                     );
                 }
             } else {
