@@ -1,14 +1,14 @@
 //! SecCfg V4 结构（28 字节头 + 32 字节 SHA256/AES 哈希尾部）
 //!
 //! - 解析：识别 SW / V2 / V3 / V4 加密类型
-//! - 构建：仅修改 lock_state，不动 critical_lock_state/dm_verity
+//! - 构建：修改 lock_state + critical_lock_state，对齐 Python mtkclient
 
 use log::info;
 use sha2::{Digest, Sha256};
 
 use crate::security::sej::{
-    sej_sec_cfg_hw_encrypt, sej_sec_cfg_hw_v3_encrypt, sej_sec_cfg_sw_decrypt,
-    sej_sec_cfg_sw_encrypt,
+    sej_sec_cfg_hw_decrypt, sej_sec_cfg_hw_encrypt, sej_sec_cfg_hw_v3_decrypt,
+    sej_sec_cfg_hw_v3_encrypt, sej_sec_cfg_sw_decrypt, sej_sec_cfg_sw_encrypt,
 };
 
 /// SecCfg V4 解析和修改
@@ -49,10 +49,14 @@ impl SecCfgV4 {
             ));
         }
 
-        if data.len() < 0x20 {
-            return Err("seccfg 数据太小，无法读取哈希".to_string());
-        }
-        let enc_hash = data[data.len() - 0x20..data.len()].to_vec();
+        // 对齐 mtkclient: hash = data[seccfg_size - 0x20 : seccfg_size]
+        // seccfg_size 通常为 0x3C，即 data[0x1C..0x3C]
+        let seccfg_size = size as usize;
+        let enc_hash = if seccfg_size >= 0x20 && data.len() >= seccfg_size {
+            data[seccfg_size - 0x20..seccfg_size].to_vec()
+        } else {
+            return Err("seccfg_size 太小，无法读取 HACC 签名".to_string());
+        };
 
         let seccfg_header: [u8; 28] = [
             magic.to_le_bytes()[0],
@@ -87,20 +91,32 @@ impl SecCfgV4 {
 
         let expected_hash = Sha256::digest(seccfg_header);
 
-        let mut hwtype = String::new();
-        if let Ok(dec) = sej_sec_cfg_sw_decrypt(&enc_hash)
+        // 对齐 Python SecCfgV4.parse()：按 SW → V3 → V4(legacy) → V2 顺序尝试
+        // 如果所有类型都不匹配（例如之前写入了错误签名的 seccfg），
+        // 不报错退出，而是警告并默认 V4，允许用户重新写入修复
+        let hwtype = if let Ok(dec) = sej_sec_cfg_sw_decrypt(&enc_hash)
             && dec[..32] == expected_hash[..]
         {
-            hwtype = "SW".to_string();
-        }
-
-        if hwtype.is_empty() {
-            // SW 解密失败，说明硬件加密（V2/V3/V4）。
-            // 具体区分 V2/V3/V4 需要额外信息（如芯片类型），实际使用中 MT6768 系列
-            // 主要是 V4。这里标记为 V4 作为默认值，在线签名时走 HACC 硬件路径。
-            // 如果 HACC 不可用，sej_hacc_sign 会自动回退到软件路径。
-            hwtype = "V4".to_string();
-        }
+            "SW".to_string()
+        } else if let Ok(dec) = sej_sec_cfg_hw_v3_decrypt(&enc_hash, false)
+            && dec[..32] == expected_hash[..]
+        {
+            "V3".to_string()
+        } else if let Ok(dec) = sej_sec_cfg_hw_v3_decrypt(&enc_hash, true)
+            && dec[..32] == expected_hash[..]
+        {
+            "V4".to_string()
+        } else if let Ok(dec) = sej_sec_cfg_hw_decrypt(&enc_hash)
+            && dec[..32] == expected_hash[..]
+        {
+            "V2".to_string()
+        } else {
+            log::warn!(
+                "[SECCFG] 签名哈希验证失败 (SW/V2/V3/V4 均不匹配)，可能是之前写入了错误签名。\
+                 默认使用 V4 类型继续，写入时将重新生成正确签名。"
+            );
+            "V4".to_string()
+        };
 
         info!(
             "seccfg V4 解析成功: hwtype={}, lock_state=0x{:08X}",
@@ -120,20 +136,22 @@ impl SecCfgV4 {
     }
 
     /// 修改 seccfg V4（lock/unlock）
-    /// 对齐 C# 版正确行为：只修改 lock_state(0x0C)，不动 critical_lock_state/dm_verity(0x10)
-    /// Python mtkclient 的 Bug：错误地将 offset 0x10 写为 01，导致 dm-verity corruption
+    /// critical_lock_state（LKCS）：unlock=LKCS_UNLOCK(1), lock=LKCS_LOCK(2)
+    /// lock_state（LKS）：unlock=LKS_UNLOCK(3), lock=LKS_DEFAULT=1
+    /// 偏移 0x10 的 critical_lock_state 必须正确声明，否则 Preloader/LK
+    /// 认为关键安全状态未声明 → seccfg 完整性校验失败 → red state
     #[allow(dead_code)] // 预留：unlock-bootloader / lock-bootloader 命令调用入口
     pub(crate) fn create(&self, lockflag: &str, partition_size: usize) -> Result<Vec<u8>, String> {
-        let new_lock = if lockflag == "unlock" {
+        let (new_lock, new_critical) = if lockflag == "unlock" {
             if self.lock_state == 3 {
                 return Err("设备已解锁".to_string());
             }
-            3u32
+            (3u32, 1u32) // LKS_UNLOCK=3, LKCS_UNLOCK=1
         } else if lockflag == "lock" {
             if self.lock_state == 1 {
                 return Err("设备已上锁".to_string());
             }
-            1u32
+            (1u32, 2u32) // LKS_DEFAULT=1, LKCS_LOCK=2
         } else {
             return Err("无效 lockflag".to_string());
         };
@@ -155,18 +173,16 @@ impl SecCfgV4 {
             new_lock.to_le_bytes()[1],
             new_lock.to_le_bytes()[2],
             new_lock.to_le_bytes()[3],
-            self.critical_lock_state.to_le_bytes()[0],
-            self.critical_lock_state.to_le_bytes()[1],
-            self.critical_lock_state.to_le_bytes()[2],
-            self.critical_lock_state.to_le_bytes()[3],
+            new_critical.to_le_bytes()[0],
+            new_critical.to_le_bytes()[1],
+            new_critical.to_le_bytes()[2],
+            new_critical.to_le_bytes()[3],
             self.sboot_runtime.to_le_bytes()[0],
             self.sboot_runtime.to_le_bytes()[1],
             self.sboot_runtime.to_le_bytes()[2],
             self.sboot_runtime.to_le_bytes()[3],
-            self.endflag.to_le_bytes()[0],
-            self.endflag.to_le_bytes()[1],
-            self.endflag.to_le_bytes()[2],
-            self.endflag.to_le_bytes()[3],
+            // 对齐 Python: endflag 固定 0x45454545
+            0x45, 0x45, 0x45, 0x45,
         ];
 
         let new_hash = Sha256::digest(seccfg_header);

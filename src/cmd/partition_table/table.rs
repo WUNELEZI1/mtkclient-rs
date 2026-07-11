@@ -148,7 +148,6 @@ pub fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64, super_meta
     }
 
     // GPT 分区（交替亮度，先 format 定宽再整体上色）
-    let mut _super_idx: Option<usize> = None;
     for (i, entry) in partitions.iter().enumerate() {
         row += 1;
         let start_addr = entry.start_addr;
@@ -168,43 +167,36 @@ pub fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64, super_meta
             println!("{}", line.bright_white());
         }
 
-        // 记录 super 分区索引
+        // 遇到 super 分区时，立即展开其 logical partitions
         if entry.name.to_lowercase() == "super" {
-            _super_idx = Some(i);
-        }
-    }
-
-    // 展开 super 分区的 logical partition
-    if let Some(ref meta) = super_metadata {
-        if !meta.partitions.is_empty() {
-            println!(
-                "  {} {} ({} logical partitions)",
-                "├─".cyan(),
-                "Dynamic Partitions".cyan(),
-                meta.partitions.len()
-            );
-            for lp in &meta.partitions {
-                let (off, size) = meta.find_partition(&lp.name).unwrap_or((0, 0));
-                let ab_tag = if lp.is_slot_suffixed() {
-                    let suffix = if lp.name.ends_with("_a") { " [A-slot]".cyan() }
-                               else if lp.name.ends_with("_b") { " [B-slot]".magenta() }
-                               else { "".into() };
-                    suffix
-                } else {
-                    "".into()
-                };
-                let lp_line = format!(
-                    "  {} {:<20}  offset=0x{:08X}  size=0x{:08X} ({}){}",
-                    "│  ".cyan(),
-                    lp.name,
-                    off,
-                    size,
-                    emmc::format_size(size),
-                    ab_tag,
-                );
-                println!("{}", lp_line.dimmed());
+            if let Some(ref meta) = super_metadata {
+                if !meta.partitions.is_empty() {
+                    let total_lp = meta.partitions.len();
+                    for (j, lp) in meta.partitions.iter().enumerate() {
+                        let (off, size) = meta.find_partition(&lp.name).unwrap_or((0, 0));
+                        let is_last = j + 1 == total_lp;
+                        let branch = if is_last { "└─" } else { "├─" };
+                        let ab_tag = if lp.is_slot_suffixed() {
+                            let suffix = if lp.name.ends_with("_a") { " [A-slot]".cyan() }
+                                       else if lp.name.ends_with("_b") { " [B-slot]".magenta() }
+                                       else { "".into() };
+                            suffix
+                        } else {
+                            "".into()
+                        };
+                        let lp_line = format!(
+                            "     {} {:<20}  offset=0x{:08X}  size=0x{:08X} ({}){}",
+                            branch.cyan(),
+                            lp.name,
+                            off,
+                            size,
+                            emmc::format_size(size),
+                            ab_tag,
+                        );
+                        println!("{}", lp_line.dimmed());
+                    }
+                }
             }
-            println!();
         }
     }
 

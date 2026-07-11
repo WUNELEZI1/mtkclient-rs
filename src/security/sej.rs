@@ -7,13 +7,38 @@ use std::cell::RefCell;
 use std::thread::sleep;
 use std::time::Duration;
 
-const HACC_INIT: u32 = 0x1000_A020;
-const HACC_DATA: u32 = 0x1000_A010;
-const HACC_CTRL: u32 = 0x1000_A008;
-const HACC_OUT0: u32 = 0x1000_A050;
+// HACC 寄存器偏移（对齐 Python hwcrypto_sej.py regval 表）
+// 基址 sej_base = 0x1000A000 (MT6768)
+const HACC_ACON: u32 = 0x004;
+const HACC_ACON2: u32 = 0x008;
+const HACC_ACONK: u32 = 0x00C;
+const HACC_ASRC0: u32 = 0x010;
+const HACC_AKEY0: u32 = 0x020;
+const HACC_ACFG0: u32 = 0x040;
+const HACC_AOUT0: u32 = 0x050;
+const HACC_UNK: u32 = 0x0BC;
+
+// HACC 控制标志（对齐 Python Sej 类常量）
+const AES_ENC: u32 = 0x00000001;
+const AES_CBC: u32 = 0x00000002;
+const AES_128: u32 = 0x00000000;
+const AES_CHG_BO_OFF: u32 = 0x00000000;
+const AES_START: u32 = 0x00000001;
+const AES_CLR: u32 = 0x00000002;
+const AES_RDY: u32 = 0x00008000;
+const AES_BK2C: u32 = 0x00000010;
+const AES_R2K: u32 = 0x00000100;
+
+// SEJ V3 初始化用的固定模式
+const CFG_RANDOM_PATTERN: [u32; 12] = [
+    0x2D44BB70, 0xA744D227, 0xD0A9864B, 0x83FFC244,
+    0x7EC8266B, 0x43E80FB2, 0x01A6348A, 0x2067F9A0,
+    0x54536405, 0xD546A6B1, 0x1CC3EC3A, 0xDE377A83,
+];
 
 struct HaccBackendVtable {
     ptr: *mut (),
+    sej_base: u32,
     reg_write32: unsafe fn(*mut (), u32, u32) -> Result<(), String>,
     reg_read32: unsafe fn(*mut (), u32) -> Result<u32, String>,
     is_hacc_ready: unsafe fn(*mut ()) -> bool,
@@ -27,6 +52,7 @@ pub trait HaccBackend {
     fn is_hacc_ready(&self) -> bool;
     fn reg_write32(&mut self, addr: u32, value: u32) -> Result<(), String>;
     fn reg_read32(&mut self, addr: u32) -> Result<u32, String>;
+    fn sej_base(&self) -> u32;
 }
 
 impl<'a> HaccBackend for DAXFlash<'a> {
@@ -38,13 +64,11 @@ impl<'a> HaccBackend for DAXFlash<'a> {
         if !self.daext {
             return Err("DA Extensions 未启用，无法访问 HACC 寄存器".to_string());
         }
-        let resp = self.send_devctrl(addr, Some(&value.to_le_bytes()))?;
-        if !resp.is_empty() {
-            trace!(
-                "[HACC] write 0x{:08X} -> {:08X}, resp {:02X?}",
-                addr, value, resp
-            );
-        }
+        self.custom_writeregister(addr, value)?;
+        trace!(
+            "[HACC] write 0x{:08X} -> {:08X}",
+            addr, value
+        );
         Ok(())
     }
 
@@ -52,15 +76,17 @@ impl<'a> HaccBackend for DAXFlash<'a> {
         if !self.daext {
             return Err("DA Extensions 未启用，无法访问 HACC 寄存器".to_string());
         }
-        let resp = self.send_devctrl(addr, None)?;
-        if resp.len() < 4 {
-            return Err(format!(
-                "HACC read 0x{:08X} 返回数据太短: {}",
-                addr,
-                resp.len()
-            ));
-        }
-        Ok(u32::from_le_bytes(resp[0..4].try_into().unwrap()))
+        let val = self.custom_readregister(addr)?;
+        trace!(
+            "[HACC] read 0x{:08X} -> {:08X}",
+            addr, val
+        );
+        Ok(val)
+    }
+
+    fn sej_base(&self) -> u32 {
+        // MT6768 HACC/SEJ 基址
+        0x1000_A000
     }
 }
 
@@ -90,6 +116,7 @@ where
 {
     let vtable = HaccBackendVtable {
         ptr: backend as *mut T as *mut (),
+        sej_base: backend.sej_base(),
         reg_write32: backend_write_trampoline::<T>,
         reg_read32: backend_read_trampoline::<T>,
         is_hacc_ready: backend_ready_trampoline::<T>,
@@ -115,14 +142,161 @@ fn with_backend_mut<R>(
 }
 
 fn wait_hacc_ready(ctx: &HaccBackendVtable) -> Result<(), String> {
-    for _ in 0..50 {
-        let status = unsafe { (ctx.reg_read32)(ctx.ptr, HACC_CTRL)? };
-        if status == 0x8000 {
+    let base = ctx.sej_base;
+    for _ in 0..20 {
+        let val = unsafe { (ctx.reg_read32)(ctx.ptr, base + HACC_ACON2)? };
+        if val & AES_RDY != 0 {
             return Ok(());
         }
         sleep(Duration::from_millis(10));
     }
-    Err("HACC 超时等待状态 0x8000".to_string())
+    Err("HACC 超时等待 AES_RDY".to_string())
+}
+
+fn hacc_write(ctx: &HaccBackendVtable, offset: u32, val: u32) -> Result<(), String> {
+    unsafe { (ctx.reg_write32)(ctx.ptr, ctx.sej_base + offset, val) }
+}
+
+fn hacc_read(ctx: &HaccBackendVtable, offset: u32) -> Result<u32, String> {
+    unsafe { (ctx.reg_read32)(ctx.ptr, ctx.sej_base + offset) }
+}
+
+/// SEJ V3 初始化 — 对齐 Python SEJ_V3_Init()
+fn sej_v3_init(
+    ctx: &HaccBackendVtable,
+    encrypt: bool,
+    iv: &[u32; 4],
+    legacy: bool,
+) -> Result<(), String> {
+    // 1. 清除所有 8 个密钥寄存器 (AKEY0-7, offset 0x20-0x3C)
+    for i in 0..8 {
+        hacc_write(ctx, HACC_AKEY0 + i * 4, 0)?;
+    }
+
+    // 2. 设置 ACON = CBC | DEC | 128（生成 META Key 用解密模式）
+    let acon_init = AES_CHG_BO_OFF | AES_CBC | AES_128; // DEC = 0
+    hacc_write(ctx, HACC_ACON, acon_init)?;
+
+    // 3. ACONK = BK2C | R2K — 绑定 HUID/HUK 到 HACC
+    hacc_write(ctx, HACC_ACONK, AES_BK2C | AES_R2K)?;
+
+    // 4. 清除 HACC_ASRC/HACC_ACFG/HACC_AOUT
+    hacc_write(ctx, HACC_ACON2, AES_CLR)?;
+
+    // 5. 设置 IV 到 ACFG0-3
+    hacc_write(ctx, HACC_ACFG0, iv[0])?;
+    hacc_write(ctx, HACC_ACFG0 + 4, iv[1])?;
+    hacc_write(ctx, HACC_ACFG0 + 8, iv[2])?;
+    hacc_write(ctx, HACC_ACFG0 + 12, iv[3])?;
+
+    // 6. Legacy vs 非 Legacy 路径
+    let acon_setting = AES_CHG_BO_OFF | AES_128
+        | AES_CBC
+        | if encrypt { AES_ENC } else { 0 };
+
+    if legacy {
+        // Legacy 路径：设置 HACC_UNK bit1，然后做一次 CLR 等待
+        let unk = hacc_read(ctx, HACC_UNK)?;
+        hacc_write(ctx, HACC_UNK, unk | 2)?;
+
+        hacc_write(ctx, HACC_ACON2, 0x40000000)?;
+        for _ in 0..20 {
+            let val = hacc_read(ctx, HACC_ACON2)?;
+            if val > 0x80000000 {
+                break;
+            }
+            sleep(Duration::from_millis(1));
+        }
+
+        // 关闭 R2K，保留 BK2C
+        hacc_write(ctx, HACC_UNK, unk & 0xFFFFFFFE)?;
+        hacc_write(ctx, HACC_ACONK, AES_BK2C)?;
+        hacc_write(ctx, HACC_ACON, acon_setting)?;
+    } else {
+        // 非 Legacy 路径：设置 HACC_UNK=1
+        hacc_write(ctx, HACC_UNK, 1)?;
+
+        // 用 g_CFG_RANDOM_PATTERN 做 3 轮加密生成密钥
+        for i in 0..3 {
+            let pos = i * 4;
+            hacc_write(ctx, HACC_ASRC0, CFG_RANDOM_PATTERN[pos])?;
+            hacc_write(ctx, HACC_ASRC0 + 4, CFG_RANDOM_PATTERN[pos + 1])?;
+            hacc_write(ctx, HACC_ASRC0 + 8, CFG_RANDOM_PATTERN[pos + 2])?;
+            hacc_write(ctx, HACC_ASRC0 + 12, CFG_RANDOM_PATTERN[pos + 3])?;
+            hacc_write(ctx, HACC_ACON2, AES_START)?;
+            wait_hacc_ready(ctx)?;
+        }
+
+        hacc_write(ctx, HACC_ACON2, AES_CLR)?;
+        // 重新设置 IV
+        hacc_write(ctx, HACC_ACFG0, iv[0])?;
+        hacc_write(ctx, HACC_ACFG0 + 4, iv[1])?;
+        hacc_write(ctx, HACC_ACFG0 + 8, iv[2])?;
+        hacc_write(ctx, HACC_ACFG0 + 12, iv[3])?;
+        hacc_write(ctx, HACC_ACON, acon_setting)?;
+        hacc_write(ctx, HACC_ACONK, 0)?;
+    }
+
+    trace!("[SEJ_V3_Init] 完成, encrypt={}, legacy={}", encrypt, legacy);
+    Ok(())
+}
+
+/// SEJ 数据加密/解密 — 对齐 Python sej_run()
+fn sej_run(ctx: &HaccBackendVtable, data: &[u8]) -> Result<Vec<u8>, String> {
+    let mut result = Vec::with_capacity(data.len());
+    let dwords: Vec<u32> = data
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+
+    for chunk in dwords.chunks(4) {
+        hacc_write(ctx, HACC_ASRC0, chunk[0])?;
+        hacc_write(ctx, HACC_ASRC0 + 4, chunk.get(1).copied().unwrap_or(0))?;
+        hacc_write(ctx, HACC_ASRC0 + 8, chunk.get(2).copied().unwrap_or(0))?;
+        hacc_write(ctx, HACC_ASRC0 + 12, chunk.get(3).copied().unwrap_or(0))?;
+
+        hacc_write(ctx, HACC_ACON2, AES_START)?;
+        wait_hacc_ready(ctx)?;
+
+        result.extend_from_slice(&hacc_read(ctx, HACC_AOUT0)?.to_le_bytes());
+        result.extend_from_slice(&hacc_read(ctx, HACC_AOUT0 + 4)?.to_le_bytes());
+        result.extend_from_slice(&hacc_read(ctx, HACC_AOUT0 + 8)?.to_le_bytes());
+        result.extend_from_slice(&hacc_read(ctx, HACC_AOUT0 + 12)?.to_le_bytes());
+    }
+
+    Ok(result)
+}
+
+/// SEJ 终止 — 对齐 Python sej_terminate()
+fn sej_terminate(ctx: &HaccBackendVtable) -> Result<(), String> {
+    hacc_write(ctx, HACC_ACON2, AES_CLR)?;
+    for i in 0..8 {
+        hacc_write(ctx, HACC_AKEY0 + i * 4, 0)?;
+    }
+    Ok(())
+}
+
+/// 通过 HACC 引擎对输入做 AES-128-CBC 签名 — 完整对齐 Python hw_aes128_cbc_encrypt
+fn extract_hacc_output(
+    ctx: &HaccBackendVtable,
+    data: &[u8],
+    legacy: bool,
+) -> Result<Vec<u8>, String> {
+    info!("HACC init");
+    let iv: [u32; 4] = G_HACC_CFG_1[0..4].try_into().unwrap();
+
+    // 1. SEJ V3 初始化（绑定 HUID/HUK 密钥）
+    sej_v3_init(ctx, true, &iv, legacy)?;
+
+    // 2. 逐块加密
+    info!("HACC run");
+    let result = sej_run(ctx, data)?;
+
+    // 3. 终止（清除密钥）
+    info!("HACC terminate");
+    sej_terminate(ctx)?;
+
+    Ok(result)
 }
 
 const SEJ_SW_KEY: &[u8; 32] = b"25A1763A21BC854CD569DC23B4782B63";
@@ -313,81 +487,24 @@ pub(crate) fn sej_sec_cfg_hw_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-fn extract_hacc_output(ctx: &HaccBackendVtable, data: &[u8]) -> Result<[u8; 32], String> {
-    let mut input = [0u8; 32];
-    let used_len = data.len().min(32);
-    input[..used_len].copy_from_slice(&data[..used_len]);
-    let mut output = [0u8; 32];
-
-    info!("HACC init");
-    unsafe { (ctx.reg_write32)(ctx.ptr, HACC_INIT, 0) }?;
-
-    for (block_idx, block) in input.chunks(16).enumerate() {
-        let mut chunk = [0u8; 16];
-        chunk[..block.len()].copy_from_slice(block);
-
-        let w0 = u32::from_le_bytes(chunk[0..4].try_into().unwrap());
-        let w1 = u32::from_le_bytes(chunk[4..8].try_into().unwrap());
-        let w2 = u32::from_le_bytes(chunk[8..12].try_into().unwrap());
-        let w3 = u32::from_le_bytes(chunk[12..16].try_into().unwrap());
-
-        info!("HACC run");
-        trace!(
-            "[HACC] block {} write data: {:08X} {:08X} {:08X} {:08X}",
-            block_idx, w0, w1, w2, w3
-        );
-        unsafe { (ctx.reg_write32)(ctx.ptr, HACC_DATA, w0) }?;
-        unsafe { (ctx.reg_write32)(ctx.ptr, HACC_DATA + 4, w1) }?;
-        unsafe { (ctx.reg_write32)(ctx.ptr, HACC_DATA + 8, w2) }?;
-        unsafe { (ctx.reg_write32)(ctx.ptr, HACC_DATA + 12, w3) }?;
-        unsafe { (ctx.reg_write32)(ctx.ptr, HACC_CTRL, 1) }?;
-        wait_hacc_ready(ctx)?;
-
-        let r0 = unsafe { (ctx.reg_read32)(ctx.ptr, HACC_OUT0) }?;
-        let r1 = unsafe { (ctx.reg_read32)(ctx.ptr, HACC_OUT0 + 4) }?;
-        let r2 = unsafe { (ctx.reg_read32)(ctx.ptr, HACC_OUT0 + 8) }?;
-        let r3 = unsafe { (ctx.reg_read32)(ctx.ptr, HACC_OUT0 + 12) }?;
-
-        output[block_idx * 16..block_idx * 16 + 4].copy_from_slice(&r0.to_le_bytes());
-        output[block_idx * 16 + 4..block_idx * 16 + 8].copy_from_slice(&r1.to_le_bytes());
-        output[block_idx * 16 + 8..block_idx * 16 + 12].copy_from_slice(&r2.to_le_bytes());
-        output[block_idx * 16 + 12..block_idx * 16 + 16].copy_from_slice(&r3.to_le_bytes());
-    }
-
-    info!("HACC terminate");
-    unsafe { (ctx.reg_write32)(ctx.ptr, HACC_CTRL, 2) }?;
-    unsafe { (ctx.reg_write32)(ctx.ptr, HACC_INIT, 0) }?;
-    Ok(output)
-}
-
-/// 通过 HACC 引擎对输入做签名/加密，并返回 32 字节结果。
-/// 如果 DA Extensions 后端可用，优先走硬件；否则在提供 preloader 数据时走软件路径。
+/// 通过 HACC 引擎对输入做签名/加密，并返回结果。
+/// legacy=true 对应 V4 类型，legacy=false 对应 V3 类型。
 pub fn sej_hacc_sign(
     data: &[u8],
     hw_code: u16,
-    preloader_data: Option<&[u8]>,
-) -> Result<[u8; 32], String> {
-    let mut sw_key = sw_key_default();
-    if let Some(preloader) = preloader_data
-        && let Some(key) = extract_sw_key_from_preloader(preloader)
-    {
-        sw_key = key;
-    }
-
-    match with_backend_mut(|ctx| extract_hacc_output(ctx, data)) {
+    legacy: bool,
+) -> Result<Vec<u8>, String> {
+    match with_backend_mut(|ctx| extract_hacc_output(ctx, data, legacy)) {
         Ok(sig) => {
             debug!("[SEJ] hw_sign success, hw_code=0x{:04X}", hw_code);
             Ok(sig)
         }
         Err(e) => {
             debug!(
-                "[SEJ] hw_sign unavailable (hw_code=0x{:04X}): {}, fallback to software path",
+                "[SEJ] hw_sign unavailable (hw_code=0x{:04X}): {}, no software fallback for V3/V4",
                 hw_code, e
             );
-            let enc = sej_sec_cfg_sw_encrypt_with_key(data, &sw_key)?;
-            let mut out = [0u8; 32];
-            out.copy_from_slice(&enc[..32.min(enc.len())]);
-            Ok(out)
+            Err(e)
         }
     }
 }

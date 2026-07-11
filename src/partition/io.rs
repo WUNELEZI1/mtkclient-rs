@@ -11,6 +11,7 @@ use log::{debug, info, warn};
 use std::io::Read;
 use std::sync::atomic::Ordering;
 
+use crate::connection;
 use crate::da::xflash::{CMD_FORMAT, CMD_MAGIC, DAXFlash, pack3};
 use crate::usb::log::QUIET_USB_READ;
 
@@ -141,6 +142,68 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
+    /// 确保 super 动态分区元数据已加载（统一入口，避免多处重复代码）
+    ///
+    /// 加载策略：
+    /// 1. 如果已缓存，直接返回
+    /// 2. 尝试从 super 分区前 1MB 解析（AOSP 标准位置）
+    /// 3. 尝试从 super 分区末尾 1MB 解析（backup geometry）
+    /// 4. 尝试从 metadata 分区前 1MB 解析（MTK Virtual A/B 设备）
+    pub(crate) fn ensure_super_metadata(&mut self) -> Result<(), String> {
+        if self.super_metadata.is_some() {
+            return Ok(());
+        }
+
+        // 获取 super 分区信息
+        let (super_addr, super_size) = self.find_partition_addr("super")
+            .map_err(|e| format!("查找 super 分区失败: {}", e))?;
+        let meta_read_size = std::cmp::min(super_size, 1024 * 1024) as u64;
+
+        // 策略 1：super 分区前 1MB（primary）
+        match self.readflash_data(super_addr, meta_read_size) {
+            Ok(primary_data) => {
+                if let Ok(meta) = crate::partition::lp::SuperMetadata::parse(&primary_data) {
+                    info!("Super 动态分区解析成功（primary）: {} 个 logical partition", meta.partitions.len());
+                    self.super_metadata = Some(meta);
+                    return Ok(());
+                }
+            }
+            Err(e) => debug!("读取 super 分区失败: {}", e),
+        }
+
+        // 策略 2：super 分区末尾 1MB（backup）
+        let backup_addr = super_addr + super_size.saturating_sub(meta_read_size);
+        match self.readflash_data(backup_addr, meta_read_size) {
+            Ok(backup_data) => {
+                if let Ok(meta) = crate::partition::lp::SuperMetadata::parse(&backup_data) {
+                    info!("Super 动态分区解析成功（backup）: {} 个 logical partition", meta.partitions.len());
+                    self.super_metadata = Some(meta);
+                    return Ok(());
+                }
+            }
+            Err(e) => debug!("读取 super backup 失败: {}", e),
+        }
+
+        // 策略 3：metadata 分区前 1MB（MTK Virtual A/B）
+        if let Ok((metadata_addr, metadata_size)) = self.find_partition_addr("metadata") {
+            let md_read_size = std::cmp::min(metadata_size, 1024 * 1024) as u64;
+            match self.readflash_data(metadata_addr, md_read_size) {
+                Ok(metadata_data) => {
+                    let non_zero = metadata_data.iter().filter(|&&b| b != 0).count();
+                    info!("metadata 数据中非零字节: {} / {}", non_zero, metadata_data.len());
+                    if let Ok(meta) = crate::partition::lp::SuperMetadata::parse(&metadata_data) {
+                        info!("Super 动态分区解析成功（metadata 分区）: {} 个 logical partition", meta.partitions.len());
+                        self.super_metadata = Some(meta);
+                        return Ok(());
+                    }
+                }
+                Err(e) => debug!("读取 metadata 分区失败: {}", e),
+            }
+        }
+
+        Err("无法解析 super 动态分区元数据（super primary/backup 和 metadata 分区均失败）".to_string())
+    }
+
     /// 查找分区的物理地址和大小（需要 GPT 数据）
     /// 如果 GPT 数据未加载，自动尝试从缓存加载或重新读取。
     pub(crate) fn find_partition_addr(&mut self, partition: &str) -> Result<(u64, u64), String> {
@@ -159,36 +222,17 @@ impl<'a> DAXFlash<'a> {
         }
 
         // GPT 中未找到，尝试从 super 动态分区解析 logical partition
-        if partition != "super" {
-            if let Ok((super_addr, super_size)) = self.find_partition_addr("super") {
-                // 如果缓存中没有 super 元数据，读取并解析
-                if self.super_metadata.is_none() {
-                    info!("GPT 中未找到 {}，尝试从 super 动态分区解析...", partition);
-                    // 元数据通常在 super 分区前 1MB 内，不需要读取整个分区
-                    let meta_size = std::cmp::min(super_size, 1024 * 1024);
-                    match self.readflash_data(super_addr, meta_size) {
-                        Ok(super_data) => {
-                            match crate::partition::lp::SuperMetadata::parse(&super_data) {
-                                Ok(meta) => {
-                                    info!("Super 动态分区解析成功: {} 个 logical partition", meta.partitions.len());
-                                    self.super_metadata = Some(meta);
-                                }
-                                Err(e) => {
-                                    debug!("Super 动态分区解析失败: {}", e);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            debug!("读取 super 分区失败: {}", e);
-                        }
-                    }
-                }
+        if partition != "super" && partition != "metadata" {
+            if self.super_metadata.is_none() {
+                info!("GPT 中未找到 {}，尝试从 super 动态分区解析...", partition);
+                let _ = self.ensure_super_metadata();
+            }
 
-                if let Some(ref meta) = self.super_metadata {
-                    if let Some((offset, size)) = meta.find_partition(partition) {
-                        info!("从 super 动态分区中找到 {}: 偏移 0x{:08X}, 大小 0x{:08X}", partition, offset, size);
-                        return Ok((super_addr + offset, size));
-                    }
+            if let Some(ref meta) = self.super_metadata {
+                if let Some((offset, size)) = meta.find_partition(partition) {
+                    let (super_addr, _) = self.find_partition_addr("super")?;
+                    info!("从 super 动态分区中找到 {}: 偏移 0x{:08X}, 大小 0x{:08X}", partition, offset, size);
+                    return Ok((super_addr + offset, size));
                 }
             }
         }
@@ -396,14 +440,10 @@ impl<'a> DAXFlash<'a> {
         // 1. 找到 super 物理分区地址
         let (super_addr, _super_size) = self.find_partition_addr("super")?;
 
-        // 2. 如果缓存中没有 super 元数据，读取并解析
+        // 2. 确保 super 元数据已加载（统一入口：super → backup → metadata）
         if self.super_metadata.is_none() {
-            let meta_size = std::cmp::min(_super_size, 1024 * 1024);
-            let super_data = self.readflash_data(super_addr, meta_size)?;
-            let meta = crate::partition::lp::SuperMetadata::parse(&super_data)
-                .map_err(|e| format!("解析 super 元数据失败: {}", e))?;
-            info!("Super 动态分区: {} 个 logical partition", meta.partitions.len());
-            self.super_metadata = Some(meta);
+            self.ensure_super_metadata()
+                .map_err(|e| format!("加载 super 元数据失败: {}", e))?;
         }
 
         // 3. 在 super 元数据中查找逻辑分区（自动处理 A/B 槽位）
@@ -418,8 +458,70 @@ impl<'a> DAXFlash<'a> {
             逻辑分区名, actual_name, super_addr, logical_offset, 物理地址, logical_size
         );
 
-        // 4. 流式读取到文件（使用空回调，进度由内部进度条显示）
-        self.readflash_to_file(物理地址, logical_size, 8, 输出文件, 0, |_offset: u64| {})?;
+        // 4. 断点续传检查：对齐到 512 字节边界
+        let 输出路径 = std::path::Path::new(输出文件);
+        let existing_size = if 输出路径.exists() {
+            std::fs::metadata(输出文件).map(|m| m.len()).unwrap_or(0)
+        } else {
+            0
+        };
+        let start_offset = if existing_size > 0 {
+            let aligned = (existing_size / 512) * 512;
+            if aligned != existing_size {
+                info!("  断点续传: 截断到 512 对齐 {} 字节", aligned);
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(输出文件)
+                    .map_err(|e| format!("打开文件失败: {}", e))?;
+                file.set_len(aligned)
+                    .map_err(|e| format!("截断文件失败: {}", e))?;
+            }
+            info!(
+                "  断点续传: 已有 {} 字节 ({}%)，还需读取 {} 字节",
+                aligned,
+                aligned as f64 / logical_size as f64 * 100.0,
+                logical_size - aligned
+            );
+            aligned
+        } else {
+            0
+        };
+
+        // 5. 创建进度条并流式读取
+        use indicatif::{ProgressBar, ProgressStyle};
+        use std::sync::atomic::Ordering;
+        let bar = if crate::usb::log::QUIET_USB_READ.load(Ordering::Relaxed) {
+            ProgressBar::hidden()
+        } else {
+            ProgressBar::new(logical_size)
+        };
+        bar.set_style(
+            ProgressStyle::with_template(
+                "  {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] \
+             {binary_bytes}/{binary_total_bytes} ({percent}%) \
+             {binary_bytes_per_sec} {msg} ETA {eta}",
+            )
+            .unwrap()
+            .progress_chars("█▓░"),
+        );
+        bar.set_message(format!("读取: {}", actual_name));
+        if start_offset > 0 {
+            bar.set_position(start_offset);
+        }
+
+        let bar_clone = bar.clone();
+        // 只在文件完全不存在或大小为 0 时清理 resume
+        // （保留 resume 文件：如果设备仍在发送数据流中，active_resume 路径
+        //   会通过 ACK 接续；如果设备已断开，active_resume ACK 失败后会
+        //   自动 fallback 到非活跃路径发新 READ_DATA）
+        if start_offset == 0 {
+            let resume_path = format!("{}.resume", 输出文件);
+            let _ = std::fs::remove_file(&resume_path);
+        }
+        self.readflash_to_file(物理地址, logical_size, 8, 输出文件, start_offset, move |bytes_read| {
+            bar_clone.set_position(bytes_read);
+        })?;
+        bar.finish_with_message("完成");
         info!("  动态分区 {} 已保存到: {}", 逻辑分区名, 输出文件);
         Ok(())
     }
@@ -575,6 +677,7 @@ impl<'a> DAXFlash<'a> {
         self.preloader.device.write(&param)?;
 
         // 等待 STATUS_COMPLETE (0x40040005) 或 STATUS_CONTINUE (0x40040004)
+        // 注意：FORMAT 命令完成后，部分 DA 版本返回 0x00000000 (ACK) 而非 0x40040005
         const STATUS_COMPLETE: u32 = 0x40040005;
         const STATUS_CONTINUE: u32 = 0x40040004;
 
@@ -587,8 +690,29 @@ impl<'a> DAXFlash<'a> {
             status = self.status()?;
         }
 
-        if status != STATUS_COMPLETE {
+        // FORMAT 成功状态：STATUS_COMPLETE 或 0x00000000 (ACK)
+        if status != STATUS_COMPLETE && status != 0x00000000 {
             return Err(format!("擦除失败: status=0x{:08X}", status));
+        }
+
+        // FORMAT 后 eMMC 内部擦除操作需要较长时间完成（数百毫秒到数秒），
+        // 期间 DA 可能无法正常响应命令。
+        // 执行 xflash_sync 重新同步 DA 状态 + drain_pending 清理残留 + 1000ms 等待
+        self.preloader.device.drain_pending();
+        let _ = self.xflash_sync();
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        self.preloader.device.drain_pending();
+        let _ = self.xflash_sync();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        self.preloader.device.drain_pending();
+
+        // 擦除后检测 DA 心跳，如果失败则主动清除会话状态
+        // 避免下次命令在半失效状态下复用 DA 会话
+        if !self.da_heartbeat() {
+            warn!("擦除后 DA 心跳检测失败，清除会话状态以便下次重新加载 DA");
+            connection::reset_session();
+        } else {
+            info!("擦除后 DA 心跳正常，会话保持有效");
         }
 
         info!("  擦除完成: 分区 {} (0x{:X} @ 0x{:X})", 分区名, 大小, 地址);

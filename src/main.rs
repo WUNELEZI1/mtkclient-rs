@@ -246,7 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   2. 读 .state 文件，检查 da_loaded 标志和 VID/PID 匹配
     //   3. 如果复用条件满足 → connect_to_da_mode（直接连接 PID=0x2000）
     //   4. 否则 → 走正常的 smart_init 流程
-    let da_session_reused =
+    let mut da_session_reused =
         if let Some((current_vid, current_pid, _dev_type)) = usb::获取第一个联发科VIDPID() {
             if crate::connection::try_reuse_da_session(current_vid, current_pid) {
                 info!(
@@ -326,10 +326,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     da.patch_da = cli.patch_da;
     da.da_x_speed = app_config.da_x_speed;
 
-    // 复用 DA 会话时标记 DA 已加载，避免 handle_command 中重复 upload_da
+    // 复用 DA 会话时：排空残留 → 协议同步 → 心跳验证 → 再标记 daext
     if da_session_reused {
-        da.daext = true;
-        info!("[DA_SESSION] DA 已标记为加载状态 (daext=true)");
+        da.preloader.device.drain_pending();
+
+        if let Err(e) = da.xflash_sync() {
+            warn!("[DA_SESSION] sync 失败: {}，回退到完整加载", e);
+            crate::connection::reset_session();
+            da_session_reused = false;
+            // 注意：不能在 if let 绑定后重新赋值，需要走 fallback 路径
+            // 这里 sync 失败说明 DA 会话已失效，后续 handle_command 会重新 upload_da
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if !da.check_da_session() {
+                warn!("[DA_SESSION] 心跳失败，回退到完整加载");
+                da_session_reused = false;
+                // check_da_session 内部已调用 reset_session()
+            } else {
+                da.daext = true;
+                info!("[DA_SESSION] DA 会话复用验证通过 (daext=true)");
+            }
+        }
+    }
+
+    if !da_session_reused {
+        // 如果复用验证失败，回退到正常加载流程
+        // handle_command 中检测到 daext=false 会自动 upload_da
     }
 
     // preloader 路径优先级：用户指定 > .state 恢复 > 从设备 dump

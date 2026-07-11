@@ -13,8 +13,14 @@ pub mod io;
 pub mod partition_table;
 #[path = "super.rs"]
 pub mod lp;
+#[path = "cow.rs"]
+pub(crate) mod cow;
+#[path = "ext4.rs"]
+pub(crate) mod ext4;
 #[path = "write.rs"]
 pub(crate) mod write;
+#[path = "explorer.rs"]
+pub mod explorer;
 
 pub use gpt::GptInfo;
 #[allow(unused_imports)]

@@ -87,14 +87,11 @@ impl<'a> DAXFlash<'a> {
         storage: u32,
         parttype: u32,
     ) -> Result<(), String> {
-        // 写入前清空 USB IN pending data，防止读取残留干扰写入
-        self.preloader.device.drain_pending();
+        // 对齐 Python mtkclient writeflash：先调用 get_packet_length 再 cmd_write_data
+        // 不发送 xflash_sync（SYNC_SIGNAL 会破坏 HACC 后的 DA 状态机）
+        let write_packet_size = self.get_packet_length().unwrap_or(0x40000);
 
         self.cmd_write_data(addr, total, storage, parttype)?;
-
-        // 写入时跳过 get_packet_length（避免 send_devctrl 干扰 DA 状态）。
-        // 使用 128KB 默认值（0x20000），平衡速度和稳定性。
-        let write_packet_size = 0x20000usize;
         let start_time = std::time::Instant::now();
 
         // 创建进度条
@@ -198,7 +195,11 @@ impl<'a> DAXFlash<'a> {
     /// 获取写包长度（对齐 Python get_packet_length）
     fn get_packet_length(&mut self) -> Result<usize, String> {
         // 发送 GET_PACKET_LENGTH (0x040007) 通过 devctrl
+        // send_devctrl 内部已包含完整的 xread + status 握手
         let data = self.send_devctrl(0x040007, None)?;
+        if data.is_empty() {
+            return Ok(0x40000); // 默认值
+        }
         if data.len() >= 8 {
             let plen = u32::from_le_bytes(data[..4].try_into().unwrap());
             let read_plen = u32::from_le_bytes(data[4..8].try_into().unwrap());
@@ -235,12 +236,12 @@ impl<'a> DAXFlash<'a> {
             addr, size, storage, parttype
         );
 
-        // 尝试发送 WRITE_DATA 命令，若状态流错位则同步后重试一次
-        for attempt in 0..2 {
+        // 对齐 Python：发送 WRITE_DATA，失败时仅 drain + 重试（不发 xflash_sync）
+        for attempt in 0..3 {
             if attempt > 0 {
-                warn!("[cmd_write_data] 第一次尝试失败，执行 drain + 重试...");
+                warn!("[cmd_write_data] 第 {} 次尝试失败，执行 drain + 重试...", attempt);
                 self.preloader.device.drain_pending();
-                std::thread::sleep(std::time::Duration::from_millis(200));
+                std::thread::sleep(std::time::Duration::from_millis(500));
             }
 
             // xsend(WRITE_DATA)

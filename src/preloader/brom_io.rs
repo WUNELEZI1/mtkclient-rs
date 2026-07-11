@@ -19,11 +19,6 @@ const JUMP_DA_RETRY_DELAY_MS: u64 = 100;
 const JUMP_DA_RETRY_QUIET_MS: u64 = 30;
 const JUMP_BL_POST_DELAY_MS: u64 = 50;
 
-fn jump_da_echo_has_command_prefix(echo: [u8; 4], addr: u32) -> bool {
-    let addr_bytes = addr.to_be_bytes();
-    echo[0] == 0xD5 && echo[1..] == addr_bytes[..3]
-}
-
 impl Preloader {
     /// SEND_DA: 发送 Download Agent 到设备
     /// 对齐 Python mtkclient 2.0.1 的实现
@@ -40,7 +35,9 @@ impl Preloader {
         );
 
         // 1. echo(0xD7) 命令
-        if !self.echo_1byte(0xD7)? {
+        // 对齐 Python mtk_preloader.py: echo() 将 int 转为 pack(">I")，发送 4 字节
+        // Preloader 串口模式下设备期望 4 字节命令，1 字节会导致超时
+        if !self.echo_4byte(0xD7)? {
             return Err("SEND_DA: echo 0xD7 不匹配".into());
         }
 
@@ -135,11 +132,11 @@ impl Preloader {
     }
 
     /// JUMP_DA: 跳转到 Download Agent
-    /// Python: echo(JUMP_DA) → usbwrite(pack(">I", addr)) → rdword() → rword()
+    /// 对齐 mtkclient: echo(JUMP_DA) → addr → addr → rword()
+    /// BROM 通过 addr 出现两次来区分 JUMP_DA 和 WRITE32
     pub fn jump_da(&mut self, addr: u32) -> Result<bool, String> {
         let mut last_err = String::new();
         for attempt in 1..=JUMP_DA_MAX_ATTEMPT {
-            // 用轮询代替固定延迟：flush 设备输出直到缓冲区空
             self.flush_input_poll(Duration::from_millis(5), 40).ok();
 
             if !self.echo_1byte(0xD5)? {
@@ -147,54 +144,22 @@ impl Preloader {
                 trace!("[JUMP_DA] attempt {}: echo 0xD5 不匹配，重试", attempt);
                 continue;
             }
-            // Python: usbwrite(pack(">I", addr)) — 大端
-            if let Err(e) = self.device.write(&addr.to_be_bytes()) {
-                last_err = format!("jump_da write addr: {}", e);
-                trace!(
-                    "[JUMP_DA] attempt {}: write addr 失败: {}，重试",
-                    attempt, e
-                );
+            // 对齐 mtkclient: addr 发两次，BROM 用此区分 JUMP_DA 和 WRITE32
+            if !self.echo_4byte(addr)? {
+                last_err = "jump_da echo addr(1): mismatch".to_string();
+                trace!("[JUMP_DA] attempt {}: 第一次 echo addr 不匹配，重试", attempt);
                 self.flush_input();
                 continue;
             }
-            // Python: rdword() — 大端回读
-            let mut echo = [0u8; 4];
-            match self.device.read_exact(&mut echo) {
-                Ok(_) => {
-                    let mut resaddr = u32::from_be_bytes(echo);
-                    if resaddr != addr && jump_da_echo_has_command_prefix(echo, addr) {
-                        let mut tail = [0u8; 1];
-                        self.device
-                            .read_exact(&mut tail)
-                            .map_err(|e| format!("jump_da addr resync tail: {}", e))?;
-                        echo = [echo[1], echo[2], echo[3], tail[0]];
-                        resaddr = u32::from_be_bytes(echo);
-                        trace!(
-                            "[JUMP_DA] addr echo had 0xD5 prefix, resynced to {:08X}",
-                            resaddr
-                        );
-                    }
-                    if resaddr != addr {
-                        return Err(format!(
-                            "jump_da addr mismatch: expected {:08X}, got {:08X}",
-                            addr, resaddr
-                        ));
-                    }
-                    let mut st = [0u8; 2];
-                    self.device
-                        .read_exact(&mut st)
-                        .map_err(|e| format!("jump_da status: {}", e))?;
-                    let status = u16::from_be_bytes(st);
-                    info!("jump_da 成功: addr=0x{:08X}, attempt={}", addr, attempt);
-                    return Ok(status == 0);
-                }
-                Err(e) => {
-                    last_err = format!("jump_da echo: {}", e);
-                    trace!("[JUMP_DA] attempt {}: read echo 失败: {}，重试", attempt, e);
-                    self.flush_input();
-                    continue;
-                }
+            if !self.echo_4byte(addr)? {
+                last_err = "jump_da echo addr(2): mismatch".to_string();
+                trace!("[JUMP_DA] attempt {}: 第二次 echo addr 不匹配，重试", attempt);
+                self.flush_input();
+                continue;
             }
+            let status = self.rword()?;
+            info!("jump_da 成功: addr=0x{:08X}, status=0x{:04X}, attempt={}", addr, status, attempt);
+            return Ok(status == 0);
         }
         Err(last_err)
     }
@@ -218,9 +183,15 @@ impl Preloader {
 
     /// 获取 ME_ID (0xE1)
     pub fn get_me_id(&mut self) -> Result<Vec<u8>, String> {
-        if !self.echo_1byte(0xFE)? {
-            return Err("get_me_id: sync FE 失败".into());
-        }
+        // FE 不做同字节回显（刷机匣日志：写 FE → 读 0x03）
+        self.device
+            .write(&[0xFE])
+            .map_err(|e| format!("get_me_id: sync FE write: {}", e))?;
+        let mut fe_resp = [0u8; 1];
+        self.device
+            .read_exact(&mut fe_resp)
+            .map_err(|e| format!("get_me_id: sync FE read: {}", e))?;
+        trace!("get_me_id: FE 响应 0x{:02X}", fe_resp[0]);
         if !self.echo_1byte(0xE1)? {
             return Err("get_me_id: echo 0xE1 失败".into());
         }
@@ -236,9 +207,15 @@ impl Preloader {
 
     /// 获取 SOC_ID (0xE7)
     pub fn get_soc_id(&mut self) -> Result<Vec<u8>, String> {
-        if !self.echo_1byte(0xFE)? {
-            return Err("get_soc_id: sync FE 失败".into());
-        }
+        // FE 不做同字节回显（刷机匣日志：写 FE → 读 0x03）
+        self.device
+            .write(&[0xFE])
+            .map_err(|e| format!("get_soc_id: sync FE write: {}", e))?;
+        let mut fe_resp = [0u8; 1];
+        self.device
+            .read_exact(&mut fe_resp)
+            .map_err(|e| format!("get_soc_id: sync FE read: {}", e))?;
+        trace!("get_soc_id: FE 响应 0x{:02X}", fe_resp[0]);
         if !self.echo_1byte(0xE7)? {
             return Err("get_soc_id: echo 0xE7 失败".into());
         }
@@ -250,26 +227,5 @@ impl Preloader {
         let _status = self.rword()?;
         trace!("SOC_ID: {:02X?}", data);
         Ok(data)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn jump_da_echo_detects_command_prefix_before_address() {
-        assert!(jump_da_echo_has_command_prefix(
-            [0xD5, 0x00, 0x20, 0x00],
-            0x00200000
-        ));
-    }
-
-    #[test]
-    fn jump_da_echo_does_not_treat_unrelated_mismatch_as_prefix() {
-        assert!(!jump_da_echo_has_command_prefix(
-            [0xD5, 0x12, 0x34, 0x56],
-            0x00200000
-        ));
     }
 }
