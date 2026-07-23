@@ -24,7 +24,12 @@ fn pad_display_width(input: &str, width: usize, align_right: bool) -> String {
     }
 }
 
-pub fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64, super_metadata: Option<&crate::partition::lp::SuperMetadata>) {
+pub fn print_gpt_table(
+    data: &[u8],
+    boot1_size: u64,
+    boot2_size: u64,
+    super_metadata: Option<&crate::partition::lp::SuperMetadata>,
+) {
     let gpt_info = match GptInfo::parse(data) {
         Ok(info) => info,
         Err(_) => return,
@@ -86,19 +91,15 @@ pub fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64, super_meta
     );
 
     // 表头行（先格式化定宽纯文本，再整体上色）
+    // 注意：表头含中文字符，必须用 pad_display_width 计算显示宽度
     let header_plain = format!(
-        "| {:<idx$} | {:<name$} | {:>addr$} | {:>addr$} | {:>size$} | {:>bytes$} |",
-        "编号",
-        "名称",
-        "起始地址",
-        "结束地址",
-        "大小",
-        "字节数",
-        idx = W_IDX,
-        name = W_NAME,
-        addr = W_ADDR,
-        size = W_SIZE,
-        bytes = W_BYTES,
+        "| {} | {} | {} | {} | {} | {} |",
+        pad_display_width("编号", W_IDX, false),
+        pad_display_width("名称", W_NAME, false),
+        pad_display_width("起始地址", W_ADDR, true),
+        pad_display_width("结束地址", W_ADDR, true),
+        pad_display_width("大小", W_SIZE, true),
+        pad_display_width("字节数", W_BYTES, true),
     );
 
     // 格式化一行为定宽纯文本（不含颜色代码）
@@ -177,17 +178,21 @@ pub fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64, super_meta
                         let is_last = j + 1 == total_lp;
                         let branch = if is_last { "└─" } else { "├─" };
                         let ab_tag = if lp.is_slot_suffixed() {
-                            let suffix = if lp.name.ends_with("_a") { " [A-slot]".cyan() }
-                                       else if lp.name.ends_with("_b") { " [B-slot]".magenta() }
-                                       else { "".into() };
+                            let suffix = if lp.name.ends_with("_a") {
+                                " [A-slot]".cyan()
+                            } else if lp.name.ends_with("_b") {
+                                " [B-slot]".magenta()
+                            } else {
+                                "".into()
+                            };
                             suffix
                         } else {
                             "".into()
                         };
                         let lp_line = format!(
-                            "     {} {:<20}  offset=0x{:08X}  size=0x{:08X} ({}){}",
+                            "     {} {}  offset=0x{:08X}  size=0x{:08X} ({}){}",
                             branch.cyan(),
-                            lp.name,
+                            pad_display_width(&lp.name, 20, false),
                             off,
                             size,
                             emmc::format_size(size),
@@ -203,8 +208,10 @@ pub fn print_gpt_table(data: &[u8], boot1_size: u64, boot2_size: u64, super_meta
     // 底部分隔线 + 总计
     println!("{}", sep);
     let total_label = format!("| 共 {} 个分区", row);
-    let sep_len = sep.len();
-    let total_text = format!("{:<width$} |", total_label, width = sep_len - 1);
+    let sep_display_width = UnicodeWidthStr::width(sep.as_str());
+    let label_display_width = UnicodeWidthStr::width(total_label.as_str());
+    let padding_needed = sep_display_width.saturating_sub(label_display_width + 1); // +1 for trailing " |"
+    let total_text = format!("{}{} |", total_label, " ".repeat(padding_needed));
     println!("{}", total_text.green().bold());
     println!("{}", sep);
     println!();

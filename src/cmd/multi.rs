@@ -50,51 +50,9 @@ pub fn cmd_multi(
         let sub_cmd = parts[0].as_str();
         let sub_args = &parts[1..];
 
-        let result: Result<(), Box<dyn std::error::Error>> = match sub_cmd {
-            "printgpt" => {
-                super::partition_table::cmd_printgpt(da, log_level);
-                Ok(())
-            }
-            "r" => {
-                if sub_args.first().map(|s| s.as_str()) == Some("gpt") {
-                    let dir = sub_args.get(1).ok_or("用法: mtkclient r gpt <dir>")?;
-                    super::partition_table::cmd_read_gpt(da, dir, log_level)
-                } else {
-                    super::io::cmd_read(da, sub_args)
-                }
-            }
-            "rl" => {
-                let dir = sub_args.first().ok_or("用法: mtkclient rl <dir>")?;
-                super::partition_table::cmd_read_all(da, dir, app_config)
-            }
-            "wl" => {
-                let dir = sub_args.first().ok_or("用法: mtkclient wl <dir>")?;
-                super::partition_table::cmd_write_all(da, dir, app_config.verify)
-            }
-            "w" => super::io::cmd_write(da, sub_args, app_config.verify),
-            "e" => super::io::cmd_erase(da, sub_args),
-            "zyb" => super::execute_single_command(
-                da,
-                "zyb",
-                sub_args,
-                app_config.verify,
-                log_level,
-                app_config,
-            ),
-            "frp" => crate::security::frp::frp_unlock(da).map_err(|e| e.into()),
-            "reboot" => super::io::cmd_reboot(da, sub_args, !da.preloader.is_preloader_mode),
-            "slot" => super::io::cmd_slot(da, sub_args),
-            "adb" => {
-                da.enable_adb_and_reboot()
-                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-                info!("{}", "ADB 已启用，设备正在重启进入系统".green());
-                Ok(())
-            }
-            _ => {
-                error!("{}", format!("未知命令: {}", sub_cmd).red());
-                Err(format!("未知命令: {}", sub_cmd).into())
-            }
-        };
+        let result: Result<(), Box<dyn std::error::Error>> =
+            super::dispatch_cmd(da, sub_cmd, sub_args, app_config.verify, log_level, app_config)
+                .map_err(|e| e.into());
 
         match result {
             Ok(()) => {

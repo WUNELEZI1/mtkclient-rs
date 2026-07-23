@@ -261,12 +261,7 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 发送 READ_DATA 命令及 56B 参数（提取公共逻辑，消除重复）
-    fn send_read_data_cmd(
-        &mut self,
-        addr: u64,
-        size: u64,
-        parttype: u32,
-    ) -> Result<(), String> {
+    fn send_read_data_cmd(&mut self, addr: u64, size: u64, parttype: u32) -> Result<(), String> {
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
         self.write_with_retry(&pkt, "readflash xsend")?;
         self.write_with_retry(&CMD_READ_DATA.to_le_bytes(), "readflash CMD")?;
@@ -343,7 +338,10 @@ impl<'a> DAXFlash<'a> {
             let mut ack_ok = false;
             for attempt in 0..3 {
                 match self.ack_silent() {
-                    Ok(()) => { ack_ok = true; break; }
+                    Ok(()) => {
+                        ack_ok = true;
+                        break;
+                    }
                     Err(e) => {
                         if attempt < 2 {
                             warn!("[RESUME] ACK 尝试 {} 失败，200ms 后重试...", attempt + 1);
@@ -703,11 +701,17 @@ mod tests {
         let output =
             std::env::temp_dir().join(format!("resume_match_{}_{}.img", std::process::id(), "a"));
         let output = output.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&output);
+        remove_resume_file(&output);
+
+        // 创建与 written=0x2000 匹配的输出文件（active_resume_matches 需要文件存在且大小匹配）
+        std::fs::write(&output, vec![0u8; 0x2000]).unwrap();
         write_resume_file(&output, 0x1000, 0x4000, 8, 0x2000, true, Some(0x1000)).unwrap();
 
         assert!(active_resume_matches(&output, 0x2000));
         assert!(!active_resume_matches(&output, 0x1000));
 
+        let _ = std::fs::remove_file(&output);
         remove_resume_file(&output);
     }
 
@@ -749,7 +753,7 @@ mod tests {
 
 impl<'a> DAXFlash<'a> {
     /// 通过 DA 重启设备（XFlash CMD_RESET）
-    /// 对齐刷机匣：0x010007 + param(storage=1, value=0x64)
+    /// 对齐刷机匣：0x010007 + param(storage, value=0x64)
     pub fn reset_device(&mut self) -> Result<(), String> {
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
         self.preloader.device.write(&pkt)?;
@@ -759,9 +763,21 @@ impl<'a> DAXFlash<'a> {
             return Err(format!("CMD_RESET status: 0x{:08X}", st));
         }
 
+        // 检测设备存储类型：0=eMMC, 1=UFS, 2=SD, 3=MMC, 6=UFS_CARD
+        let storage_type = self
+            .get_emmc_info()
+            .map(|info| match info.emmc_type.as_str() {
+                "UFS" => 1u32,
+                "SD" => 2u32,
+                "MMC" => 3u32,
+                "UFS_CARD" => 6u32,
+                _ => 0u32,
+            })
+            .unwrap_or(0u32);
+
         // param: storage(4) + value(4) + zeros(20) = 28 字节
         let mut param = vec![0u8; 28];
-        param[0..4].copy_from_slice(&1u32.to_le_bytes()); // storage=eMMC
+        param[0..4].copy_from_slice(&storage_type.to_le_bytes());
         param[4..8].copy_from_slice(&100u32.to_le_bytes()); // value=0x64
         let param_pkt = pack3(CMD_MAGIC, 0x01, 28);
         self.preloader.device.write(&param_pkt)?;

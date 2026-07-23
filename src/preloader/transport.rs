@@ -50,6 +50,8 @@ pub trait BromTransport {
     fn cancel_pending_transfers(&mut self) {}
     /// 清空 USB IN pending data，写入前调用防止读取残留干扰
     fn drain_pending(&mut self) {}
+    /// 循环排空 IN 管道残留（不 clear_halt，用于 DA 会话复用）
+    fn drain_pipes(&mut self) {}
     /// USB 管道恢复：循环排空 IN 残留 + clear_halt 双端点（HACC 超时后使用）
     fn recover_usb_pipes(&mut self) {}
     fn set_timeout(&mut self, duration: Duration);
@@ -129,7 +131,7 @@ pub enum BromPortResult {
 
 /// serialport 实现 BROM 传输
 pub struct SerialPortTransport {
-    port: Box<dyn serialport::SerialPort>,
+    port: Option<Box<dyn serialport::SerialPort>>,
     timeout: Duration,
 }
 
@@ -138,7 +140,17 @@ impl SerialPortTransport {
         if !verify_port_exists(port_name) {
             return Err(format!("端口 {} 不存在（注册表残留）", port_name));
         }
-        let port = serialport::new(port_name, baud_rate)
+        Self::open_raw(port_name, baud_rate)
+    }
+
+    /// 直接打开串口，不做 verify_port_exists 验证
+    ///
+    /// Pattern 协议必须使用此方法！verify_port_exists 会打开再关闭 COM 口，
+    /// 清空串口接收缓冲区中 Preloader 发送的 READY 信号。
+    ///
+    /// 对齐 Python SerialClass.connect(): dsrdtr=False, rtscts=False
+    pub fn open_raw(port_name: &str, baud_rate: u32) -> Result<Self, String> {
+        let mut port = serialport::new(port_name, baud_rate)
             .timeout(Duration::from_millis(SERIAL_OPEN_TIMEOUT_MS))
             .data_bits(serialport::DataBits::Eight)
             .stop_bits(serialport::StopBits::One)
@@ -146,12 +158,15 @@ impl SerialPortTransport {
             .flow_control(serialport::FlowControl::None)
             .open()
             .map_err(|e| format!("无法打开串口 {}: {}", port_name, e))?;
+        // 对齐 Python: dsrdtr=False — 禁用 DTR 信号
+        // DTR 信号会触发设备进入 BROM 握手模式
+        let _ = port.write_data_terminal_ready(false);
         trace!(
-            "[SERIAL] {} 已打开: baud={}, 8N1, no_flow_control",
+            "[SERIAL] {} 已打开(raw, DTR=off): baud={}, 8N1, no_flow_control",
             port_name, baud_rate
         );
         Ok(SerialPortTransport {
-            port,
+            port: Some(port),
             timeout: Duration::from_millis(SERIAL_OPEN_TIMEOUT_MS),
         })
     }
@@ -265,28 +280,33 @@ impl SerialPortTransport {
 
 impl BromTransport for SerialPortTransport {
     fn write(&mut self, data: &[u8]) -> Result<usize, String> {
-        self.port
+        let port = self.port.as_mut().ok_or("串口已关闭")?;
+        port
             .write_all(data)
             .map_err(|e| format!("serial write: {}", e))?;
         Ok(data.len())
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<usize, String> {
-        self.port
+        let port = self.port.as_mut().ok_or("串口已关闭")?;
+        port
             .read_exact(buf)
             .map_err(|e| format!("serial read_exact: {}", e))?;
         Ok(buf.len())
     }
 
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
-        self.port
+        let port = self.port.as_mut().ok_or("串口已关闭")?;
+        port
             .read(buf)
             .map_err(|e| format!("serial read: {}", e))
     }
 
     fn set_timeout(&mut self, duration: Duration) {
         self.timeout = duration;
-        let _ = self.port.set_timeout(duration);
+        if let Some(port) = self.port.as_mut() {
+            let _ = port.set_timeout(duration);
+        }
     }
 
     fn get_timeout(&self) -> Duration {
@@ -314,6 +334,35 @@ impl BromTransport for SerialPortTransport {
 
     fn is_libusb(&self) -> bool {
         false
+    }
+
+    /// 串口模式下排空残留数据：循环读取直到超时，防止 FORMAT 等命令后的残留干扰后续操作
+    fn drain_pipes(&mut self) {
+        let original_timeout = self.timeout;
+        if let Some(port) = self.port.as_mut() {
+            // 设置短超时（50ms），快速轮询排空
+            let _ = port.set_timeout(Duration::from_millis(50));
+            let mut buf = [0u8; 512];
+            let mut total = 0usize;
+            for _ in 0..20 {
+                match port.read(&mut buf) {
+                    Ok(n) if n > 0 => total += n,
+                    _ => break,
+                }
+            }
+            if total > 0 {
+                trace!("[SERIAL] drain_pipes 排空 {} 字节残留数据", total);
+            }
+            // 恢复原始超时
+            let _ = port.set_timeout(original_timeout);
+        }
+    }
+
+    fn close_device(&mut self) -> Result<(), String> {
+        // 关闭串口：drop port 即可释放 COM 口资源
+        self.port.take();
+        trace!("[SERIAL] 串口已关闭");
+        Ok(())
     }
 }
 
@@ -349,6 +398,10 @@ impl BromTransport for USB设备 {
 
     fn drain_pending(&mut self) {
         USB设备::drain_pending(self)
+    }
+
+    fn drain_pipes(&mut self) {
+        USB设备::drain_pipes(self)
     }
 
     fn recover_usb_pipes(&mut self) {

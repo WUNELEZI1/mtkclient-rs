@@ -9,3 +9,10 @@ index = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
  
 [http]
 check-revoke = false
+
+# release 构建反逆向工程：移除源码路径信息，防止泄露构建环境
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "--remap-path-prefix=C:\\Users\\wqy=",
+    "--remap-path-prefix=D:\\test\\ZybClient=",
+]

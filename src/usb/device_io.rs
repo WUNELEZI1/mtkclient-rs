@@ -145,7 +145,11 @@ impl USB设备 {
         let result = match ep_out.wait_next_complete(timeout) {
             Some(r) => r,
             None => {
-                trace!("[USB WRITE] timeout after {:?}ms, len={}", timeout.as_millis(), data.len());
+                trace!(
+                    "[USB WRITE] timeout after {:?}ms, len={}",
+                    timeout.as_millis(),
+                    data.len()
+                );
                 // 超时后必须排空 OUT endpoint 的 pending transfer，否则后续 submit
                 // 会被追加到队列末尾，WinUSB 仍在等待第一个（已失败的）transfer
                 Self::drain_out_pending(ep_out);

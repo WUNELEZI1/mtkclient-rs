@@ -101,14 +101,22 @@ fn parse_snap_header(data: &[u8]) -> Result<SnapHeader, String> {
     }
     let magic = u32::from_le_bytes(data[0..4].try_into().unwrap());
     if magic != SNAP_MAGIC {
-        return Err(format!("magic 不匹配: 期望 0x{:08X}, 实际 0x{:08X}", SNAP_MAGIC, magic));
+        return Err(format!(
+            "magic 不匹配: 期望 0x{:08X}, 实际 0x{:08X}",
+            SNAP_MAGIC, magic
+        ));
     }
     let valid = u32::from_le_bytes(data[4..8].try_into().unwrap());
     let version = u32::from_le_bytes(data[8..12].try_into().unwrap());
     let chunk_size = u32::from_le_bytes(data[12..16].try_into().unwrap());
 
-    info!("dm-snapshot persistent 格式: valid={}, version={}, chunk_size={} sectors ({} 字节)",
-        valid, version, chunk_size, chunk_size * 512);
+    info!(
+        "dm-snapshot persistent 格式: valid={}, version={}, chunk_size={} sectors ({} 字节)",
+        valid,
+        version,
+        chunk_size,
+        chunk_size * 512
+    );
 
     if valid != 1 {
         warn!("快照标记为无效 (valid={})", valid);
@@ -117,7 +125,12 @@ fn parse_snap_header(data: &[u8]) -> Result<SnapHeader, String> {
         warn!("非预期版本号: {}（期望 1）", version);
     }
 
-    Ok(SnapHeader { magic, valid, version, chunk_size })
+    Ok(SnapHeader {
+        magic,
+        valid,
+        version,
+        chunk_size,
+    })
 }
 
 /// 读取所有 dm-snapshot persistent exceptions
@@ -133,11 +146,17 @@ fn parse_snap_header(data: &[u8]) -> Result<SnapHeader, String> {
 /// 其中 e = exceptions_per_area = (chunk_size * 512) / 16
 ///
 /// Metadata Area N 的物理位置 = chunk (1 + N * (e + 1))
-fn parse_snap_exceptions(cow_data: &[u8], header: &SnapHeader) -> Result<Vec<SnapException>, String> {
+fn parse_snap_exceptions(
+    cow_data: &[u8],
+    header: &SnapHeader,
+) -> Result<Vec<SnapException>, String> {
     let chunk_bytes = (header.chunk_size as u64) * 512;
     let exceptions_per_area = chunk_bytes / 16;
 
-    info!("chunk_bytes={}, exceptions_per_area={}", chunk_bytes, exceptions_per_area);
+    info!(
+        "chunk_bytes={}, exceptions_per_area={}",
+        chunk_bytes, exceptions_per_area
+    );
 
     let mut exceptions = Vec::new();
     let mut area = 0u32;
@@ -152,14 +171,15 @@ fn parse_snap_exceptions(cow_data: &[u8], header: &SnapHeader) -> Result<Vec<Sna
             break;
         }
 
-        let metadata = &cow_data[metadata_offset as usize
-            ..(metadata_offset + chunk_bytes) as usize];
+        let metadata =
+            &cow_data[metadata_offset as usize..(metadata_offset + chunk_bytes) as usize];
 
         let mut area_full = true;
         for i in 0..exceptions_per_area {
             let offset = (i * 16) as usize;
             let old_chunk = u64::from_le_bytes(metadata[offset..offset + 8].try_into().unwrap());
-            let new_chunk = u64::from_le_bytes(metadata[offset + 8..offset + 16].try_into().unwrap());
+            let new_chunk =
+                u64::from_le_bytes(metadata[offset + 8..offset + 16].try_into().unwrap());
 
             // new_chunk == 0 表示该 metadata area 到此结束
             //（chunk 0 是 header，不可能作为数据）
@@ -168,7 +188,10 @@ fn parse_snap_exceptions(cow_data: &[u8], header: &SnapHeader) -> Result<Vec<Sna
                 break;
             }
 
-            exceptions.push(SnapException { old_chunk, new_chunk });
+            exceptions.push(SnapException {
+                old_chunk,
+                new_chunk,
+            });
         }
 
         if !area_full {
@@ -222,13 +245,17 @@ fn merge_snap_data(
         let chunk_len = chunk_bytes as usize;
 
         if cow_offset as usize + chunk_len > cow_data.len() {
-            warn!("exception old={} new={}: COW 偏移 0x{:X} 超出范围",
-                ex.old_chunk, ex.new_chunk, cow_offset);
+            warn!(
+                "exception old={} new={}: COW 偏移 0x{:X} 超出范围",
+                ex.old_chunk, ex.new_chunk, cow_offset
+            );
             continue;
         }
         if target_offset + chunk_len > merged.len() {
-            warn!("exception old={} new={}: 目标偏移 0x{:X} 超出 buffer",
-                ex.old_chunk, ex.new_chunk, target_offset);
+            warn!(
+                "exception old={} new={}: 目标偏移 0x{:X} 超出 buffer",
+                ex.old_chunk, ex.new_chunk, target_offset
+            );
             continue;
         }
 
@@ -242,8 +269,12 @@ fn merge_snap_data(
         applied += 1;
     }
 
-    info!("dm-snapshot 合并完成: {} / {} 个 exception 已应用, buffer 最大偏移 0x{:X}",
-        applied, exceptions.len(), max_offset);
+    info!(
+        "dm-snapshot 合并完成: {} / {} 个 exception 已应用, buffer 最大偏移 0x{:X}",
+        applied,
+        exceptions.len(),
+        max_offset
+    );
 
     if applied == 0 {
         return Err("dm-snapshot 中没有可应用的 exception".to_string());
@@ -295,7 +326,8 @@ where
         for i in 0..exceptions_per_area {
             let offset = (i * 16) as usize;
             let old_chunk = u64::from_le_bytes(metadata[offset..offset + 8].try_into().unwrap());
-            let new_chunk = u64::from_le_bytes(metadata[offset + 8..offset + 16].try_into().unwrap());
+            let new_chunk =
+                u64::from_le_bytes(metadata[offset + 8..offset + 16].try_into().unwrap());
 
             if new_chunk == 0 {
                 area_full = false;
@@ -384,12 +416,16 @@ fn parse_aosp_cow_header(data: &[u8]) -> Result<AospCowHeader, String> {
 
     match magic {
         COW_MAGIC_V2 => {
-            info!("AOSP COW v2 格式: block_size={}, ops_offset=0x{:X}, num_ops={}, total_size=0x{:X}",
-                block_size, ops_offset, num_ops, total_size);
+            info!(
+                "AOSP COW v2 格式: block_size={}, ops_offset=0x{:X}, num_ops={}, total_size=0x{:X}",
+                block_size, ops_offset, num_ops, total_size
+            );
         }
         COW_MAGIC_V3 => {
-            info!("AOSP COW v3 格式: block_size={}, ops_offset=0x{:X}, num_ops={}, total_size=0x{:X}, flags=0x{:X}",
-                block_size, ops_offset, num_ops, total_size, flags);
+            info!(
+                "AOSP COW v3 格式: block_size={}, ops_offset=0x{:X}, num_ops={}, total_size=0x{:X}, flags=0x{:X}",
+                block_size, ops_offset, num_ops, total_size, flags
+            );
         }
         _ => {
             return Err(format!("无效的 COW magic: 0x{:08X}", magic));
@@ -413,10 +449,18 @@ fn parse_aosp_cow_ops(data: &[u8], header: &AospCowHeader) -> Result<Vec<AospCow
     let ops_end = ops_start + header.ops_size as usize;
 
     if ops_start >= data.len() {
-        return Err(format!("ops_offset 0x{:X} 超出数据范围 {}", ops_start, data.len()));
+        return Err(format!(
+            "ops_offset 0x{:X} 超出数据范围 {}",
+            ops_start,
+            data.len()
+        ));
     }
 
-    let available = if ops_end > data.len() { data.len() } else { ops_end };
+    let available = if ops_end > data.len() {
+        data.len()
+    } else {
+        ops_end
+    };
     let ops_data = &data[ops_start..available];
     const OP_ENTRY_SIZE: usize = 28;
 
@@ -428,7 +472,8 @@ fn parse_aosp_cow_ops(data: &[u8], header: &AospCowHeader) -> Result<Vec<AospCow
         let op_type = u32::from_le_bytes(ops_data[offset..offset + 4].try_into().unwrap());
         let source = u64::from_le_bytes(ops_data[offset + 4..offset + 12].try_into().unwrap());
         let target = u64::from_le_bytes(ops_data[offset + 12..offset + 20].try_into().unwrap());
-        let data_length = u64::from_le_bytes(ops_data[offset + 20..offset + 28].try_into().unwrap());
+        let data_length =
+            u64::from_le_bytes(ops_data[offset + 20..offset + 28].try_into().unwrap());
 
         let cow_type = CowOpType::from(op_type);
         // 跳过 Label(3) 和 Cluster(4)
@@ -462,13 +507,19 @@ fn merge_aosp_cow_data(cow_data: &[u8], base_size: u64) -> Result<(Vec<u8>, usiz
         match op.op_type {
             CowOpType::Replace => {
                 if op.source as usize + op.data_length as usize > cow_data.len() {
-                    warn!("REPLACE source=0x{:X} len=0x{:X} 超出范围", op.source, op.data_length);
+                    warn!(
+                        "REPLACE source=0x{:X} len=0x{:X} 超出范围",
+                        op.source, op.data_length
+                    );
                     continue;
                 }
                 let target_offset = op.target as usize;
                 let data_len = op.data_length as usize;
                 if target_offset + data_len > buffer_size {
-                    warn!("REPLACE target=0x{:X} len=0x{:X} 超出 buffer", op.target, op.data_length);
+                    warn!(
+                        "REPLACE target=0x{:X} len=0x{:X} 超出 buffer",
+                        op.target, op.data_length
+                    );
                     continue;
                 }
                 let src_start = op.source as usize;
@@ -476,21 +527,30 @@ fn merge_aosp_cow_data(cow_data: &[u8], base_size: u64) -> Result<(Vec<u8>, usiz
                     .copy_from_slice(&cow_data[src_start..src_start + data_len]);
 
                 let end = target_offset + data_len;
-                if end > max_offset { max_offset = end; }
+                if end > max_offset {
+                    max_offset = end;
+                }
                 replace_count += 1;
             }
             CowOpType::Zero => {}
             CowOpType::Copy => {
-                debug!("COPY: source=0x{:X}, target=0x{:X}, len=0x{:X}（base 全零，跳过）",
-                    op.source, op.target, op.data_length);
+                debug!(
+                    "COPY: source=0x{:X}, target=0x{:X}, len=0x{:X}（base 全零，跳过）",
+                    op.source, op.target, op.data_length
+                );
             }
             CowOpType::Unknown(n) => {
-                if n == 5 { debug!("XOR: 跳过"); }
+                if n == 5 {
+                    debug!("XOR: 跳过");
+                }
             }
         }
     }
 
-    info!("AOSP COW 合并完成: {} REPLACE, buffer 最大偏移 0x{:X}", replace_count, max_offset);
+    info!(
+        "AOSP COW 合并完成: {} REPLACE, buffer 最大偏移 0x{:X}",
+        replace_count, max_offset
+    );
 
     if replace_count == 0 && max_offset == 0 {
         return Err("AOSP COW 中没有 REPLACE 操作".to_string());
@@ -521,15 +581,13 @@ pub fn merge_cow_data(
     base_size: u64,
 ) -> Result<(Vec<u8>, usize), String> {
     match detect_cow_format(cow_data) {
-        Some(CowFormat::DmSnapshotPersistent) => {
-            merge_snap_data(cow_data, base_data, base_size)
-        }
-        Some(CowFormat::AospCow) => {
-            merge_aosp_cow_data(cow_data, base_size)
-        }
+        Some(CowFormat::DmSnapshotPersistent) => merge_snap_data(cow_data, base_data, base_size),
+        Some(CowFormat::AospCow) => merge_aosp_cow_data(cow_data, base_size),
         None => {
             let hex: Vec<String> = cow_data[..std::cmp::min(16, cow_data.len())]
-                .iter().map(|b| format!("{:02X}", b)).collect();
+                .iter()
+                .map(|b| format!("{:02X}", b))
+                .collect();
             Err(format!("未知的 COW 格式（头部: {}）", hex.join(" ")))
         }
     }

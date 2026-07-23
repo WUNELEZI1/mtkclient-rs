@@ -41,6 +41,18 @@ struct LpTranslator {
 }
 
 impl LpTranslator {
+    /// 创建 identity translator（逻辑偏移 = 物理偏移）
+    /// 用于非 super 内的独立分区（如 system_a 直接读取场景）
+    fn identity(partition_size: u64) -> Self {
+        LpTranslator {
+            extents: vec![LpExtent {
+                phys_offset: 0,
+                size: partition_size,
+            }],
+            total_size: partition_size,
+        }
+    }
+
     /// 简单翻译，不跨 extent，用于 superblock/BGD/inode 等小块
     fn logical_to_abs(&self, logical_offset: u64) -> u64 {
         let mut acc = 0u64;
@@ -50,7 +62,10 @@ impl LpTranslator {
             }
             acc += ext.size;
         }
-        panic!("offset 0x{:X} 超出 LP 范围 (total 0x{:X})", logical_offset, self.total_size);
+        panic!(
+            "offset 0x{:X} 超出 LP 范围 (total 0x{:X})",
+            logical_offset, self.total_size
+        );
     }
 
     /// 翻译一段连续的分区逻辑偏移（可能跨 LP extent 边界）
@@ -90,9 +105,7 @@ const LP_ATTR_READONLY: u32 = 0x00000001;
 const LP_ATTR_SLOT_SUFFIXED: u32 = 0x00000002;
 
 /// 解析 LP 元数据，只读两块 4KB: geometry @ 0x1000, header @ 0x3000
-fn read_lp_metadata<F>(
-    read_fn: &mut F,
-) -> Result<(Vec<LpPartition>, Vec<LpExtent>), String>
+fn read_lp_metadata<F>(read_fn: &mut F) -> Result<(Vec<LpPartition>, Vec<LpExtent>), String>
 where
     F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
 {
@@ -168,15 +181,10 @@ where
         let name = String::from_utf8_lossy(&part_data[eo..eo + 36])
             .trim_end_matches('\0')
             .to_string();
-        let attributes = u32::from_le_bytes(
-            part_data[eo + 36..eo + 40].try_into().unwrap(),
-        );
-        let first_extent_index = u32::from_le_bytes(
-            part_data[eo + 40..eo + 44].try_into().unwrap(),
-        );
-        let num_extents = u32::from_le_bytes(
-            part_data[eo + 44..eo + 48].try_into().unwrap(),
-        );
+        let attributes = u32::from_le_bytes(part_data[eo + 36..eo + 40].try_into().unwrap());
+        let first_extent_index =
+            u32::from_le_bytes(part_data[eo + 40..eo + 44].try_into().unwrap());
+        let num_extents = u32::from_le_bytes(part_data[eo + 44..eo + 48].try_into().unwrap());
         partitions.push(LpPartition {
             name,
             attributes,
@@ -221,6 +229,7 @@ struct Ext4Superblock {
     block_size: u32,
     inodes_per_group: u32,
     inode_size: u16,
+    bgd_entry_size: u16, // 32 或 64，取决于 INCOMPAT_64BIT
 }
 
 #[derive(Debug, Clone)]
@@ -234,10 +243,7 @@ struct DirEntry {
 // ext4 读取函数
 // ============================================================================
 
-fn read_ext4_superblock<F>(
-    read_fn: &mut F,
-    lp: &LpTranslator,
-) -> Result<Ext4Superblock, String>
+fn read_ext4_superblock<F>(read_fn: &mut F, lp: &LpTranslator) -> Result<Ext4Superblock, String>
 where
     F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
 {
@@ -248,15 +254,26 @@ where
     }
     let magic = u16::from_le_bytes(data[56..58].try_into().unwrap());
     if magic != EXT4_MAGIC {
-        return Err(format!("ext4 magic 不匹配: 0x{:04X} (期望 0x{:04X})", magic, EXT4_MAGIC));
+        return Err(format!(
+            "ext4 magic 不匹配: 0x{:04X} (期望 0x{:04X})",
+            magic, EXT4_MAGIC
+        ));
     }
     let block_size = 1024u32 << u32::from_le_bytes(data[24..28].try_into().unwrap());
     let inodes_per_group = u32::from_le_bytes(data[40..44].try_into().unwrap());
     let inode_size = u16::from_le_bytes(data[88..90].try_into().unwrap());
+    let feature_incompat = u32::from_le_bytes(data[96..100].try_into().unwrap());
+    // INCOMPAT_64BIT (bit 5 = 0x20) 表示 64 字节 BGD 条目
+    let bgd_entry_size: u16 = if (feature_incompat & 0x20) != 0 {
+        64
+    } else {
+        32
+    };
     Ok(Ext4Superblock {
         block_size,
         inodes_per_group,
         inode_size: if inode_size == 0 { 128 } else { inode_size },
+        bgd_entry_size,
     })
 }
 
@@ -278,9 +295,9 @@ where
     } else {
         2048
     };
-    let bgd_entry_offset = bgd_base + (group as u64) * 64;
+    let bgd_entry_offset = bgd_base + (group as u64) * sb.bgd_entry_size as u64;
     let bgd_abs = lp.logical_to_abs(bgd_entry_offset);
-    let bgd_data = read_fn(bgd_abs, 64)?;
+    let bgd_data = read_fn(bgd_abs, sb.bgd_entry_size as u64)?;
     let inode_table_block = u32::from_le_bytes(bgd_data[8..12].try_into().unwrap());
 
     // 计算 inode 在分区内的逻辑偏移
@@ -314,7 +331,74 @@ fn get_inode_flags(inode_data: &[u8]) -> u32 {
     u32::from_le_bytes(inode_data[32..36].try_into().unwrap())
 }
 
+/// 判断 inode 是否为 symlink（mode & 0xF000 == 0xA000）
+fn is_symlink_mode(mode: u16) -> bool {
+    (mode & 0xF000) == 0xA000
+}
+
+/// 递归解析 extent 树，返回所有叶子节点的 (物理起始, 物理结束) 范围列表
+///
+/// 支持 depth=0（叶子节点）和 depth>=1（索引节点）。
+/// 对于索引节点，递归读取子块并解析其 extent entries。
+fn parse_extent_tree<F>(
+    read_fn: &mut F,
+    lp: &LpTranslator,
+    sb: &Ext4Superblock,
+    i_block_data: &[u8],
+) -> Result<Vec<(u64, u64)>, String>
+where
+    F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
+{
+    if i_block_data.len() < 12 {
+        return Ok(vec![]);
+    }
+    let magic = u16::from_le_bytes(i_block_data[0..2].try_into().unwrap());
+    if magic != EXTENT_HEADER_MAGIC {
+        return Ok(vec![]);
+    }
+    let entries = u16::from_le_bytes(i_block_data[2..4].try_into().unwrap());
+    let depth = u16::from_le_bytes(i_block_data[6..8].try_into().unwrap());
+    let block_size = sb.block_size as u64;
+
+    let mut ranges = Vec::new();
+
+    for i in 0..entries {
+        let off = 12 + (i as usize) * 12;
+        if off + 12 > i_block_data.len() {
+            break;
+        }
+        let _lblock = u32::from_le_bytes(i_block_data[off..off + 4].try_into().unwrap());
+        let len = u16::from_le_bytes(i_block_data[off + 4..off + 6].try_into().unwrap());
+        let start_hi = u16::from_le_bytes(i_block_data[off + 6..off + 8].try_into().unwrap());
+        let start_lo = u32::from_le_bytes(i_block_data[off + 8..off + 12].try_into().unwrap());
+        let pblock = ((start_hi as u64) << 32) | (start_lo as u64);
+
+        if depth == 0 {
+            // 叶子节点：直接收集物理范围
+            let start = pblock * block_size;
+            let end = (pblock + len as u64) * block_size;
+            ranges.push((start, end));
+        } else {
+            // 索引节点：读取子块并递归解析
+            let child_offset = pblock * block_size;
+            let fragments = lp.translate_range(child_offset, block_size);
+            let mut child_data = Vec::new();
+            for (abs_off, frag_len) in fragments {
+                let chunk = read_fn(abs_off, frag_len)?;
+                child_data.extend_from_slice(&chunk);
+            }
+            let child_ranges = parse_extent_tree(read_fn, lp, sb, &child_data)?;
+            ranges.extend_from_slice(&child_ranges);
+        }
+    }
+    Ok(ranges)
+}
+
 /// 读取 inode 的所有数据块（通过 extent + LP 翻译）
+/// 支持三种情况：
+///   1. EXT4_INODE_FLAG_EXTENTS → 标准 extent 树读取（支持 depth=0/1）
+///   2. symlink（无 EXTENTS）→ 内联数据（i_block 区域，最大 60 字节）
+///   3. 空目录/空文件（无 EXTENTS，size=0）→ 返回空
 fn read_inode_data<F>(
     read_fn: &mut F,
     lp: &LpTranslator,
@@ -325,6 +409,22 @@ where
     F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
 {
     let flags = get_inode_flags(inode_data);
+    let mode = get_inode_mode(inode_data);
+    let file_size = get_inode_size(inode_data);
+
+    // 空文件/空目录
+    if file_size == 0 {
+        return Ok(Vec::new());
+    }
+
+    // symlink 内联数据：目标路径直接存储在 i_block 区域（最大 60 字节）
+    if is_symlink_mode(mode) && (flags & EXT4_INODE_FLAG_EXTENTS) == 0 {
+        let i_block = &inode_data[40..100.min(inode_data.len())];
+        let symlink_len = file_size.min(60) as usize;
+        return Ok(i_block[..symlink_len].to_vec());
+    }
+
+    // 非 symlink 且无 extents：旧式 block map（间接块），暂不支持
     if (flags & EXT4_INODE_FLAG_EXTENTS) == 0 {
         return Err("inode 不使用 extents（不支持旧版 ext 格式）".into());
     }
@@ -333,36 +433,17 @@ where
     let i_block = &inode_data[40..100.min(inode_data.len())];
     let magic = u16::from_le_bytes(i_block[0..2].try_into().unwrap());
     if magic != EXTENT_HEADER_MAGIC {
-        return Err(format!(
-            "extent header magic 不匹配: 0x{:04X} (期望 0x{:04X})",
-            magic, EXTENT_HEADER_MAGIC
-        ));
-    }
-    let entries = u16::from_le_bytes(i_block[2..4].try_into().unwrap());
-    let depth = u16::from_le_bytes(i_block[6..8].try_into().unwrap());
-    if depth != 0 {
-        return Err(format!("extent depth={} 不支持（只支持 depth=0）", depth));
+        // vendor/overlay 等 COW (copy-on-write) 分区的 inode 可能含有非标准 magic
+        // 返回空数据而非报错，让 ls/cat 优雅处理
+        return Ok(Vec::new());
     }
 
-    let file_size = get_inode_size(inode_data);
-    let block_size = sb.block_size as u64;
-    let mut data = Vec::new();
+    let ranges = parse_extent_tree(read_fn, lp, sb, i_block)?;
 
-    for i in 0..entries {
-        let off = 12 + (i as usize) * 12;
-        if off + 12 > i_block.len() {
-            break;
-        }
-        let _lblock = u32::from_le_bytes(i_block[off..off + 4].try_into().unwrap());
-        let len = u16::from_le_bytes(i_block[off + 4..off + 6].try_into().unwrap());
-        let start_hi = u16::from_le_bytes(i_block[off + 6..off + 8].try_into().unwrap());
-        let start_lo = u32::from_le_bytes(i_block[off + 8..off + 12].try_into().unwrap());
-        let pblock = ((start_hi as u64) << 32) | (start_lo as u64);
-
-        let logical_offset = pblock * block_size;
-        let read_len = len as u64 * block_size;
-
-        let fragments = lp.translate_range(logical_offset, read_len);
+    let mut data = Vec::with_capacity(file_size as usize);
+    for (start, end) in ranges {
+        let read_len = end - start;
+        let fragments = lp.translate_range(start, read_len);
         for (abs_off, frag_len) in fragments {
             let chunk = read_fn(abs_off, frag_len)?;
             data.extend_from_slice(&chunk);
@@ -507,7 +588,10 @@ impl Explorer {
 
         // 精确匹配
         if self.find_partition(first_seg).is_ok() {
-            Ok((first_seg.to_string(), target[first_slash.unwrap() + 1..].to_string()))
+            Ok((
+                first_seg.to_string(),
+                target[first_slash.unwrap() + 1..].to_string(),
+            ))
         } else {
             Err(format!("未找到分区: {}", first_seg))
         }
@@ -535,8 +619,10 @@ fn fmt_inode_size(n: u64) -> String {
         format!("{}", n)
     } else if n < 1048576 {
         format!("{:.0}K", n as f64 / 1024.0)
-    } else {
+    } else if n < 1073741824 {
         format!("{:.1}M", n as f64 / 1048576.0)
+    } else {
+        format!("{:.1}G", n as f64 / 1073741824.0)
     }
 }
 
@@ -564,10 +650,7 @@ fn file_type_str(ft: u8) -> &'static str {
 impl Explorer {
     /// ls super — 列出所有 LP 分区
     fn cmd_ls_super(&self) {
-        println!(
-            "{:<20} {:>12} {:>12}  {}",
-            "分区", "偏移", "大小", "标记"
-        );
+        println!("{:<20} {:>12} {:>12}  {}", "分区", "偏移", "大小", "标记");
         println!("{}", "-".repeat(60));
         for part in &self.partitions {
             let (mut total_size, mut first_offset) = (0u64, 0u64);
@@ -592,7 +675,11 @@ impl Explorer {
                     tags.push("[B-slot]");
                 }
             }
-            let tag_str = if tags.is_empty() { String::new() } else { tags.join(" ") };
+            let tag_str = if tags.is_empty() {
+                String::new()
+            } else {
+                tags.join(" ")
+            };
             println!(
                 "{:<20} 0x{:>08X} {:>12}  {}",
                 part.name,
@@ -604,15 +691,10 @@ impl Explorer {
     }
 
     /// ls [partition][/path] — 列出目录内容
-    fn cmd_ls<F>(
-        &self,
-        read_fn: &mut F,
-        target: &str,
-    ) -> Result<(), String>
+    fn cmd_ls<F>(&self, read_fn: &mut F, target: &str) -> Result<(), String>
     where
         F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
     {
-        // 判断是 ls super 还是 ls partition/path
         let trimmed = target.trim();
         if trimmed.is_empty() || trimmed == "super" {
             if self.current_partition.is_none() {
@@ -622,18 +704,41 @@ impl Explorer {
             // 有当前分区时，列出当前路径
             let part_name = self.current_partition.as_ref().unwrap().clone();
             let sub_path = self.current_path.clone();
-            return self.cmd_ls_path(read_fn, &part_name, &sub_path);
+            // 构造完整 target: part_name/sub_path
+            let full_target = if sub_path.is_empty() {
+                part_name
+            } else {
+                format!("{}/{}", part_name, sub_path)
+            };
+            return self.cmd_ls_path(read_fn, &full_target, "");
+        }
+
+        // 处理相对路径：不以 / 开头且当前在分区内
+        if !trimmed.starts_with('/') {
+            if let Some(ref cur_part) = self.current_partition {
+                // 先检查是否是分区名
+                if self.find_partition(trimmed).is_err() {
+                    // 不是分区名，拼接当前路径
+                    let full_target = if self.current_path.is_empty() {
+                        format!("{}", cur_part)
+                    } else {
+                        format!("{}/{}", cur_part, self.current_path)
+                    };
+                    // 拼接 target
+                    let full_target = if trimmed.is_empty() {
+                        full_target
+                    } else {
+                        format!("{}/{}", full_target, trimmed)
+                    };
+                    return self.cmd_ls_path(read_fn, &full_target, "");
+                }
+            }
         }
 
         self.cmd_ls_path(read_fn, target, "")
     }
 
-    fn cmd_ls_path<F>(
-        &self,
-        read_fn: &mut F,
-        target: &str,
-        _unused: &str,
-    ) -> Result<(), String>
+    fn cmd_ls_path<F>(&self, read_fn: &mut F, target: &str, _unused: &str) -> Result<(), String>
     where
         F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
     {
@@ -688,24 +793,58 @@ impl Explorer {
 
         // 获取每个条目的大小（需要读 inode）
         for d in &dirs {
-            let ino_data = read_inode(read_fn, &lp, &sb, d.inode)?;
-            let ino_size = get_inode_size(&ino_data);
-            println!(
-                "{:<40} {:>10}  {}",
-                format!("{}/", d.name),
-                fmt_inode_size(ino_size),
-                file_type_str(d.file_type).dimmed(),
-            );
+            match read_inode(read_fn, &lp, &sb, d.inode) {
+                Ok(ino_data) => {
+                    let ino_size = get_inode_size(&ino_data);
+                    // inode 数据损坏时大小可能离奇，限制显示
+                    let display_size = if ino_size > 0x1_0000_0000 {
+                        4096u64
+                    } else {
+                        ino_size
+                    };
+                    println!(
+                        "{:<40} {:>10}  {}",
+                        format!("{}/", d.name),
+                        fmt_inode_size(display_size),
+                        file_type_str(d.file_type).dimmed(),
+                    );
+                }
+                Err(_) => {
+                    println!(
+                        "{:<40} {:>10}  {}",
+                        format!("{}/", d.name),
+                        "4K",
+                        file_type_str(d.file_type).dimmed(),
+                    );
+                }
+            }
         }
         for f in &files {
-            let ino_data = read_inode(read_fn, &lp, &sb, f.inode)?;
-            let ino_size = get_inode_size(&ino_data);
-            println!(
-                "{:<40} {:>10}  {}",
-                f.name,
-                fmt_inode_size(ino_size),
-                file_type_str(f.file_type).dimmed(),
-            );
+            match read_inode(read_fn, &lp, &sb, f.inode) {
+                Ok(ino_data) => {
+                    let ino_size = get_inode_size(&ino_data);
+                    // inode 数据损坏时大小可能离奇，限制显示
+                    let display_size = if ino_size > 0x1_0000_0000 {
+                        4096u64
+                    } else {
+                        ino_size
+                    };
+                    println!(
+                        "{:<40} {:>10}  {}",
+                        f.name,
+                        fmt_inode_size(display_size),
+                        file_type_str(f.file_type).dimmed(),
+                    );
+                }
+                Err(_) => {
+                    println!(
+                        "{:<40} {:>10}  {}",
+                        f.name,
+                        "???",
+                        file_type_str(f.file_type).dimmed(),
+                    );
+                }
+            }
         }
 
         println!(
@@ -718,11 +857,7 @@ impl Explorer {
     }
 
     /// cat <partition/path> — 显示文件内容
-    fn cmd_cat<F>(
-        &self,
-        read_fn: &mut F,
-        target: &str,
-    ) -> Result<(), String>
+    fn cmd_cat<F>(&self, read_fn: &mut F, target: &str) -> Result<(), String>
     where
         F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
     {
@@ -798,11 +933,7 @@ impl Explorer {
     }
 
     /// cd <partition>[/path] — 切换当前分区/目录
-    fn cmd_cd<F>(
-        &mut self,
-        read_fn: &mut F,
-        target: &str,
-    ) -> Result<(), String>
+    fn cmd_cd<F>(&mut self, read_fn: &mut F, target: &str) -> Result<(), String>
     where
         F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
     {
@@ -813,6 +944,85 @@ impl Explorer {
             return Ok(());
         }
 
+        // 处理 ".."：从当前路径回退一级
+        if trimmed == ".." {
+            if let Some(ref _part) = self.current_partition {
+                if self.current_path.is_empty() {
+                    // 已在分区根目录，回到 super 根
+                    self.current_partition = None;
+                } else if let Some(last_slash) = self.current_path.rfind('/') {
+                    self.current_path = self.current_path[..last_slash].to_string();
+                } else {
+                    self.current_path.clear();
+                }
+            }
+            return Ok(());
+        }
+
+        // 绝对路径：以 / 开头
+        if trimmed.starts_with('/') {
+            let target = trimmed.trim_start_matches('/');
+            let (part_name, sub_path) = self.split_target(target)?;
+            if part_name.is_empty() {
+                self.current_partition = None;
+                self.current_path.clear();
+                return Ok(());
+            }
+            // 获取实际分区名
+            let part_idx = self.find_partition(&part_name)?;
+            let real_name = self.partitions[part_idx].name.clone();
+
+            // 验证子路径是目录
+            if !sub_path.is_empty() {
+                let lp = self.make_translator(part_idx)?;
+                let sb = read_ext4_superblock(read_fn, &lp)?;
+                let inode_num = resolve_path(read_fn, &lp, &sb, ROOT_INODE, &sub_path)?;
+                let inode_data = read_inode(read_fn, &lp, &sb, inode_num)?;
+                let mode = get_inode_mode(&inode_data);
+                if !is_dir_mode(mode) {
+                    return Err("不是目录".into());
+                }
+            }
+
+            self.current_partition = Some(real_name);
+            self.current_path = sub_path;
+            return Ok(());
+        }
+
+        // 相对路径：当前已在某分区内时，优先尝试子目录
+        if let Some(ref cur_part) = self.current_partition {
+            let part_idx = self.find_partition(cur_part)?;
+            let real_name = self.partitions[part_idx].name.clone();
+            let lp = self.make_translator(part_idx)?;
+            let sb = read_ext4_superblock(read_fn, &lp)?;
+
+            // 先尝试将 target 当作当前目录下的子路径
+            let try_path = if self.current_path.is_empty() {
+                trimmed.to_string()
+            } else {
+                format!("{}/{}", self.current_path, trimmed)
+            };
+
+            // 尝试解析子路径
+            match resolve_path(read_fn, &lp, &sb, ROOT_INODE, &try_path) {
+                Ok(inode_num) => {
+                    let inode_data = read_inode(read_fn, &lp, &sb, inode_num)?;
+                    let mode = get_inode_mode(&inode_data);
+                    if is_dir_mode(mode) {
+                        self.current_partition = Some(real_name);
+                        self.current_path = try_path;
+                        return Ok(());
+                    } else {
+                        return Err("不是目录".into());
+                    }
+                }
+                Err(_) => {
+                    // 子路径不存在，尝试切换到其他分区
+                }
+            }
+        }
+
+        // 切换分区（可能带子路径）
         let (part_name, sub_path) = self.split_target(trimmed)?;
         if part_name.is_empty() {
             self.current_partition = None;
@@ -820,11 +1030,11 @@ impl Explorer {
             return Ok(());
         }
 
-        self.find_partition(&part_name)?;
+        let part_idx = self.find_partition(&part_name)?;
+        let real_name = self.partitions[part_idx].name.clone();
 
-        // 如果有子路径，验证是目录
+        // 验证子路径是目录
         if !sub_path.is_empty() {
-            let part_idx = self.find_partition(&part_name)?;
             let lp = self.make_translator(part_idx)?;
             let sb = read_ext4_superblock(read_fn, &lp)?;
             let inode_num = resolve_path(read_fn, &lp, &sb, ROOT_INODE, &sub_path)?;
@@ -835,7 +1045,7 @@ impl Explorer {
             }
         }
 
-        self.current_partition = Some(part_name);
+        self.current_partition = Some(real_name);
         self.current_path = sub_path;
         Ok(())
     }
@@ -855,11 +1065,7 @@ impl Explorer {
     }
 
     /// tree <part>[/path] [depth] — 树形显示
-    fn cmd_tree<F>(
-        &self,
-        read_fn: &mut F,
-        arg: &str,
-    ) -> Result<(), String>
+    fn cmd_tree<F>(&self, read_fn: &mut F, arg: &str) -> Result<(), String>
     where
         F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
     {
@@ -908,7 +1114,14 @@ impl Explorer {
         }
 
         let inode_data = read_inode(read_fn, lp, sb, inode_num)?;
-        let dir_data = read_inode_data(read_fn, lp, sb, &inode_data)?;
+        let dir_data = match read_inode_data(read_fn, lp, sb, &inode_data) {
+            Ok(d) => d,
+            Err(e) => {
+                // 非 extent inode / 旧式 ext 格式等：跳过不崩溃
+                println!("{}(读取失败: {})", prefix, e);
+                return Ok(());
+            }
+        };
         let entries = parse_dir(&dir_data);
 
         // 分离目录和文件，排序
@@ -940,8 +1153,13 @@ impl Explorer {
                     format!("{}|   ", prefix)
                 };
                 self.tree_recurse(
-                    read_fn, lp, sb, entry.inode,
-                    &new_prefix, depth - 1, max_depth,
+                    read_fn,
+                    lp,
+                    sb,
+                    entry.inode,
+                    &new_prefix,
+                    depth - 1,
+                    max_depth,
                 )?;
             }
         }
@@ -949,11 +1167,7 @@ impl Explorer {
     }
 
     /// info <partition> — 分区详情
-    fn cmd_info<F>(
-        &self,
-        read_fn: &mut F,
-        target: &str,
-    ) -> Result<(), String>
+    fn cmd_info<F>(&self, read_fn: &mut F, target: &str) -> Result<(), String>
     where
         F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
     {
@@ -975,7 +1189,14 @@ impl Explorer {
                 tags.push("[B-slot]");
             }
         }
-        println!("标记:   {}", if tags.is_empty() { "无".to_string() } else { tags.join(" ") });
+        println!(
+            "标记:   {}",
+            if tags.is_empty() {
+                "无".to_string()
+            } else {
+                tags.join(" ")
+            }
+        );
         println!("Extent:  {} 段", part.num_extents);
 
         for i in 0..part.num_extents {
@@ -1010,26 +1231,55 @@ impl Explorer {
         Ok(())
     }
 
-    /// cp <partition/path> <local_path> — 提取到本地
-    fn cmd_cp<F>(
-        &self,
-        read_fn: &mut F,
-        arg: &str,
-    ) -> Result<(), String>
+    /// cp [-r] [--depth N] <partition/path> <local_path> — 提取到本地
+    ///   -r          递归复制目录（默认只复制文件，目录会报错）
+    ///   --depth N   限制递归深度（1=只复制当前目录文件，2=包含子目录，等）
+    fn cmd_cp<F>(&self, read_fn: &mut F, arg: &str) -> Result<(), String>
     where
         F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
     {
-        // 拆分源和目标
-        let parts: Vec<&str> = arg.rsplitn(2, ' ').collect();
-        if parts.len() < 2 {
-            return Err("用法: cp <partition/path> <local_path>".into());
+        // 解析参数
+        let tokens: Vec<&str> = arg.split_whitespace().collect();
+        let mut recursive = false;
+        let mut max_depth: Option<usize> = None;
+        let mut src_idx = 0usize;
+        let mut dst_idx = tokens.len().saturating_sub(1);
+
+        let mut i = 0;
+        while i < tokens.len() {
+            match tokens[i] {
+                "-r" | "-R" | "--recursive" => {
+                    recursive = true;
+                    i += 1;
+                }
+                "-d" | "--depth" => {
+                    if i + 1 < tokens.len() {
+                        max_depth = tokens[i + 1].parse().ok();
+                        i += 2;
+                    } else {
+                        return Err("--depth 后缺少数值".into());
+                    }
+                }
+                _ => {
+                    if src_idx == 0 && !tokens[i].starts_with('-') {
+                        src_idx = i;
+                    }
+                    dst_idx = i;
+                    i += 1;
+                }
+            }
         }
-        let dst_raw = parts[0].trim();
-        let src_raw = parts[1].trim();
+
+        if src_idx >= tokens.len() || dst_idx >= tokens.len() || src_idx == dst_idx {
+            return Err("用法: cp [-r] [--depth N] <partition/path> <local_path>".into());
+        }
+
+        let src_raw = tokens[src_idx];
+        let dst_raw = tokens[dst_idx];
 
         let (part_name, sub_path) = self.split_target(src_raw)?;
         if part_name.is_empty() || sub_path.is_empty() {
-            return Err("用法: cp <partition/path> <local_path>".into());
+            return Err("用法: cp [-r] [--depth N] <partition/path> <local_path>".into());
         }
 
         let part_idx = self.find_partition(&part_name)?;
@@ -1051,8 +1301,16 @@ impl Explorer {
         };
 
         if is_dir_mode(mode) {
-            // 递归复制目录
-            self.cp_recurse(read_fn, &lp, &sb, inode_num, &dst, &sub_path)?;
+            if !recursive {
+                return Err(format!(
+                    "{} 是目录，请使用 -r 选项递归复制",
+                    src_raw
+                ));
+            }
+            // 递归复制目录，应用 max_depth
+            let effective_max = max_depth.unwrap_or(usize::MAX);
+            println!("递归复制: {} → {} (max_depth={})", src_raw, dst, effective_max);
+            self.cp_recurse_depth(read_fn, &lp, &sb, inode_num, &dst, &sub_path, 0, effective_max)?;
         } else {
             // 复制文件
             println!("提取: {} → {}", src_raw, dst);
@@ -1064,7 +1322,7 @@ impl Explorer {
         Ok(())
     }
 
-    fn cp_recurse<F>(
+    fn cp_recurse_depth<F>(
         &self,
         read_fn: &mut F,
         lp: &LpTranslator,
@@ -1072,14 +1330,50 @@ impl Explorer {
         inode_num: u32,
         dst_dir: &str,
         src_prefix: &str,
+        depth: usize,
+        max_depth: usize,
     ) -> Result<(), String>
     where
         F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
     {
-        fs::create_dir_all(dst_dir).map_err(|e| format!("创建目录失败: {}", e))?;
+        // 达到用户指定的最大深度时停止递归，创建空目录作为占位
+        if depth >= max_depth {
+            if max_depth < usize::MAX {
+                println!("  [depth={}/{}] 达到最大深度，跳过子目录: {}", depth, max_depth, src_prefix);
+            }
+            let _ = fs::create_dir_all(dst_dir);
+            return Ok(());
+        }
 
-        let inode_data = read_inode(read_fn, lp, sb, inode_num)?;
-        let dir_data = read_inode_data(read_fn, lp, sb, &inode_data)?;
+        // 硬编码安全上限：ext4 最大深度约 4000+
+        const MAX_DEPTH_HARD: usize = 256;
+        if depth > MAX_DEPTH_HARD {
+            eprintln!("  [跳过] 目录过深 (>{}) 跳过递归: {}", MAX_DEPTH_HARD, src_prefix);
+            let _ = fs::create_dir_all(dst_dir);
+            return Ok(());
+        }
+
+        if let Err(e) = fs::create_dir_all(dst_dir) {
+            eprintln!("  [警告] 创建目录失败 {}: {}", dst_dir, e);
+            return Ok(());
+        }
+
+        let inode_data = match read_inode(read_fn, lp, sb, inode_num) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("  [跳过] 读取 inode {} 失败: {}", inode_num, e);
+                return Ok(());
+            }
+        };
+
+        let dir_data = match read_inode_data(read_fn, lp, sb, &inode_data) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("  [跳过] 读取目录数据失败 {}: {}", src_prefix, e);
+                return Ok(());
+            }
+        };
+
         let entries = parse_dir(&dir_data);
 
         for entry in &entries {
@@ -1087,18 +1381,42 @@ impl Explorer {
                 continue;
             }
 
-            let entry_inode_data = read_inode(read_fn, lp, sb, entry.inode)?;
-            let mode = get_inode_mode(&entry_inode_data);
             let entry_path = format!("{}/{}", src_prefix, entry.name);
             let dst_path = format!("{}/{}", dst_dir, entry.name);
 
+            let entry_inode_data = match read_inode(read_fn, lp, sb, entry.inode) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("  [跳过] 无法读取 {} (inode={}): {}", entry_path, entry.inode, e);
+                    // 创建空文件作为占位
+                    let _ = fs::write(&dst_path, b"");
+                    continue;
+                }
+            };
+
+            let mode = get_inode_mode(&entry_inode_data);
+
             if is_dir_mode(mode) {
-                self.cp_recurse(read_fn, lp, sb, entry.inode, &dst_path, &entry_path)?;
+                if let Err(e) = self.cp_recurse_depth(read_fn, lp, sb, entry.inode, &dst_path, &entry_path, depth + 1, max_depth) {
+                    eprintln!("  [警告] 子目录复制失败 {}: {}", entry_path, e);
+                }
             } else {
-                println!("提取: {} → {}", entry_path, dst_path);
-                let file_data = read_inode_data(read_fn, lp, sb, &entry_inode_data)?;
-                fs::write(&dst_path, &file_data)
-                    .map_err(|e| format!("写入失败: {}", e))?;
+                match read_inode_data(read_fn, lp, sb, &entry_inode_data) {
+                    Ok(file_data) => {
+                        if let Err(e) = fs::write(&dst_path, &file_data) {
+                            eprintln!("  [跳过] 写入失败 {}: {}", dst_path, e);
+                            // 创建空文件作为占位
+                            let _ = fs::write(&dst_path, b"");
+                        } else {
+                            println!("  提取: {} ({} bytes)", entry_path, file_data.len());
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  [跳过] 读取文件失败 {}: {}", entry_path, e);
+                        // 创建空文件作为占位
+                        let _ = fs::write(&dst_path, b"");
+                    }
+                }
             }
         }
 
@@ -1111,7 +1429,9 @@ impl Explorer {
         println!("  ls [super]                 列出 super 分区表");
         println!("  ls [part[/path]]           列出目录内容");
         println!("  cat <part/path>            显示文件内容");
-        println!("  cp <part/path> <local>     提取文件/目录到本地");
+        println!("  cp [-r] [--depth N] <part/path> <local>  提取文件/目录到本地");
+        println!("      -r        递归复制目录");
+        println!("      --depth N 限制递归深度 (1=当前目录, 2=一层子目录...)");
         println!("  cd <part>[/path]           切换当前分区/目录");
         println!("  pwd                        显示当前路径");
         println!("  tree <part>[/path] [depth] 树形显示 (默认深度3)");
@@ -1134,6 +1454,18 @@ impl Explorer {
         println!("输入 'help' 查看命令\n");
 
         loop {
+            // 检查 Ctrl+C 状态
+            if crate::cancel::force_requested() {
+                println!("\n强制退出 fs_shell。");
+                crate::cancel::reset();
+                break;
+            }
+            if crate::cancel::requested() {
+                println!("\n(已取消，输入 help 查看命令，再次 Ctrl+C 强制退出)");
+                crate::cancel::reset();
+                continue;
+            }
+
             // 提示符
             match &self.current_partition {
                 None => print!("{}", "zyb> ".cyan()),
@@ -1141,7 +1473,10 @@ impl Explorer {
                     if self.current_path.is_empty() {
                         print!("{}", format!("zyb:/{}/> ", part).cyan());
                     } else {
-                        print!("{}", format!("zyb:/{}/{}> ", part, self.current_path).cyan());
+                        print!(
+                            "{}",
+                            format!("zyb:/{}/{}> ", part, self.current_path).cyan()
+                        );
                     }
                 }
             };
@@ -1160,6 +1495,17 @@ impl Explorer {
                     println!("读取输入失败");
                     break;
                 }
+            }
+
+            // read_line 之后也检查 cancel
+            if crate::cancel::force_requested() {
+                println!("\n强制退出 fs_shell。");
+                crate::cancel::reset();
+                break;
+            }
+            if crate::cancel::requested() {
+                crate::cancel::reset();
+                continue;
             }
 
             let line = input.trim();
@@ -1216,7 +1562,10 @@ impl Explorer {
                     break;
                 }
                 _ => {
-                    println!("{}", format!("未知命令: {} (输入 help 查看帮助)", cmd).red());
+                    println!(
+                        "{}",
+                        format!("未知命令: {} (输入 help 查看帮助)", cmd).red()
+                    );
                 }
             }
         }
@@ -1232,7 +1581,7 @@ pub fn run_explorer<F>(read_fn: &mut F) -> Result<(), String>
 where
     F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
 {
-    println!("{}", "zyb fs_shell - super.img 浏览器".bold());
+    // banner 在 run_interactive 中打印，此处不再重复
 
     let (partitions, extents) = read_lp_metadata(read_fn)?;
     println!("解析到 {} 个逻辑分区:", partitions.len());
@@ -1255,7 +1604,10 @@ where
 /// 从本地 super.img 文件启动浏览器
 pub fn run_explorer_file(path: &str) -> Result<(), String> {
     let mut file = fs::File::open(path).map_err(|e| format!("打开文件失败: {}", e))?;
-    let file_size = file.metadata().map_err(|e| format!("获取文件信息失败: {}", e))?.len();
+    let file_size = file
+        .metadata()
+        .map_err(|e| format!("获取文件信息失败: {}", e))?
+        .len();
     println!("打开: {} ({} bytes)", path, fmt_size(file_size));
 
     let mut read_fn = |offset: u64, length: u64| -> Result<Vec<u8>, String> {
@@ -1274,4 +1626,55 @@ pub fn run_explorer_file(path: &str) -> Result<(), String> {
     };
 
     run_explorer(&mut read_fn)
+}
+
+/// 从 ext4 分区中按路径读取文件内容（不依赖 LP 元数据）
+///
+/// 复用 fs_shell 内部的 ext4 解析逻辑（支持 BGD 32/64 字节、inline symlink、
+/// 空 inode 等），使用 identity translator 直接按分区偏移读取。
+///
+/// 参数：
+/// - `read_fn`: 读取回调 `(offset, len) -> Result<Vec<u8>, String>`，offset 从分区起始算
+/// - `partition_size`: 分区总大小
+/// - `path`: 文件路径，如 `"system/build.prop"`
+///
+/// 返回：文件原始数据
+pub fn read_file_by_path<F>(
+    read_fn: &mut F,
+    partition_size: u64,
+    path: &str,
+) -> Result<Vec<u8>, String>
+where
+    F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
+{
+    let lp = LpTranslator::identity(partition_size);
+    let sb = read_ext4_superblock(read_fn, &lp)?;
+
+    log::info!(
+        "[explorer] ext4: block_size={}, inode_size={}, bgd_entry_size={}",
+        sb.block_size,
+        sb.inode_size,
+        sb.bgd_entry_size
+    );
+
+    let inode_num = resolve_path(read_fn, &lp, &sb, ROOT_INODE, path)?;
+    log::info!("[explorer] 找到 {} -> inode={}", path, inode_num);
+
+    let inode_data = read_inode(read_fn, &lp, &sb, inode_num)?;
+    let mode = get_inode_mode(&inode_data);
+    let size = get_inode_size(&inode_data);
+
+    if is_dir_mode(mode) {
+        return Err(format!("{} 是目录，不是文件", path));
+    }
+
+    log::info!(
+        "[explorer] 读取 {} ({} bytes, mode=0x{:04X})",
+        path,
+        size,
+        mode
+    );
+    let data = read_inode_data(read_fn, &lp, &sb, &inode_data)?;
+
+    Ok(data)
 }

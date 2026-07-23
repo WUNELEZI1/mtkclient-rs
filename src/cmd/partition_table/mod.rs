@@ -9,7 +9,7 @@
 //! - `print_gpt_table`  — 表格格式化输出
 
 use colored::Colorize;
-use log::{error, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use std::time::SystemTime;
 
 use crate::da::DAXFlash;
@@ -28,12 +28,12 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
 
             // 尝试加载 super 动态分区元数据（用于 printgpt 展示 logical partition）
             if da.super_metadata.is_none() {
-                info!("正在尝试加载 super 动态分区元数据...");
+                debug!("正在尝试加载 super 动态分区元数据...");
                 if let Err(e) = da.ensure_super_metadata() {
                     warn!("加载 super 动态分区元数据失败: {}", e);
                 }
             } else {
-                info!("super 元数据已缓存，跳过加载");
+                debug!("super 元数据已缓存，跳过加载");
             }
 
             // 输出完整 EMMC 信息
@@ -106,14 +106,22 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
     }
 }
 
-/// 读取 GPT 原始数据到指定目录
+/// 读取 GPT 原始数据到指定路径
+/// 
+/// 如果 `path` 包含文件扩展名（如 .bin/.img），直接保存为该文件；
+/// 否则将其视为目录，在目录下创建 `gpt.bin`。
 pub fn cmd_read_gpt(
     da: &mut DAXFlash,
-    dir: &str,
+    path: &str,
     log_level: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {}", e))?;
-    let output = format!("{}/gpt.bin", dir);
+    // 判断 path 是文件还是目录：含常见扩展名则视为文件
+    let output = if path.ends_with(".bin") || path.ends_with(".img") || path.ends_with(".dat") {
+        path.to_string()
+    } else {
+        std::fs::create_dir_all(path).map_err(|e| format!("创建目录失败: {}", e))?;
+        format!("{}/gpt.bin", path)
+    };
 
     if da.get_last_gpt_data().is_err() {
         da.read_gpt().map_err(|e| format!("GPT 读取失败: {}", e))?;

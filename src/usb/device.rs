@@ -10,7 +10,7 @@
 use super::context::USB上下文;
 use super::context::USB阶段;
 use crate::system::config::{DeviceType, SUPPORTED_DEVICES};
-use log::{info, trace, warn};
+use log::{debug, info, trace, warn};
 use nusb::MaybeFuture;
 use nusb::descriptors::TransferType;
 use std::time::Duration;
@@ -370,6 +370,53 @@ impl USB设备 {
         self.超时 = orig_timeout;
     }
 
+    /// 循环排空 IN 管道残留数据（不 reset HALT，不破坏 USB data toggle 序列）
+    /// 用于 DA 会话复用时：新进程打开 USB 后需要排空上一个进程留下的残留数据，
+    /// 但不能 clear_halt（会重置 data toggle 导致后续读取错位）。
+    pub fn drain_pipes(&mut self) {
+        self.输入暂存.clear();
+
+        // 先取消挂起的 IN transfer
+        if let Some(ep_in) = self.输入端点句柄.as_mut() {
+            if ep_in.pending() > 0 {
+                trace!("[USB] drain_pipes: 取消 {} 个挂起 IN 传输", ep_in.pending());
+                ep_in.cancel_all();
+                while ep_in.pending() > 0 {
+                    let _ = ep_in.wait_next_complete(Duration::from_millis(10));
+                }
+            }
+        }
+
+        // 循环排空 IN 管道残留数据（500ms 超时，循环直到无数据）
+        let orig_timeout = self.超时;
+        self.超时 = Duration::from_millis(500);
+        let mut drain_count = 0;
+        loop {
+            let mut tmp = [0u8; 512];
+            match self.读取(&mut tmp) {
+                Ok(0) => {
+                    break; // 超时无数据，排空完毕
+                }
+                Ok(n) => {
+                    drain_count += 1;
+                    trace!(
+                        "[USB] drain_pipes: 排空 {} 字节残留数据 (第 {} 次)",
+                        n, drain_count
+                    );
+                    continue;
+                }
+                Err(_) => break,
+            }
+        }
+        self.超时 = orig_timeout;
+
+        if drain_count > 0 {
+            debug!("[USB] drain_pipes: 共排空 {} 次 IN 残留数据", drain_count);
+        } else {
+            trace!("[USB] drain_pipes: 无残留数据");
+        }
+    }
+
     /// USB 管道恢复：循环排空 IN 残留数据 + 重置双端点 HALT 状态
     /// 用于 HACC 签名等长时间操作超时后的管道恢复。
     /// 根因：send_devctrl 超时后设备 DA 状态机卡在"等待 status 被读取"，
@@ -401,7 +448,10 @@ impl USB设备 {
                 }
                 Ok(n) => {
                     drain_count += 1;
-                    trace!("[USB] recover: 排空 {} 字节残留数据 (第 {} 次)", n, drain_count);
+                    trace!(
+                        "[USB] recover: 排空 {} 字节残留数据 (第 {} 次)",
+                        n, drain_count
+                    );
                     continue;
                 }
                 Err(_) => break,
@@ -417,7 +467,7 @@ impl USB设备 {
         let _ = self.清除输入端点停顿();
         let _ = self.清除输出端点停顿();
 
-        info!("[USB] USB 管道恢复完成 (IN drain + clear_halt_both)");
+        debug!("[USB] USB 管道恢复完成 (IN drain + clear_halt_both)");
     }
 
     /// USB 总线复位（对齐 Python device.reset()）

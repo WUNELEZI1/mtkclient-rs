@@ -5,13 +5,14 @@
 //! - `cmd_erase`    — 擦除分区
 //! - `cmd_reboot`   — 重启设备（支持 system/fastboot/recovery/fastbootd）
 //! - `cmd_slot`     — 显示/切换 A/B 槽位
+//! - `cmd_peek`     — 读取设备内存（hex dump 输出）
+//! - `cmd_poke`     — 写入设备内存（hex 数据输入）
 
 use colored::Colorize;
 use log::{info, warn};
+use std::time::Duration;
 
 use crate::da::DAXFlash;
-use crate::da::xflash::protocol::ShutdownBootMode;
-use crate::preloader::transport::BromTransport;
 
 /// 读取分区数据到文件
 ///
@@ -24,7 +25,10 @@ use crate::preloader::transport::BromTransport;
 ///   mtkclient r super --dp vendor vendor.img       → 读取 super 内的 vendor
 pub fn cmd_read(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 2 {
-        return Err("用法: mtkclient r <part> <file> 或 mtkclient r super --dp <logical_part> <file>".into());
+        return Err(
+            "用法: mtkclient r <part> <file> 或 mtkclient r super --dp <logical_part> <file>"
+                .into(),
+        );
     }
 
     // 解析 --dp 参数：r super --dp system output.img
@@ -34,15 +38,19 @@ pub fn cmd_read(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
         if args[0].to_lowercase() != "super" {
             return Err("--dp 只能与 super 分区一起使用".into());
         }
-        let logical_name = args.get(idx + 1)
-            .ok_or("--dp 后缺少逻辑分区名")?;
-        let output_file = args.get(idx + 2)
-            .ok_or("缺少输出文件名")?;
+        let logical_name = args.get(idx + 1).ok_or("--dp 后缺少逻辑分区名")?;
+        let output_file = args.get(idx + 2).ok_or("缺少输出文件名")?;
 
-        info!("读取 super 内的动态分区: {} → {}", logical_name, output_file);
+        info!(
+            "读取 super 内的动态分区: {} → {}",
+            logical_name, output_file
+        );
         da.读取动态分区(logical_name, output_file)
             .map_err(|e| format!("读取动态分区失败: {}", e))?;
-        info!("{}", format!("super[{}] -> {}", logical_name, output_file).green());
+        info!(
+            "{}",
+            format!("super[{}] -> {}", logical_name, output_file).green()
+        );
         return Ok(());
     }
 
@@ -96,12 +104,32 @@ pub fn cmd_erase(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::
 pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error>> {
     let partitions = ["userdata", "md_udc", "metadata"];
 
-    warn!("{}", "═══════════════════════════════════════════════".yellow().bold());
+    warn!(
+        "{}",
+        "═══════════════════════════════════════════════"
+            .yellow()
+            .bold()
+    );
     warn!("{}", "  即将执行恢复出厂设置！".yellow().bold());
     warn!("{}", "  将擦除: userdata, md_udc, metadata".yellow().bold());
-    warn!("{}", "  metadata 擦除后，super_metadata 缓存将被清除".yellow().bold());
-    warn!("{}", "  设备重启后 bootloader 会自动重建 metadata".yellow().bold());
-    warn!("{}", "═══════════════════════════════════════════════".yellow().bold());
+    warn!(
+        "{}",
+        "  metadata 擦除后，super_metadata 缓存将被清除"
+            .yellow()
+            .bold()
+    );
+    warn!(
+        "{}",
+        "  设备重启后 bootloader 会自动重建 metadata"
+            .yellow()
+            .bold()
+    );
+    warn!(
+        "{}",
+        "═══════════════════════════════════════════════"
+            .yellow()
+            .bold()
+    );
 
     for &part in &partitions {
         info!("正在擦除 {}...", part);
@@ -112,7 +140,10 @@ pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error
 
     // metadata 擦除后，清除 super_metadata 缓存，下次需要时重新读取
     da.super_metadata = None;
-    info!("{}", "super_metadata 缓存已清除（下次需要时自动重新读取）".dimmed());
+    info!(
+        "{}",
+        "super_metadata 缓存已清除（下次需要时自动重新读取）".dimmed()
+    );
 
     info!("{}", "恢复出厂设置完成！请重启设备。".green().bold());
     info!("提示: 重启后执行 reboot 命令让设备进入系统");
@@ -120,28 +151,49 @@ pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error
 }
 
 /// 重启设备
+///
 /// 用法:
 ///   reboot                          → 正常重启到系统
 ///   reboot fastboot                 → 重启到 Bootloader（lk fastboot）
 ///   reboot recovery                 → 重启到 Recovery
 ///   reboot fastbootd                → 重启到 fastbootd（userspace fastboot）
-///   reboot fastboot --via para      → 通过 para 分区设置 boot_mode=5（DA模式）
-///   reboot fastboot --via da        → 通过 XFlash DA SHUTDOWN bootmode=2 直接重启
-///   reboot fastboot --via xml       → 通过 XML DA SET-BOOT-MODE 重启（新平台）
+///   reboot meta                     → 重启到 META 模式
+///   reboot <mode> --via <method>    → 指定重启方式
+///
+/// --via 参数:
+///   para      (默认) 通过 para 分区设置 boot_mode（最稳定）
+///   misc      通过 misc 分区设置 bootloader_message
+///   da        通过 DA SHUTDOWN 命令直接重启
+///   xml       通过 XML DA SET-BOOT-MODE 重启（新平台）
+///   preloader 通过 Preloader Pattern 协议（fastboot/meta，无需加载 DA）
+///
+/// --via preloader 支持的模式:
+///   fastboot  → Pattern FASTBOOT（BROM: 先 reset 到 Preloader，再 Pattern）
+///   meta      → Pattern METAMETA（同上）
+///   recovery/fastbootd/system → 不支持 Pattern，回退到 para
+///
+/// 模式与工作模式的关系:
+///   --mode brom:
+///     --via preloader: BROM write32 触发看门狗重启 → 等 Preloader → 握手 → trigger_meta_reboot → Pattern
+///     --via para/misc/da/xml: 加载 DA → 写分区 → 重启
+///   --mode preloader:
+///     --via preloader: trigger_meta_reboot → Pattern
+///     --via para/misc: 加载 DA → 写分区 → 重启
 pub fn cmd_reboot(
     da: &mut DAXFlash,
     args: &[String],
     is_brom: bool,
+    is_preloader: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 解析参数：reboot [mode] [--via misc/para/da/xml]
+    // 解析参数：reboot [mode] [--via misc/para/da/xml/preloader]
     let mut mode = "system";
-    let mut via = "misc";
+    let mut via = "para"; // 默认 para（最稳定）
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--via" => {
-                via = args.get(i + 1).map(|s| s.as_str()).unwrap_or("misc");
+                via = args.get(i + 1).map(|s| s.as_str()).unwrap_or("para");
                 i += 2;
             }
             "system" | "fastboot" | "recovery" | "fastbootd" | "meta" => {
@@ -150,7 +202,7 @@ pub fn cmd_reboot(
             }
             _ => {
                 return Err(format!(
-                    "未知重启参数: {}。用法: reboot [system|fastboot|recovery|fastbootd|meta] [--via misc|para|da|xml]",
+                    "未知重启参数: {}。用法: reboot [system|fastboot|recovery|fastbootd|meta] [--via misc|para|da|xml|preloader]",
                     args[i]
                 )
                 .into());
@@ -158,53 +210,48 @@ pub fn cmd_reboot(
         }
     }
 
+    // --via preloader: Pattern 协议路径（支持 fastboot 和 meta）
+    if via == "preloader" {
+        return cmd_reboot_via_preloader(da, mode, is_brom, is_preloader);
+    }
+
+    // 非 preloader 路径：需要加载 DA
+    // Preloader 模式下 via 限制：仅支持 misc、para
+    if is_preloader && !matches!(via, "misc" | "para") {
+        warn!(
+            "Preloader 模式下 via={} 不支持（仅支持 misc/para/preloader），已回退到 para",
+            via
+        );
+        via = "para";
+    }
+
     match mode {
         "system" => {
-            // 正常重启：通过 DA SHUTDOWN(bootmode=REBOOT)
-            do_reboot(da, "system")?;
-        }
-        "fastboot" => {
-            // BROM 模式下：先 jump_bl 重启到 bootloader，然后尝试 Preloader Pattern
             if is_brom {
-                info!("BROM 模式下重启到 fastboot：执行 jump_bl...");
+                // BROM 模式：使用 JUMP_BL 直接重启
+                info!("通过 JUMP_BL 重启到系统...");
                 match da.preloader.jump_bl() {
                     Ok(_) => {
-                        info!("jump_bl 成功，设备正在重启到 Bootloader...");
+                        info!("{}", "设备已重启到系统 (JUMP_BL)".green());
                         crate::connection::reset_session();
-                        // 等待设备重新枚举
-                        std::thread::sleep(std::time::Duration::from_secs(2));
-                        // 尝试连接 Preloader 串口并发送 Pattern
-                        match try_preloader_pattern_reboot() {
-                            Ok(_) => {
-                                info!("{}", "设备已通过 Preloader Pattern 重启到 Bootloader".green());
-                                return Ok(());
-                            }
-                            Err(e) => {
-                                warn!("Preloader Pattern 发送失败: {}，设备可能已进入 Bootloader", e);
-                                return Ok(());
-                            }
-                        }
                     }
                     Err(e) => {
-                        warn!("jump_bl 失败: {}，回退到 misc 分区方式", e);
-                        set_bootloader_message(da, mode)?;
+                        warn!("JUMP_BL 失败: {}，回退到 para...", e);
+                        set_boot_mode_via_para(da, mode)?;
                         do_reboot(da, mode)?;
                     }
                 }
             } else {
-                // DA 模式下：根据 --via 选择重启方式
+                // Preloader 模式：使用 para 分区写入 boot_mode=0 后 CMD_RESET
+                info!("Preloader 模式：通过 para 分区重启到系统...");
+                set_boot_mode_via_para(da, mode)?;
+                do_reboot(da, mode)?;
+            }
+        }
+        "fastboot" => {
+            if is_brom {
                 match via {
-                    "da" => {
-                        // Layer 2: XFlash DA SHUTDOWN bootmode=2
-                        info!("通过 DA SHUTDOWN 直接重启到 fastboot...");
-                        da.da_reboot_fastboot()
-                            .map_err(|e| format!("DA SHUTDOWN fastboot 失败: {}", e))?;
-                        info!("{}", "设备已通过 DA SHUTDOWN 重启到 fastboot".green());
-                        crate::connection::reset_session();
-                        return Ok(());
-                    }
                     "xml" => {
-                        // Layer 3: XML DA SET-BOOT-MODE + REBOOT
                         info!("通过 XML DA 协议重启到 fastboot...");
                         da.da_xml_reboot_fastboot()
                             .map_err(|e| format!("XML DA fastboot 失败: {}", e))?;
@@ -216,33 +263,39 @@ pub fn cmd_reboot(
                     _ => set_bootloader_message(da, mode)?,
                 }
                 do_reboot(da, mode)?;
+            } else {
+                // Preloader 模式非 preloader via：需要加载 DA
+                match via {
+                    "para" => set_boot_mode_via_para(da, mode)?,
+                    _ => set_bootloader_message(da, mode)?,
+                }
+                do_reboot(da, mode)?;
             }
         }
         "recovery" | "fastbootd" => {
             info!("准备重启到 {} 模式 (via {})...", mode, via);
             match via {
                 "da" => {
-                    // DA 模式下 fastbootd/recovery 仍通过 misc 分区设置
-                    // 因为 SHUTDOWN bootmode 只支持 0/1/2，没有 recovery/fastbootd
                     set_bootloader_message(da, mode)?;
-                    do_reboot(da, mode)?;
                 }
                 "para" => set_boot_mode_via_para(da, mode)?,
+                "xml" => {
+                    warn!("XML DA 不支持 {} 模式，回退到 misc", mode);
+                    set_bootloader_message(da, mode)?;
+                }
                 _ => set_bootloader_message(da, mode)?,
             }
             do_reboot(da, mode)?;
         }
         "meta" => {
-            info!("准备重启到 {} 模式 (via {})...", mode, via);
+            info!("准备重启到 meta 模式 (via {})...", via);
             match via {
                 "da" => {
-                    // DA 模式下 meta 通过 SET_META_BOOT_MODE devctrl
                     info!("通过 DA SET_META_BOOT_MODE 重启到 meta...");
                     if let Err(e) = da.set_meta_boot_mode(1) {
                         warn!("SET_META_BOOT_MODE 失败: {}，回退到 misc", e);
                         set_bootloader_message(da, mode)?;
                     }
-                    do_reboot(da, mode)?;
                 }
                 "xml" => {
                     da.da_xml_reboot_meta()
@@ -262,73 +315,116 @@ pub fn cmd_reboot(
     Ok(())
 }
 
-/// 尝试连接 Preloader 串口并发送 Fastboot Pattern
-fn try_preloader_pattern_reboot() -> Result<(), String> {
-    use std::time::Duration;
-    use crate::preloader::SerialPortTransport;
-    use crate::cmd::preloader_boot_mode;
+/// --via preloader: 通过 Pattern 协议重启设备
+///
+/// 支持的 mode: fastboot, meta
+/// 不支持的 mode (recovery/fastbootd/system): 回退到 para
+///
+/// BROM 模式流程（DA 加载前拦截，设备仍在 BROM 握手状态）:
+/// 1. trigger_meta_reboot: write32(wdt+0x14, 0x00001209) 触发看门狗重启
+/// 2. 关闭串口 → 等待设备重枚举为 Preloader VCOM
+/// 3. open_raw → 读 READY → 发送模式标识 → DISCONNECT
+///
+/// Preloader 模式流程（同上）
+fn cmd_reboot_via_preloader(
+    da: &mut DAXFlash,
+    mode: &str,
+    is_brom: bool,
+    _is_preloader: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::cmd::preloader_boot_mode::{self, BootMode};
 
-    info!("等待 Preloader COM 口出现（最多 15 秒）...");
-
-    // 最多等待 15 秒，每 200ms 扫描一次
-    let max_wait_ms = 15000u64;
-    let interval_ms = 200u64;
-    let max_retries = max_wait_ms / interval_ms;
-
-    for _retry in 0..max_retries {
-        if let Some(port_result) = SerialPortTransport::find_brom_port_with_timeout(interval_ms) {
-            match port_result {
-                crate::preloader::BromPortResult::SerialPort(port_name) => {
-                    info!("发现 Preloader COM 口: {}", port_name);
-                    // 打开串口
-                    let mut transport = SerialPortTransport::new(&port_name, 115200)
-                        .map_err(|e| format!("打开串口失败: {}", e))?;
-                    // 设置超时
-                    transport.set_timeout(Duration::from_millis(2000));
-
-                    // 尝试握手（部分 Preloader 需要）
-                    info!("尝试 Preloader 握手...");
-                    if let Err(e) = transport.do_handshake() {
-                        warn!("握手失败（可能不需要）: {}", e);
+    // Pattern 协议支持的模式映射
+    let boot_mode = match mode {
+        "fastboot" => BootMode::Fastboot,
+        "meta" => BootMode::Meta,
+        _ => {
+            // recovery/fastbootd/system 不支持 Pattern，回退到 para
+            warn!(
+                "{} 模式不支持 --via preloader（Pattern 协议无对应标识），回退到 --via para",
+                mode
+            );
+            match mode {
+                "system" => {
+                    // system 模式直接 jump_bl
+                    info!("通过 JUMP_BL 重启到系统...");
+                    match da.preloader.jump_bl() {
+                        Ok(_) => {
+                            info!("{}", "设备已重启到系统 (JUMP_BL)".green());
+                            crate::connection::reset_session();
+                        }
+                        Err(e) => {
+                            warn!("JUMP_BL 失败: {}", e);
+                            crate::connection::reset_session();
+                            info!("{}", "请手动重启设备".yellow());
+                        }
                     }
-
-                    // 发送 Fastboot Pattern
-                    info!("发送 Fastboot Pattern...");
-                    preloader_boot_mode::send_boot_pattern(
-                        &mut transport,
-                        preloader_boot_mode::BootMode::Fastboot,
-                    )?;
-                    return Ok(());
                 }
-                _ => {
-                    // WinUsbDevice 或其他结果，不是串口
-                    continue;
+                "recovery" | "fastbootd" | "meta" => {
+                    set_boot_mode_via_para(da, mode)?;
+                    do_reboot(da, mode)?;
                 }
+                _ => {}
             }
+            return Ok(());
         }
-    }
-
-    Err("未在 15 秒内找到 Preloader COM 口".to_string())
-}
-
-/// 执行实际重启（使用 XFlash DA SHUTDOWN 协议）
-fn do_reboot(da: &mut DAXFlash, mode: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let bootmode = match mode {
-        "system" => ShutdownBootMode::Reboot,
-        _ => ShutdownBootMode::Reboot,
     };
 
-    match da.da_shutdown(bootmode) {
+    let mode_name = boot_mode.name();
+    let tag = if is_brom { "BROM" } else { "Preloader" };
+    info!("通过 Preloader Pattern 协议重启到 {}...", mode_name);
+
+    // 步骤 1: trigger_meta_reboot 触发看门狗重启
+    info!("  [{}] 步骤 1/2: 触发看门狗重启...", tag);
+    match da.preloader.trigger_meta_reboot() {
+        Ok(_) => info!("  看门狗已触发，设备正在重启..."),
+        Err(e) => warn!("  看门狗触发失败: {}，继续等待设备重枚举", e),
+    }
+    let _ = da.preloader.device.close_device();
+    crate::connection::reset_session();
+    std::thread::sleep(Duration::from_millis(1000));
+
+    // 步骤 2: 等待 Preloader VCOM → Pattern 协议
+    info!("  [{}] 步骤 2/2: 等待 Preloader VCOM → Pattern 协议...", tag);
+    match preloader_boot_mode::try_preloader_pattern(boot_mode) {
+        Ok(_) => {
+            info!(
+                "{}",
+                format!("  设备已通过 Pattern 重启到 {}", mode_name)
+                    .green()
+                    .bold()
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            warn!("  Pattern 发送失败: {}，设备可能已进入目标模式", e);
+            return Ok(());
+        }
+    }
+}
+
+/// 执行实际重启
+/// 优先使用 CMD_RESET (DA 协议重启命令)，失败则提示用户手动重启
+fn do_reboot(da: &mut DAXFlash, mode: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // 尝试 CMD_RESET（DA 协议的设备重启命令）
+    match da.reset_device() {
         Ok(()) => {
-            info!("{}", format!("设备已重启到 {} 模式 (DA SHUTDOWN)", mode).green());
+            info!(
+                "{}",
+                format!("设备已重启到 {} 模式 (CMD_RESET)", mode).green()
+            );
             crate::connection::reset_session();
             Ok(())
         }
         Err(e) => {
-            warn!("DA SHUTDOWN 失败: {}，回退到 jump_bl", e);
-            da.close_device(true);
+            warn!("CMD_RESET 失败: {}", e);
+            // CMD_RESET 失败时不再尝试 da_shutdown（已知无效）和 jump_bl（DA 模式下 echo 不匹配）
+            // 提示用户手动重启
             crate::connection::reset_session();
-            info!("{}", format!("设备已重启到 {} 模式", mode).green());
+            info!("{}", format!(
+                "misc/para 分区已写入，请手动重启设备（断开 USB 重新连接或按电源键重启），设备将启动到 {} 模式",
+                mode
+            ).yellow());
             Ok(())
         }
     }
@@ -346,7 +442,7 @@ fn set_bootloader_message(da: &mut DAXFlash, mode: &str) -> Result<(), String> {
     let mut msg = vec![0u8; 32 + 32 + 1024]; // 只修改前 1088 字节
 
     let cmd_str = match mode {
-        "fastboot" => "bootloader",     // 进入 lk bootloader（adb reboot bootloader）
+        "fastboot" => "bootloader", // 进入 lk bootloader（adb reboot bootloader）
         "recovery" => "boot-recovery",
         "fastbootd" => "boot-fastboot", // 进入 fastbootd（用户空间 fastboot）
         _ => "",
@@ -358,25 +454,33 @@ fn set_bootloader_message(da: &mut DAXFlash, mode: &str) -> Result<(), String> {
         info!("已设置 bootloader_message command='{}'", cmd_str);
     }
 
-    // 读取 misc 分区，修改前 1088 字节，写回
-    let misc_data = match da.读取分区("misc", "misc_tmp_read.bin") {
-        Ok(_) => std::fs::read("misc_tmp_read.bin").unwrap_or_else(|_| vec![0u8; 0x1000]),
+    // 读取 misc 分区到内存
+    let (misc_addr, misc_size) = match da.find_partition_addr("misc") {
+        Ok(r) => r,
         Err(e) => {
-            warn!("读取 misc 分区失败 ({})，尝试直接写入", e);
-            vec![0u8; 0x1000] // 4KB 默认值
+            warn!("查找 misc 分区失败 ({}），使用默认值", e);
+            // 无法获取分区地址，分配一个最小的缓冲区
+            let mut new_misc = vec![0u8; 0x1000];
+            new_misc[..msg.len()].copy_from_slice(&msg);
+            return write_partition_from_memory(da, "misc", &new_misc);
         }
     };
 
-    let mut new_misc = misc_data;
+    let mut new_misc = match da.readflash_data(misc_addr, misc_size) {
+        Ok(data) => data,
+        Err(e) => {
+            warn!("读取 misc 分区失败 ({})，使用默认值", e);
+            vec![0u8; 0x1000]
+        }
+    };
+
     if new_misc.len() < msg.len() {
         new_misc.resize(msg.len(), 0);
     }
     new_misc[..msg.len()].copy_from_slice(&msg);
 
-    // 写回 misc 分区
-    std::fs::write("misc_reboot_tmp.bin", &new_misc).map_err(|e| e.to_string())?;
-    da.写入分区("misc", "misc_reboot_tmp.bin")
-        .map_err(|e| format!("写入 misc 分区失败: {}", e))?;
+    // 直接从内存写入 misc 分区
+    write_partition_from_memory(da, "misc", &new_misc)?;
 
     info!("misc 分区已更新");
     Ok(())
@@ -396,36 +500,40 @@ fn set_bootloader_message(da: &mut DAXFlash, mode: &str) -> Result<(), String> {
 /// 这是 misc 分区之外的第二种方案，部分设备的 LK 只识别 para
 fn set_boot_mode_via_para(da: &mut DAXFlash, mode: &str) -> Result<(), String> {
     let boot_mode: u32 = match mode {
-        "fastboot" => 5,  // BROM download mode，等同于 bootloader
+        "system" => 0,   // 正常启动
         "recovery" => 1,
         "fastbootd" => 2,
+        "fastboot" => 5, // BROM download mode，等同于 bootloader
         _ => return Err(format!("para 不支持的启动模式: {}", mode)),
     };
 
-    // 读取 para 分区
-    let para_data = match da.读取分区("para", "para_reboot_tmp_read.bin") {
-        Ok(_) => std::fs::read("para_reboot_tmp_read.bin")
-            .unwrap_or_else(|_| vec![0u8; 0x2000]),
+    // 读取 para 分区到内存
+    let (para_addr, para_size) = match da.find_partition_addr("para") {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("查找 para 分区失败 ({})，回退到 misc", e);
+            return set_bootloader_message(da, mode);
+        }
+    };
+
+    let mut new_para = match da.readflash_data(para_addr, para_size) {
+        Ok(data) => data,
         Err(e) => {
             warn!("读取 para 分区失败 ({})，回退到 misc", e);
             return set_bootloader_message(da, mode);
         }
     };
 
-    let mut new_para = para_data;
     // para 分区通常至少 4KB，确保能容纳 boot_mode
     if new_para.len() < 4 {
         new_para.resize(4, 0);
     }
 
-    let old_mode = u32::from_le_bytes([
-        new_para[0], new_para[1], new_para[2], new_para[3],
-    ]);
+    let old_mode = u32::from_le_bytes([new_para[0], new_para[1], new_para[2], new_para[3]]);
     new_para[0..4].copy_from_slice(&boot_mode.to_le_bytes());
 
-    std::fs::write("para_reboot_tmp.bin", &new_para).map_err(|e| e.to_string())?;
-    da.写入分区("para", "para_reboot_tmp.bin")
-        .map_err(|e| format!("写入 para 分区失败: {}", e))?;
+    // 直接从内存写入 para 分区
+    write_partition_from_memory(da, "para", &new_para)?;
 
     info!(
         "para 分区已更新: boot_mode 0x{:X} -> 0x{:X} ({})",
@@ -473,47 +581,41 @@ fn show_slot(da: &mut DAXFlash) -> Result<(), String> {
 fn set_slot(da: &mut DAXFlash, slot: char) -> Result<(), String> {
     info!("设置 A/B 槽位为 {}...", slot);
 
-    // 读取 misc 分区
-    let misc_data = match da.读取分区("misc", "misc_tmp_read2.bin") {
-        Ok(_) => std::fs::read("misc_tmp_read2.bin").map_err(|e| e.to_string())?,
-        Err(e) => return Err(format!("读取 misc 分区失败: {}", e)),
-    };
+    // 读取 misc 分区到内存
+    let (misc_addr, misc_size) = da.find_partition_addr("misc")
+        .map_err(|e| format!("查找 misc 分区失败: {}", e))?;
 
-    let mut new_misc = misc_data.clone();
+    let mut new_misc = da.readflash_data(misc_addr, misc_size)
+        .map_err(|e| format!("读取 misc 分区失败: {}", e))?;
 
-    // 尝试在 misc 分区中查找并修改槽位标记
-    // A/B 槽位信息通常存储在 misc 分区的 bootctrl 区域（偏移 0x2000 或 0x4000）
-    // 或者在 bootloader_message 的保留区域中
-    // 这里尝试查找已知的槽位标记模式
-    let slot_marker_a = b"_a";
-    let slot_marker_b = b"_b";
-
-    // 简单策略：查找并替换槽位标记
-    let modified = if slot == 'a' {
-        replace_slot_markers(&mut new_misc, slot_marker_b, slot_marker_a)
-    } else {
-        replace_slot_markers(&mut new_misc, slot_marker_a, slot_marker_b)
-    };
-
-    if modified == 0 {
-        warn!("未在 misc 分区中找到槽位标记，尝试写入 bootctrl 结构...");
-        // 如果找不到标记，尝试在偏移 0x2000 处写入槽位信息
-        if new_misc.len() < 0x2010 {
-            new_misc.resize(0x2010, 0);
+    // 优先检查 bootctrl 结构（偏移 0x2000）
+    let bootctrl_offset = 0x2000;
+    if new_misc.len() >= bootctrl_offset + 12 {
+        let magic = u32::from_le_bytes([
+            new_misc[bootctrl_offset],
+            new_misc[bootctrl_offset + 1],
+            new_misc[bootctrl_offset + 2],
+            new_misc[bootctrl_offset + 3],
+        ]);
+        if magic == 0x424F4F54 {
+            // 已有 bootctrl 结构，直接修改 active_slot
+            let new_slot_val = if slot == 'a' { 0u32 } else { 1u32 };
+            new_misc[bootctrl_offset + 8..bootctrl_offset + 12]
+                .copy_from_slice(&new_slot_val.to_le_bytes());
+            info!("bootctrl 结构已更新 (active_slot={})", new_slot_val);
+        } else {
+            // 没有 bootctrl 结构，初始化一个
+            warn!("misc 分区中无 bootctrl 结构，创建新的...");
+            new_misc[bootctrl_offset..bootctrl_offset + 4]
+                .copy_from_slice(&0x424F4F54u32.to_le_bytes()); // "BOOT"
+            new_misc[bootctrl_offset + 4..bootctrl_offset + 8].copy_from_slice(&1u32.to_le_bytes()); // version
+            new_misc[bootctrl_offset + 8..bootctrl_offset + 12]
+                .copy_from_slice(&(if slot == 'a' { 0u32 } else { 1u32 }).to_le_bytes()); // active_slot
         }
-        // bootctrl 结构：magic(4) + version(4) + active_slot(4) + ...
-        let bootctrl_offset = 0x2000;
-        new_misc[bootctrl_offset..bootctrl_offset + 4]
-            .copy_from_slice(&0x424F4F54u32.to_le_bytes()); // "BOOT"
-        new_misc[bootctrl_offset + 4..bootctrl_offset + 8].copy_from_slice(&1u32.to_le_bytes()); // version
-        new_misc[bootctrl_offset + 8..bootctrl_offset + 12]
-            .copy_from_slice(&(if slot == 'a' { 0u32 } else { 1u32 }).to_le_bytes()); // active_slot
     }
 
-    // 写回 misc 分区
-    std::fs::write("misc_slot_tmp.bin", &new_misc).map_err(|e| e.to_string())?;
-    da.写入分区("misc", "misc_slot_tmp.bin")
-        .map_err(|e| format!("写入 misc 分区失败: {}", e))?;
+    // 直接从内存写入 misc 分区
+    write_partition_from_memory(da, "misc", &new_misc)?;
 
     info!("{}", format!("A/B 槽位已设置为 {}", slot).green().bold());
     Ok(())
@@ -521,11 +623,13 @@ fn set_slot(da: &mut DAXFlash, slot: char) -> Result<(), String> {
 
 /// 从 misc 分区读取槽位信息
 fn read_slot_from_misc(da: &mut DAXFlash) -> Result<Option<String>, String> {
-    let misc_data = match da.读取分区("misc", "misc_tmp_read3.bin") {
-        Ok(_) => match std::fs::read("misc_tmp_read3.bin") {
-            Ok(data) => data,
-            Err(_) => return Ok(None),
-        },
+    let (misc_addr, misc_size) = match da.find_partition_addr("misc") {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
+
+    let misc_data = match da.readflash_data(misc_addr, misc_size) {
+        Ok(data) => data,
         Err(_) => return Ok(None),
     };
 
@@ -569,6 +673,23 @@ fn read_slot_from_misc(da: &mut DAXFlash) -> Result<Option<String>, String> {
     Ok(None)
 }
 
+/// 从内存直接写入分区数据（无需临时文件）
+///
+/// 将 data 写入到指定分区，自动查找分区地址并处理 512 字节对齐
+fn write_partition_from_memory(
+    da: &mut DAXFlash,
+    part_name: &str,
+    data: &[u8],
+) -> Result<(), String> {
+    let (addr, _size) = da
+        .find_partition_addr(part_name)
+        .map_err(|e| format!("查找分区 {} 失败: {}", part_name, e))?;
+
+    da.write_flash_data(addr, data, 1, 8)
+        .map_err(|e| format!("写入分区 {} 失败: {}", part_name, e))?;
+    Ok(())
+}
+
 /// 在字节数组中替换槽位标记
 fn replace_slot_markers(data: &mut [u8], from: &[u8], to: &[u8]) -> usize {
     let mut count = 0;
@@ -581,4 +702,119 @@ fn replace_slot_markers(data: &mut [u8], from: &[u8], to: &[u8]) -> usize {
         i += 1;
     }
     count
+}
+
+// =============================================================================
+// peek / poke — 设备内存读写
+// =============================================================================
+
+/// 读取设备内存并输出 hex dump
+///
+/// 用法:
+///   peek <addr>          — 读取 4 字节（默认）
+///   peek <addr> <size>   — 读取指定字节数
+///
+/// 地址支持 0x 前缀或十进制格式
+pub fn cmd_peek(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.is_empty() {
+        return Err("用法: peek <addr> [size]".into());
+    }
+
+    let addr = parse_addr(&args[0])?;
+    let size: u32 = if args.len() >= 2 {
+        parse_size(&args[1])?
+    } else {
+        4 // 默认 4 字节
+    };
+
+    if size == 0 {
+        return Err("size 不能为 0".into());
+    }
+    if size > 0x100000 {
+        return Err("size 不能超过 1MB（peek 适用于小范围内存读取）".into());
+    }
+
+    let data = da
+        .cmd_peek(addr, size)
+        .map_err(|e| format!("peek 失败: {}", e))?;
+
+    println!(
+        "{}",
+        format!(
+            "[peek] 地址 0x{:08X}, 读取 {} 字节:",
+            addr,
+            data.len()
+        )
+        .cyan()
+    );
+    println!("{}", crate::util::hex_dump(&data, addr));
+
+    Ok(())
+}
+
+/// 写入数据到设备内存
+///
+/// 用法:
+///   poke <addr> <hex_data>
+///
+/// 地址支持 0x 前缀或十进制格式
+/// hex_data 支持: AABB、AA BB、AA:BB、0xAABB 等格式
+pub fn cmd_poke(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.len() < 2 {
+        return Err("用法: poke <addr> <hex_data>".into());
+    }
+
+    let addr = parse_addr(&args[0])?;
+    let data = crate::util::parse_hex(&args[1])
+        .map_err(|e| format!("hex 数据解析失败: {}", e))?;
+
+    if data.is_empty() {
+        return Err("hex 数据为空".into());
+    }
+
+    info!(
+        "写入 {} 字节到地址 0x{:08X}: {}",
+        data.len(),
+        addr,
+        crate::util::hex_str(&data)
+    );
+
+    da.cmd_poke(addr, &data)
+        .map_err(|e| format!("poke 失败: {}", e))?;
+
+    info!(
+        "{}",
+        format!(
+            "已成功写入 {} 字节到 0x{:08X}",
+            data.len(),
+            addr
+        )
+        .green()
+    );
+
+    Ok(())
+}
+
+/// 解析地址参数（支持 0x 前缀的十六进制或十进制）
+pub fn parse_addr(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16)
+            .map_err(|e| format!("无效的十六进制地址 '{}': {}", s, e).into())
+    } else {
+        s.parse::<u64>()
+            .map_err(|e| format!("无效的地址 '{}': {}", s, e).into())
+    }
+}
+
+/// 解析 size 参数（支持 0x 前缀的十六进制或十进制）
+pub fn parse_size(s: &str) -> Result<u32, Box<dyn std::error::Error>> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16)
+            .map_err(|e| format!("无效的十六进制 size '{}': {}", s, e).into())
+    } else {
+        s.parse::<u32>()
+            .map_err(|e| format!("无效的 size '{}': {}", s, e).into())
+    }
 }

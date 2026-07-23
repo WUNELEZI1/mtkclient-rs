@@ -4,8 +4,7 @@
 //! - `upload_da2` — Stage2：发送 DA2 + boot_to
 
 use log::{info, trace};
-use std::fs::File;
-use std::io::Read;
+// File/Read 不再需要，DA 文件通过 read_file_auto_decompress 读取
 use std::time::Duration;
 
 use crate::da::loader::header::DaRegion;
@@ -18,23 +17,25 @@ const CMD_SYNC_SIGNAL: u32 = 0x434E5953;
 const DEFAULT_DA_FILE: &str = "MTK_DA_V5.bin";
 
 impl<'a> DAXFlash<'a> {
-    fn open_da_file() -> Result<(File, String), String> {
-        let path = 获取可执行文件相对路径(DEFAULT_DA_FILE);
+    /// 打开 DA 文件路径：优先使用用户指定的路径（--da 参数），否则使用默认路径
+    fn open_da_path(&self) -> (std::path::PathBuf, String) {
+        let path = if !self.preloader.da_path.is_empty() {
+            std::path::PathBuf::from(&self.preloader.da_path)
+        } else {
+            获取可执行文件相对路径(DEFAULT_DA_FILE)
+        };
         let path_str = path.to_string_lossy().to_string();
-        let file =
-            File::open(&path).map_err(|e| format!("无法打开 DA 文件 '{}': {}", path_str, e))?;
-        Ok((file, path_str))
+        (path, path_str)
     }
 
-    /// 获取或缓存 DA 文件数据
+    /// 获取或缓存 DA 文件数据（支持 .bin.gz 自动解压）
     fn load_da_file(&mut self) -> Result<Vec<u8>, String> {
         if let Some(ref data) = self.da_file_data {
             trace!("[DA_CACHE] 复用缓存的 DA 文件数据 ({} 字节)", data.len());
             return Ok(data.clone());
         }
-        let (mut file, _path) = Self::open_da_file()?;
-        let mut da_data = Vec::new();
-        file.read_to_end(&mut da_data)
+        let (path, _path_str) = self.open_da_path();
+        let da_data = crate::system::compress::read_file_auto_decompress(&path)
             .map_err(|e| format!("读取 DA 文件失败: {}", e))?;
         trace!("[DA_CACHE] 读取 DA 文件并缓存 ({} 字节)", da_data.len());
         self.da_file_data = Some(da_data.clone());
@@ -62,7 +63,8 @@ impl<'a> DAXFlash<'a> {
         // Fallback：同步读取 + 解析（使用芯片 da_code 匹配 DA 文件内条目）
         trace!("[DA_PRELOAD] 后台线程未就绪，回退到同步加载");
         let da_data = self.load_da_file()?;
-        let da_code = self.preloader.chip.map(|c| c.da_code).unwrap_or(0x6768);
+        let da_code = self.preloader.chip.as_ref().map(|c| c.da_code)
+            .ok_or_else(|| "芯片配置不可用，无法确定 DA code".to_string())?;
         let (_magic, regions, _is_v6) = parse_da_header(&da_data, da_code)?;
         Ok((da_data, regions))
     }
@@ -112,22 +114,8 @@ impl<'a> DAXFlash<'a> {
 
         trace!("成功上传 stage 1，跳转中...");
 
-        // jump_da 内部已有 flush_input_poll，无需重复刷新
+        // jump_da 内部已消费 0xC0 同步信号（含跳过 0x00 填充），无需再次读取
         self.preloader.jump_da(da1_address)?;
-
-        // Python: sync = self.usbread(1) 等待 0xC0 — 已有 5s 超时
-        let orig_timeout = self.preloader.device.get_timeout();
-        self.preloader
-            .device
-            .set_timeout(Duration::from_millis(5000));
-
-        let mut sync = [0u8; 1];
-        self.preloader.device.read(&mut sync)?;
-        self.preloader.device.set_timeout(orig_timeout);
-        if sync[0] != 0xC0 {
-            return Err(format!("Error DA 同步: 0x{:02X}", sync[0]));
-        }
-        trace!("DA 同步 OK (0xC0)");
 
         // Python: self.sync() 发送 XFlash SYNC_SIGNAL
         self.xflash_sync()?;

@@ -2,14 +2,14 @@
 
 use clap::Parser;
 use colored::Colorize;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use std::io::Write;
 use std::sync::Mutex;
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" {
-    fn SetConsoleOutputCP(wCodePageID: u32) -> i32;
-    fn SetConsoleCP(wCodePageID: u32) -> i32;
+    fn SetConsoleOutputCP(wCodePage: u32) -> i32;
+    fn SetConsoleCP(wCodePage: u32) -> i32;
 }
 
 /// 获取本地时间戳字符串 [YYYY/MM/DD HH:MM:SS.mmm]
@@ -18,23 +18,34 @@ fn get_local_timestamp() -> String {
     {
         #[repr(C)]
         struct SystemTime {
-            w_year: u16, w_month: u16, w_day_of_week: u16,
-            w_day: u16, w_hour: u16, w_minute: u16,
-            w_second: u16, w_milliseconds: u16,
+            w_year: u16,
+            w_month: u16,
+            w_day_of_week: u16,
+            w_day: u16,
+            w_hour: u16,
+            w_minute: u16,
+            w_second: u16,
+            w_milliseconds: u16,
         }
         unsafe extern "system" {
             fn GetLocalTime(lpSystemTime: *mut SystemTime);
         }
         let mut st = SystemTime {
-            w_year: 0, w_month: 0, w_day_of_week: 0,
-            w_day: 0, w_hour: 0, w_minute: 0,
-            w_second: 0, w_milliseconds: 0,
+            w_year: 0,
+            w_month: 0,
+            w_day_of_week: 0,
+            w_day: 0,
+            w_hour: 0,
+            w_minute: 0,
+            w_second: 0,
+            w_milliseconds: 0,
         };
-        unsafe { GetLocalTime(&mut st); }
+        unsafe {
+            GetLocalTime(&mut st);
+        }
         format!(
             "{:04}/{:02}/{:02} {:02}:{:02}:{:02}.{:03}",
-            st.w_year, st.w_month, st.w_day,
-            st.w_hour, st.w_minute, st.w_second, st.w_milliseconds
+            st.w_year, st.w_month, st.w_day, st.w_hour, st.w_minute, st.w_second, st.w_milliseconds
         )
     }
     #[cfg(not(target_os = "windows"))]
@@ -88,8 +99,10 @@ impl log::Log for TeeLogger {
 }
 
 mod cancel;
+mod error;
 #[path = "cmd/mod.rs"]
 mod cmd;
+mod util;
 #[path = "connection/mod.rs"]
 mod connection;
 #[path = "da/mod.rs"]
@@ -109,15 +122,90 @@ mod usb;
 use connection::ConnectionManager;
 use usb::USB上下文;
 
+/// 检查 Windows 版本，要求 Windows 10 或更高
+#[cfg(target_os = "windows")]
+fn check_windows_version() -> Result<(), String> {
+    #[repr(C)]
+    struct OSVERSIONINFOEXW {
+        dw_os_version_info_size: u32,
+        dw_major_version: u32,
+        dw_minor_version: u32,
+        dw_build_number: u32,
+        dw_platform_id: u32,
+        sz_csd_version: [u16; 128],
+        w_service_pack_major: u16,
+        w_service_pack_minor: u16,
+        w_suite_mask: u16,
+        w_product_type: u8,
+        w_reserved: u8,
+    }
+
+    unsafe extern "system" {
+        fn RtlGetVersion(lp_version_information: *mut OSVERSIONINFOEXW) -> i32;
+    }
+
+    let mut info = OSVERSIONINFOEXW {
+        dw_os_version_info_size: std::mem::size_of::<OSVERSIONINFOEXW>() as u32,
+        dw_major_version: 0,
+        dw_minor_version: 0,
+        dw_build_number: 0,
+        dw_platform_id: 0,
+        sz_csd_version: [0; 128],
+        w_service_pack_major: 0,
+        w_service_pack_minor: 0,
+        w_suite_mask: 0,
+        w_product_type: 0,
+        w_reserved: 0,
+    };
+
+    unsafe {
+        RtlGetVersion(&mut info);
+    }
+
+    // Windows 10 = Major 10, Build >= 10240
+    // Windows 11 = Major 10, Build >= 22000
+    if info.dw_major_version < 10 {
+        return Err(format!(
+            "不支持的操作系统: Windows {}.{} (Build {})。本程序需要 Windows 10 或 Windows 11 (64-bit)。",
+            info.dw_major_version, info.dw_minor_version, info.dw_build_number
+        ));
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    colored::control::set_override(true);
-    cancel::install_ctrlc_handler();
+    // 编译时限制：仅支持 x86_64 架构
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        eprintln!("错误: 本程序仅支持 64-bit (x86_64) 架构。");
+        std::process::exit(1);
+    }
 
     #[cfg(target_os = "windows")]
-    unsafe {
-        SetConsoleCP(65001);
-        SetConsoleOutputCP(65001);
+    {
+        // 1. 运行时检查 Windows 版本（要求 Windows 10+）
+        if let Err(e) = check_windows_version() {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+
+        // 2. 强制设置控制台代码页为 UTF-8（CP_UTF8 = 65001）
+        //    必须在任何输出之前调用，确保中文字符正确显示
+        unsafe {
+            SetConsoleCP(65001);
+            SetConsoleOutputCP(65001);
+        }
+        // 3. 启用 Windows ANSI 转义序列支持（CMD.exe 默认关闭）
+        colored::control::set_virtual_terminal(true).ok();
     }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        eprintln!("警告: 本程序仅在 Windows 10/11 上经过充分测试。");
+        colored::control::set_override(true);
+    }
+
+    cancel::install_ctrlc_handler();
 
     // 输出版本号（每次代码更新 cargo.toml version +0.0.1）
     println!(
@@ -127,7 +215,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "{}",
-        "Copyright (c) wunelezi & trae | Licensed under GPL-3.0".dimmed()
+        "Copyright (c) wunelezi | Licensed under GPL-3.0".dimmed()
     );
     println!();
 
@@ -139,6 +227,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let cli = cmd::cli::Cli::parse();
+
+    // === 后台预加载 tar.gz（多线程解压，不阻塞主线程）===
+    if let Some(tar_path) = system::compress::find_tar_gz_path() {
+        debug!("发现 tar.gz: {}, 启动后台加载线程...", tar_path.display());
+        system::compress::init_tar_cache_async(tar_path);
+    }
 
     // Windows: 驱动安装 (pnputil / wdi-rs) 必须管理员，提前提权
     // 用环境变量 MTKCLIENT_ELEVATED 标记避免子进程重复提权造成死循环
@@ -236,7 +330,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 工作模式：brom / preloader / auto
     let 工作模式 = app_config.工作模式;
-    info!("[MAIN] 工作模式: {:?}", 工作模式);
+    debug!("[MAIN] 工作模式: {:?}", 工作模式);
 
     // === DA 会话复用检查 ===
     // 如果 .state 存在且设备已经处于 DA 模式（PID=0x2000），
@@ -269,11 +363,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 warn!("[DA_SESSION] DA 会话复用失败: {}，回退到正常流程", e);
                 crate::connection::reset_session();
-                conn_mgr.smart_init(&usb_context, 工作模式)?
+                let pair = conn_mgr.smart_init(&usb_context, 工作模式)?;
+                da_session_reused = conn_mgr.da_session_reused_in_init;
+                pair
             }
         }
     } else {
-        conn_mgr.smart_init(&usb_context, 工作模式)?
+        let pair = conn_mgr.smart_init(&usb_context, 工作模式)?;
+        if conn_mgr.da_session_reused_in_init {
+            da_session_reused = true;
+        }
+        pair
     };
 
     // 从 .state 恢复 preloader 路径（如果存在且用户未指定）
@@ -281,7 +381,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(state) = crate::connection::SessionState::load() {
             if let Some(ref path) = state.preloader_path {
                 if std::path::Path::new(path).exists() {
-                    info!("[DA_SESSION] 从 .state 恢复 preloader 路径: {}", path);
+                    debug!("[DA_SESSION] 从 .state 恢复 preloader 路径: {}", path);
                     Some(path.clone())
                 } else {
                     warn!("[DA_SESSION] .state 中的 preloader 路径不存在: {}", path);
@@ -314,39 +414,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 避免在 main.rs 与 handle_command 双重执行（之前会 dump 两次）。
     let final_preloader_path = app_config.preloader_path.clone().unwrap_or_default();
     if !final_preloader_path.is_empty() {
-        info!("使用指定的 preloader 文件: {}", final_preloader_path);
+        debug!("使用指定的 preloader 文件: {}", final_preloader_path);
     } else {
-        info!(
+        debug!(
             "{}",
             "未指定 --preloader，将强制从设备 dump 并覆盖同名文件".yellow()
         );
     }
 
+    // 传递用户指定的 DA 文件路径给 preloader（供后台线程预解析和 upload_da 使用）
+    preloader.da_path = app_config.da_path.clone().unwrap_or_default();
+
     let mut da = da::DAXFlash::new(&mut preloader);
     da.patch_da = cli.patch_da;
     da.da_x_speed = app_config.da_x_speed;
 
-    // 复用 DA 会话时：排空残留 → 协议同步 → 心跳验证 → 再标记 daext
+    // 复用 DA 会话时：循环排空 IN 残留（不 clear_halt），直接标记 daext
+    // 不做心跳验证、不发 xflash_sync、不 reconnect：
+    //   刷机匣日志证实"重新初始化DA模式"只做 drain + devctrl 查询后直接操作，
+    //   DA 在 DRAM 中持续运行，USB 重新打开后状态机保持完整。
+    //   心跳验证用的 send_devctrl(0x010106) 在 USB 刚重开后可能超时（设备还在
+    //   处理 USB 枚举），导致误判 DA 失效 → reconnect → xflash_sync → 状态破坏 →
+    //   fallback BROM 加载 → 设备实际还在 DA 模式 → send_da 超时。
+    //   drain_pipes 循环排空 IN 残留，但不 clear_halt（会重置 data toggle
+    //   导致后续读取错位，如 0xEF400400 错误）。
     if da_session_reused {
-        da.preloader.device.drain_pending();
-
-        if let Err(e) = da.xflash_sync() {
-            warn!("[DA_SESSION] sync 失败: {}，回退到完整加载", e);
-            crate::connection::reset_session();
-            da_session_reused = false;
-            // 注意：不能在 if let 绑定后重新赋值，需要走 fallback 路径
-            // 这里 sync 失败说明 DA 会话已失效，后续 handle_command 会重新 upload_da
-        } else {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            if !da.check_da_session() {
-                warn!("[DA_SESSION] 心跳失败，回退到完整加载");
-                da_session_reused = false;
-                // check_da_session 内部已调用 reset_session()
-            } else {
-                da.daext = true;
-                info!("[DA_SESSION] DA 会话复用验证通过 (daext=true)");
-            }
-        }
+        da.preloader.device.drain_pipes();
+        da.daext = true;
+        let init_mode = crate::connection::SessionState::load().map(|s| s.init_mode);
+        info!(
+            "[DA_SESSION] DA 会话复用 (init_mode={:?})，跳过验证直接使用",
+            init_mode
+        );
     }
 
     if !da_session_reused {

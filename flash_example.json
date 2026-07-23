@@ -1,0 +1,19 @@
+// mtkclient-rs 刷机脚本示例
+// 使用方法：cargo run -- --mode brom run flash_example.json
+//
+// 支持的命令：r, w, e, rl, wl, printgpt, reboot, slot, zyb, frp, adb
+// 命令格式与命令行完全一致
+
+{
+  "name": "全量刷机",
+  "description": "写入 super + boot + dtbo，擦除用户数据，重启",
+  "continue_on_error": true,
+
+  "commands": [
+    "w super super.img",
+    "w boot_a boot_a.img",
+    "w dtbo_a dtbo_a.img",
+    "zyb erase_data",
+    "reboot system"
+  ]
+}

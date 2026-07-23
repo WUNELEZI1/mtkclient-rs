@@ -1,270 +1,339 @@
 //! Preloader 模式 BootMode Switch 协议 (Layer 1)
 //!
-//! 对齐 MTKAuthPass.exe 的 `CMD_BootAsFASTBOOT()` 行为。
+//! 对齐 Python mtkclient `META.init()` 的实现。
 //!
-//! 协议流程（从 EXE 逆向 + mtkclient meta.py 验证）：
-//! 1. Start handshake with Preloader — drain 残留数据
-//! 2. 等待设备发送 "READY"（5 字节 ASCII）
-//! 3. Receive READY succeed!
-//! 4. 发送 8 字节模式标识（如 FASTBOOT）
-//! 5. 接收回传确认（如 TOOBTSAF = FASTBOOT 字节反转）
-//! 6. 发送 "DISCONNECT"（10 字节）
-//! 7. reboot to [mode]
+//! 协议流程（CDC bulk transfer）：
+//! 1. 打开 Preloader VCOM 串口 (PID=0x2000)，**不做 BROM 握手**
+//! 2. 持续读取直到收到 "READY"
+//! 3. 发送 8 字节模式标识（如 FASTBOOT）
+//! 4. 持续读取直到收到非 READY 的响应（如 TOOBTSAF）
+//! 5. 发送 DISCONNECT
 //!
-//! Pattern 映射（8 字节，发送标识 / 回传确认成对出现）：
-//!   FASTBOOT  → 发送 "FASTBOOT"  / 回传 "TOOBTSAF"   ★ 无需 SLA
-//!   METAMETA  → 发送 "METAMETA"  / 回传 "ATEMATEM"   ★ 需要 SLA
-//!   FACTORYM  → 发送 "FACTORYM"  / 回传 "MYROTCAF"
-//!   FACTFACT  → 发送 "FACTFACT"  / 回传 "TCAFTCAF"
-//!   SWITCHMD  → 发送 "SWITCHMD"  / 回传 "DMHCTIWS"
-//!   ADVEMETA  → 发送 "ADVEMETA"  / 回传 "ATEMEVDA"
+//! 关键：Pattern 协议必须在 BROM 握手之前执行！
+//! Python mtkclient META.init() 直接操作 CDC USB endpoint，完全不做 handshake。
+//! 如果先做 BROM 握手，设备进入 BROM 协议状态，会把 Pattern 数据当作 BROM 命令回显。
 //!
-//! 注意：旧实现使用反转字符串作为发送标识（如 DMHCTIWS），这是错误的。
-//! 正确的流程是发送正向标识（FASTBOOT），设备回传反向确认（TOOBTSAF）。
-//! 但为了向后兼容，保留 pattern() 返回反转值用于 switch request 的内部标识。
-//!
-//! 参考：MTKAuthPass.exe 模式表 (0x022FC684 起)
+//! 另一个关键：扫描端口时不能用 verify_port_exists()（会打开再关闭 COM 口，清空缓冲区中的 READY），
+//! 必须直接枚举到 PID=0x2000 后立即用 SerialPortTransport::new() 打开。
 
-use log::{info, trace, warn};
 use std::time::Duration;
+
+use log::{info, warn};
 
 use crate::preloader::transport::BromTransport;
 
+/// DISCONNECT 命令
+const DISCONNECT_CMD: &[u8] = b"DISCONNECT";
+
 /// 支持的启动模式
-///
-/// 对齐 MTK Preloader Pattern 协议文档中全部 9 种模式。
-/// 每种模式包含正向发送标识和反向回传确认。
 #[derive(Debug, Clone, Copy)]
 pub enum BootMode {
-    Fastboot,       // bootloader (lk)
-    Factory,        // factory / recovery
-    FactoryMenu,    // factory menu
-    Meta,           // meta mode
-    AteMeta,        // ATE / META 组合模式
-    AteEvda,        // ATE 工程验证下载代理 (ADV META)
-    AteEvdx,        // ATE 工程验证调试 (ADV META X-variant)
-    AdvancedMeta,   // 高级 META
-    AteFactory,     // ATE 工厂
-    DualTalkSwitch, // 双卡切换
+    Fastboot,
+    Factory,
+    FactoryMenu,
+    Meta,
+    AteMeta,
+    AteEvda,
+    AteEvdx,
+    AdvancedMeta,
+    AteFactory,
+    DualTalkSwitch,
 }
 
 impl BootMode {
-    /// 发送标识 — 8 字节 ASCII，发送给 Preloader 的模式命令
     fn send_id(&self) -> &'static [u8] {
         match self {
-            BootMode::Fastboot       => b"FASTBOOT",   // 发送标识
-            BootMode::Factory        => b"FACTORYM",   // ATE Factory 发送标识
-            BootMode::FactoryMenu    => b"FACTFACT",   // Factory Menu 发送标识
-            BootMode::Meta           => b"METAMETA",   // META 发送标识
-            BootMode::AteMeta        => b"ATEMATEM",   // ATE META 发送标识
-            BootMode::AteEvda        => b"ATEMEVDA",   // ADV META 发送标识
-            BootMode::AteEvdx        => b"ATEMEVDX",   // ADV META X-variant
-            BootMode::AdvancedMeta   => b"ADVEMETA",   // ADV META 发送标识
-            BootMode::AteFactory     => b"FACTFACT",   // ATE Factory
-            BootMode::DualTalkSwitch => b"SWITCHMD",   // Mode Switch 发送标识
+            BootMode::Fastboot => b"FASTBOOT",
+            BootMode::Factory => b"FACTORYM",
+            BootMode::FactoryMenu => b"FACTFACT",
+            BootMode::Meta => b"METAMETA",
+            BootMode::AteMeta => b"ATEMATEM",
+            BootMode::AteEvda => b"ATEMEVDA",
+            BootMode::AteEvdx => b"ATEMEVDX",
+            BootMode::AdvancedMeta => b"ADVEMETA",
+            BootMode::AteFactory => b"FACTFACT",
+            BootMode::DualTalkSwitch => b"SWITCHMD",
         }
     }
 
-    /// 回传确认 — 设备回传的 8 字节反转字符串
-    fn response_id(&self) -> &'static [u8] {
+    fn response_ids(&self) -> &'static [&'static [u8]] {
         match self {
-            BootMode::Fastboot       => b"TOOBTSAF",   // FASTBOOT reversed
-            BootMode::Factory        => b"MYROTCAF",   // FACTORYM reversed
-            BootMode::FactoryMenu    => b"TCAFTCAF",   // FACTFACT reversed
-            BootMode::Meta           => b"ATEMATEM",   // METAMETA reversed
-            BootMode::AteMeta        => b"METAMETA",   // ATEMATEM reversed
-            BootMode::AteEvda        => b"ADVEMETA",   // ATEMEVDA reversed
-            BootMode::AteEvdx        => b"ADXVEMETA",   // ATEMEVDX reversed
-            BootMode::AdvancedMeta   => b"ATEMEVDA",   // ADVEMETA reversed
-            BootMode::AteFactory     => b"TCAFTCAF",   // FACTFACT reversed
-            BootMode::DualTalkSwitch => b"DMHCTIWS",   // SWITCHMD reversed
+            BootMode::Fastboot => &[b"TOOBTSAF"],
+            BootMode::Factory => &[b"MYROTCAF"],
+            BootMode::FactoryMenu => &[b"TCAFTCAF"],
+            BootMode::Meta => &[b"ATEMATEM", b"METASLA"],
+            BootMode::AteMeta => &[b"METAMETA", b"ATEMATEM"],
+            BootMode::AteEvda => &[b"ADVEMETA"],
+            BootMode::AteEvdx => &[b"ADXVEMETA", b"ATEMEVDX"],
+            BootMode::AdvancedMeta => &[b"ATEMEVDA"],
+            BootMode::AteFactory => &[b"TCAFTCAF"],
+            BootMode::DualTalkSwitch => &[b"DMHCTIWS"],
         }
     }
 
-    /// 反转 Pattern — 用于内部标识和 switch request
-    /// 保留旧接口兼容性
-    fn pattern(&self) -> &'static [u8] {
+    pub fn name(&self) -> &'static str {
         match self {
-            BootMode::Fastboot       => b"DMHCTIWS",   // "SWITCHMD" reversed (dualtalk)
-            BootMode::Factory        => b"MYROTCAF",   // "FACTORYM" reversed
-            BootMode::FactoryMenu    => b"TCAFTCAF",   // "FACTFACT" reversed
-            BootMode::Meta           => b"ATEMATEM",   // "METAMETA" reversed
-            BootMode::AteMeta        => b"METAMETA",   // "ATEMATEM" reversed
-            BootMode::AteEvda        => b"ATEMEVDA",   // "ADVEMETA" reversed
-            BootMode::AteEvdx        => b"ATEMEVDX",   // "ATEMEVDX"
-            BootMode::AdvancedMeta   => b"ADVEMETA",   // "ADVEMETA"
-            BootMode::AteFactory     => b"FACTFACT",   // "FACTFACT"
-            BootMode::DualTalkSwitch => b"SWITCHMD",   // "SWITCHMD"
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        match self {
-            BootMode::Fastboot       => "FASTBOOT",
-            BootMode::Factory        => "FACTORY",
-            BootMode::FactoryMenu    => "FACTORY_MENU",
-            BootMode::Meta           => "META",
-            BootMode::AteMeta        => "ATE_META",
-            BootMode::AteEvda        => "ATE_EVDA",
-            BootMode::AteEvdx        => "ATE_EVDX",
-            BootMode::AdvancedMeta   => "ADVANCED_META",
-            BootMode::AteFactory     => "ATE_FACTORY",
-            BootMode::DualTalkSwitch => "DUALTALK_SWITCH",
-        }
-    }
-
-    /// 是否需要 SLA 认证
-    /// 对齐 mtkclient meta.py: 只有 META (ATEMATEM) 需要额外握手
-    fn needs_sla(&self) -> bool {
-        matches!(self, BootMode::Meta | BootMode::AteMeta | BootMode::AteEvda | BootMode::AteEvdx)
-    }
-
-    /// 从用户输入的字符串解析 BootMode
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "fastboot" | "bootloader" | "lk"         => Some(BootMode::Fastboot),
-            "factory" | "recovery"                     => Some(BootMode::Factory),
-            "factory_menu" | "factfact"                => Some(BootMode::FactoryMenu),
-            "meta"                                     => Some(BootMode::Meta),
-            "ate_meta" | "atemeta"                    => Some(BootMode::AteMeta),
-            "ate_evda" | "ateevda" | "adv_meta"       => Some(BootMode::AteEvda),
-            "ate_evdx" | "ateevdx"                     => Some(BootMode::AteEvdx),
-            "advanced_meta" | "advmeta" | "advemeta"  => Some(BootMode::AdvancedMeta),
-            "ate_factory" | "atefactory"              => Some(BootMode::AteFactory),
-            "dualtalk_switch" | "dualtalk" | "switchmd" => Some(BootMode::DualTalkSwitch),
-            _ => None,
+            BootMode::Fastboot => "FASTBOOT",
+            BootMode::Factory => "FACTORY",
+            BootMode::FactoryMenu => "FACTORY_MENU",
+            BootMode::Meta => "META",
+            BootMode::AteMeta => "ATE_META",
+            BootMode::AteEvda => "ADV_META",
+            BootMode::AteEvdx => "ADV_META_X",
+            BootMode::AdvancedMeta => "ADVANCED_META",
+            BootMode::AteFactory => "ATE_FACTORY",
+            BootMode::DualTalkSwitch => "DUAL_TALK_SWITCH",
         }
     }
 }
 
-/// DISCONNECT 命令 — 告知 Preloader 断开连接并重启到目标模式
-const DISCONNECT_CMD: &[u8] = b"DISCONNECT"; // 10 字节
+/// 读取一个 Preloader 数据片段
+///
+/// 对齐 Python: bytearray(ep_in(maxinsize)) — CDC bulk 每次返回一个 USB 事务的数据。
+/// 串口是连续流，可能一次性返回多个逻辑消息（如 "READYREADYREADY..."）。
+/// 使用小 buffer（16 字节）+ 短超时，更接近 CDC bulk 的包边界行为。
+fn read_packet(device: &mut dyn BromTransport, timeout: Duration) -> Result<Vec<u8>, String> {
+    device.set_timeout(timeout);
+    let mut buf = vec![0u8; 16];
+    let mut total = 0;
+    let deadline = std::time::Instant::now();
 
-/// 发送 BootMode Pattern 协议（完整 BootAs 流程）
+    loop {
+        if crate::cancel::requested() {
+            return Err("用户取消".to_string());
+        }
+        let remaining = timeout.saturating_sub(deadline.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        // 每次读取使用短超时（50ms），更接近 CDC bulk 的逐包行为
+        let read_timeout = std::cmp::min(Duration::from_millis(50), remaining);
+        device.set_timeout(read_timeout);
+        match device.read(&mut buf[total..]) {
+            Ok(0) => break,
+            Ok(n) => {
+                total += n;
+                if total >= 16 {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    buf.truncate(total);
+    Ok(buf)
+}
+
+/// 通过 Preloader Pattern 协议切换启动模式
 ///
-/// 对齐 MTKAuthPass.exe CMD_BootAs* 系列行为：
-/// 0. drain 残留数据
-/// 1. 等待 Preloader 发送 "READY"
-/// 2. 发送 8 字节模式标识（如 FASTBOOT）
-/// 3. 接收回传确认（如 TOOBTSAF）
-/// 4. 发送 DISCONNECT
-/// 5. 等待设备重启到目标模式
-///
-/// 注意：FASTBOOT 不需要 SLA 认证，直接走 DISCONNECT。
-/// META/ADV_META 需要额外 SLA 握手步骤（暂不支持，仅打印警告）。
-pub fn send_boot_pattern(
-    device: &mut dyn BromTransport,
-    mode: BootMode,
-) -> Result<(), String> {
+/// 对齐 Python mtkclient META.init():
+/// - 持续读取直到收到 "READY"
+/// - 发送 8 字节模式标识
+/// - 持续读取直到收到回传确认（非 READY）
+/// - 发送 DISCONNECT
+pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Result<(), String> {
     info!(
-        "[BootAs] Start handshake with Preloader... mode={}",
+        "[BootAs] Start Pattern protocol... mode={}",
         mode.name()
     );
 
     let orig_timeout = device.get_timeout();
 
-    // 0. drain 残留数据
-    device.set_timeout(Duration::from_millis(100));
-    let mut drain_buf = [0u8; 512];
+    // Step 1: 持续读取直到收到 "READY"，收到后立即发送模式标识
+    // 对齐 Python: if resp == b"READY": ep_out(metamode, len(metamode))
+    // 关键：收到 READY 后必须立即发送，不能等待！Preloader 的 READY 窗口很短。
+    let mut ready_received = false;
+    let deadline = std::time::Instant::now();
+    let max_wait = Duration::from_secs(10);
+
     loop {
-        match device.read(&mut drain_buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => trace!("[BootAs] drain {} bytes", n),
+        if crate::cancel::requested() {
+            return Err("用户取消".to_string());
         }
+        if deadline.elapsed() > max_wait {
+            break;
+        }
+        let resp = match read_packet(device, Duration::from_millis(2000)) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        // 检查是否包含 READY（串口模式下可能是 "READYREADYREADY..." 连续流）
+        if resp.windows(5).any(|w| w == b"READY") {
+            info!("[BootAs] Receive READY");
+            ready_received = true;
+
+            // 收到 READY 后立即发送模式标识（对齐 Python: ep_out(metamode, len(metamode))）
+            let send_id = mode.send_id();
+            info!(
+                "[BootAs] 发送模式标识: {} ({})",
+                mode.name(),
+                hex_str(send_id)
+            );
+            // 发送模式标识后设备可能立即重启（COM 口断开），write 失败视为成功
+            if let Err(e) = device.write(send_id) {
+                warn!("[BootAs] 发送模式标识后设备可能已重启: {}", e);
+                device.set_timeout(orig_timeout);
+                return Ok(());
+            }
+            break; // 发送完成，跳出循环
+        }
+
+        if resp.is_empty() {
+            continue;
+        }
+
+        log::trace!("[BootAs] 收到数据（非 READY）: {}", hex_str(&resp));
     }
 
-    // 1. 等待 READY（最多重试 3 次，对齐 MTKAuthPass "retry READY" 逻辑）
-    let mut ready_ok = false;
-    for attempt in 0..3 {
-        device.set_timeout(Duration::from_millis(2000));
-        let mut ready_buf = [0u8; 64];
-        match device.read(&mut ready_buf) {
-            Ok(n) => {
-                let resp = String::from_utf8_lossy(&ready_buf[..n]);
-                if resp.trim() == "READY" {
-                    info!("[BootAs] Receive READY succeed!");
-                    ready_ok = true;
-                    break;
-                } else {
-                    trace!(
-                        "[BootAs] attempt {}: 收到 '{}' (hex: {})",
-                        attempt + 1,
-                        resp.trim(),
-                        hex_str(&ready_buf[..n])
-                    );
-                    // 可能是前次操作的残留数据，继续等待
-                    continue;
-                }
-            }
-            Err(e) => {
-                trace!("[BootAs] attempt {}: 等待 READY: {}", attempt + 1, e);
-                if attempt == 2 {
-                    warn!("[BootAs] 3 次尝试均未收到 READY，继续发送模式标识...");
-                }
-            }
-        }
-    }
-
-    device.set_timeout(orig_timeout);
-
-    if !ready_ok {
+    if !ready_received {
         warn!("[BootAs] 未收到 READY，设备可能已处于就绪状态");
-    }
-
-    // 2. 发送模式标识（8 字节，如 FASTBOOT）
-    let send_id = mode.send_id();
-    info!(
-        "[BootAs] 发送模式标识: {} ({})",
-        mode.name(),
-        hex_str(send_id)
-    );
-    device.write(send_id)
-        .map_err(|e| format!("发送模式标识失败: {}", e))?;
-
-    // 3. 接收回传确认（如 TOOBTSAF）
-    device.set_timeout(Duration::from_millis(5000));
-    let expected_resp = mode.response_id();
-    let mut resp_buf = [0u8; 64];
-    match device.read(&mut resp_buf) {
-        Ok(n) => {
-            let resp = &resp_buf[..n];
-            if resp == expected_resp {
-                info!(
-                    "[BootAs] 收到回传确认: {} ✓",
-                    String::from_utf8_lossy(expected_resp)
-                );
-            } else if resp.len() >= 8 && &resp[..8] == expected_resp {
-                info!(
-                    "[BootAs] 收到回传确认: {} ✓ (含额外数据)",
-                    String::from_utf8_lossy(expected_resp)
-                );
-            } else {
-                warn!(
-                    "[BootAs] 收到非预期回传: {} (预期: {})",
-                    hex_str(resp),
-                    hex_str(expected_resp)
-                );
-            }
-        }
-        Err(e) => {
+        // 即使没收到 READY 也尝试发送
+        let send_id = mode.send_id();
+        info!("[BootAs] 尝试发送模式标识: {} ({})", mode.name(), hex_str(send_id));
+        if let Err(e) = device.write(send_id) {
+            warn!("[BootAs] 发送失败: {}", e);
             device.set_timeout(orig_timeout);
-            warn!("[BootAs] 读取回传确认超时: {}，继续发送 DISCONNECT", e);
+            return Ok(());
         }
     }
+
+    // Step 2: 读取回传确认（设备可能立即重启，读错误视为成功）
+    let resp_deadline = std::time::Instant::now();
+    let resp_max_wait = Duration::from_secs(3);
+
+    loop {
+        if crate::cancel::requested() {
+            return Err("用户取消".to_string());
+        }
+        if resp_deadline.elapsed() > resp_max_wait {
+            info!("[BootAs] 等待回传确认超时，设备可能已重启");
+            break;
+        }
+        let resp = match read_packet(device, Duration::from_millis(1000)) {
+            Ok(r) => r,
+            Err(_) => {
+                info!("[BootAs] 读取中断（设备可能已重启）");
+                break;
+            }
+        };
+
+        // 模式标识发送后可能继续收到 READY，跳过
+        if resp.windows(5).any(|w| w == b"READY") {
+            log::trace!("[BootAs] 收到 READY（模式标识发送后），继续等待...");
+            continue;
+        }
+
+        if resp.is_empty() {
+            continue;
+        }
+
+        // 检查是否包含预期的回传确认（串口模式下可能和其他数据混在一起）
+        let matched = mode.response_ids().iter().any(|id| {
+            resp.windows(id.len()).any(|w| w == *id)
+        });
+
+        if matched {
+            info!(
+                "[BootAs] 收到回传确认: {} ✓",
+                String::from_utf8_lossy(&resp)
+            );
+
+            // ATEMATEM 流程处理
+            if resp == b"ATEM0001" {
+                device
+                    .write(&[
+                        0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xC0,
+                    ])
+                    .ok();
+                continue;
+            } else if resp == b"ATEM0002" {
+                device
+                    .write(&[
+                        0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xC0,
+                        0x00, 0x80, 0x00, 0x00,
+                    ])
+                    .ok();
+                continue;
+            } else if resp == b"ATEMATEX" {
+                info!("[BootAs] ATEMATEM 握手完成");
+            }
+            break;
+        }
+
+        warn!("[BootAs] 收到非预期回传: {} (继续等待...)", hex_str(&resp));
+    }
+
+    // Step 4: 发送 DISCONNECT（设备可能已重启，失败忽略）
+    info!("[BootAs] 发送 DISCONNECT");
+    let _ = device.write(DISCONNECT_CMD);
+
     device.set_timeout(orig_timeout);
 
-    // 4. 发送 DISCONNECT
-    info!("[BootAs] 发送 DISCONNECT");
-    device.write(DISCONNECT_CMD)
-        .map_err(|e| format!("发送 DISCONNECT 失败: {}", e))?;
-
-    // 5. 等待设备重启
     info!("[BootAs] reboot to {}...", mode.name().to_lowercase());
     std::thread::sleep(Duration::from_millis(500));
 
     Ok(())
 }
 
+/// 扫描 Preloader COM 口（不使用 verify_port_exists，避免清空串口缓冲区）
+///
+/// 直接通过 serialport::available_ports() 枚举，找到 VID=0E8D PID=2000 的串口后立即返回。
+/// 不调用 verify_port_exists()，因为它会用 CreateFile 打开再关闭 COM 口，清空缓冲区中的 READY。
+pub(crate) fn scan_preloader_port() -> Option<String> {
+    let ports = match serialport::available_ports() {
+        Ok(p) => p,
+        Err(_) => return None,
+    };
+
+    for p in &ports {
+        if let serialport::SerialPortType::UsbPort(ref info) = p.port_type {
+            if info.vid == 0x0E8D && info.pid == 0x2000 {
+                return Some(p.port_name.clone());
+            }
+        }
+    }
+    None
+}
+
+/// 尝试连接 Preloader 串口并发送 Pattern 协议
+///
+/// 等待 Preloader VCOM (PID=0x2000) 出现，打开原始串口（不握手），执行 Pattern 协议。
+pub(crate) fn try_preloader_pattern(
+    boot_mode: BootMode,
+) -> Result<(), String> {
+    use crate::preloader::SerialPortTransport;
+    use std::time::Duration;
+
+    info!("等待 Preloader COM 口出现（最多 15 秒）...");
+
+    let deadline = std::time::Instant::now();
+    let max_wait = Duration::from_secs(15);
+
+    loop {
+        if crate::cancel::requested() {
+            return Err("用户取消".to_string());
+        }
+        if deadline.elapsed() > max_wait {
+            return Err("未在 15 秒内找到 Preloader COM 口".into());
+        }
+
+        // 使用 scan_preloader_port（不做 verify，避免清空缓冲区中的 READY）
+        if let Some(port_name) = scan_preloader_port() {
+            info!("发现 Preloader COM 口: {}", port_name);
+            // 打开原始串口 — 使用 open_raw，不做 verify_port_exists！
+            let mut transport = SerialPortTransport::open_raw(&port_name, 115200)
+                .map_err(|e| format!("打开串口失败: {}", e))?;
+            transport.set_timeout(Duration::from_millis(2000));
+
+            send_boot_pattern(&mut transport, boot_mode)?;
+            return Ok(());
+        }
+
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 fn hex_str(data: &[u8]) -> String {
-    data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
+    crate::util::hex_str(data)
 }

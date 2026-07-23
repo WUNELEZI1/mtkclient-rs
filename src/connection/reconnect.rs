@@ -2,7 +2,7 @@ use crate::preloader::Preloader;
 use crate::usb;
 use crate::usb::{USB上下文, USB阶段};
 use colored::Colorize;
-use log::{info, trace, warn};
+use log::{debug, info, trace, warn};
 use std::time::Duration;
 
 use super::manager::{ConnectionManager, DeviceMode};
@@ -64,7 +64,8 @@ impl ConnectionManager {
                 trace!("[RECONNECT] 尝试刷新 libusb context...");
                 if let Ok(new_ctx) = USB上下文::新建() {
                     for &pid in &pids {
-                        if let Ok(device) = usb::USB设备::按VID_PID打开(&new_ctx, 0x0E8D, pid) {
+                        if let Ok(device) = usb::USB设备::按VID_PID打开(&new_ctx, 0x0E8D, pid)
+                        {
                             info!("[RECONNECT] 使用新 context 成功连接 (attempt {})", retry);
                             return Ok(device);
                         }
@@ -87,10 +88,10 @@ impl ConnectionManager {
     /// DA 加载后重连
     #[allow(dead_code)] // 预留：DA 加载后设备重枚举流程
     pub fn reconnect_after_da(&self, context: &USB上下文) -> Result<usb::USB设备, String> {
-        info!("[DA] DA 加载完成，等待设备重枚举...");
+        debug!("[DA] DA 加载完成，等待设备重枚举...");
         std::thread::sleep(Duration::from_millis(super::manager::USB_REENUM_DELAY_MS));
 
-        info!("[DA] 尝试 BROM PID (0x0003)...");
+        debug!("[DA] 尝试 BROM PID (0x0003)...");
         if let Ok(device) = self.try_quick_connect(context, 0x0E8D, 0x0003, 5) {
             info!(
                 "[DA] 连接成功: VID=0x{:04X} PID=0x{:04X}",
@@ -99,7 +100,7 @@ impl ConnectionManager {
             return Ok(device);
         }
 
-        info!("[DA] BROM PID 失败，扫描所有已知 PID...");
+        debug!("[DA] BROM PID 失败，扫描所有已知 PID...");
         self.reconnect_loop(context, USB阶段::未知)
     }
 
@@ -228,21 +229,23 @@ impl ConnectionManager {
     }
 
     /// Preloader 模式初始化：等待 Preloader VCOM (PID=0x2000)，握手后直接返回
-    /// 如果找不到 Preloader 设备但检测到 BROM 设备，自动 fallback 到 BROM 模式
+    /// allow_brom_fallback: 当找不到 Preloader 时是否尝试 fallback 到 BROM（--mode auto 用 true，--mode preloader 用 false）
     pub(crate) fn smart_init_preloader(
         &mut self,
         context: &USB上下文,
+        allow_brom_fallback: bool,
     ) -> Result<(Preloader, DeviceMode), String> {
         info!("等待 Preloader VCOM 设备连接 (PID=0x2000)，无需按任何按键...");
 
         // 0. 尝试复用已有 DA 会话（设备已在 DA 模式，跳过 BROM 握手）
+        // PID=0x2000（Preloader VCOM）也可复用：Preloader 模式下加载 DA 后 USB 仍为 0x2000
         if let Some(state) = crate::connection::session::SessionState::load() {
-            if state.da_loaded && (state.usb_pid == 0x2000 || state.usb_pid == 0x2001) {
+            if state.da_loaded {
                 if let Ok(ports) = serialport::available_ports() {
                     for p in &ports {
                         if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
                             && info.vid == 0x0E8D
-                            && (info.pid == 0x2000 || info.pid == 0x2001)
+                            && (info.pid == 0x0003 || info.pid == 0x2000 || info.pid == 0x2001)
                         {
                             info!(
                                 "[PRELOADER] 发现 Preloader COM 口: {} (VID={:04X} PID={:04X})，尝试 DA 会话复用",
@@ -263,6 +266,7 @@ impl ConnectionManager {
                                     self.mode = DeviceMode::Preloader;
                                     self.stage = USB阶段::Preloader;
                                     self.port_name = Some(p.port_name.clone());
+                                    self.da_session_reused_in_init = true;
                                     info!("[PRELOADER] DA 会话复用：跳过 BROM 握手，直接返回");
                                     return Ok((preloader, DeviceMode::Preloader));
                                 }
@@ -335,39 +339,45 @@ impl ConnectionManager {
                 }
             }
 
-            // 3. 尝试一定次数后仍未找到 Preloader 设备，检测 BROM 设备并 fallback
+            // 3. 尝试一定次数后仍未找到 Preloader 设备
             if retry_count >= PRELOADER_MAX_RETRY {
-                warn!(
-                    "[PRELOADER] 等待 {} 次 (约 {} 秒) 未找到 Preloader 设备，尝试检测 BROM 设备...",
-                    retry_count,
-                    (retry_count * 200) / 1000
-                );
+                if allow_brom_fallback {
+                    trace!(
+                        "[PRELOADER] 等待 {} 次 (约 {} 秒) 未找到 Preloader 设备，尝试检测 BROM 设备...",
+                        retry_count,
+                        (retry_count * 200) / 1000
+                    );
 
-                // 检测 BROM COM 口
-                if let Ok(ports) = serialport::available_ports() {
-                    for p in &ports {
-                        if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
-                            && info.vid == 0x0E8D
-                            && info.pid == 0x0003
-                        {
-                            warn!(
-                                "[PRELOADER] 检测到 BROM COM 口: {}，自动切换到 BROM 模式",
-                                p.port_name
-                            );
-                            return self.smart_init(context, crate::system::config::工作模式::Brom);
+                    // 检测 BROM COM 口
+                    if let Ok(ports) = serialport::available_ports() {
+                        for p in &ports {
+                            if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
+                                && info.vid == 0x0E8D
+                                && info.pid == 0x0003
+                            {
+                                warn!(
+                                    "[PRELOADER] 检测到 BROM COM 口: {}，自动切换到 BROM 模式",
+                                    p.port_name
+                                );
+                                return self.smart_init(context, crate::system::config::工作模式::Brom);
+                            }
                         }
                     }
-                }
 
-                // 检测 BROM WinUSB 设备
-                if let Ok(_usb_device) = usb::USB设备::按VID_PID打开(context, 0x0E8D, 0x0003) {
-                    warn!("[PRELOADER] 检测到 BROM WinUSB 设备 (PID=0x0003)，自动切换到 BROM 模式");
-                    return self.smart_init(context, crate::system::config::工作模式::Brom);
+                    // 检测 BROM WinUSB 设备
+                    if let Ok(_usb_device) = usb::USB设备::按VID_PID打开(context, 0x0E8D, 0x0003) {
+                        warn!("[PRELOADER] 检测到 BROM WinUSB 设备 (PID=0x0003)，自动切换到 BROM 模式");
+                        return self.smart_init(context, crate::system::config::工作模式::Brom);
+                    }
+
+                    trace!("[PRELOADER] 未检测到 BROM 设备，继续等待 Preloader 设备...");
+                } else {
+                    trace!("[PRELOADER] 等待 {} 次 (约 {} 秒) 未找到 Preloader 设备，继续等待...",
+                           retry_count, (retry_count * 200) / 1000);
                 }
 
                 // 重置计数器继续等待（给用户更多时间）
                 retry_count = 0;
-                warn!("[PRELOADER] 未检测到 BROM 设备，继续等待 Preloader 设备...");
             }
 
             std::thread::sleep(Duration::from_millis(super::manager::RECONNECT_INTERVAL_MS));
@@ -375,7 +385,7 @@ impl ConnectionManager {
     }
 
     /// Preloader 串口握手：打开 COM 口 → init_preloader
-    fn preloader_serial_handshake(&self, port_name: &str) -> Result<Preloader, String> {
+    pub(crate) fn preloader_serial_handshake(&self, port_name: &str) -> Result<Preloader, String> {
         let transport = SerialPortTransport::new(port_name, 115200)?;
         let mut preloader = Preloader::new(Box::new(transport));
         if !preloader

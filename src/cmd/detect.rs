@@ -5,8 +5,8 @@
 
 use log::info;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::preloader::transport::{BromPortResult, SerialPortTransport};
@@ -169,12 +169,7 @@ pub fn cmd_detect() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     })
                     .collect();
-                eprintln!(
-                    "<< [{}] {} | {}",
-                    n,
-                    hex.join(" "),
-                    ascii
-                );
+                eprintln!("<< [{}] {} | {}", n, hex.join(" "), ascii);
                 // 尝试解析已知命令
                 if n == 1 {
                     eprintln!("   解析: {}", describe_cmd(data[0]));
@@ -189,8 +184,14 @@ pub fn cmd_detect() -> Result<(), Box<dyn std::error::Error>> {
             match cmd_byte {
                 b'\r' | b'\n' => {
                     let handshake = [0xA0u8, 0x0A, 0x50, 0x05];
-                    eprintln!(">> 发送 Preloader 握手: {}",
-                        handshake.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" "));
+                    eprintln!(
+                        ">> 发送 Preloader 握手: {}",
+                        handshake
+                            .iter()
+                            .map(|b| format!("{:02X}", b))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
                     let _ = port.write_all(&handshake);
                     let _ = port.flush();
                 }

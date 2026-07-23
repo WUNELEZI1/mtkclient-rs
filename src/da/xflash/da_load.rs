@@ -210,13 +210,30 @@ impl<'a> DAXFlash<'a> {
             if ack.len() >= 4 {
                 let magic = u32::from_le_bytes([ack[0], ack[1], ack[2], ack[3]]);
                 if magic == DA_EXTENSIONS_ACK_MAGIC {
+                    // 检测设备存储类型：0=eMMC, 1=UFS, 2=SD, 3=MMC, 6=UFS_CARD
+                    let storage_type = self
+                        .get_emmc_info()
+                        .map(|info| match info.emmc_type.as_str() {
+                            "UFS" => 1u32,
+                            "SD" => 2u32,
+                            "MMC" => 3u32,
+                            "UFS_CARD" => 6u32,
+                            _ => 0u32, // 默认 eMMC
+                        })
+                        .unwrap_or(0u32);
                     // Python 第 1256 行：CUSTOM_ACK 成功后立即调用 custom_set_storage
-                    // CUSTOM_SET_STORAGE 参数：0=eMMC, 1=UFS
                     if self
-                        .send_devctrl(DA_EXTENSIONS_DEVCTRL_SET_STORAGE, Some(&0u32.to_le_bytes()))
+                        .send_devctrl(DA_EXTENSIONS_DEVCTRL_SET_STORAGE, Some(&storage_type.to_le_bytes()))
                         .is_ok()
                     {
-                        info!("DA Extensions 加载成功，存储类型已设置为 eMMC");
+                        let type_name = match storage_type {
+                            1 => "UFS",
+                            2 => "SD",
+                            3 => "MMC",
+                            6 => "UFS_CARD",
+                            _ => "eMMC",
+                        };
+                        info!("DA Extensions 加载成功，存储类型已设置为 {}", type_name);
                         self.daext = true;
                     } else {
                         warn!("custom_set_storage 失败，extensions 功能可能受限");

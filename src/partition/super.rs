@@ -194,24 +194,38 @@ impl SuperMetadata {
 
         // 步骤 1：扫描 Header magic "0PLA"
         let header_offset = Self::find_header_magic(data, max_scan)?;
-        debug!("找到 LP_METADATA_HEADER_MAGIC at offset 0x{:04X}", header_offset);
+        debug!(
+            "找到 LP_METADATA_HEADER_MAGIC at offset 0x{:04X}",
+            header_offset
+        );
 
         // 步骤 2：尝试找 Geometry
         let geometry = Self::find_geometry(data, header_offset, max_scan);
 
         // 步骤 3：解析 Header（含 TableDescriptor）
         let header = Self::parse_header(data, header_offset)?;
-        trace!("Header: version={}.{}, header_size={}, tables_size={}",
-            header.major_version, header.minor_version,
-            header.header_size, header.tables_size);
-        trace!("  partitions: offset={}, count={}, entry_size={}",
-            header.partitions.offset, header.partitions.num_entries, header.partitions.entry_size);
-        trace!("  extents:    offset={}, count={}, entry_size={}",
-            header.extents.offset, header.extents.num_entries, header.extents.entry_size);
-        trace!("  groups:     offset={}, count={}, entry_size={}",
-            header.groups.offset, header.groups.num_entries, header.groups.entry_size);
-        trace!("  block_devs: offset={}, count={}, entry_size={}",
-            header.block_devices.offset, header.block_devices.num_entries, header.block_devices.entry_size);
+        trace!(
+            "Header: version={}.{}, header_size={}, tables_size={}",
+            header.major_version, header.minor_version, header.header_size, header.tables_size
+        );
+        trace!(
+            "  partitions: offset={}, count={}, entry_size={}",
+            header.partitions.offset, header.partitions.num_entries, header.partitions.entry_size
+        );
+        trace!(
+            "  extents:    offset={}, count={}, entry_size={}",
+            header.extents.offset, header.extents.num_entries, header.extents.entry_size
+        );
+        trace!(
+            "  groups:     offset={}, count={}, entry_size={}",
+            header.groups.offset, header.groups.num_entries, header.groups.entry_size
+        );
+        trace!(
+            "  block_devs: offset={}, count={}, entry_size={}",
+            header.block_devices.offset,
+            header.block_devices.num_entries,
+            header.block_devices.entry_size
+        );
 
         // 步骤 4：按 TableDescriptor 解析各表
         // 表位置 = header_offset + header_size + descriptor.offset
@@ -242,7 +256,8 @@ impl SuperMetadata {
         debug!("解析 {} 个 group", groups.len());
 
         // 确定 block_size：优先从 geometry 读取，否则默认 512
-        let block_size = geometry.as_ref()
+        let block_size = geometry
+            .as_ref()
             .map(|g| g.logical_block_size)
             .unwrap_or(512);
 
@@ -294,7 +309,11 @@ impl SuperMetadata {
     }
 
     /// 从 header_offset 向前回溯查找 Geometry
-    fn find_geometry(data: &[u8], header_offset: usize, _max_scan: usize) -> Option<LpMetadataGeometry> {
+    fn find_geometry(
+        data: &[u8],
+        header_offset: usize,
+        _max_scan: usize,
+    ) -> Option<LpMetadataGeometry> {
         // Geometry 通常在 header 之前的 0x1000 倍数位置
         // 扫描 header_offset 之前的区域
         let scan_start = header_offset.saturating_sub(0x40000);
@@ -305,7 +324,8 @@ impl SuperMetadata {
             let magic = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
             if magic == GEOMETRY_MAGIC {
                 debug!("找到 LP_METADATA_GEOMETRY_MAGIC at offset 0x{:04X}", offset);
-                let struct_size = u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap());
+                let struct_size =
+                    u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap());
                 let metadata_max_size = if offset + 44 <= data.len() {
                     u32::from_le_bytes(data[offset + 40..offset + 44].try_into().unwrap())
                 } else {
@@ -385,7 +405,10 @@ impl SuperMetadata {
 
     fn read_table_descriptor(data: &[u8], offset: usize) -> Result<TableDescriptor, String> {
         if offset + 12 > data.len() {
-            return Err(format!("数据不足，无法读取 TableDescriptor at 0x{:X}", offset));
+            return Err(format!(
+                "数据不足，无法读取 TableDescriptor at 0x{:X}",
+                offset
+            ));
         }
         Ok(TableDescriptor {
             offset: u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()),
@@ -405,7 +428,10 @@ impl SuperMetadata {
         entry_size: usize,
     ) -> Result<Vec<LpMetadataPartition>, String> {
         if entry_size < 48 {
-            return Err(format!("Partition entry_size {} 过小（至少 48）", entry_size));
+            return Err(format!(
+                "Partition entry_size {} 过小（至少 48）",
+                entry_size
+            ));
         }
 
         let mut partitions = Vec::with_capacity(count as usize);
@@ -527,7 +553,10 @@ impl SuperMetadata {
             let flags = u32::from_le_bytes(data[eo + 36..eo + 40].try_into().unwrap());
             let maximum_size = u64::from_le_bytes(data[eo + 40..eo + 48].try_into().unwrap());
 
-            trace!("  group[{}]: name={}, flags={}, max_size={}", i, name, flags, maximum_size);
+            trace!(
+                "  group[{}]: name={}, flags={}, max_size={}",
+                i, name, flags, maximum_size
+            );
 
             groups.push(LpMetadataGroup {
                 name,

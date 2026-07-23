@@ -31,8 +31,7 @@ const AES_R2K: u32 = 0x00000100;
 
 // SEJ V3 初始化用的固定模式
 const CFG_RANDOM_PATTERN: [u32; 12] = [
-    0x2D44BB70, 0xA744D227, 0xD0A9864B, 0x83FFC244,
-    0x7EC8266B, 0x43E80FB2, 0x01A6348A, 0x2067F9A0,
+    0x2D44BB70, 0xA744D227, 0xD0A9864B, 0x83FFC244, 0x7EC8266B, 0x43E80FB2, 0x01A6348A, 0x2067F9A0,
     0x54536405, 0xD546A6B1, 0x1CC3EC3A, 0xDE377A83,
 ];
 
@@ -65,10 +64,7 @@ impl<'a> HaccBackend for DAXFlash<'a> {
             return Err("DA Extensions 未启用，无法访问 HACC 寄存器".to_string());
         }
         self.custom_writeregister(addr, value)?;
-        trace!(
-            "[HACC] write 0x{:08X} -> {:08X}",
-            addr, value
-        );
+        trace!("[HACC] write 0x{:08X} -> {:08X}", addr, value);
         Ok(())
     }
 
@@ -77,16 +73,12 @@ impl<'a> HaccBackend for DAXFlash<'a> {
             return Err("DA Extensions 未启用，无法访问 HACC 寄存器".to_string());
         }
         let val = self.custom_readregister(addr)?;
-        trace!(
-            "[HACC] read 0x{:08X} -> {:08X}",
-            addr, val
-        );
+        trace!("[HACC] read 0x{:08X} -> {:08X}", addr, val);
         Ok(val)
     }
 
     fn sej_base(&self) -> u32 {
-        // MT6768 HACC/SEJ 基址
-        0x1000_A000
+        self.preloader.chip.map(|c| c.sej_base).unwrap_or(0x1000_A000)
     }
 }
 
@@ -190,9 +182,7 @@ fn sej_v3_init(
     hacc_write(ctx, HACC_ACFG0 + 12, iv[3])?;
 
     // 6. Legacy vs 非 Legacy 路径
-    let acon_setting = AES_CHG_BO_OFF | AES_128
-        | AES_CBC
-        | if encrypt { AES_ENC } else { 0 };
+    let acon_setting = AES_CHG_BO_OFF | AES_128 | AES_CBC | if encrypt { AES_ENC } else { 0 };
 
     if legacy {
         // Legacy 路径：设置 HACC_UNK bit1，然后做一次 CLR 等待
@@ -410,10 +400,10 @@ pub(crate) fn sej_sec_cfg_hw_v3_encrypt(data: &[u8], legacy: bool) -> Result<Vec
 
     let _ = legacy;
     let cipher = Aes128CbcEnc::new(&SEJ_HW_KEY.into(), &iv.into());
-    let mut buf = data.to_vec();
-    while !buf.len().is_multiple_of(16) {
-        buf.push(0);
-    }
+    let padded_len = (data.len() + 15) & !15;
+    let mut buf = Vec::with_capacity(padded_len);
+    buf.extend_from_slice(data);
+    buf.resize(padded_len, 0);
     let buf_len = buf.len();
     cipher
         .encrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf, buf_len)
@@ -432,11 +422,11 @@ pub(crate) fn sej_sec_cfg_hw_encrypt(data: &[u8]) -> Result<Vec<u8>, String> {
         iv[i * 4..(i + 1) * 4].copy_from_slice(&G_HACC_CFG_1[i].to_le_bytes());
     }
     let cipher = Aes128CbcEnc::new(&SEJ_HW_KEY.into(), &iv.into());
-    let mut buf = data.to_vec();
+    let padded_len = (data.len() + 15) & !15;
+    let mut buf = Vec::with_capacity(padded_len);
+    buf.extend_from_slice(data);
     xor_g_hacc_cfg_1(&mut buf);
-    while !buf.len().is_multiple_of(16) {
-        buf.push(0);
-    }
+    buf.resize(padded_len, 0);
     let buf_len = buf.len();
     cipher
         .encrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf, buf_len)
@@ -489,11 +479,7 @@ pub(crate) fn sej_sec_cfg_hw_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
 
 /// 通过 HACC 引擎对输入做签名/加密，并返回结果。
 /// legacy=true 对应 V4 类型，legacy=false 对应 V3 类型。
-pub fn sej_hacc_sign(
-    data: &[u8],
-    hw_code: u16,
-    legacy: bool,
-) -> Result<Vec<u8>, String> {
+pub fn sej_hacc_sign(data: &[u8], hw_code: u16, legacy: bool) -> Result<Vec<u8>, String> {
     match with_backend_mut(|ctx| extract_hacc_output(ctx, data, legacy)) {
         Ok(sig) => {
             debug!("[SEJ] hw_sign success, hw_code=0x{:04X}", hw_code);

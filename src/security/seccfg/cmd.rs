@@ -3,6 +3,7 @@
 //! 流程：读 seccfg 分区 → 识别 V3/V4 → 修改 lock_state → SEJ 签名 → 写回
 //! 优化：如果 seccfg 状态已匹配目标，直接退出不执行 HACC/写入
 
+use colored::Colorize;
 use log::info;
 
 use crate::da::DAXFlash;
@@ -43,7 +44,11 @@ pub fn unlock_bootloader(da: &mut DAXFlash) -> Result<(), String> {
 
     // 对齐 Python mtkclient：HACC 后直接 writeflash，不延迟不同步
     da.write_flash_data(seccfg_addr, &new_data, 1, 8)?;
-    info!("Bootloader 解锁成功");
+    info!("{}", "Bootloader 解锁成功".green().bold());
+
+    info!("Bootloader 已解锁");
+    info!("提示: 如果设备因 dm-verity 无法启动，请手动运行 'zyb vbmeta 3' 禁用验证");
+
     Ok(())
 }
 
@@ -55,7 +60,8 @@ pub fn lock_bootloader(da: &mut DAXFlash) -> Result<(), String> {
 
     // 从 chip 缓存获取 hw_code，不使用 get_hw_code()（BROM echo 协议）
     // DA 已加载后发送 BROM echo 命令会破坏 DA 状态机
-    let hw_code = da.preloader.chip.as_ref().map(|c| c.hw_code).unwrap_or(0);
+    let hw_code = da.preloader.chip.as_ref().map(|c| c.hw_code)
+        .ok_or_else(|| "芯片配置不可用，无法执行 HACC 签名".to_string())?;
     let new_data = if seccfg_data.len() >= 28
         && u32::from_le_bytes(seccfg_data[0..4].try_into().unwrap()) == SecCfgV4::MAGIC
     {

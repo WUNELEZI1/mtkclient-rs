@@ -3,11 +3,75 @@
 //! - `write_flash_data` — 按原始地址写入数据（带进度条显示）
 //! - `get_packet_length` — 获取写包长度
 //! - `cmd_write_data`   — 发送写命令
+//!
+//! 写入断点续传辅助函数：
+//! - `write_resume_path_for`       — 生成 `.wresume` 文件路径
+//! - `write_write_resume_file`     — 写入续传状态文件
+//! - `remove_write_resume_file`    — 删除续传状态文件
+//! - `check_write_resume`          — 检查续传状态是否匹配
 
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{info, trace, warn};
 
 use crate::da::xflash::{CMD_MAGIC, CMD_WRITE_DATA, DAXFlash, pack3};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 写入断点续传辅助函数
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// 生成写入续传状态文件路径
+pub(crate) fn write_resume_path_for(input_file: &str) -> String {
+    format!("{}.wresume", input_file)
+}
+
+/// 写入续传状态文件
+pub(crate) fn write_write_resume_file(
+    input_file: &str,
+    addr: u64,
+    total: u64,
+    written: u64,
+    packet_len: Option<usize>,
+) -> Result<(), String> {
+    let packet = packet_len.unwrap_or(0);
+    let content = format!(
+        "input={}\naddr=0x{:X}\ntotal={}\nwritten={}\npacket_len={}\n",
+        input_file, addr, total, written, packet
+    );
+    std::fs::write(write_resume_path_for(input_file), content)
+        .map_err(|e| format!("写入续传状态失败: {}", e))
+}
+
+/// 删除写入续传状态文件
+pub(crate) fn remove_write_resume_file(input_file: &str) {
+    let _ = std::fs::remove_file(write_resume_path_for(input_file));
+}
+
+/// 检查写入续传状态是否匹配
+/// 返回已写入字节数（若匹配且有效），否则 None
+pub(crate) fn check_write_resume(input_file: &str, addr: u64, total: u64) -> Option<u64> {
+    let content = match std::fs::read_to_string(write_resume_path_for(input_file)) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+
+    let resume_addr = content
+        .lines()
+        .find_map(|line| line.strip_prefix("addr=0x"))
+        .and_then(|v| u64::from_str_radix(v, 16).ok());
+    let resume_total = content
+        .lines()
+        .find_map(|line| line.strip_prefix("total="))
+        .and_then(|v| v.parse::<u64>().ok());
+    let written = content
+        .lines()
+        .find_map(|line| line.strip_prefix("written="))
+        .and_then(|v| v.parse::<u64>().ok());
+
+    match (resume_addr, resume_total, written) {
+        (Some(ra), Some(rt), Some(w)) if ra == addr && rt == total && w > 0 && w < total => Some(w),
+        _ => None,
+    }
+}
 
 fn explain_write_status(status: u32) -> &'static str {
     match status {
@@ -79,6 +143,12 @@ impl<'a> DAXFlash<'a> {
     /// 按原始地址流式写入数据，供分区写入、seccfg/frp 等场景复用。
     /// 接受任意 `Read` 实现（文件、内存缓冲区等），避免大文件全量载入内存。
     /// 带进度条显示：使用 indicatif 实时更新进度，最后输出总耗时和速度。
+    ///
+    /// 断点续传参数：
+    /// - `start_offset`: 本次调用前已写入的字节数（用于进度条初始化和恢复文件记录）
+    /// - `resume_input`: 输入文件路径（用于在取消时保存/更新 `.wresume` 文件）
+    /// - `base_addr`: 原始分区起始地址（不含 start_offset 偏移）
+    /// - `original_total`: 原始总写入大小（不含 start_offset 减去）
     pub(crate) fn write_flash_data_stream(
         &mut self,
         addr: u64,
@@ -86,6 +156,8 @@ impl<'a> DAXFlash<'a> {
         total: u64,
         storage: u32,
         parttype: u32,
+        start_offset: u64,
+        resume_input: &str,
     ) -> Result<(), String> {
         // 对齐 Python mtkclient writeflash：先调用 get_packet_length 再 cmd_write_data
         // 不发送 xflash_sync（SYNC_SIGNAL 会破坏 HACC 后的 DA 状态机）
@@ -94,8 +166,13 @@ impl<'a> DAXFlash<'a> {
         self.cmd_write_data(addr, total, storage, parttype)?;
         let start_time = std::time::Instant::now();
 
-        // 创建进度条
-        let bar = ProgressBar::new(total);
+        // 创建进度条（total 是本次剩余量，进度条显示已写入总量）
+        let total_written = start_offset + total;
+        let bar = if total_written > 0 {
+            ProgressBar::new(total_written)
+        } else {
+            ProgressBar::new(total)
+        };
         bar.set_style(
             ProgressStyle::with_template(
                 "  {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] \
@@ -106,6 +183,9 @@ impl<'a> DAXFlash<'a> {
             .progress_chars("█▓░"),
         );
         bar.set_message(format!("写入: 0x{:08X}", addr));
+        if start_offset > 0 {
+            bar.set_position(start_offset);
+        }
 
         let mut pos = 0u64;
         let mut chunk_buf = vec![0u8; write_packet_size];
@@ -113,13 +193,24 @@ impl<'a> DAXFlash<'a> {
             if crate::cancel::force_requested() || crate::cancel::requested() {
                 self.preloader.device.cancel_pending_transfers();
                 bar.abandon_with_message("写入已取消");
-                return Err("写入已取消".to_string());
+                return self.build_cancel_error(
+                    start_offset,
+                    pos,
+                    total,
+                    addr,
+                    resume_input,
+                    write_packet_size,
+                );
             }
             let to_read = std::cmp::min(write_packet_size as u64, total - pos) as usize;
-            let n = reader.read(&mut chunk_buf[..to_read])
+            let n = reader
+                .read(&mut chunk_buf[..to_read])
                 .map_err(|e| format!("读取文件失败: {}", e))?;
             if n == 0 {
-                return Err(format!("文件提前结束: 期望 {} 字节，实际 {} 字节", total, pos));
+                return Err(format!(
+                    "文件提前结束: 期望 {} 字节，实际 {} 字节",
+                    total, pos
+                ));
             }
             let chunk = &chunk_buf[..n];
             let checksum: u32 = chunk
@@ -133,10 +224,27 @@ impl<'a> DAXFlash<'a> {
 
             let zero = 0u32.to_le_bytes();
             let checksum_bytes = checksum.to_le_bytes();
-            self.send_param_list_chunked(&[&zero, &checksum_bytes, chunk], "writeflash chunk")?;
+            // 捕获 send_param_list_chunked 的取消错误，保存续传状态
+            if let Err(e) =
+                self.send_param_list_chunked(&[&zero, &checksum_bytes, chunk], "writeflash chunk")
+            {
+                if crate::cancel::force_requested() || crate::cancel::requested() {
+                    self.preloader.device.cancel_pending_transfers();
+                    bar.abandon_with_message("写入已取消");
+                    return self.build_cancel_error(
+                        start_offset,
+                        pos,
+                        total,
+                        addr,
+                        resume_input,
+                        write_packet_size,
+                    );
+                }
+                return Err(e);
+            }
 
             pos += n as u64;
-            bar.set_position(pos);
+            bar.set_position(start_offset + pos);
         }
 
         let st = self.read_write_final_status()?;
@@ -170,7 +278,15 @@ impl<'a> DAXFlash<'a> {
         storage: u32,
         parttype: u32,
     ) -> Result<(), String> {
-        self.write_flash_data_stream(addr, &mut data.as_ref(), data.len() as u64, storage, parttype)
+        self.write_flash_data_stream(
+            addr,
+            &mut data.as_ref(),
+            data.len() as u64,
+            storage,
+            parttype,
+            0,
+            "",
+        )
     }
 
     /// 读取写入最终状态，支持 0x00010004 重试
@@ -190,6 +306,41 @@ impl<'a> DAXFlash<'a> {
             }
         }
         Ok(st)
+    }
+
+    /// 构建取消错误并保存续传状态
+    fn build_cancel_error(
+        &self,
+        start_offset: u64,
+        pos: u64,
+        total: u64,
+        addr: u64,
+        resume_input: &str,
+        write_packet_size: usize,
+    ) -> Result<(), String> {
+        if !resume_input.is_empty() {
+            let base_addr = addr.saturating_sub(start_offset);
+            let original_total = start_offset + total;
+            let total_written_now = start_offset + pos;
+            let _ = write_write_resume_file(
+                resume_input,
+                base_addr,
+                original_total,
+                total_written_now,
+                Some(write_packet_size),
+            );
+            let pct = if original_total > 0 {
+                total_written_now as f64 / original_total as f64 * 100.0
+            } else {
+                0.0
+            };
+            Err(format!(
+                "写入已取消，已写入 {}/{} 字节 ({:.1}%)。重新执行相同命令将从断点继续。",
+                total_written_now, original_total, pct
+            ))
+        } else {
+            Err("写入已取消".to_string())
+        }
     }
 
     /// 获取写包长度（对齐 Python get_packet_length）
@@ -239,7 +390,10 @@ impl<'a> DAXFlash<'a> {
         // 对齐 Python：发送 WRITE_DATA，失败时仅 drain + 重试（不发 xflash_sync）
         for attempt in 0..3 {
             if attempt > 0 {
-                warn!("[cmd_write_data] 第 {} 次尝试失败，执行 drain + 重试...", attempt);
+                warn!(
+                    "[cmd_write_data] 第 {} 次尝试失败，执行 drain + 重试...",
+                    attempt
+                );
                 self.preloader.device.drain_pending();
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
@@ -250,7 +404,9 @@ impl<'a> DAXFlash<'a> {
                 trace!("[cmd_write_data] write header 失败: {}", e);
                 continue;
             }
-            if let Err(e) = self.write_with_retry(&CMD_WRITE_DATA.to_le_bytes(), "cmd_write_data CMD") {
+            if let Err(e) =
+                self.write_with_retry(&CMD_WRITE_DATA.to_le_bytes(), "cmd_write_data CMD")
+            {
                 trace!("[cmd_write_data] write CMD 失败: {}", e);
                 continue;
             }
