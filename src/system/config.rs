@@ -97,6 +97,7 @@ impl 工作模式 {
 #[allow(dead_code)] // 预留：CLI/设备配置映射字段，部分在当前命令集下不会全部读取
 pub struct AppConfig {
     pub log_level: log::LevelFilter,
+    pub da_path: Option<String>,
     pub da2_path: Option<String>,
     pub preloader_path: Option<String>,
     pub loader_path: Option<String>,
@@ -125,6 +126,7 @@ impl AppConfig {
 
         AppConfig {
             log_level,
+            da_path: cli.loader_path.clone(),
             da2_path: cli.da2_path.clone(),
             preloader_path: cli.preloader_path.clone(),
             loader_path: cli.loader_path.clone(),
@@ -186,74 +188,8 @@ pub struct ChipConfig {
 }
 
 /// 芯片配置表（按 hw_code 索引）
-pub static CHIP_CONFIGS: &[ChipConfig] = &[
-    // MT6768 / MT6769 (Helio P65/G85)
-    ChipConfig {
-        hw_code: 0x0707,
-        da_code: 0x6768,
-        name: "MT6768/MT6769",
-        description: "Helio P65/G85 k68v1",
-        loader: "mt6768_payload.bin",
-        var1: 0x25,
-        watchdog: 0x10007000,
-        uart: 0x11002000,
-        brom_payload_addr: 0x100A00,
-        da_payload_addr: 0x200000,
-        pl_payload_addr: 0x40200000,
-        gcpu_base: 0x10050000,
-        sej_base: 0x1000A000,
-        dxcc_base: 0x10210000,
-        cqdma_base: 0x10212000,
-        ap_dma_mem: 0x110001A0,
-        send_ptr: (0x10286C, 0xC190),
-        ctrl_buffer: 0x00102A28,
-        cmd_handler: 0x0000CF15,
-        brom_register_access: (0xC598, 0xC650),
-        meid_addr: 0x102AF8,
-        socid_addr: 0x102B08,
-        prov_addr: 0x1054F4,
-        misc_lock: 0x1001A100,
-        efuse_addr: 0x11CE0000,
-        blacklist: &[(0x10282C, 0x0), (0x00105994, 0)],
-        blacklist_count: 0x0000000A,
-        // MT6768 特殊值（从实际设备逆向，已验证可工作）
-        ptr_da_bra: Some(0xC650),
-        ptr_send_addr: Some(0xC190),
-    },
-    // MT6771 (Helio P60/P70)
-    ChipConfig {
-        hw_code: 0x0788,
-        da_code: 0x0788,
-        name: "MT6771",
-        description: "Helio P60/P70 k71v1",
-        loader: "mt6771_payload.bin",
-        var1: 0x0A,
-        watchdog: 0x10007000,
-        uart: 0x11002000,
-        brom_payload_addr: 0x100A00,
-        da_payload_addr: 0x201000,
-        pl_payload_addr: 0x40200000,
-        gcpu_base: 0x10050000,
-        sej_base: 0x1000A000,
-        dxcc_base: 0x10210000,
-        cqdma_base: 0x10212000,
-        ap_dma_mem: 0x11000158,
-        send_ptr: (0x102878, 0xDEBC),
-        ctrl_buffer: 0x00102A80,
-        cmd_handler: 0x0000EBE9,
-        brom_register_access: (0xE2D0, 0xE388),
-        meid_addr: 0x102B38,
-        socid_addr: 0x102B48,
-        prov_addr: 0x1065C0,
-        misc_lock: 0x1001A100,
-        efuse_addr: 0x11F10000,
-        blacklist: &[(0x102834, 0x0), (0x106A60, 0x0)],
-        blacklist_count: 0x0000000A,
-        // 无特殊值，使用 brom_register_access.1 和 send_ptr.1 作为默认
-        ptr_da_bra: None,
-        ptr_send_addr: None,
-    },
-];
+/// 从 mtkclient brom_config.py 自动提取，包含 67 种芯片配置
+pub use crate::system::chips_generated::CHIP_CONFIGS;
 
 /// 设备安全配置（对齐 Python get_target_config）
 #[derive(Debug, Clone, Copy)]

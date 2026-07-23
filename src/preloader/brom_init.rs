@@ -82,6 +82,7 @@ impl Preloader {
             .iter()
             .find(|c| c.hw_code == hw)
             .ok_or_else(|| format!("未知芯片: HW code 0x{:04X}", hw))?;
+        self.chip = Some(*chip);
 
         // 2.5 启动后台线程预读取并解析 DA 文件：bypass / 发送 DA 期间并行完成，
         // 节省文件 I/O + header 解析的 2~4 秒
@@ -89,13 +90,23 @@ impl Preloader {
         let da_code_for_parse = chip.da_code;
         let da_parsed = Arc::new(Mutex::new(None));
         let da_parsed_clone = Arc::clone(&da_parsed);
+        // 提前复制 da_path 到闭包中，避免借用 self
+        let da_path_for_thread = if !self.da_path.is_empty() {
+            self.da_path.clone()
+        } else {
+            String::new()
+        };
         std::thread::spawn(move || {
             use crate::da::loader::header::parse_da_header;
             use crate::system::paths::获取可执行文件相对路径;
             use std::fs::File;
             use std::io::Read;
 
-            let da_path = 获取可执行文件相对路径("MTK_DA_V5.bin");
+            let da_path = if !da_path_for_thread.is_empty() {
+                std::path::PathBuf::from(&da_path_for_thread)
+            } else {
+                获取可执行文件相对路径("MTK_DA_V5.bin")
+            };
             let mut file = match File::open(&da_path) {
                 Ok(f) => f,
                 Err(_) => return,
@@ -117,7 +128,28 @@ impl Preloader {
         });
         self.da_parsed = Some(da_parsed);
 
-        // 3. 关闭看门狗（对齐 Python write32 协议）
+        // 3. 关闭看门狗
+        self.disable_watchdog()?;
+
+        // 4. get_target_config — 对齐刷机匣第 101-108 行
+        let _ = self.get_target_config();
+
+        // 5-7. BROM sync (FE, FF, FC)
+        self.sync_brom()?;
+
+        trace!("BROM 模式初始化成功");
+        self.brom_initialized = true;
+        Ok(true)
+    }
+
+    /// 关闭看门狗（Preloader 和 BROM 模式都需要）
+    ///
+    /// 使用 BROM write32 协议将 watchdog 寄存器写入 WDT_MAGIC (0x22000000)。
+    /// Preloader 模式下如果不关看门狗，设备会在约 3 秒后自动重启。
+    fn disable_watchdog(&mut self) -> Result<(), String> {
+        let chip = self.chip.as_ref()
+            .ok_or("disable_watchdog: chip 未初始化")?;
+
         trace!("[WD] 开始关闭看门狗流程 (write32协议)");
         self.device
             .set_timeout(Duration::from_secs(WATCHDOG_TIMEOUT_SECS));
@@ -157,19 +189,10 @@ impl Preloader {
         }
 
         trace!("{}", "看门狗已关闭".green().bold());
-
-        // 4. get_target_config — 对齐刷机匣第 101-108 行
-        let _ = self.get_target_config();
-
-        // 5-7. BROM sync (FE, FF, FC)
-        self.sync_brom()?;
-
-        trace!("BROM 模式初始化成功");
-        self.brom_initialized = true;
-        Ok(true)
+        Ok(())
     }
 
-    /// Preloader 模式初始化：握手 + 获取 HW code（不关看门狗，不 sync_brom）
+    /// Preloader 模式初始化：握手 + 获取 HW code + 关看门狗
     pub fn init_preloader(&mut self) -> Result<bool, String> {
         // 1. 握手
         if !self.device.do_handshake()? {
@@ -184,10 +207,60 @@ impl Preloader {
             .ok_or_else(|| format!("未知芯片: HW code 0x{:04X}", hw))?;
         self.chip = Some(*chip);
 
+        // 3. 关闭看门狗（Preloader 模式也需要，否则 3 秒后设备自动重启）
+        self.disable_watchdog()?;
+
         trace!("Preloader 模式初始化成功, chip={}", chip.name);
         self.brom_initialized = true;
         self.is_preloader_mode = true;
         Ok(true)
+    }
+
+    /// 触发看门狗重启（用于 Preloader Pattern 协议前）
+    ///
+    /// 串口模式下 brom_register_access(0xDA) 不被设备支持（echo 正常但无 status 响应），
+    /// 直接使用 BROM WRITE32 写看门狗 WDT_RESTART 寄存器触发重启。
+    ///
+    /// 设备重启后 Preloader 发送 READY 信号，Pattern 协议收到后立即发送 FASTBOOT。
+    pub fn trigger_meta_reboot(&mut self) -> Result<(), String> {
+        let chip = self.chip.as_ref()
+            .ok_or("trigger_meta_reboot: chip 未初始化")?;
+
+        let reboot_addr = chip.watchdog + 0x14;
+        let reboot_value: u32 = 0x00001209;
+
+        // 直接 write32 触发看门狗重启（跳过 brom_register_access，串口不支持）
+        trace!(
+            "[META] write32(0x{:08X}, 0x{:08X}) 触发看门狗重启",
+            reboot_addr, reboot_value
+        );
+
+        // BROM WRITE32 协议: echo_1byte(0xD4) → echo_4byte(addr) → echo_4byte(count) → echo_4byte(value) → rword()
+        trace!("[META] write32: echo_1byte(0xD4)");
+        if !self.echo_1byte(0xD4)? {
+            return Err("meta_reset: echo 0xD4 不匹配".into());
+        }
+        trace!("[META] write32: echo_4byte(addr=0x{:08X})", reboot_addr);
+        if !self.echo_4byte(reboot_addr)? {
+            return Err("meta_reset: echo addr 不匹配".into());
+        }
+        trace!("[META] write32: echo_4byte(count=1)");
+        if !self.echo_4byte(1)? {
+            return Err("meta_reset: echo count 不匹配".into());
+        }
+        trace!("[META] write32: echo_4byte(value=0x{:08X})", reboot_value);
+        if !self.echo_4byte(reboot_value)? {
+            return Err("meta_reset: echo value 不匹配".into());
+        }
+        trace!("[META] write32: rword() 读 status");
+        let status = self.rword()?;
+        trace!("[META] write32 status: 0x{:04X}", status);
+        if status > 0xFF {
+            trace!("[META] write32 status 异常 (0x{:04X})，但设备可能已重启", status);
+        }
+
+        trace!("{}", "看门狗重启已触发".green().bold());
+        Ok(())
     }
 
     /// BROM echo 协议：完全对齐 Python Port.echo() (Port.py:210-229)
@@ -293,6 +366,8 @@ impl Preloader {
     }
 
     /// 发送 4 字节大端参数并校验回显（对齐 Python pack(">I", val)）
+    /// 支持残余数据容错：逐字节读取并维护 4 字节滑动窗口环缓冲区，
+    /// 跳过残余字节后匹配期望回显（与 echo_1byte 跳过机制一致）。
     pub fn echo_4byte(&mut self, val: u32) -> Result<bool, String> {
         let be = val.to_be_bytes();
         trace!("[ECHO_4] 发送: {:02X?} (值=0x{:08X})", be, val);
@@ -308,17 +383,74 @@ impl Preloader {
                 return Err(format!("echo_4byte write: {}", e));
             }
         }
-        let mut echo = [0u8; 4];
-        self.device
-            .read_exact(&mut echo)
-            .map_err(|e| format!("echo_4byte read: {}", e))?;
-        trace!("[ECHO_4] 接收: {:02X?} (期望 {:02X?})", echo, be);
-        if echo == be {
-            Ok(true)
-        } else {
-            trace!("[ECHO_4] mismatch: expected {:02X?}, got {:02X?}", be, echo);
-            Ok(false)
+
+        // 逐字节读取，维护 4 字节滑动窗口环缓冲区
+        let mut ring = [0u8; 4];
+        let mut ring_pos = 0usize;
+        let mut ring_filled = 0usize;
+        let mut buf = [0u8; 1];
+
+        for i in 0..32 {
+            match self.device.read_exact(&mut buf) {
+                Ok(_) => {
+                    ring[ring_pos] = buf[0];
+                    ring_pos = (ring_pos + 1) % 4;
+                    if ring_filled < 4 {
+                        ring_filled += 1;
+                    }
+
+                    if ring_filled >= 4 {
+                        // 按写入顺序重组环缓冲区为连续 4 字节
+                        let window = [
+                            ring[(ring_pos) % 4],
+                            ring[(ring_pos + 1) % 4],
+                            ring[(ring_pos + 2) % 4],
+                            ring[(ring_pos + 3) % 4],
+                        ];
+                        if window == be {
+                            let skipped = i + 1 - 4;
+                            if skipped > 0 {
+                                trace!(
+                                    "[ECHO_4] 跳过 {} 字节残余数据，回显 {:02X?} 匹配",
+                                    skipped, be
+                                );
+                            }
+                            return Ok(true);
+                        } else if i < 3 {
+                            // 还在填充环缓冲区阶段，记录残余字节
+                            trace!(
+                                "[ECHO_4] 跳过残余字节 0x{:02X} (第 {} 次)，等待 {:02X?}",
+                                buf[0], i + 1, be
+                            );
+                        } else {
+                            trace!(
+                                "[ECHO_4] 窗口 {:02X?} 不匹配 {:02X?}，继续读取...",
+                                window, be
+                            );
+                        }
+                    } else {
+                        trace!(
+                            "[ECHO_4] 填充环缓冲区：接收 0x{:02X} (已填充 {}/4)",
+                            buf[0], ring_filled
+                        );
+                    }
+                }
+                Err(e) => {
+                    trace!(
+                        "[ECHO_4] 读取 0x{:08X} 超时/错误 (第 {} 次): {}",
+                        val, i, e
+                    );
+                    return Ok(false);
+                }
+            }
         }
+
+        trace!(
+            "[ECHO_4] 32 次读取后仍未匹配 {:02X?}，残余数据过多",
+            be
+        );
+        self.flush_input();
+        Ok(false)
     }
 
     /// 发送 4 字节大端参数，校验回显后再读取 2 字节 status。

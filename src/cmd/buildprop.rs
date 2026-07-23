@@ -1,8 +1,8 @@
 //! 轻量级 build.prop 读取器
 //!
 //! 实现策略（按优先级）：
-//! 1. ext4 文件系统解析：精确定位 /system/build.prop，只读 2-4 个数据块（~16KB）
-//! 2. 原始数据搜索：读取前 256MB，搜索 key=value 字符串
+//! 1. ext4 文件系统解析（复用 fs_shell explorer）：精确定位 /system/build.prop
+//! 2. 原始数据搜索：读取前 64MB，搜索 key=value 字符串
 //! 3. Virtual A/B COW 合并：ext4 解析或原始搜索失败后，尝试 COW 分区合并
 //!
 //! 支持从设备分区或本地镜像文件读取。
@@ -12,7 +12,7 @@ use log::{info, warn};
 use std::collections::HashMap;
 
 use crate::da::DAXFlash;
-use crate::partition::{cow, ext4};
+use crate::partition::{cow, explorer};
 
 /// 需要提取的关键属性及其显示名称
 const BUILDPROP_KEYS: &[(&str, &str)] = &[
@@ -92,9 +92,17 @@ pub fn extract_buildprop(data: &[u8]) -> HashMap<String, String> {
 pub fn print_buildprop(props: &HashMap<String, String>, source: &str) {
     let mut found = 0;
     println!();
-    println!("  {} {}", "┌─────────────────────────────────────────────────".cyan(), "┐".cyan());
+    println!(
+        "  {} {}",
+        "┌─────────────────────────────────────────────────".cyan(),
+        "┐".cyan()
+    );
     println!("  {} {}", "│  Android Build Properties".cyan(), "│".cyan());
-    println!("  {} {}", "├─────────────────────────────────────────────────".cyan(), "┤".cyan());
+    println!(
+        "  {} {}",
+        "├─────────────────────────────────────────────────".cyan(),
+        "┤".cyan()
+    );
 
     for &(key, label) in BUILDPROP_KEYS {
         if let Some(value) = props.get(key) {
@@ -115,7 +123,11 @@ pub fn print_buildprop(props: &HashMap<String, String>, source: &str) {
         println!("  {} {}", "│  (未找到属性数据)".dimmed(), "│".cyan());
     }
 
-    println!("  {} {}", "└─────────────────────────────────────────────────".cyan(), "┘".cyan());
+    println!(
+        "  {} {}",
+        "└─────────────────────────────────────────────────".cyan(),
+        "┘".cyan()
+    );
     println!();
 
     if found > 0 {
@@ -138,8 +150,7 @@ pub fn cmd_buildprop(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn s
     // 本地文件模式
     if std::path::Path::new(target_part).exists() && !target_part.starts_with('-') {
         info!("从文件读取: {}", target_part);
-        let file_data = std::fs::read(target_part)
-            .map_err(|e| format!("读取文件失败: {}", e))?;
+        let file_data = std::fs::read(target_part).map_err(|e| format!("读取文件失败: {}", e))?;
 
         let props = extract_buildprop(&file_data);
         print_buildprop(&props, &format!("文件 {}", target_part));
@@ -150,65 +161,49 @@ pub fn cmd_buildprop(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn s
     info!("从设备读取 {} 分区...", target_part);
 
     let (addr, size, actual_name) = find_partition_with_smart(da, target_part)?;
-    info!("分区 {} (实际: {}): 0x{:08X}, {} 字节", target_part, actual_name, addr, size);
+    info!(
+        "分区 {} (实际: {}): 0x{:08X}, {} 字节",
+        target_part, actual_name, addr, size
+    );
 
-    // === 策略 1: 优先使用 ext4 文件系统解析 ===
-    info!("尝试 ext4 文件系统解析...");
+    // === 策略 1: 优先使用 ext4 文件系统解析（复用 fs_shell explorer） ===
+    info!("尝试 ext4 文件系统解析 (fs_shell)...");
     let mut read_fn = |offset: u64, len: u64| -> Result<Vec<u8>, String> {
         if offset + len > size {
-            return Err(format!("读取超出分区范围: offset=0x{:X}, len={}, size={}", offset, len, size));
+            return Err(format!(
+                "读取超出分区范围: offset=0x{:X}, len={}, size={}",
+                offset, len, size
+            ));
         }
         da.readflash_data(addr + offset, len)
             .map_err(|e| format!("DA 读取失败: {}", e))
     };
 
-    match ext4::read_buildprop_from_partition(&mut read_fn, size) {
-        Ok((bp_data, bp_ranges, block_size)) => {
-            info!("ext4 解析成功，读取 build.prop {} 字节", bp_data.len());
-            // 调试：打印前 500 字节内容
-            if bp_data.len() > 0 {
-                let preview_len = std::cmp::min(500, bp_data.len());
-                let preview = String::from_utf8_lossy(&bp_data[..preview_len]);
-                let lines: Vec<&str> = preview.split('\n').collect();
-                info!("build.prop 前 {} 行:", std::cmp::min(15, lines.len()));
-                for line in lines.iter().take(15) {
-                    if !line.trim().is_empty() && !line.trim().starts_with('#') {
-                        info!("  {}", line.trim());
-                    }
+    // 尝试多个常见路径：/system/build.prop 是 Treble 设备标准路径
+    let prop_paths = ["/system/build.prop", "/build.prop", "build.prop"];
+    for prop_path in &prop_paths {
+        match explorer::read_file_by_path(&mut read_fn, size, prop_path) {
+            Ok(bp_data) => {
+                info!("ext4 解析成功，从 {} 读取 {} 字节", prop_path, bp_data.len());
+                let props = extract_buildprop(&bp_data);
+                if !props.is_empty() {
+                    print_buildprop(&props, &format!("{} (ext4: {})", actual_name, prop_path));
+                    return Ok(());
                 }
+                info!("ext4 解析 {} 未包含有效 build.prop 属性，尝试下一个路径", prop_path);
             }
-            let props = extract_buildprop(&bp_data);
-            if !props.is_empty() {
-                print_buildprop(&props, &format!("{} (ext4 解析)", actual_name));
-                return Ok(());
+            Err(_) => {
+                // 继续尝试下一个路径
             }
-
-            // ext4 解析数据无效（可能是 Virtual A/B COW 未合并），尝试定向 COW 合并
-            info!("ext4 解析数据未包含有效 build.prop 属性，尝试定向 COW 合并...");
-            match try_cow_merge_targeted(da, &actual_name, addr, size, &bp_ranges, block_size) {
-                Ok(merged_data) => {
-                    let cow_props = extract_buildprop(&merged_data);
-                    if !cow_props.is_empty() {
-                        print_buildprop(&cow_props, &format!("{} (定向 COW 合并)", actual_name));
-                        return Ok(());
-                    } else {
-                        warn!("定向 COW 合并后仍未找到属性");
-                    }
-                }
-                Err(e) => {
-                    warn!("定向 COW 合并失败: {}", e);
-                }
-            }
-        }
-        Err(e) => {
-            info!("ext4 解析失败: {}，fallback 到原始搜索", e);
         }
     }
+    info!("ext4 解析未找到 build.prop，fallback 到原始搜索");
 
     // === 策略 2: 原始数据搜索（前 64MB）===
     let read_size = std::cmp::min(size, 64 * 1024 * 1024);
     info!("读取前 {} 字节用于搜索...", read_size);
-    let base_data = da.readflash_data(addr, read_size)
+    let base_data = da
+        .readflash_data(addr, read_size)
         .map_err(|e| format!("读取失败: {}", e))?;
 
     info!("在 {} 字节数据中搜索 build.prop 属性...", base_data.len());
@@ -217,21 +212,30 @@ pub fn cmd_buildprop(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn s
     // 诊断信息
     if props.is_empty() {
         let preview: Vec<String> = base_data[..std::cmp::min(32, base_data.len())]
-            .iter().map(|b| format!("{:02X}", b)).collect();
-        info!("base 数据前 {} 字节: {} | 非零字节数: {}",
+            .iter()
+            .map(|b| format!("{:02X}", b))
+            .collect();
+        info!(
+            "base 数据前 {} 字节: {} | 非零字节数: {}",
             preview.len(),
             preview.join(" "),
-            base_data.iter().filter(|&&b| b != 0).count());
+            base_data.iter().filter(|&&b| b != 0).count()
+        );
 
         // === 策略 3: Virtual A/B COW 合并 ===
-        let has_dynamic = da.super_metadata.as_ref()
+        let has_dynamic = da
+            .super_metadata
+            .as_ref()
             .map(|m| !m.partitions.is_empty())
             .unwrap_or(false);
         if has_dynamic {
             info!("存在动态分区，尝试 Virtual A/B COW 合并...");
             match try_cow_merge(da, &actual_name, size, Some(&base_data)) {
                 Ok((cow_source, merged_data)) => {
-                    info!("COW 合并成功，在 {} 字节合并数据中搜索属性...", merged_data.len());
+                    info!(
+                        "COW 合并成功，在 {} 字节合并数据中搜索属性...",
+                        merged_data.len()
+                    );
                     let cow_props = extract_buildprop(&merged_data);
                     if !cow_props.is_empty() {
                         props = cow_props;
@@ -269,7 +273,10 @@ fn try_cow_merge(
 
     let (cow_addr, cow_size, cow_source) = find_cow_partition(da, &cow_name)?;
 
-    info!("COW 分区 {}: 地址 0x{:08X}, 大小 {} 字节", cow_source, cow_addr, cow_size);
+    info!(
+        "COW 分区 {}: 地址 0x{:08X}, 大小 {} 字节",
+        cow_source, cow_addr, cow_size
+    );
 
     // 只读取 metadata areas，不读取整个 COW 分区
     let mut cow_read_fn = |offset: u64, len: u64| -> Result<Vec<u8>, String> {
@@ -277,15 +284,19 @@ fn try_cow_merge(
             .map_err(|e| format!("COW 读取失败: {}", e))
     };
 
-    let (chunk_size_sectors, exception_table) = cow::snap_build_exception_table(&mut cow_read_fn, cow_size)
-        .map_err(|e| format!("读取 COW exception table 失败: {}", e))?;
+    let (chunk_size_sectors, exception_table) =
+        cow::snap_build_exception_table(&mut cow_read_fn, cow_size)
+            .map_err(|e| format!("读取 COW exception table 失败: {}", e))?;
 
     if exception_table.is_empty() {
         return Err("COW exception table 为空（0 个 exceptions），无需合并".into());
     }
 
-    info!("COW chunk_size={} sectors, exceptions={}, 开始定向合并...",
-        chunk_size_sectors, exception_table.len());
+    info!(
+        "COW chunk_size={} sectors, exceptions={}, 开始定向合并...",
+        chunk_size_sectors,
+        exception_table.len()
+    );
 
     let chunk_bytes = (chunk_size_sectors as u64) * 512;
     let base = match base_data {
@@ -308,7 +319,8 @@ fn try_cow_merge(
             continue;
         }
 
-        let chunk_data = da.readflash_data(cow_addr + cow_offset, read_len)
+        let chunk_data = da
+            .readflash_data(cow_addr + cow_offset, read_len)
             .map_err(|e| format!("COW 数据读取失败: {}", e))?;
 
         let base_start = base_offset as usize;
@@ -320,8 +332,11 @@ fn try_cow_merge(
         }
     }
 
-    info!("COW 定向合并完成: {} 个 exception 已应用, 有效数据范围: 0..0x{:X}",
-        exception_table.len(), max_offset);
+    info!(
+        "COW 定向合并完成: {} 个 exception 已应用, 有效数据范围: 0..0x{:X}",
+        exception_table.len(),
+        max_offset
+    );
 
     let effective_data = if (max_offset as usize) < merged.len() {
         merged[..max_offset as usize].to_vec()
@@ -347,85 +362,15 @@ fn find_cow_partition(
     if let Some(ref meta) = da.super_metadata {
         if let Some((offset, size)) = meta.find_partition(cow_name) {
             let (super_addr, _) = da.find_partition_addr("super")?;
-            info!("从 super 动态分区中找到 {}: 偏移 0x{:08X}, 大小 0x{:08X}",
-                cow_name, offset, size);
+            info!(
+                "从 super 动态分区中找到 {}: 偏移 0x{:08X}, 大小 0x{:08X}",
+                cow_name, offset, size
+            );
             return Ok((super_addr + offset, size, cow_name.to_string()));
         }
     }
 
     Err(format!("未找到 COW 分区 {}", cow_name).into())
-}
-
-/// 定向 Virtual A/B COW 合并
-///
-/// 只读取 build.prop 需要的具体数据块，不合并整个 COW 分区。
-/// 步骤：
-/// 1. 读取 COW 的 exception table（只读 metadata areas，通常几百 KB）
-/// 2. 对 build.prop 的每个物理块，查询 COW exception
-/// 3. 如果有 exception，从 COW 的 new_chunk 读取；否则从 base 分区读取
-fn try_cow_merge_targeted(
-    da: &mut DAXFlash,
-    partition_name: &str,
-    base_addr: u64,
-    _base_size: u64,
-    ranges: &[(u64, u64)],
-    _block_size: u32,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let cow_name = format!("{}-cow", partition_name);
-    info!("定向 COW 合并: 查找 COW 分区 {}", cow_name);
-
-    let (cow_addr, cow_size, _) = find_cow_partition(da, &cow_name)?;
-
-    info!("COW 分区 {}: 地址 0x{:08X}, 大小 {} 字节", cow_name, cow_addr, cow_size);
-
-    // 读取 COW exception table（只读 metadata areas）
-    let mut cow_read_fn = |offset: u64, len: u64| -> Result<Vec<u8>, String> {
-        da.readflash_data(cow_addr + offset, len)
-            .map_err(|e| format!("COW 读取失败: {}", e))
-    };
-
-    let (chunk_size_sectors, exception_table) = cow::snap_build_exception_table(&mut cow_read_fn, cow_size)
-        .map_err(|e| format!("读取 COW exception table 失败: {}", e))?;
-
-    let chunk_bytes = (chunk_size_sectors as u64) * 512;
-    info!("COW chunk_size={} sectors ({} 字节), exceptions={}",
-        chunk_size_sectors, chunk_bytes, exception_table.len());
-
-    // 定向合并：只读取 build.prop 需要的块
-    let mut merged_data = Vec::new();
-    let mut redirected = 0usize;
-    let mut direct = 0usize;
-
-    for (start, end) in ranges {
-        let mut current = *start;
-        while current < *end {
-            let chunk_num = current / chunk_bytes;
-            let chunk_offset = current % chunk_bytes;
-            let read_len = std::cmp::min(chunk_bytes - chunk_offset, end - current);
-
-            let chunk_data = if let Some(&new_chunk) = exception_table.get(&chunk_num) {
-                let cow_offset = new_chunk * chunk_bytes + chunk_offset;
-                info!("COW 重定向: chunk {} -> new_chunk {}, 读取 COW offset 0x{:X}",
-                    chunk_num, new_chunk, cow_offset);
-                redirected += 1;
-                da.readflash_data(cow_addr + cow_offset, read_len)
-                    .map_err(|e| format!("COW 数据读取失败: {}", e))?
-            } else {
-                let base_offset = current;
-                direct += 1;
-                da.readflash_data(base_addr + base_offset, read_len)
-                    .map_err(|e| format!("base 数据读取失败: {}", e))?
-            };
-
-            merged_data.extend_from_slice(&chunk_data);
-            current += read_len;
-        }
-    }
-
-    info!("定向 COW 合并完成: {} 个块重定向, {} 个块直接读取, 总数据 {} 字节",
-        redirected, direct, merged_data.len());
-
-    Ok(merged_data)
 }
 
 /// 查找分区地址

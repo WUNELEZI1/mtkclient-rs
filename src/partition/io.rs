@@ -7,15 +7,15 @@
 //! - `erase_partition` — 擦除分区
 //! - `write_flash_data` / `cmd_write_data` / `get_packet_length` — 底层写入原语
 
-use log::{debug, info, warn};
+use log::{debug, info, trace, warn};
 use std::io::Read;
 use std::sync::atomic::Ordering;
 
-use crate::connection;
 use crate::da::xflash::{CMD_FORMAT, CMD_MAGIC, DAXFlash, pack3};
 use crate::usb::log::QUIET_USB_READ;
 
 use super::gpt::GptInfo;
+use super::write::{check_write_resume, remove_write_resume_file};
 
 /// 在文件末尾填充零字节的 Reader 包装器，用于 512 字节对齐。
 struct PaddedReader<R: Read> {
@@ -82,12 +82,12 @@ impl<'a> DAXFlash<'a> {
 
         match Self::load_gpt_cache_from_file(&path) {
             Ok(data) => {
-                info!("复用 GPT 缓存: {} ({} 字节)", path, data.len());
+                debug!("复用 GPT 缓存: {} ({} 字节)", path, data.len());
                 self.last_gpt_data = Some(data);
                 true
             }
             Err(e) => {
-                info!("GPT 缓存不可用，将重新读取: {}", e);
+                debug!("GPT 缓存不可用，将重新读取: {}", e);
                 false
             }
         }
@@ -112,7 +112,7 @@ impl<'a> DAXFlash<'a> {
             let entry_size = gpt_info.part_entry_size as u64;
             let needed_len = 512 + num_entries * entry_size;
 
-            info!(
+            debug!(
                 "  GPT 分区数: {}, 分区项大小: {} 字节, 需要: {} 字节",
                 num_entries, entry_size, needed_len
             );
@@ -122,7 +122,7 @@ impl<'a> DAXFlash<'a> {
                 gpt_data = self.readflash_data(0, needed_len)?;
             }
         }
-        info!("  读取 GPT 数据: {} 字节", gpt_data.len());
+        debug!("  读取 GPT 数据: {} 字节", gpt_data.len());
 
         // 保存原始数据供调试模式使用
         self.last_gpt_data = Some(gpt_data.clone());
@@ -130,11 +130,11 @@ impl<'a> DAXFlash<'a> {
         // 写入完整原始数据到文件
         std::fs::write("gpt_full.bin", &gpt_data)
             .map_err(|e| format!("写 gpt_full.bin 失败: {}", e))?;
-        info!("已写入 gpt_full.bin, {} 字节", gpt_data.len());
+        debug!("已写入 gpt_full.bin, {} 字节", gpt_data.len());
 
         // 备份 gpt.bin（对齐 mtkclient 行为）
         Self::save_gpt_cache_file(GPT_CACHE_FILE, &gpt_data)?;
-        info!("已写入 {}, {} 字节", GPT_CACHE_FILE, gpt_data.len());
+        debug!("已写入 {}, {} 字节", GPT_CACHE_FILE, gpt_data.len());
 
         // 只做解析校验。完整分区表输出只在 printgpt 命令中执行，
         // 读分区命令内部读取 GPT 时不应刷屏。
@@ -155,7 +155,8 @@ impl<'a> DAXFlash<'a> {
         }
 
         // 获取 super 分区信息
-        let (super_addr, super_size) = self.find_partition_addr("super")
+        let (super_addr, super_size) = self
+            .find_partition_addr("super")
             .map_err(|e| format!("查找 super 分区失败: {}", e))?;
         let meta_read_size = std::cmp::min(super_size, 1024 * 1024) as u64;
 
@@ -163,7 +164,10 @@ impl<'a> DAXFlash<'a> {
         match self.readflash_data(super_addr, meta_read_size) {
             Ok(primary_data) => {
                 if let Ok(meta) = crate::partition::lp::SuperMetadata::parse(&primary_data) {
-                    info!("Super 动态分区解析成功（primary）: {} 个 logical partition", meta.partitions.len());
+                    debug!(
+                        "Super 动态分区解析成功（primary）: {} 个 logical partition",
+                        meta.partitions.len()
+                    );
                     self.super_metadata = Some(meta);
                     return Ok(());
                 }
@@ -176,7 +180,10 @@ impl<'a> DAXFlash<'a> {
         match self.readflash_data(backup_addr, meta_read_size) {
             Ok(backup_data) => {
                 if let Ok(meta) = crate::partition::lp::SuperMetadata::parse(&backup_data) {
-                    info!("Super 动态分区解析成功（backup）: {} 个 logical partition", meta.partitions.len());
+                    debug!(
+                        "Super 动态分区解析成功（backup）: {} 个 logical partition",
+                        meta.partitions.len()
+                    );
                     self.super_metadata = Some(meta);
                     return Ok(());
                 }
@@ -190,9 +197,16 @@ impl<'a> DAXFlash<'a> {
             match self.readflash_data(metadata_addr, md_read_size) {
                 Ok(metadata_data) => {
                     let non_zero = metadata_data.iter().filter(|&&b| b != 0).count();
-                    info!("metadata 数据中非零字节: {} / {}", non_zero, metadata_data.len());
+                    debug!(
+                        "metadata 数据中非零字节: {} / {}",
+                        non_zero,
+                        metadata_data.len()
+                    );
                     if let Ok(meta) = crate::partition::lp::SuperMetadata::parse(&metadata_data) {
-                        info!("Super 动态分区解析成功（metadata 分区）: {} 个 logical partition", meta.partitions.len());
+                        debug!(
+                            "Super 动态分区解析成功（metadata 分区）: {} 个 logical partition",
+                            meta.partitions.len()
+                        );
                         self.super_metadata = Some(meta);
                         return Ok(());
                     }
@@ -201,12 +215,21 @@ impl<'a> DAXFlash<'a> {
             }
         }
 
-        Err("无法解析 super 动态分区元数据（super primary/backup 和 metadata 分区均失败）".to_string())
+        Err(
+            "无法解析 super 动态分区元数据（super primary/backup 和 metadata 分区均失败）"
+                .to_string(),
+        )
     }
 
-    /// 查找分区的物理地址和大小（需要 GPT 数据）
-    /// 如果 GPT 数据未加载，自动尝试从缓存加载或重新读取。
+    /// 查找分区的物理地址和大小
+    /// 优先处理 eMMC 硬件分区（boot1/boot2/rpmb），然后查 GPT，最后查 super 动态分区
     pub(crate) fn find_partition_addr(&mut self, partition: &str) -> Result<(u64, u64), String> {
+        // 1. 先尝试解析特殊分区（boot1/boot2/rpmb）
+        if let Some((_pt, addr, size)) = self.resolve_special_partition(partition) {
+            return Ok((addr, size));
+        }
+
+        // 2. 加载 GPT 并查找
         if self.last_gpt_data.is_none() && !self.try_load_cached_gpt() {
             self.read_gpt()?;
         }
@@ -221,17 +244,20 @@ impl<'a> DAXFlash<'a> {
             return Ok((entry.start_addr, entry.size));
         }
 
-        // GPT 中未找到，尝试从 super 动态分区解析 logical partition
+        // 3. GPT 中未找到，尝试从 super 动态分区解析 logical partition
         if partition != "super" && partition != "metadata" {
             if self.super_metadata.is_none() {
-                info!("GPT 中未找到 {}，尝试从 super 动态分区解析...", partition);
+                trace!("GPT 中未找到 {}，尝试从 super 动态分区解析...", partition);
                 let _ = self.ensure_super_metadata();
             }
 
             if let Some(ref meta) = self.super_metadata {
-                if let Some((offset, size)) = meta.find_partition(partition) {
+                if let Some((actual_name, offset, size)) = meta.find_partition_smart(partition) {
                     let (super_addr, _) = self.find_partition_addr("super")?;
-                    info!("从 super 动态分区中找到 {}: 偏移 0x{:08X}, 大小 0x{:08X}", partition, offset, size);
+                    debug!(
+                        "从 super 动态分区中找到 {}[{}]: 偏移 0x{:08X}, 大小 0x{:08X} ({}字节)",
+                        partition, actual_name, offset, size, size
+                    );
                     return Ok((super_addr + offset, size));
                 }
             }
@@ -243,32 +269,51 @@ impl<'a> DAXFlash<'a> {
     /// 解析特殊分区名（boot1/boot2/rpmb 等），返回 (parttype, addr, size)
     /// parttype: 1=boot1, 2=boot2, 3=rpmb, 8=user
     fn resolve_special_partition(&mut self, name: &str) -> Option<(u32, u64, u64)> {
-        let emmc = self.get_emmc_info().ok()?;
         let lower = name.to_lowercase();
-        match lower.as_str() {
-            "boot1" | "emmc_boot1" => {
-                if emmc.boot1_size > 0 {
-                    Some((1, 0, emmc.boot1_size))
-                } else {
-                    None
+
+        // 1. 优先通过 get_emmc_info 获取精确大小
+        if let Ok(emmc) = self.get_emmc_info() {
+            match lower.as_str() {
+                "boot1" | "emmc_boot1" if emmc.boot1_size > 0 => {
+                    return Some((1, 0, emmc.boot1_size));
                 }
-            }
-            "boot2" | "emmc_boot2" => {
-                if emmc.boot2_size > 0 {
-                    Some((2, 0, emmc.boot2_size))
-                } else {
-                    None
+                "boot2" | "emmc_boot2" if emmc.boot2_size > 0 => {
+                    return Some((2, 0, emmc.boot2_size));
                 }
-            }
-            "rpmb" | "emmc_rpmb" => {
-                if emmc.rpmb_size > 0 {
-                    Some((3, 0, emmc.rpmb_size))
-                } else {
-                    None
+                "rpmb" | "emmc_rpmb" if emmc.rpmb_size > 0 => {
+                    return Some((3, 0, emmc.rpmb_size));
                 }
+                _ => {}
             }
-            _ => None,
         }
+
+        // 2. Fallback：从 GPT 第一个分区的起始地址推断 boot1/boot2 大小
+        // 若 GPT 第一个分区起始地址 > 0，则前面空间均分给 boot1 和 boot2
+        if lower == "boot1" || lower == "boot2" || lower == "emmc_boot1" || lower == "emmc_boot2" {
+            if let Some(ref gpt_data) = self.last_gpt_data {
+                if let Ok(gpt) = GptInfo::parse(gpt_data) {
+                    if let Some(first) = gpt.partitions().first() {
+                        let inferred = first.start_addr / 2;
+                        // 合理性检查：推断值至少 1MB 才使用，否则默认 4MB
+                        let size = if inferred >= 0x10_0000 { inferred } else { 0x400000 };
+                        trace!("{} fallback: GPT 第一个分区起始=0x{:X}, 推断大小=0x{:X}",
+                               name, first.start_addr, size);
+                        return Some((if lower.starts_with("boot1") { 1 } else { 2 }, 0, size));
+                    }
+                }
+            }
+            // 无 GPT 数据时默认 4MB
+            trace!("{} fallback: 无 GPT 数据，默认大小=4MB", name);
+            return Some((if lower.starts_with("boot1") { 1 } else { 2 }, 0, 0x400000));
+        }
+
+        // rpmb fallback 默认 4MB
+        if lower == "rpmb" || lower == "emmc_rpmb" {
+            trace!("rpmb fallback: 默认大小=4MB");
+            return Some((3, 0, 0x400000));
+        }
+
+        None
     }
 
     /// 读取分区数据到文件
@@ -290,19 +335,13 @@ impl<'a> DAXFlash<'a> {
                 if self.last_gpt_data.is_none() && !self.try_load_cached_gpt() {
                     self.read_gpt()?;
                 }
-                let gpt_data = self
-                    .last_gpt_data
-                    .as_ref()
-                    .ok_or_else(|| "无 GPT 数据，请先运行 printgpt".to_string())?;
-                let gpt_info = GptInfo::parse(gpt_data)?;
-                let entry = gpt_info
-                    .find_partition(分区名)
-                    .ok_or_else(|| format!("未找到分区: {}", 分区名))?;
+                // find_partition_addr 内部已处理 GPT 物理分区 → super 动态分区回退
+                let (addr, size) = self.find_partition_addr(分区名)?;
                 info!(
                     "找到分区 {}，起始地址: 0x{:X}，大小: {} 字节",
-                    分区名, entry.start_addr, entry.size
+                    分区名, addr, size
                 );
-                (8u32, entry.start_addr, entry.size)
+                (8u32, addr, size)
             };
 
         let 输出路径 = std::path::Path::new(输出文件);
@@ -436,7 +475,9 @@ impl<'a> DAXFlash<'a> {
     ///
     /// 用法: 读取动态分区 "system" 到 "system.img"
     /// 内部通过 super 元数据解析逻辑分区的物理偏移。
-    pub fn 读取动态分区(&mut self, 逻辑分区名: &str, 输出文件: &str) -> Result<(), String> {
+    pub fn 读取动态分区(
+        &mut self, 逻辑分区名: &str, 输出文件: &str
+    ) -> Result<(), String> {
         // 1. 找到 super 物理分区地址
         let (super_addr, _super_size) = self.find_partition_addr("super")?;
 
@@ -447,13 +488,13 @@ impl<'a> DAXFlash<'a> {
         }
 
         // 3. 在 super 元数据中查找逻辑分区（自动处理 A/B 槽位）
-        let meta = self.super_metadata.as_ref()
-            .ok_or("super 元数据不可用")?;
-        let (actual_name, logical_offset, logical_size) = meta.find_partition_smart(逻辑分区名)
+        let meta = self.super_metadata.as_ref().ok_or("super 元数据不可用")?;
+        let (actual_name, logical_offset, logical_size) = meta
+            .find_partition_smart(逻辑分区名)
             .ok_or_else(|| format!("在 super 中未找到逻辑分区: {}", 逻辑分区名))?;
 
         let 物理地址 = super_addr + logical_offset;
-        info!(
+        debug!(
             "读取动态分区 {}[{}]: super[0x{:08X}] + offset[0x{:08X}] = 物理地址 0x{:08X}, 大小 {} 字节",
             逻辑分区名, actual_name, super_addr, logical_offset, 物理地址, logical_size
         );
@@ -518,9 +559,16 @@ impl<'a> DAXFlash<'a> {
             let resume_path = format!("{}.resume", 输出文件);
             let _ = std::fs::remove_file(&resume_path);
         }
-        self.readflash_to_file(物理地址, logical_size, 8, 输出文件, start_offset, move |bytes_read| {
-            bar_clone.set_position(bytes_read);
-        })?;
+        self.readflash_to_file(
+            物理地址,
+            logical_size,
+            8,
+            输出文件,
+            start_offset,
+            move |bytes_read| {
+                bar_clone.set_position(bytes_read);
+            },
+        )?;
         bar.finish_with_message("完成");
         info!("  动态分区 {} 已保存到: {}", 逻辑分区名, 输出文件);
         Ok(())
@@ -528,17 +576,17 @@ impl<'a> DAXFlash<'a> {
 
     /// 写入文件到分区（带校验）
     /// 分块流式校验：避免大分区全量读入内存导致 OOM。
+    /// 支持断点续传：续传时只校验本次写入的部分。
     pub fn 写入分区带校验(
         &mut self, 分区名: &str, 输入文件: &str
     ) -> Result<(), String> {
-        // 先写入
+        // 先写入（写入分区内部处理断点续传）
         self.写入分区(分区名, 输入文件)?;
 
-        // 分块流式校验
+        // 分块流式校验：只校验本次写入的部分
         info!("  开始分块校验写入数据...");
-        use std::io::{BufReader, Read};
-        let file = std::fs::File::open(输入文件)
-            .map_err(|e| format!("读取原始文件失败: {}", e))?;
+        use std::io::{BufReader, Read, Seek, SeekFrom};
+        let file = std::fs::File::open(输入文件).map_err(|e| format!("读取原始文件失败: {}", e))?;
         let mut reader = BufReader::new(file);
 
         let gpt_data = self
@@ -550,27 +598,57 @@ impl<'a> DAXFlash<'a> {
             .find_partition(分区名)
             .ok_or_else(|| format!("未找到分区: {}", 分区名))?;
 
+        // 计算校验起始位置：写入可能续传，只校验本次写入的部分
+        let 写入大小 = {
+            let 文件元数据 =
+                std::fs::metadata(输入文件).map_err(|e| format!("无法获取文件元数据: {}", e))?;
+            let 文件大小 = 文件元数据.len();
+            if 文件大小 % 512 != 0 {
+                文件大小 + (512 - 文件大小 % 512)
+            } else {
+                文件大小
+            }
+        };
+        // 检查是否是续传写入（resume 文件已删除，但可通过写入大小推算）
+        // 实际上 resume 文件已在 写入分区 成功后被删除，
+        // 所以这里始终从 0 开始校验是安全的做法（写入已完成）。
+        let verify_start = 0u64;
+
+        // Seek 到校验起始位置
+        if verify_start > 0 {
+            reader
+                .seek(SeekFrom::Start(verify_start))
+                .map_err(|e| format!("文件 seek 失败: {}", e))?;
+        }
+
         const VERIFY_CHUNK: usize = 0x20000; // 128KB 校验块
-        let mut offset = 0u64;
+        let mut offset = verify_start;
         let mut buf = vec![0u8; VERIFY_CHUNK];
 
         loop {
-            let n = reader.read(&mut buf).map_err(|e| format!("读取原始文件失败: {}", e))?;
+            let n = reader
+                .read(&mut buf)
+                .map_err(|e| format!("读取原始文件失败: {}", e))?;
             if n == 0 {
                 break;
             }
-            let chunk = &buf[..n];
-            let device_data = self.readflash_data(entry.start_addr + offset, n as u64)?;
+            // 不超过文件实际大小（避免校验 padding 的零字节）
+            if offset >= 写入大小 {
+                break;
+            }
+            let effective_n = std::cmp::min(n, (写入大小.saturating_sub(offset)) as usize);
+            let chunk = &buf[..effective_n];
+            let device_data = self.readflash_data(entry.start_addr + offset, effective_n as u64)?;
             if device_data != chunk {
                 return Err(format!(
                     "校验失败 @ offset 0x{:X}: 写入数据与原始数据不匹配",
                     entry.start_addr + offset
                 ));
             }
-            offset += n as u64;
+            offset += effective_n as u64;
         }
 
-        info!("  校验通过 ✓ (共 {} 字节)", offset);
+        info!("  校验通过 (共 {} 字节)", offset);
         Ok(())
     }
 
@@ -578,13 +656,14 @@ impl<'a> DAXFlash<'a> {
     /// 对齐 Python writeflash (xflash_lib.py:writeflash)
     /// 协议: cmd_write_data → 循环分包写入 [0x0(4B)][checksum(4B)][data] → CC_OPTIONAL_DOWNLOAD_ACT → status
     /// 增加校验：文件大小不能超过分区大小，超过时报错。
+    /// 支持断点续传：取消后可通过 `.wresume` 文件从断点继续。
     pub fn 写入分区(&mut self, 分区名: &str, 输入文件: &str) -> Result<(), String> {
         info!("写入文件 {} 到分区 {}...", 输入文件, 分区名);
 
         // 打开文件（流式读取，避免全量载入内存）
-        let file = std::fs::File::open(输入文件)
-            .map_err(|e| format!("无法打开文件: {}", e))?;
-        let 文件元数据 = file.metadata()
+        let file = std::fs::File::open(输入文件).map_err(|e| format!("无法打开文件: {}", e))?;
+        let 文件元数据 = file
+            .metadata()
             .map_err(|e| format!("无法获取文件元数据: {}", e))?;
         let 文件大小 = 文件元数据.len();
 
@@ -594,11 +673,13 @@ impl<'a> DAXFlash<'a> {
                 info!("写入特殊分区 {} (parttype={})", 分区名, pt);
                 (pt, addr, size)
             } else {
-                // 如果无 GPT 缓存，自动读取 GPT 数据
+                // 如果无 GPT 缓存，先尝试从 gpt.bin 加载缓存，再从设备读取
                 if self.last_gpt_data.is_none() {
-                    self.read_gpt()?;
+                    if !self.try_load_cached_gpt() {
+                        self.read_gpt()?;
+                    }
                 }
-                // 找到分区地址和大小
+                // find_partition_addr 内部已处理 GPT 物理分区 → super 动态分区回退
                 let (addr, size) = self.find_partition_addr(分区名)?;
                 (8u32, addr, size) // parttype = USER
             };
@@ -617,17 +698,59 @@ impl<'a> DAXFlash<'a> {
         }
 
         // 使用 PaddedReader 自动处理 512 字节对齐填充
-        let padded_reader = PaddedReader::new(file, 文件大小, 512);
         let 写入大小 = if 文件大小 % 512 != 0 {
             文件大小 + (512 - 文件大小 % 512)
         } else {
             文件大小
         };
 
-        // 使用 BufReader 流式读取 + write_flash_data_stream
-        let mut reader = std::io::BufReader::new(padded_reader);
-        self.write_flash_data_stream(地址, &mut reader, 写入大小, 1, parttype)?;
+        // 检查写入断点续传
+        let start_offset = match check_write_resume(输入文件, 地址, 写入大小) {
+            Some(offset) => {
+                info!(
+                    "  断点续传: 从 0x{:X} ({}) 继续，已写入 {}/{} 字节 ({:.1}%)",
+                    offset,
+                    offset,
+                    offset,
+                    写入大小,
+                    offset as f64 / 写入大小 as f64 * 100.0
+                );
+                offset
+            }
+            None => 0,
+        };
 
+        // 打开文件并 seek 到断点位置
+        use std::io::{Seek, SeekFrom};
+        let file_for_seek =
+            std::fs::File::open(输入文件).map_err(|e| format!("无法打开文件: {}", e))?;
+        let mut file_seekable = file_for_seek;
+        if start_offset > 0 {
+            file_seekable
+                .seek(SeekFrom::Start(start_offset))
+                .map_err(|e| format!("文件 seek 失败: {}", e))?;
+        }
+
+        let remaining = 写入大小.saturating_sub(start_offset);
+        let padded_reader =
+            PaddedReader::new(file_seekable, 文件大小.saturating_sub(start_offset), 512);
+        let mut reader = std::io::BufReader::new(padded_reader);
+
+        let write_addr = 地址 + start_offset;
+
+        // 使用 BufReader 流式读取 + write_flash_data_stream
+        self.write_flash_data_stream(
+            write_addr,
+            &mut reader,
+            remaining,
+            1,
+            parttype,
+            start_offset,
+            输入文件,
+        )?;
+
+        // 成功：删除续传状态文件
+        remove_write_resume_file(输入文件);
         info!("  写入完成: {} 字节写入分区 {}", 文件大小, 分区名);
         Ok(())
     }
@@ -695,25 +818,15 @@ impl<'a> DAXFlash<'a> {
             return Err(format!("擦除失败: status=0x{:08X}", status));
         }
 
-        // FORMAT 后 eMMC 内部擦除操作需要较长时间完成（数百毫秒到数秒），
-        // 期间 DA 可能无法正常响应命令。
-        // 执行 xflash_sync 重新同步 DA 状态 + drain_pending 清理残留 + 1000ms 等待
-        self.preloader.device.drain_pending();
-        let _ = self.xflash_sync();
-        std::thread::sleep(std::time::Duration::from_millis(1000));
-        self.preloader.device.drain_pending();
-        let _ = self.xflash_sync();
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        self.preloader.device.drain_pending();
-
-        // 擦除后检测 DA 心跳，如果失败则主动清除会话状态
-        // 避免下次命令在半失效状态下复用 DA 会话
-        if !self.da_heartbeat() {
-            warn!("擦除后 DA 心跳检测失败，清除会话状态以便下次重新加载 DA");
-            connection::reset_session();
-        } else {
-            info!("擦除后 DA 心跳正常，会话保持有效");
+        // STATUS_COMPLETE 后必须发送 ACK 完成 FORMAT 事务，
+        // 否则 DA 卡在等待 ACK 状态，下一条命令会超时
+        if status == STATUS_COMPLETE {
+            let _ = self.ack();
         }
+
+        // 擦除完成后排空 USB 管道残留
+        // 不用 recover_usb_pipes：clear_halt 会重置 data toggle 导致后续读取错位
+        self.preloader.device.drain_pipes();
 
         info!("  擦除完成: 分区 {} (0x{:X} @ 0x{:X})", 分区名, 大小, 地址);
         Ok(())
@@ -737,7 +850,7 @@ fn log_gpt_crc_report(gpt_info: &GptInfo<'_>) {
     match gpt_info.crc_report() {
         Ok(report) => {
             if report.header_ok() {
-                info!(
+                debug!(
                     "GPT Header CRC 校验成功: 0x{:08X}",
                     report.stored_header_crc32
                 );
@@ -749,7 +862,7 @@ fn log_gpt_crc_report(gpt_info: &GptInfo<'_>) {
             }
 
             if report.partition_entries_ok() {
-                info!(
+                debug!(
                     "GPT 分区条目 CRC 校验成功: 0x{:08X}",
                     report.stored_partition_entries_crc32
                 );

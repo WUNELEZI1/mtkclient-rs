@@ -37,69 +37,69 @@ pub const CMD_FORMAT: u32 = 0x010003; // 格式化命令
 // =============================================================================
 
 // --- 基础命令 (0x01xxxx) ---
-pub const CMD_DOWNLOAD: u32 = 0x010001;        // 下载
-pub const CMD_UPLOAD: u32 = 0x010002;          // 上传
-pub const CMD_FORMAT_PART: u32 = 0x010006;     // 格式化分区
-pub const CMD_SHUTDOWN: u32 = 0x010007;        // ★ 关机/reboot（含 bootmode 参数）
-pub const CMD_DEVICE_CTRL: u32 = 0x010009;     // 设备控制（总入口，子命令通过此发送）
-pub const CMD_SWITCH_USB: u32 = 0x01000B;       // 切换 USB 速度
-pub const CMD_READ_OTP: u32 = 0x01000C;         // 读 OTP
-pub const CMD_WRITE_OTP: u32 = 0x01000D;        // 写 OTP
-pub const CMD_WRITE_EFUSE: u32 = 0x01000E;      // 写 eFuse
-pub const CMD_READ_EFUSE: u32 = 0x01000F;       // 读 eFuse
-pub const CMD_NAND_BMT: u32 = 0x010010;         // NAND BMT
+pub const CMD_DOWNLOAD: u32 = 0x010001; // 下载
+pub const CMD_UPLOAD: u32 = 0x010002; // 上传
+pub const CMD_FORMAT_PART: u32 = 0x010006; // 格式化分区
+pub const CMD_SHUTDOWN: u32 = 0x010007; // ★ 关机/reboot（含 bootmode 参数）
+pub const CMD_DEVICE_CTRL: u32 = 0x010009; // 设备控制（总入口，子命令通过此发送）
+pub const CMD_SWITCH_USB: u32 = 0x01000B; // 切换 USB 速度
+pub const CMD_READ_OTP: u32 = 0x01000C; // 读 OTP
+pub const CMD_WRITE_OTP: u32 = 0x01000D; // 写 OTP
+pub const CMD_WRITE_EFUSE: u32 = 0x01000E; // 写 eFuse
+pub const CMD_READ_EFUSE: u32 = 0x01000F; // 读 eFuse
+pub const CMD_NAND_BMT: u32 = 0x010010; // NAND BMT
 
 // --- 设备控制子命令 (0x02xxxx) — 通过 CMD_DEVICE_CTRL 发送 ---
-pub const SET_BMT: u32 = 0x020001;              // 设置 BMT 百分比
-pub const SET_BATTERY: u32 = 0x020002;          // 设置电池优化
-pub const SET_CHECKSUM: u32 = 0x020003;         // 设置校验级别
-pub const SET_RESET_KEY: u32 = 0x020004;        // 设置 Reset Key
-pub const SET_HOST_INFO: u32 = 0x020005;        // 设置主机信息
-pub const SET_META_BOOT_MODE: u32 = 0x020006;   // ★ 设置 Meta Boot Mode
-pub const SET_EMMC_RST: u32 = 0x020007;         // 设置 eMMC HW Reset
-pub const SET_GEN_GPX: u32 = 0x020008;          // 设置生成 GPX
-pub const SET_REG_VAL: u32 = 0x020009;          // 设置寄存器值
-pub const SET_EXT_SIG: u32 = 0x02000A;          // 设置外部签名
-pub const SET_SEC_POL: u32 = 0x02000B;          // ★ 设置远程安全策略 (SLA)
-pub const SET_AIO_SIG: u32 = 0x02000C;          // 设置一体化签名
-pub const SET_RSC_INFO: u32 = 0x02000D;         // 设置 RSC 信息
-pub const SET_UPDATE_FW: u32 = 0x020010;        // 设置更新固件
-pub const SET_UFS_CFG: u32 = 0x020011;          // 设置 UFS 配置
+pub const SET_BMT: u32 = 0x020001; // 设置 BMT 百分比
+pub const SET_BATTERY: u32 = 0x020002; // 设置电池优化
+pub const SET_CHECKSUM: u32 = 0x020003; // 设置校验级别
+pub const SET_RESET_KEY: u32 = 0x020004; // 设置 Reset Key
+pub const SET_HOST_INFO: u32 = 0x020005; // 设置主机信息
+pub const SET_META_BOOT_MODE: u32 = 0x020006; // ★ 设置 Meta Boot Mode
+pub const SET_EMMC_RST: u32 = 0x020007; // 设置 eMMC HW Reset
+pub const SET_GEN_GPX: u32 = 0x020008; // 设置生成 GPX
+pub const SET_REG_VAL: u32 = 0x020009; // 设置寄存器值
+pub const SET_EXT_SIG: u32 = 0x02000A; // 设置外部签名
+pub const SET_SEC_POL: u32 = 0x02000B; // ★ 设置远程安全策略 (SLA)
+pub const SET_AIO_SIG: u32 = 0x02000C; // 设置一体化签名
+pub const SET_RSC_INFO: u32 = 0x02000D; // 设置 RSC 信息
+pub const SET_UPDATE_FW: u32 = 0x020010; // 设置更新固件
+pub const SET_UFS_CFG: u32 = 0x020011; // 设置 UFS 配置
 
 // --- 信息获取子命令 (0x04xxxx) ---
-pub const GET_EMMC_INFO: u32 = 0x040001;        // 获取 eMMC 信息
-pub const GET_NAND_INFO: u32 = 0x040002;        // 获取 NAND 信息
-pub const GET_NOR_INFO: u32 = 0x040003;         // 获取 NOR 信息
-pub const GET_UFS_INFO: u32 = 0x040004;         // 获取 UFS 信息
-pub const GET_DA_VER: u32 = 0x040005;           // 获取 DA 版本
-pub const GET_EXPIRE: u32 = 0x040006;           // 获取过期日期
-pub const GET_PKT_LEN: u32 = 0x040007;          // 获取包长度
-pub const GET_RANDOM_ID: u32 = 0x040008;        // 获取随机 ID
-pub const GET_PART_TBL: u32 = 0x040009;          // 获取分区表
-pub const GET_CONN: u32 = 0x04000A;             // 获取连接代理
-pub const GET_USB_SPD: u32 = 0x04000B;          // 获取 USB 速度
-pub const GET_RAM_INFO: u32 = 0x04000C;         // 获取 RAM 信息
-pub const GET_CHIP_ID: u32 = 0x04000D;          // 获取芯片 ID
-pub const GET_OTP_LOCK: u32 = 0x04000E;        // 获取 OTP 锁定状态
-pub const GET_BATT_VOLT: u32 = 0x04000F;        // 获取电池电压
-pub const GET_RPMB: u32 = 0x040010;             // 获取 RPMB 状态
-pub const GET_EXPIRE_DT: u32 = 0x040011;        // 获取过期日期
-pub const GET_DRAM_TYPE: u32 = 0x040012;        // 获取 DRAM 类型
-pub const GET_DEV_FW: u32 = 0x040013;           // 获取设备固件信息
-pub const GET_HRID: u32 = 0x040014;             // 获取 HRID
-pub const GET_ERR_DET: u32 = 0x040015;          // 获取错误详情
-pub const SLA_ENABLED: u32 = 0x040016;          // SLA 启用状态
+pub const GET_EMMC_INFO: u32 = 0x040001; // 获取 eMMC 信息
+pub const GET_NAND_INFO: u32 = 0x040002; // 获取 NAND 信息
+pub const GET_NOR_INFO: u32 = 0x040003; // 获取 NOR 信息
+pub const GET_UFS_INFO: u32 = 0x040004; // 获取 UFS 信息
+pub const GET_DA_VER: u32 = 0x040005; // 获取 DA 版本
+pub const GET_EXPIRE: u32 = 0x040006; // 获取过期日期
+pub const GET_PKT_LEN: u32 = 0x040007; // 获取包长度
+pub const GET_RANDOM_ID: u32 = 0x040008; // 获取随机 ID
+pub const GET_PART_TBL: u32 = 0x040009; // 获取分区表
+pub const GET_CONN: u32 = 0x04000A; // 获取连接代理
+pub const GET_USB_SPD: u32 = 0x04000B; // 获取 USB 速度
+pub const GET_RAM_INFO: u32 = 0x04000C; // 获取 RAM 信息
+pub const GET_CHIP_ID: u32 = 0x04000D; // 获取芯片 ID
+pub const GET_OTP_LOCK: u32 = 0x04000E; // 获取 OTP 锁定状态
+pub const GET_BATT_VOLT: u32 = 0x04000F; // 获取电池电压
+pub const GET_RPMB: u32 = 0x040010; // 获取 RPMB 状态
+pub const GET_EXPIRE_DT: u32 = 0x040011; // 获取过期日期
+pub const GET_DRAM_TYPE: u32 = 0x040012; // 获取 DRAM 类型
+pub const GET_DEV_FW: u32 = 0x040013; // 获取设备固件信息
+pub const GET_HRID: u32 = 0x040014; // 获取 HRID
+pub const GET_ERR_DET: u32 = 0x040015; // 获取错误详情
+pub const SLA_ENABLED: u32 = 0x040016; // SLA 启用状态
 
 // --- 下载信息 (0x08xxxx) ---
-pub const START_DL_INFO: u32 = 0x080001;        // 开始下载信息
-pub const END_DL_INFO: u32 = 0x080002;          // 结束下载信息
+pub const START_DL_INFO: u32 = 0x080001; // 开始下载信息
+pub const END_DL_INFO: u32 = 0x080002; // 结束下载信息
 
 // =============================================================================
 // Shutdown bootmode 枚举（对齐 xflash_lib.py ShutDownModes）
 // =============================================================================
 
 /// DA Shutdown 命令的 bootmode 参数
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ShutdownBootMode {
     /// 关机
     Normal = 0,
@@ -184,7 +184,11 @@ pub fn xml_set_boot_mode(mode: XmlBootMode) -> Vec<u8> {
 /// <action>IMMEDIATE</action>
 /// ```
 pub fn xml_reboot(disconnect: bool) -> Vec<u8> {
-    let action = if disconnect { "DISCONNECT" } else { "IMMEDIATE" };
+    let action = if disconnect {
+        "DISCONNECT"
+    } else {
+        "IMMEDIATE"
+    };
     let arg = format!("<action>{}</action>", action);
     build_xml_command("REBOOT", &arg)
 }
@@ -354,14 +358,16 @@ impl<'a> DAXFlash<'a> {
 
     fn send_ack(&mut self) -> Result<(), String> {
         let hdr = pack3(CMD_MAGIC, 0x01, 4);
+        let zero = 0u32.to_le_bytes();
+
+        // 所有芯片统一使用 16B 单包发送 ACK，避免两次 USB OUT transfer 的调度开销
+        let mut buf = [0u8; 16];
+        buf[..12].copy_from_slice(&hdr);
+        buf[12..16].copy_from_slice(&zero);
         self.preloader
             .device
-            .write(&hdr)
-            .map_err(|e| format!("send_ack write hdr: {}", e))?;
-        self.preloader
-            .device
-            .write(&0u32.to_le_bytes())
-            .map_err(|e| format!("send_ack write data: {}", e))?;
+            .write(&buf)
+            .map_err(|e| format!("send_ack write 16B: {}", e))?;
         Ok(())
     }
 }
@@ -373,7 +379,7 @@ impl<'a> DAXFlash<'a> {
 impl<'a> DAXFlash<'a> {
     /// XFlash 同步命令
     /// Python: sync() → 只 xsend(CMD_SYNC_SIGNAL)，不读 status 也不读 response
-    /// 
+    ///
     /// 警告：此方法只发送 SYNC_SIGNAL，不读取任何响应。
     /// 在 DA 加载流程（upload_da1）中调用时，DA 可能不返回 status，
     /// 如果强制读取会导致超时失败。调用者如需清除残留数据，
@@ -394,7 +400,7 @@ impl<'a> DAXFlash<'a> {
 
     /// 发送 devctrl 命令
     /// Python: 任何阶段都返回 b""，不抛异常
-    /// 
+    ///
     /// 关键修复：即使 status 非零（如 0x00010009）也必须完成完整的 3 步握手
     ///（DEVICE_CTRL → cmd → param/status），否则 DA 状态机卡在等待阶段，
     /// 后续任何命令都会超时。
@@ -437,10 +443,29 @@ impl<'a> DAXFlash<'a> {
             if st2 != 0xC0010004 && st2 != 0x00010009 {
                 warn!("send_devctrl(0x{:06X}) 阶段2 状态: 0x{:08X}", cmd, st2);
             }
-            trace!("[send_devctrl] stage2 status=0x{:08X}, 继续完成握手...", st2);
+            trace!(
+                "[send_devctrl] stage2 status=0x{:08X}, 继续完成握手...",
+                st2
+            );
         }
 
-        // 只有 stage1 和 stage2 都成功时才处理 param / xread
+        // 只有 param 模式需要两个阶段都成功才继续
+        // read 模式：即使 stage1/stage2 返回非零状态码，仍尝试 xread（部分设备如此）
+        if param.is_none() {
+            // xread 模式：对齐 Python mtkclient，send_devctrl(cmd, None)
+            // 在 xread() 后还需读取一次 status（DA 协议规定）。
+            // 如果不读，USB 缓冲区会残留 status 包，导致后续命令状态流错位。
+            let resp = self.xread_data()?;
+            let _ = self.status(); // 消费 DA 发送的额外 status 包
+            trace!(
+                "[send_devctrl] cmd=0x{:06X} xread returned {} bytes",
+                cmd,
+                resp.len()
+            );
+            return Ok(resp);
+        }
+
+        // param 模式：两个阶段都成功才继续发送 param
         if stage1_ok && stage2_ok {
             if let Some(p) = param {
                 let pkt3 = pack3(CMD_MAGIC, 0x01, p.len() as u32);
@@ -454,37 +479,34 @@ impl<'a> DAXFlash<'a> {
                         cmd, st3
                     ));
                 }
-            } else {
-                // xread 模式：对齐 Python mtkclient，send_devctrl(cmd, None)
-                // 在 xread() 后还需读取一次 status（DA 协议规定）。
-                // 如果不读，USB 缓冲区会残留 status 包，导致后续命令状态流错位。
-                let resp = self.xread_data()?;
-                let _ = self.status(); // 消费 DA 发送的额外 status 包
-                trace!(
-                    "[send_devctrl] cmd=0x{:06X} xread returned {} bytes",
-                    cmd,
-                    resp.len()
-                );
-                return Ok(resp);
             }
         } else {
-            // stage1/stage2 失败：如果是 param 模式，仍需发送 param 以完成握手
+            // read 模式已在上方处理；param 模式 stage 失败时仍需发送 param 完成握手
             if let Some(p) = param {
                 let pkt3 = pack3(CMD_MAGIC, 0x01, p.len() as u32);
                 let _ = self.preloader.device.write(&pkt3);
                 let _ = self.preloader.device.write(p);
                 let _ = self.status(); // 读取并丢弃 status3，完成握手
             }
-            // read 模式且 stage 失败：无需读取 xread_data
         }
 
         Ok(vec![])
     }
 
+    /// 临时设置短超时执行回调，完成后恢复原超时
+    /// 用于可选查询：命令不支持时快速失败，不等 5 秒
+    pub(crate) fn with_short_timeout<T>(&mut self, ms: u64, f: impl FnOnce(&mut Self) -> Result<T, String>) -> Result<T, String> {
+        let orig = self.preloader.device.get_timeout();
+        self.preloader.device.set_timeout(Duration::from_millis(ms));
+        let result = f(self);
+        self.preloader.device.set_timeout(orig);
+        result
+    }
+
     /// 获取连接代理（brom 或 preloader）
     /// Python: 返回 b"" 或 None 时视为失败
     pub(crate) fn get_connection_agent(&mut self) -> Result<String, String> {
-        let data = self.send_devctrl(0x010102, None)?; // GET_CONNECTION_AGENT
+        let data = self.with_short_timeout(200, |da| da.send_devctrl(0x010102, None))?;
         if data.is_empty() {
             return Err("get_connection_agent returned empty".to_string());
         }
@@ -501,7 +523,10 @@ impl<'a> DAXFlash<'a> {
         self.preloader.device.write(&0x010009u32.to_le_bytes())?;
         let st1 = self.status()?;
         if st1 != 0 {
-            return Err(format!("custom_readregister: DEVICE_CTRL status=0x{:08X}", st1));
+            return Err(format!(
+                "custom_readregister: DEVICE_CTRL status=0x{:08X}",
+                st1
+            ));
         }
 
         let pkt2 = pack3(CMD_MAGIC, 0x01, 4);
@@ -509,7 +534,10 @@ impl<'a> DAXFlash<'a> {
         self.preloader.device.write(&0x0F0002u32.to_le_bytes())?;
         let st2 = self.status()?;
         if st2 != 0 {
-            return Err(format!("custom_readregister: CUSTOM_READREGISTER status=0x{:08X}", st2));
+            return Err(format!(
+                "custom_readregister: CUSTOM_READREGISTER status=0x{:08X}",
+                st2
+            ));
         }
 
         // step 2: xsend(addr)
@@ -527,7 +555,10 @@ impl<'a> DAXFlash<'a> {
         }
 
         if data.len() < 4 {
-            return Err(format!("custom_readregister: response too short: {} bytes", data.len()));
+            return Err(format!(
+                "custom_readregister: response too short: {} bytes",
+                data.len()
+            ));
         }
         Ok(u32::from_le_bytes(data[0..4].try_into().unwrap()))
     }
@@ -542,7 +573,10 @@ impl<'a> DAXFlash<'a> {
         self.preloader.device.write(&0x010009u32.to_le_bytes())?;
         let st1 = self.status()?;
         if st1 != 0 {
-            return Err(format!("custom_writeregister: DEVICE_CTRL status=0x{:08X}", st1));
+            return Err(format!(
+                "custom_writeregister: DEVICE_CTRL status=0x{:08X}",
+                st1
+            ));
         }
 
         let pkt2 = pack3(CMD_MAGIC, 0x01, 4);
@@ -550,7 +584,10 @@ impl<'a> DAXFlash<'a> {
         self.preloader.device.write(&0x0F0004u32.to_le_bytes())?;
         let st2 = self.status()?;
         if st2 != 0 {
-            return Err(format!("custom_writeregister: CUSTOM_WRITEREGISTER status=0x{:08X}", st2));
+            return Err(format!(
+                "custom_writeregister: CUSTOM_WRITEREGISTER status=0x{:08X}",
+                st2
+            ));
         }
 
         // step 2: xsend(addr)
@@ -584,18 +621,18 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
-    /// 获取过期日期
+    /// 获取过期日期（短超时：200ms，不支持时快速跳过）
     pub(crate) fn get_expire_date(&mut self) -> Result<Vec<u8>, String> {
-        let data = self.send_devctrl(0x010105, None)?;
+        let data = self.with_short_timeout(200, |da| da.send_devctrl(0x010105, None))?;
         if data.is_empty() {
             return Err("get_expire_date returned empty".to_string());
         }
         Ok(data)
     }
 
-    /// 获取 SLA 状态
+    /// 获取 SLA 状态（短超时：200ms，不支持时快速跳过）
     pub(crate) fn get_sla_status(&mut self) -> Result<u32, String> {
-        let data = self.send_devctrl(0x01010E, None)?; // SLA_ENABLED_STATUS
+        let data = self.with_short_timeout(200, |da| da.send_devctrl(0x01010E, None))?; // SLA_ENABLED_STATUS
         if data.len() >= 4 {
             Ok(u32::from_le_bytes(data[..4].try_into().unwrap()))
         } else {
@@ -696,9 +733,13 @@ impl<'a> DAXFlash<'a> {
 
         // 发送命令头: MAGIC + CMD_SHUTDOWN
         let hdr = pack3(CMD_MAGIC, 0x01, 4);
-        self.preloader.device.write(&hdr)
+        self.preloader
+            .device
+            .write(&hdr)
             .map_err(|e| format!("SHUTDOWN write hdr: {}", e))?;
-        self.preloader.device.write(&CMD_SHUTDOWN.to_le_bytes())
+        self.preloader
+            .device
+            .write(&CMD_SHUTDOWN.to_le_bytes())
             .map_err(|e| format!("SHUTDOWN write cmd: {}", e))?;
 
         // 读取阶段 1 status
@@ -707,30 +748,39 @@ impl<'a> DAXFlash<'a> {
             return Err(format!("SHUTDOWN 命令状态: 0x{:08X}", st));
         }
 
-        // 构建 32 字节参数体
+        // 构建 32 字节参数体 — 对齐 Python xflash_lib.shutdown()
         // 偏移   大小   Fastboot    Normal    Reboot    含义
-        // 0x00   4B    0x00000001  0x00000001  0x00000001  hasflags
-        // 0x04   4B    0x00000001  0x00000001  0x00000001  enable watchdog
+        // 0x00   4B    0x00000001  0x00000000  0x00000001  hasflags
+        // 0x04   4B    0x00000000  0x00000000  0x00000000  enablewdt (Disable)
         // 0x08   4B    0x00000000  0x00000000  0x00000000  async_mode
         // 0x0C   4B    0x00000002  0x00000000  0x00000001  bootmode
         // 0x10   4B    0x00000000  0x00000000  0x00000000  dl_bit
-        // 0x14   4B    0x00000000  0x00000000  0x00000000  reserved
-        // 0x18   4B    0x00000000  0x00000000  0x00000000  reserved
+        // 0x14   4B    0x00000000  0x00000000  0x00000000  dont_resetrtc
+        // 0x18   4B    0x00000000  0x00000000  0x00000000  leaveusb
         // 0x1C   4B    0x00000000  0x00000000  0x00000000  reserved
+        let hasflags: u32 = if bootmode != ShutdownBootMode::Normal {
+            1
+        } else {
+            0
+        };
         let mut param = [0u8; 32];
-        param[0x00..0x04].copy_from_slice(&1u32.to_le_bytes()); // hasflags
-        param[0x04..0x08].copy_from_slice(&1u32.to_le_bytes()); // enablewdt
-        param[0x08..0x0C].copy_from_slice(&0u32.to_le_bytes()); // async_mode
+        param[0x00..0x04].copy_from_slice(&hasflags.to_le_bytes()); // hasflags
+        param[0x04..0x08].copy_from_slice(&0u32.to_le_bytes()); // enablewdt = 0 (Disable)
+        param[0x08..0x0C].copy_from_slice(&0u32.to_le_bytes()); // async_mode = 0
         param[0x0C..0x10].copy_from_slice(&(bootmode as u32).to_le_bytes()); // bootmode
-        // 0x10-0x1C: zeros (dl_bit + reserved)
+        // 0x10-0x1C: zeros (dl_bit + dont_resetrtc + leaveusb + reserved)
 
         trace!("[DA SHUTDOWN] param: {}", hex_str(&param));
 
         // 发送参数体
         let param_pkt = pack3(CMD_MAGIC, 0x01, 32);
-        self.preloader.device.write(&param_pkt)
+        self.preloader
+            .device
+            .write(&param_pkt)
             .map_err(|e| format!("SHUTDOWN write param hdr: {}", e))?;
-        self.preloader.device.write(&param)
+        self.preloader
+            .device
+            .write(&param)
             .map_err(|e| format!("SHUTDOWN write param: {}", e))?;
 
         // 读取阶段 2 status
@@ -769,9 +819,13 @@ impl<'a> DAXFlash<'a> {
 
         // 发送 XML 数据（按 XFlash 格式打包）
         let pkt = pack3(CMD_MAGIC, 0x01, xml_data.len() as u32);
-        self.preloader.device.write(&pkt)
+        self.preloader
+            .device
+            .write(&pkt)
             .map_err(|e| format!("XML cmd write hdr: {}", e))?;
-        self.preloader.device.write(xml_data)
+        self.preloader
+            .device
+            .write(xml_data)
             .map_err(|e| format!("XML cmd write data: {}", e))?;
 
         // 读取 status
@@ -815,7 +869,7 @@ impl<'a> DAXFlash<'a> {
 }
 
 fn hex_str(data: &[u8]) -> String {
-    data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
+    crate::util::hex_str(data)
 }
 
 // =============================================================================

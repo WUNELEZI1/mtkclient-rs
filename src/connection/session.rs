@@ -10,6 +10,33 @@ const STATE_FILE: &str = ".state";
 /// DA 会话最大存活时间（秒），超过此时间 .state 视为过期
 const SESSION_MAX_AGE_SECS: u64 = 300; // 5 分钟
 
+/// DA 初始化模式：记录 DA 是通过哪种路径加载的，
+/// 会话复用时根据此字段选择对应的重握手方案
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitMode {
+    /// BROM 模式加载：握手 → 关看门狗 → bypass → send_da → setup_env → setup_hw_init
+    Brom,
+    /// Preloader 模式加载：跳过 bypass，直接 send_da → setup_env → setup_hw_init
+    Preloader,
+}
+
+impl InitMode {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "brom" => Some(InitMode::Brom),
+            "preloader" => Some(InitMode::Preloader),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            InitMode::Brom => "brom",
+            InitMode::Preloader => "preloader",
+        }
+    }
+}
+
 /// 会话状态（对齐 Python .state 文件机制）
 #[derive(Debug, Clone)]
 pub struct SessionState {
@@ -28,14 +55,22 @@ pub struct SessionState {
     pub optional_query_failures: Vec<String>,
     /// 会话创建的 unix 时间戳（秒）
     pub created_at: u64,
+    /// DA 初始化模式（brom/preloader），会话复用时决定重握手方案
+    pub init_mode: InitMode,
 }
 
 impl fmt::Display for SessionState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "usb_vid=0x{:04X}\nusb_pid=0x{:04X}\nhw_code=0x{:04X}\ntarget_config=0x{:08X}\nda_loaded={}\ncreated_at={}",
-            self.usb_vid, self.usb_pid, self.hw_code, self.target_config, self.da_loaded, self.created_at
+            "usb_vid=0x{:04X}\nusb_pid=0x{:04X}\nhw_code=0x{:04X}\ntarget_config=0x{:08X}\nda_loaded={}\ncreated_at={}\ninit_mode={}",
+            self.usb_vid,
+            self.usb_pid,
+            self.hw_code,
+            self.target_config,
+            self.da_loaded,
+            self.created_at,
+            self.init_mode.as_str()
         )?;
         if let Some(ref path) = self.preloader_path {
             write!(f, "\npreloader_path={}", path)?;
@@ -93,16 +128,18 @@ impl SessionState {
                 .get("created_at")
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(0), // 兼容旧版无此字段的 .state 文件
+            init_mode: map
+                .get("init_mode")
+                .and_then(|v| InitMode::from_str(v))
+                .unwrap_or(InitMode::Brom), // 兼容旧版无此字段的 .state 文件
         })
     }
 
     /// 写入 .state 文件（原子写入：先写临时文件再 rename）
     pub fn save(&self) -> Result<(), String> {
         let tmp = format!("{}.tmp", STATE_FILE);
-        fs::write(&tmp, self.to_string())
-            .map_err(|e| format!("写入 .state.tmp 失败: {}", e))?;
-        fs::rename(&tmp, STATE_FILE)
-            .map_err(|e| format!("rename .state.tmp 失败: {}", e))?;
+        fs::write(&tmp, self.to_string()).map_err(|e| format!("写入 .state.tmp 失败: {}", e))?;
+        fs::rename(&tmp, STATE_FILE).map_err(|e| format!("rename .state.tmp 失败: {}", e))?;
         Ok(())
     }
 
@@ -183,40 +220,20 @@ where
 }
 
 /// 尝试复用现有 DA 会话
-/// 如果 .state 存在且 da_loaded=true 且未过期，跳过 BROM→DA 流程。
-/// 真正的 DA 模式验证由后续的 check_da_session / reinit 完成（心跳检测），
-/// 不在此处通过 PID 过滤，因为 MTK 设备在 BROM/DA 模式下通常都使用 PID=0x0003。
+/// 如果 .state 存在且 da_loaded=true 且设备仍在线，跳过 BROM→DA 流程。
+/// 不使用时间超时判断——只要设备保持连接，DA 会话就有效。
+/// 真正的 DA 模式验证由后续的 check_da_session / reinit 完成（心跳检测）。
 pub fn try_reuse_da_session(vid: u16, pid: u16) -> bool {
     if let Some(state) = SessionState::load() {
-        // 时效检查：超过 SESSION_MAX_AGE_SECS 视为过期
-        if state.created_at > 0 {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let age = now.saturating_sub(state.created_at);
-            if age > SESSION_MAX_AGE_SECS {
-                info!(
-                    "[session] .state 已过期（{}秒 > {}秒），重新初始化",
-                    age, SESSION_MAX_AGE_SECS
-                );
-                SessionState::remove();
-                return false;
-            }
-        }
-
         if state.da_loaded && state.device_online(vid, pid) {
             info!(
-                "[session] 复用 DA 会话（hw_code=0x{:04X}，设备在线，age={}秒）",
+                "[session] 复用 DA 会话（hw_code=0x{:04X}，设备在线）",
                 state.hw_code,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs().saturating_sub(state.created_at))
-                    .unwrap_or(0)
             );
             return true;
         } else {
             trace!("[session] .state 存在但设备 PID/VID 不匹配或 DA 未加载，重新初始化");
+            SessionState::remove();
         }
     }
     false
@@ -229,6 +246,7 @@ pub fn save_da_session(
     hw_code: u16,
     target_config: u32,
     preloader_path: Option<&str>,
+    init_mode: InitMode,
 ) {
     let previous = SessionState::load();
     let device_fingerprint =
@@ -257,14 +275,14 @@ pub fn save_da_session(
         } else {
             None
         },
-        optional_query_failures: if same_device {
-            previous
-                .map(|state| state.optional_query_failures)
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        },
+        // optional_query_failures 只根据 hw_code 判断，不区分 BROM/Preloader 模式
+        // 因为同一台设备的可选查询失败情况不会因为模式切换而改变
+        optional_query_failures: previous
+            .filter(|state| state.hw_code == hw_code)
+            .map(|state| state.optional_query_failures)
+            .unwrap_or_default(),
         created_at: now,
+        init_mode,
     };
     if let Err(e) = state.save() {
         warn!("[session] 保存 .state 失败: {}", e);
@@ -336,6 +354,7 @@ mod tests {
                 "get_sla_status".to_string(),
             ],
             created_at: 1700000000,
+            init_mode: InitMode::Brom,
         };
 
         let parsed = SessionState::from_string(&state.to_string()).unwrap();

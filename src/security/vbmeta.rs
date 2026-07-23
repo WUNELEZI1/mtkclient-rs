@@ -93,12 +93,11 @@ fn patch_vbmeta_data(data: &[u8], mode: u32) -> Result<Vec<u8>, String> {
     //   1 = 0x01: hashtree 校验禁用（dm-verity off），签名验证保留
     //   2 = 0x02: 签名验证禁用，hashtree 校验保留
     //   3 = 0x03: 全部禁用（推荐刷机场景）
+    //
+    // ★ AVB header 中所有字段均为大端序（network byte order）
     let flags_offset = 0x78;
-    let old_flags = u32::from_le_bytes(
-        result[flags_offset..flags_offset + 4].try_into().unwrap(),
-    );
-    result[flags_offset..flags_offset + 4]
-        .copy_from_slice(&mode.to_le_bytes());
+    let old_flags = u32::from_be_bytes(result[flags_offset..flags_offset + 4].try_into().unwrap());
+    result[flags_offset..flags_offset + 4].copy_from_slice(&mode.to_be_bytes());
 
     info!(
         "  vbmeta: flags @0x78 = 0x{:08X} -> 0x{:08X}",

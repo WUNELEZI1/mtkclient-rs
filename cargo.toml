@@ -1,15 +1,10 @@
 [package]
 name = "mtkclient-rs"
-version = "0.5.1"
+version = "0.1.4"
 authors = ["wunelezi <https://gitee.com/WUNELEZI1>"]
 license = "GPL-3.0"
 edition = "2024"
 
-# 项目强制要求：中文函数名、变量名、文件名、注释。
-# Rust 默认对标识符执行 snake_case 检查会触发大量 non_snake_case 警告，
-# 但中文标识符（包括 PID/VID/USB/EMMC/EMI/GPT/DA/IO/SLA/DAA/SBC/BROM 等
-# 复合缩略词）都是项目约定必须保留的术语。
-# 在 crate 级别统一抑制该 lint，确保编译 0 警告。
 [lints.rust]
 non_snake_case = "allow"
 
@@ -30,7 +25,7 @@ sha2 = "0.11"
 aes = "0.9"
 cbc = "0.2"
 # USB 通信（nusb: 纯 Rust USB 库，Windows WinUSB 后端）
-nusb = "0.2"
+nusb = "0.2.5"
 # Windows 驱动自动安装（WinUSB）
 wdi-rs = "0.1.1"
 # Windows 管理员权限检测
@@ -39,6 +34,8 @@ is_elevated = "0.1"
 indicatif = "0.18"
 # Ctrl+C 优雅中断
 ctrlc = "3.5"
+flate2 = "1.0"
+tar = "0.4"
 # SIMD 字节搜索（build.prop 属性提取）
 memchr = "2.7"
 
@@ -50,11 +47,21 @@ incremental = true
 codegen-units = 256
 lto = false
 
+[profile.fast]
+# 快速优化模式：平衡编译速度和运行时性能（推荐日常测试使用）
+# 比 dev 快 2-5 倍，比 release 编译快 10 倍以上
+inherits = "dev"
+opt-level = 2
+codegen-units = 16
+lto = "thin"
+
 [profile.release]
-# 发布模式：最佳性能与稳定性
+# 发布模式：最佳性能、稳定性与反逆向工程保护
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 debug = false
-strip = true
+strip = "symbols"
 panic = "abort"
+overflow-checks = false
+incremental = false

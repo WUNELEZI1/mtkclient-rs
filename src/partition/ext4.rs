@@ -48,7 +48,10 @@ fn parse_superblock(data: &[u8]) -> Result<Superblock, String> {
     }
     let magic = u16::from_le_bytes(data[56..58].try_into().unwrap());
     if magic != EXT4_MAGIC {
-        return Err(format!("ext4 magic 不匹配: 0x{:04X} (期望 0x{:04X})", magic, EXT4_MAGIC));
+        return Err(format!(
+            "ext4 magic 不匹配: 0x{:04X} (期望 0x{:04X})",
+            magic, EXT4_MAGIC
+        ));
     }
 
     let inodes_count = u32::from_le_bytes(data[0..4].try_into().unwrap());
@@ -137,8 +140,60 @@ struct Extent {
     pblock: u64,
 }
 
+/// 递归解析 extent 树节点（支持 depth=0 叶子节点和 depth>=1 索引节点）
+fn parse_extents_recursive<F>(
+    read_fn: &mut F,
+    sb: &Superblock,
+    i_block_data: &[u8],
+) -> Result<Vec<Extent>, String>
+where
+    F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
+{
+    let entries = u16::from_le_bytes(i_block_data[2..4].try_into().unwrap());
+    let depth = u16::from_le_bytes(i_block_data[6..8].try_into().unwrap());
+
+    let mut extents = Vec::new();
+
+    for i in 0..entries {
+        let offset = 12 + (i as usize) * 12;
+        if offset + 12 > i_block_data.len() {
+            break;
+        }
+        let lblock = u32::from_le_bytes(i_block_data[offset..offset + 4].try_into().unwrap());
+        let len = u16::from_le_bytes(i_block_data[offset + 4..offset + 6].try_into().unwrap());
+        let start_hi = u16::from_le_bytes(i_block_data[offset + 6..offset + 8].try_into().unwrap());
+        let start_lo = u32::from_le_bytes(i_block_data[offset + 8..offset + 12].try_into().unwrap());
+        let pblock = ((start_hi as u64) << 32) | (start_lo as u64);
+
+        if depth == 0 {
+            // 叶子节点：直接收集 extent
+            info!(
+                "  extent[{}]: lblock={}, len={}, pblock=0x{:X} (start_hi=0x{:04X}, start_lo=0x{:08X})",
+                i, lblock, len, pblock, start_hi, start_lo
+            );
+            extents.push(Extent {
+                lblock,
+                len,
+                pblock,
+            });
+        } else {
+            // 索引节点：读取子块并递归解析
+            let block_size = sb.block_size as u64;
+            let child_offset = pblock * block_size;
+            let child_data = read_fn(child_offset, block_size)?;
+            let child_extents = parse_extents_recursive(read_fn, sb, &child_data)?;
+            extents.extend(child_extents);
+        }
+    }
+
+    Ok(extents)
+}
+
 /// 解析 inode 中的 extent tree
-fn parse_extents(inode: &Inode) -> Result<Vec<Extent>, String> {
+fn parse_extents<F>(read_fn: &mut F, inode: &Inode, sb: &Superblock) -> Result<Vec<Extent>, String>
+where
+    F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
+{
     if !inode.uses_extents {
         return Err("inode 不使用 extents（可能是旧版 ext 格式）".to_string());
     }
@@ -158,29 +213,7 @@ fn parse_extents(inode: &Inode) -> Result<Vec<Extent>, String> {
 
     info!("extent header: entries={}, depth={}", entries, depth);
 
-    if depth != 0 {
-        // 我们只支持 depth=0 的叶子节点（大多数小文件）
-        return Err(format!(
-            "extent depth={} 不支持（只支持 depth=0 的叶子 extent）",
-            depth
-        ));
-    }
-
-    let mut extents = Vec::with_capacity(entries as usize);
-    for i in 0..entries {
-        let offset = 12 + (i as usize) * 12;
-        let lblock = u32::from_le_bytes(i_block[offset..offset + 4].try_into().unwrap());
-        let len = u16::from_le_bytes(i_block[offset + 4..offset + 6].try_into().unwrap());
-        let start_hi = u16::from_le_bytes(i_block[offset + 6..offset + 8].try_into().unwrap());
-        let start_lo = u32::from_le_bytes(i_block[offset + 8..offset + 12].try_into().unwrap());
-        let pblock = ((start_hi as u64) << 32) | (start_lo as u64);
-
-        extents.push(Extent { lblock, len, pblock });
-        info!("  extent[{}]: lblock={}, len={}, pblock=0x{:X} (start_hi=0x{:04X}, start_lo=0x{:08X})",
-            i, lblock, len, pblock, start_hi, start_lo);
-    }
-
-    Ok(extents)
+    parse_extents_recursive(read_fn, sb, i_block)
 }
 
 /// 计算文件数据在分区中的物理偏移范围
@@ -189,8 +222,14 @@ fn get_file_physical_ranges(extents: &[Extent], block_size: u32) -> Vec<(u64, u6
     for ext in extents {
         let start = ext.pblock * (block_size as u64);
         let end = (ext.pblock + ext.len as u64) * (block_size as u64);
-        info!("  file range: pblock=0x{:X} * block_size={} => offset=0x{:X}..0x{:X} ({} bytes)",
-            ext.pblock, block_size, start, end, end - start);
+        info!(
+            "  file range: pblock=0x{:X} * block_size={} => offset=0x{:X}..0x{:X} ({} bytes)",
+            ext.pblock,
+            block_size,
+            start,
+            end,
+            end - start
+        );
         ranges.push((start, end));
     }
     ranges
@@ -221,8 +260,7 @@ fn parse_directory(data: &[u8]) -> Vec<DirEntry> {
         }
         let name_len = data[offset + 6] as usize;
         let file_type = data[offset + 7];
-        let name = String::from_utf8_lossy(&data[offset + 8..offset + 8 + name_len])
-            .to_string();
+        let name = String::from_utf8_lossy(&data[offset + 8..offset + 8 + name_len]).to_string();
 
         entries.push(DirEntry {
             inode,
@@ -270,8 +308,7 @@ where
     };
     let bgd_data = read_fn(bgd_offset, 64)?;
     let _bgd0 = parse_bgd(&bgd_data)?;
-    info!("bgd[0]: inode_table_block=0x{:X}",
-        _bgd0.inode_table);
+    info!("bgd[0]: inode_table_block=0x{:X}", _bgd0.inode_table);
 
     // 3. 读取 root inode (#2)
     let root_inode = read_inode(read_fn, &sb, ROOT_INODE)?;
@@ -309,7 +346,10 @@ where
     info!("/system 目录条目:");
     for e in &system_entries {
         if e.inode > 0 {
-            info!("  inode={:>5} type={} name={}", e.inode, e.file_type, e.name);
+            info!(
+                "  inode={:>5} type={} name={}",
+                e.inode, e.file_type, e.name
+            );
         }
     }
 
@@ -321,36 +361,54 @@ where
     );
     // 打印 inode 数据的 hex dump（前 64 字节）
     let inode_hex: Vec<String> = bp_inode.data[..64.min(bp_inode.data.len())]
-        .iter().map(|b| format!("{:02X}", b)).collect();
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect();
     info!("build.prop inode raw (前 64 字节): {}", inode_hex.join(" "));
 
     // 9. 读取文件数据
     let bp_data = read_inode_data(read_fn, &sb, &bp_inode)?;
 
     // 获取物理块范围（用于定向 COW 合并）
-    let bp_extents = parse_extents(&bp_inode)?;
+    let bp_extents = parse_extents(read_fn, &bp_inode, &sb)?;
     let bp_ranges = get_file_physical_ranges(&bp_extents, sb.block_size);
 
     info!("成功读取 build.prop: {} 字节", bp_data.len());
 
     // 打印数据前 64 字节的 hex dump
     let data_hex: Vec<String> = bp_data[..64.min(bp_data.len())]
-        .iter().map(|b| format!("{:02X}", b)).collect();
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect();
     info!("build.prop 数据前 64 字节: {}", data_hex.join(" "));
 
     // 尝试查找 etc/apns-conf.xml 对比
-    if let Some(etc_entry) = system_entries.iter().find(|e| e.name == "etc" && e.file_type == EXT4_FT_DIR) {
-        info!("找到 /system/etc (inode={})，尝试查找 apns-conf.xml...", etc_entry.inode);
+    if let Some(etc_entry) = system_entries
+        .iter()
+        .find(|e| e.name == "etc" && e.file_type == EXT4_FT_DIR)
+    {
+        info!(
+            "找到 /system/etc (inode={})，尝试查找 apns-conf.xml...",
+            etc_entry.inode
+        );
         if let Ok(etc_inode) = read_inode(read_fn, &sb, etc_entry.inode) {
             if let Ok(etc_data) = read_inode_data(read_fn, &sb, &etc_inode) {
                 let etc_entries = parse_directory(&etc_data);
-                if let Some(apn) = etc_entries.iter().find(|e| e.name == "apns-conf.xml" && e.file_type == EXT4_FT_REG_FILE) {
+                if let Some(apn) = etc_entries
+                    .iter()
+                    .find(|e| e.name == "apns-conf.xml" && e.file_type == EXT4_FT_REG_FILE)
+                {
                     info!("找到 /system/etc/apns-conf.xml (inode={})", apn.inode);
                     if let Ok(apn_inode) = read_inode(read_fn, &sb, apn.inode) {
-                        info!("apns-conf.xml: size={} bytes, extents={}", apn_inode.size, apn_inode.uses_extents);
+                        info!(
+                            "apns-conf.xml: size={} bytes, extents={}",
+                            apn_inode.size, apn_inode.uses_extents
+                        );
                         if let Ok(apn_data) = read_inode_data(read_fn, &sb, &apn_inode) {
                             let apn_hex: Vec<String> = apn_data[..64.min(apn_data.len())]
-                                .iter().map(|b| format!("{:02X}", b)).collect();
+                                .iter()
+                                .map(|b| format!("{:02X}", b))
+                                .collect();
                             info!("apns-conf.xml 数据前 64 字节: {}", apn_hex.join(" "));
                         }
                     }
@@ -373,9 +431,9 @@ where
 {
     let group = (inode_num - 1) / sb.inodes_per_group;
     let bgd_table_offset = if sb.block_size > 1024 {
-        sb.block_size as u64   // block 1
+        sb.block_size as u64 // block 1
     } else {
-        2048                    // block 2 (block_size=1024 时 superblock 占一整个 block)
+        2048 // block 2 (block_size=1024 时 superblock 占一整个 block)
     };
     let bgd_entry_offset = bgd_table_offset + (group as u64) * 64; // 64B per desc
     info!(
@@ -387,11 +445,7 @@ where
 }
 
 /// 读取指定 inode
-fn read_inode<F>(
-    read_fn: &mut F,
-    sb: &Superblock,
-    inode_num: u32,
-) -> Result<Inode, String>
+fn read_inode<F>(read_fn: &mut F, sb: &Superblock, inode_num: u32) -> Result<Inode, String>
 where
     F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
 {
@@ -416,15 +470,11 @@ where
 }
 
 /// 读取 inode 的所有文件数据
-fn read_inode_data<F>(
-    read_fn: &mut F,
-    sb: &Superblock,
-    inode: &Inode,
-) -> Result<Vec<u8>, String>
+fn read_inode_data<F>(read_fn: &mut F, sb: &Superblock, inode: &Inode) -> Result<Vec<u8>, String>
 where
     F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
 {
-    let extents = parse_extents(inode)?;
+    let extents = parse_extents(read_fn, inode, sb)?;
     let ranges = get_file_physical_ranges(&extents, sb.block_size);
 
     let mut data = Vec::new();

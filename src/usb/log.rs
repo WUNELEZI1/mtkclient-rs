@@ -42,7 +42,12 @@ pub fn usb_trace(direction: &str, func_info: &str, data: &[u8]) {
             .map(|b| format!("{:02x}", b))
             .collect::<Vec<_>>()
             .join(" ");
-        format!("{} ({} bytes, showing first {})", prefix, data.len(), hex_max)
+        format!(
+            "{} ({} bytes, showing first {})",
+            prefix,
+            data.len(),
+            hex_max
+        )
     };
 
     trace!("[USB {}] {} {}", direction, func_info, hex_str);

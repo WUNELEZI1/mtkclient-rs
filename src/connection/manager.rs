@@ -57,6 +57,8 @@ pub struct ConnectionManager {
     pub(crate) mode: DeviceMode,
     pub(crate) stage: USB阶段,
     pub(crate) port_name: Option<String>,
+    /// smart_init 过程中是否成功复用了 DA 会话
+    pub(crate) da_session_reused_in_init: bool,
 }
 
 impl ConnectionManager {
@@ -65,6 +67,7 @@ impl ConnectionManager {
             mode: DeviceMode::Preloader,
             stage: USB阶段::未知,
             port_name: None,
+            da_session_reused_in_init: false,
         }
     }
 
@@ -75,17 +78,108 @@ impl ConnectionManager {
         工作模式: 工作模式,
     ) -> Result<(Preloader, DeviceMode), String> {
         if 工作模式 == 工作模式::Preloader {
-            return self.smart_init_preloader(context);
+            // --mode preloader：只检测 preloader，不 fallback 到 brom
+            return self.smart_init_preloader(context, false);
         }
 
         if 工作模式 == 工作模式::Auto {
-            info!("[AUTO] 自动检测模式：优先尝试 Preloader 串口...");
-            match self.smart_init_preloader(context) {
-                Ok(result) => return Ok(result),
-                Err(e) => {
-                    warn!("[AUTO] Preloader 模式不可用: {}，回退到 BROM 模式", e);
-                    crate::connection::reset_session();
+            info!("[AUTO] 自动检测模式：等待 BROM 或 Preloader 设备出现...");
+            // 同时检测 BROM 和 Preloader，哪个先出现就用哪个
+            loop {
+                if crate::cancel::requested() {
+                    return Err("用户取消等待".to_string());
                 }
+
+                // 1. 先检查是否有 Preloader VCOM (PID=0x2000)
+                if let Ok(ports) = serialport::available_ports() {
+                    for p in &ports {
+                        if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
+                            && info.vid == 0x0E8D
+                            && info.pid == 0x2000
+                        {
+                            // 优先尝试 DA 会话复用（设备已加载 DA）
+                            if let Some(state) = crate::connection::session::SessionState::load() {
+                                if state.da_loaded {
+                                    info!(
+                                        "[AUTO] 检测到 Preloader (PID={:04X})，尝试 DA 会话复用...",
+                                        info.pid
+                                    );
+                                    match SerialPortTransport::new(&p.port_name, 115200) {
+                                        Ok(transport) => {
+                                            let mut preloader = Preloader::new(Box::new(transport));
+                                            preloader.is_preloader_mode = true;
+                                            preloader.brom_initialized = true;
+                                            if let Some(chip) = crate::system::config::CHIP_CONFIGS
+                                                .iter()
+                                                .find(|c| c.hw_code == state.hw_code)
+                                            {
+                                                preloader.chip = Some(*chip);
+                                            }
+                                            self.mode = DeviceMode::Preloader;
+                                            self.stage = USB阶段::Preloader;
+                                            self.port_name = Some(p.port_name.clone());
+                                            self.da_session_reused_in_init = true;
+                                            info!("[AUTO] DA 会话复用成功");
+                                            return Ok((preloader, DeviceMode::Preloader));
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                "[AUTO] DA 会话复用失败: {}，尝试 Preloader 握手",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+                            // DA 会话复用失败，尝试 Preloader 握手
+                            info!(
+                                "[AUTO] 检测到 Preloader 设备: {} (PID={:04X})",
+                                p.port_name, info.pid
+                            );
+                            match self.preloader_serial_handshake(&p.port_name) {
+                                Ok(preloader) => {
+                                    self.mode = DeviceMode::Preloader;
+                                    self.stage = USB阶段::Preloader;
+                                    self.port_name = Some(p.port_name.clone());
+                                    return Ok((preloader, DeviceMode::Preloader));
+                                }
+                                Err(e) => {
+                                    warn!("[AUTO] Preloader 握手失败: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. 检查 BROM 设备 (PID=0x0003)
+                let detection_result = detect_brom_driver_from_usb_bus();
+                match detection_result {
+                    UsbBusDetectionResult::WinUsbReady => {
+                        info!("{}", "[AUTO] 检测到 BROM WinUSB 设备".green().bold());
+                        return self.fallback_to_winusb_with_retry(context, 0);
+                    }
+                    UsbBusDetectionResult::SerialPort(ref port_name) => {
+                        if !port_name.is_empty() {
+                            info!("[AUTO] 检测到 BROM COM 口: {}", port_name);
+                            match self.serial_handshake_and_switch(port_name, context) {
+                                Ok(preloader) => {
+                                    info!("{}", "[AUTO] BROM 串口握手成功".green().bold());
+                                    self.mode = DeviceMode::Brom;
+                                    self.stage = USB阶段::Brom;
+                                    self.port_name = Some(port_name.clone());
+                                    return Ok((preloader, DeviceMode::Brom));
+                                }
+                                Err(e) => {
+                                    trace!("[AUTO] BROM 串口握手失败: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+
+                std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
             }
         }
 

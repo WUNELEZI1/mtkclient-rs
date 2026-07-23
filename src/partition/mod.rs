@@ -5,22 +5,22 @@
 //! - `io`      — `DAXFlash` 上的分区读写擦操作（read_gpt / write_partition / erase_partition）
 //! - `scatter` — 从 GPT 数据生成 scatter 文件（MTK SP Flash / 刷机匣 YAML）
 
+#[path = "cow.rs"]
+pub(crate) mod cow;
+#[path = "explorer.rs"]
+pub mod explorer;
+#[path = "ext4.rs"]
+pub(crate) mod ext4;
 #[path = "gpt.rs"]
 pub mod gpt;
 #[path = "io.rs"]
 pub mod io;
-#[path = "partition_table.rs"]
-pub mod partition_table;
 #[path = "super.rs"]
 pub mod lp;
-#[path = "cow.rs"]
-pub(crate) mod cow;
-#[path = "ext4.rs"]
-pub(crate) mod ext4;
+#[path = "partition_table.rs"]
+pub mod partition_table;
 #[path = "write.rs"]
 pub(crate) mod write;
-#[path = "explorer.rs"]
-pub mod explorer;
 
 pub use gpt::GptInfo;
 #[allow(unused_imports)]

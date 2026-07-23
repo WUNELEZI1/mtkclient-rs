@@ -85,8 +85,11 @@ impl<'a> DAXFlash<'a> {
 
         // status
         let st = self.status()?;
-        if st != 0 {
+        if st != 0 && st != 0xC0010003 {
             return Err(format!("setup_env status error: 0x{:08X}", st));
+        }
+        if st == 0xC0010003 {
+            trace!("setup_env: 0xC0010003（已初始化），跳过");
         }
 
         trace!("环境设置成功");
@@ -111,8 +114,11 @@ impl<'a> DAXFlash<'a> {
 
         // status
         let st = self.status()?;
-        if st != 0 {
+        if st != 0 && st != 0xC0010003 {
             return Err(format!("setup_hw_init status error: 0x{:08X}", st));
+        }
+        if st == 0xC0010003 {
+            trace!("setup_hw_init: 0xC0010003（已初始化），跳过");
         }
 
         trace!("硬件初始化成功");
@@ -266,9 +272,9 @@ impl<'a> DAXFlash<'a> {
                 }
             }
 
-            if pos % 0x2000 == 0 && !send_failed {
+            if pos % 0x10000 == 0 && !send_failed {
                 self.preloader.device.write(&[]).ok();
-                sleep(Duration::from_millis(5));
+                sleep(Duration::from_millis(1));
             }
         }
 

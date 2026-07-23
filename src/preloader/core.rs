@@ -28,9 +28,11 @@ pub struct Preloader {
     /// BROM 初始化是否完成（init 成功后为 true）
     pub brom_initialized: bool,
     /// 后台线程预读取的 DA 文件原始数据（init 启动线程，upload_da 时取用）
-    pub da_preloaded: Option<Arc<Mutex<Option<Vec<u8>>>>>, 
+    pub da_preloaded: Option<Arc<Mutex<Option<Vec<u8>>>>>,
     /// 后台线程预解析的 DA 文件（含 header 解析结果）
     pub da_parsed: Option<Arc<Mutex<Option<(Vec<u8>, Vec<DaRegion>)>>>>,
+    /// 用户指定的 DA 文件路径（--da 参数），为空时使用默认路径
+    pub da_path: String,
 }
 
 impl Preloader {
@@ -42,6 +44,7 @@ impl Preloader {
             brom_initialized: false,
             da_preloaded: None,
             da_parsed: None,
+            da_path: String::new(),
         }
     }
 }

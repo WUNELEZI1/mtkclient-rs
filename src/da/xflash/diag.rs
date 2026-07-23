@@ -24,7 +24,7 @@ impl<'a> DAXFlash<'a> {
     /// 发送 GET_CHIP_ID 作为心跳，不发送 GET_EMMC_INFO 或其他可能改变状态的命令。
     /// USB 高速重连已完全移除（只在 upload_da2 初始化时执行一次）。
     pub(crate) fn reinit(&mut self) -> Result<(), String> {
-        // 只做心跳：GET_CHIP_ID（确认 DA 存活）
+        // 心跳：GET_CHIP_ID（确认 DA 存活）
         match self.send_devctrl(0x010106, None) {
             Ok(data) if data.len() >= 10 => {
                 let hw_code = u16::from_le_bytes([data[0], data[1]]);
@@ -33,9 +33,6 @@ impl<'a> DAXFlash<'a> {
             Ok(_) => trace!("[reinit] GET_CHIP_ID 返回空数据"),
             Err(e) => trace!("[reinit] GET_CHIP_ID 失败 (可能不支持): {}", e),
         }
-
-        // 注意：不发送 GET_EMMC_INFO，因为 DA 复用时 emmc_info 已从 .state 恢复，
-        // 重新查询可能干扰 DA 状态机。
 
         Ok(())
     }
@@ -95,7 +92,7 @@ impl<'a> DAXFlash<'a> {
         };
 
         // 循环尝试打开设备（对齐 Python while not connect()）
-        let max_retries = 10;
+        let max_retries = 5;
         for attempt in 1..=max_retries {
             match self.preloader.device.reopen_device(&usb_context) {
                 Ok(_) => {
@@ -135,8 +132,9 @@ impl<'a> DAXFlash<'a> {
     ///   [24..28] block_size          (u32 LE, 字节)
     ///   [28..44] cid                 (16 字节 ASCII/MID)
     ///   [44..80] reserved / otp
+    /// 短超时 200ms，不支持时快速失败
     pub fn get_emmc_info(&mut self) -> Result<EmmcInfo, String> {
-        let data = self.send_devctrl(0x01010C, None)?;
+        let data = self.with_short_timeout(200, |da| da.send_devctrl(0x01010C, None))?;
         if data.len() < 24 {
             return Err(format!(
                 "EMMC info 数据太短（需要至少 24 字节，实际 {} 字节）",
@@ -197,8 +195,9 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 获取 EMMC 简化信息（仅 Boot1/Boot2 大小，兼容老设备响应）
+    /// 短超时 200ms，不支持时快速失败
     pub fn get_emmc_info_simple(&mut self) -> Result<EmmcInfo, String> {
-        let data = self.send_devctrl(0x01010C, None)?;
+        let data = self.with_short_timeout(200, |da| da.send_devctrl(0x01010C, None))?;
         if data.len() < 8 {
             return Err("EMMC info 数据太短".to_string());
         }
@@ -231,7 +230,10 @@ impl<'a> DAXFlash<'a> {
     ///
     /// 如果获取 VID/PID 或 HW code 失败，会静默忽略（不影响 DA 加载成功的结果）
     pub(crate) fn save_session_state(&mut self) {
-        let (vid, pid) = match (self.preloader.device.get_vid(), self.preloader.device.get_pid()) {
+        let (vid, pid) = match (
+            self.preloader.device.get_vid(),
+            self.preloader.device.get_pid(),
+        ) {
             (Some(v), Some(p)) => (v, p),
             _ => {
                 // 串口模式：get_vid/pid 返回 None，使用 MTK 默认 VID/PID
@@ -253,12 +255,18 @@ impl<'a> DAXFlash<'a> {
 
         if let Ok(hw_code) = hw_code_result {
             let preloader_path = self.preloader_path.as_deref();
+            let init_mode = if self.preloader.is_preloader_mode {
+                crate::connection::session::InitMode::Preloader
+            } else {
+                crate::connection::session::InitMode::Brom
+            };
             crate::connection::save_da_session(
                 vid,
                 pid,
                 hw_code,
                 target_config,
                 preloader_path,
+                init_mode,
             );
             for name in &self.optional_query_failures {
                 crate::connection::session::mark_optional_query_failed(name);
@@ -335,12 +343,13 @@ impl<'a> DAXFlash<'a> {
             std::thread::sleep(Duration::from_millis(500));
 
             // fallback: 扫描 Preloader COM 口
-            let port_name = crate::preloader::SerialPortTransport::find_brom_port_with_timeout(3000)
-                .and_then(|result| match result {
-                    crate::preloader::BromPortResult::SerialPort(p) => Some(p),
-                    _ => None,
-                })
-                .ok_or("无法找到 Preloader 串口端口")?;
+            let port_name =
+                crate::preloader::SerialPortTransport::find_brom_port_with_timeout(3000)
+                    .and_then(|result| match result {
+                        crate::preloader::BromPortResult::SerialPort(p) => Some(p),
+                        _ => None,
+                    })
+                    .ok_or("无法找到 Preloader 串口端口")?;
 
             info!("[RECONNECT_USB] 重新打开串口 {}...", port_name);
             let transport = crate::preloader::SerialPortTransport::new(&port_name, 115200)
@@ -370,7 +379,7 @@ impl<'a> DAXFlash<'a> {
 
         // 重新打开 USB 设备（使用同一 VID/PID）
         info!("[RECONNECT_USB] 重新打开 USB 设备...");
-        let max_retries = 10;
+        let max_retries = 5;
         for attempt in 1..=max_retries {
             match self.preloader.device.reopen_device(context) {
                 Ok(_) => {
@@ -402,7 +411,7 @@ impl<'a> DAXFlash<'a> {
             }
         }
 
-        Err(format!("USB 重新连接失败（{} 次尝试）", max_retries))
+        Err(format!("USB 重新连接失败（5 次尝试）"))
     }
 }
 

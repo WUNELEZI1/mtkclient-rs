@@ -1,6 +1,6 @@
 //! BROM IO 操作：DA 加载/跳转 + ME_ID/SOC_ID 查询
 //!
-//! - `send_da`    — 发送 Download Agent（含 64 字节分块 + 重试 + ZLP）
+//! - `send_da`    — 发送 Download Agent（动态 EP 包大小分块 + 重试 + ZLP）
 //! - `jump_da`    — 跳转到 DA（含 5 次重试，每次重试 clear_halt + flush）
 //! - `jump_bl`    — 跳转到 Bootloader
 //! - `get_me_id`  — 读取 ME_ID
@@ -64,12 +64,13 @@ impl Preloader {
 
         // 4. 上传数据
         let upload_start = Instant::now();
-        // 对齐 Python mtk_preloader.py: 固定 64 字节 chunk（某些设备固件对大 chunk 处理有 bug）
-        const CHUNK_SIZE: usize = 64;
+        // mtkclient 2.1.4.1 优化：动态使用 EP_OUT.wMaxPacketSize 替代固定 64B
+        // 保留最小值 64，防止端点报告异常值时出问题
+        let chunk_size = (self.device.获取输出端点最大包大小() as usize).max(64);
         trace!(
-            "[UPLOAD] sending {} bytes, chunk={} (Python 对齐)",
+            "[UPLOAD] sending {} bytes, chunk={}",
             dadata.len(),
-            CHUNK_SIZE
+            chunk_size
         );
 
         // 4a. 设置超时
@@ -77,10 +78,10 @@ impl Preloader {
         self.device
             .set_timeout(Duration::from_millis(DA_UPLOAD_TIMEOUT_MS));
 
-        // 4b. 发送数据（64 字节 chunk，末尾自动适配）
+        // 4b. 发送数据（动态 chunk，末尾自动适配）
         let mut pos = 0;
         while pos < dadata.len() {
-            let end = (pos + CHUNK_SIZE).min(dadata.len());
+            let end = (pos + chunk_size).min(dadata.len());
             let mut attempt = 0;
             loop {
                 attempt += 1;
@@ -132,8 +133,8 @@ impl Preloader {
     }
 
     /// JUMP_DA: 跳转到 Download Agent
-    /// 对齐 mtkclient: echo(JUMP_DA) → addr → addr → rword()
-    /// BROM 通过 addr 出现两次来区分 JUMP_DA 和 WRITE32
+    /// 协议: echo(0xD5) → echo(addr) → write(addr) → [0x00...] → 0xC0
+    /// 第二个 addr 触发跳转，BROM 可能发 0~2 个 0x00 填充，然后 DA 发 0xC0 同步
     pub fn jump_da(&mut self, addr: u32) -> Result<bool, String> {
         let mut last_err = String::new();
         for attempt in 1..=JUMP_DA_MAX_ATTEMPT {
@@ -144,22 +145,50 @@ impl Preloader {
                 trace!("[JUMP_DA] attempt {}: echo 0xD5 不匹配，重试", attempt);
                 continue;
             }
-            // 对齐 mtkclient: addr 发两次，BROM 用此区分 JUMP_DA 和 WRITE32
+            // 第一个 addr：BROM 正常回显
             if !self.echo_4byte(addr)? {
                 last_err = "jump_da echo addr(1): mismatch".to_string();
-                trace!("[JUMP_DA] attempt {}: 第一次 echo addr 不匹配，重试", attempt);
+                trace!(
+                    "[JUMP_DA] attempt {}: 第一次 echo addr 不匹配，重试",
+                    attempt
+                );
                 self.flush_input();
                 continue;
             }
-            if !self.echo_4byte(addr)? {
-                last_err = "jump_da echo addr(2): mismatch".to_string();
-                trace!("[JUMP_DA] attempt {}: 第二次 echo addr 不匹配，重试", attempt);
-                self.flush_input();
-                continue;
+            // 第二个 addr：触发跳转
+            self.device
+                .write(&addr.to_be_bytes())
+                .map_err(|e| format!("jump_da write addr(2): {}", e))?;
+
+            // 等待 DA 的 0xC0 同步信号（跳过 0x00 填充字节）
+            let orig_timeout = self.device.get_timeout();
+            self.device.set_timeout(Duration::from_millis(5000));
+            let mut found = false;
+            loop {
+                let mut byte = [0u8; 1];
+                match self.device.read_exact(&mut byte) {
+                    Ok(_) => {
+                        if byte[0] == 0xC0 {
+                            found = true;
+                            break;
+                        }
+                        trace!("[JUMP_DA] skip 0x{:02X}, waiting for 0xC0", byte[0]);
+                    }
+                    Err(e) => {
+                        trace!("[JUMP_DA] read error waiting for 0xC0: {}", e);
+                        break;
+                    }
+                }
             }
-            let status = self.rword()?;
-            info!("jump_da 成功: addr=0x{:08X}, status=0x{:04X}, attempt={}", addr, status, attempt);
-            return Ok(status == 0);
+            self.device.set_timeout(orig_timeout);
+
+            if found {
+                info!("jump_da 成功: addr=0x{:08X}, attempt={}", addr, attempt);
+                return Ok(true);
+            }
+
+            last_err = "jump_da: 未收到 0xC0".to_string();
+            trace!("[JUMP_DA] attempt {}: 未收到 0xC0，重试", attempt);
         }
         Err(last_err)
     }
