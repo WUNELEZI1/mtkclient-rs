@@ -60,7 +60,11 @@ pub fn lock_bootloader(da: &mut DAXFlash) -> Result<(), String> {
 
     // 从 chip 缓存获取 hw_code，不使用 get_hw_code()（BROM echo 协议）
     // DA 已加载后发送 BROM echo 命令会破坏 DA 状态机
-    let hw_code = da.preloader.chip.as_ref().map(|c| c.hw_code)
+    let hw_code = da
+        .preloader
+        .chip
+        .as_ref()
+        .map(|c| c.hw_code)
         .ok_or_else(|| "芯片配置不可用，无法执行 HACC 签名".to_string())?;
     let new_data = if seccfg_data.len() >= 28
         && u32::from_le_bytes(seccfg_data[0..4].try_into().unwrap()) == SecCfgV4::MAGIC

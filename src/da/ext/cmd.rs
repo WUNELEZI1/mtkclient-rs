@@ -8,7 +8,7 @@
 use log::info;
 
 use crate::da::xflash::DAXFlash;
-use crate::da::xflash::protocol::SET_META_BOOT_MODE;
+use crate::da::xflash::protocol::{DA_EXT_BOOT_ADDR, SET_META_BOOT_MODE};
 
 impl<'a> DAXFlash<'a> {
     /// 设置 meta boot 模式
@@ -30,7 +30,7 @@ impl<'a> DAXFlash<'a> {
         info!("在 DA 模式下开启 ADB...");
         self.set_meta("usb")?;
         info!("重启设备进入系统...");
-        self.boot_to(0x4FFF0000, &[], false, 0.0)?;
+        self.boot_to(DA_EXT_BOOT_ADDR, &[], false, 0.0)?;
         Ok(())
     }
 
@@ -66,11 +66,7 @@ impl<'a> DAXFlash<'a> {
             return Err("DA Extension 未加载，无法执行 poke。请确保 DA 已成功加载。".to_string());
         }
 
-        info!(
-            "poke: 写入地址 0x{:08X}, 大小 {} 字节",
-            addr,
-            data.len()
-        );
+        info!("poke: 写入地址 0x{:08X}, 大小 {} 字节", addr, data.len());
         self.write_flash_data(addr, data, 1, 8)?;
         info!("poke: 成功写入 {} 字节", data.len());
         Ok(())

@@ -11,6 +11,7 @@
 use log::{info, trace, warn};
 use std::time::Duration;
 
+use crate::da::xflash::protocol::GET_DA_VER_CMD;
 use crate::da::xflash::{DAXFlash, EmmcInfo};
 
 // =============================================================================
@@ -25,13 +26,13 @@ impl<'a> DAXFlash<'a> {
     /// USB 高速重连已完全移除（只在 upload_da2 初始化时执行一次）。
     pub(crate) fn reinit(&mut self) -> Result<(), String> {
         // 心跳：GET_CHIP_ID（确认 DA 存活）
-        match self.send_devctrl(0x010106, None) {
+        match self.send_devctrl(GET_DA_VER_CMD, None) {
             Ok(data) if data.len() >= 10 => {
                 let hw_code = u16::from_le_bytes([data[0], data[1]]);
                 info!("  芯片 HW Code: 0x{:04X}", hw_code);
             }
-            Ok(_) => trace!("[reinit] GET_CHIP_ID 返回空数据"),
-            Err(e) => trace!("[reinit] GET_CHIP_ID 失败 (可能不支持): {}", e),
+            Ok(_) => trace!("[reinit] GET_DA_VER_CMD 返回空数据"),
+            Err(e) => trace!("[reinit] GET_DA_VER_CMD 失败 (可能不支持): {}", e),
         }
 
         Ok(())
@@ -121,57 +122,96 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 获取 EMMC 完整信息（Boot1/Boot2/RPMB/User Size/Block Size/CID）
-    /// 对齐 Python: send_devctrl(0x01010C, None) → parse_emmc_info
     ///
-    /// 响应数据布局（XFlash GET_EMMC_INFO 0x01010C，80 字节）：
-    ///   [0..4]   boot1_size          (u32 LE, 字节)
-    ///   [4..8]   boot2_size          (u32 LE, 字节)
-    ///   [8..12]  rpmb_size           (u32 LE, 字节)
-    ///   [12..16] emmc_type           (u32 LE: 0=unknown, 1=EMMC, 2=UFS, 3=SD ...)
-    ///   [16..24] user_size           (u64 LE, 字节)
-    ///   [24..28] block_size          (u32 LE, 字节)
-    ///   [28..44] cid                 (16 字节 ASCII/MID)
-    ///   [44..80] reserved / otp
+    /// 对齐刷机匣 MtkClient 日志协议:
+    ///   1. DEVICE_CTRL(0x010009) → status
+    ///   2. 0x00040001 → status → xread(104 bytes) → status
+    ///
+    /// 返回格式（104 字节）：
+    ///   [0..4]   emmc_type (u32)
+    ///   [4..8]   block_size (u32)
+    ///   [8..72]  8 x qword: boot1, boot2, rpmb, gp1..gp4, user
+    ///   [72..88] CID (16 bytes)
+    ///
     /// 短超时 200ms，不支持时快速失败
     pub fn get_emmc_info(&mut self) -> Result<EmmcInfo, String> {
-        let data = self.with_short_timeout(200, |da| da.send_devctrl(0x01010C, None))?;
-        if data.len() < 24 {
+        let data = self.with_short_timeout(200, |da| da.send_emmc_query(0x00040001))?;
+        Self::parse_emmc_info(&data)
+    }
+
+    /// 获取 EMMC 简化信息（短超时 50ms，不支持时快速失败）
+    pub fn get_emmc_info_simple(&mut self) -> Result<EmmcInfo, String> {
+        let data = self.with_short_timeout(50, |da| da.send_emmc_query(0x00040001))?;
+        if data.len() < 8 {
+            return Err("EMMC info 数据太短".to_string());
+        }
+        Self::parse_emmc_info(&data)
+    }
+
+    /// 发送 EMMC 查询命令（DEVICE_CTRL 前缀 + 子命令）
+    ///
+    /// 对齐刷机匣: 每次 0x0004XXXX 命令前都先发 DEVICE_CTRL
+    fn send_emmc_query(&mut self, cmd: u32) -> Result<Vec<u8>, String> {
+        use crate::da::xflash::protocol::{CMD_MAGIC, pack3};
+
+        // Step 1: DEVICE_CTRL 前缀
+        let pkt = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&pkt)?;
+        self.preloader.device.write(&0x010009u32.to_le_bytes())?;
+        let st1 = self.status()?;
+        if st1 != 0 {
+            return Err(format!("EMMC query DEVICE_CTRL status: 0x{:08X}", st1));
+        }
+
+        // Step 2: 发送子命令
+        let pkt2 = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&pkt2)?;
+        self.preloader.device.write(&cmd.to_le_bytes())?;
+        let st2 = self.status()?;
+        if st2 != 0 {
             return Err(format!(
-                "EMMC info 数据太短（需要至少 24 字节，实际 {} 字节）",
+                "EMMC query cmd=0x{:08X} status: 0x{:08X}",
+                cmd, st2
+            ));
+        }
+
+        // Step 3: 读取响应数据
+        let resp = self.xread_data()?;
+        let _ = self.status();
+        Ok(resp)
+    }
+
+    /// 解析 EMMC info 数据（104 字节格式）
+    fn parse_emmc_info(data: &[u8]) -> Result<EmmcInfo, String> {
+        if data.len() < 8 {
+            return Err(format!(
+                "EMMC info 数据太短（需要至少 8 字节，实际 {} 字节）",
                 data.len()
             ));
         }
 
-        let boot1_size = u32::from_le_bytes(data[0..4].try_into().unwrap()) as u64;
-        let boot2_size = u32::from_le_bytes(data[4..8].try_into().unwrap()) as u64;
-        let rpmb_size = if data.len() >= 12 {
-            u32::from_le_bytes(data[8..12].try_into().unwrap()) as u64
-        } else {
-            0
+        let emmc_type_code = u32::from_le_bytes(data[0..4].try_into().unwrap());
+        let block_size = u32::from_le_bytes(data[4..8].try_into().unwrap());
+
+        let read_qword = |offset: usize| -> u64 {
+            if data.len() >= offset + 8 {
+                u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
+            } else {
+                0
+            }
         };
-        let emmc_type_code = if data.len() >= 16 {
-            u32::from_le_bytes(data[12..16].try_into().unwrap())
-        } else {
-            0
-        };
-        let user_size = if data.len() >= 24 {
-            u64::from_le_bytes(data[16..24].try_into().unwrap())
-        } else {
-            0
-        };
-        let block_size = if data.len() >= 28 {
-            u32::from_le_bytes(data[24..28].try_into().unwrap())
-        } else {
-            512
-        };
-        // CID 段在 28..44 (16 字节) — 厂商信息 ASCII
-        let cid = if data.len() >= 44 {
-            data[28..44].to_vec()
+
+        let boot1_size = read_qword(8);
+        let boot2_size = read_qword(16);
+        let rpmb_size = read_qword(24);
+        let user_size = read_qword(64);
+
+        let cid = if data.len() >= 88 {
+            data[72..88].to_vec()
         } else {
             Vec::new()
         };
 
-        // 类型代码 → 字符串描述
         let emmc_type = match emmc_type_code {
             0 => "Unknown".to_string(),
             1 => "EMMC".to_string(),
@@ -191,26 +231,6 @@ impl<'a> DAXFlash<'a> {
             block_size,
             emmc_type,
             cid,
-        })
-    }
-
-    /// 获取 EMMC 简化信息（仅 Boot1/Boot2 大小，兼容老设备响应）
-    /// 短超时 200ms，不支持时快速失败
-    pub fn get_emmc_info_simple(&mut self) -> Result<EmmcInfo, String> {
-        let data = self.with_short_timeout(200, |da| da.send_devctrl(0x01010C, None))?;
-        if data.len() < 8 {
-            return Err("EMMC info 数据太短".to_string());
-        }
-        let boot1_size = u32::from_le_bytes(data[0..4].try_into().unwrap()) as u64;
-        let boot2_size = u32::from_le_bytes(data[4..8].try_into().unwrap()) as u64;
-        Ok(EmmcInfo {
-            boot1_size,
-            boot2_size,
-            rpmb_size: 0,
-            user_size: 0,
-            block_size: 512,
-            emmc_type: "EMMC (简化)".to_string(),
-            cid: Vec::new(),
         })
     }
 }
@@ -282,137 +302,8 @@ impl<'a> DAXFlash<'a> {
 // =============================================================================
 
 impl<'a> DAXFlash<'a> {
-    /// DA 心跳检测：发送轻量级命令检测 DA 是否仍然在线
-    /// 使用 1 秒短超时，避免默认 5 秒超时导致用户等待过久
-    /// 返回 true 表示 DA 存活，false 表示 DA 已断开或设备已重启
-    pub fn da_heartbeat(&mut self) -> bool {
-        // 临时缩短超时到 1 秒，加快心跳检测速度
-        let orig_timeout = self.preloader.device.get_timeout();
-        self.preloader
-            .device
-            .set_timeout(Duration::from_millis(1000));
 
-        // 使用 GET_CHIP_ID (0x010106) 作为心跳命令，数据量小且安全
-        let result = match self.send_devctrl(0x010106, None) {
-            Ok(data) if data.len() >= 2 => {
-                trace!("[HEARTBEAT] DA 存活，响应 {} 字节", data.len());
-                true
-            }
-            Ok(_) => {
-                trace!("[HEARTBEAT] DA 响应空数据，视为存活");
-                true
-            }
-            Err(e) => {
-                trace!("[HEARTBEAT] DA 无响应: {}", e);
-                false
-            }
-        };
 
-        self.preloader.device.set_timeout(orig_timeout);
-        result
-    }
-
-    /// 检查 DA 会话是否有效，如果无效则重置会话状态
-    /// 注意：如果用户按了 Ctrl+C，不视为 DA 失效，避免误清 .state
-    pub fn check_da_session(&mut self) -> bool {
-        // 用户主动取消时不做心跳检测，避免 send_devctrl 被中断后误判为 DA 失效
-        if crate::cancel::requested() || crate::cancel::force_requested() {
-            trace!("[DA_SESSION] 用户取消中，跳过心跳检测");
-            return true;
-        }
-
-        if self.da_heartbeat() {
-            true
-        } else {
-            warn!("[DA_SESSION] DA 会话已失效，重置会话状态");
-            crate::connection::reset_session();
-            false
-        }
-    }
-
-    /// DA 会话恢复：关闭死连接 → 重新打开 → sync
-    /// 用于 Ctrl+C 中断后设备未重启的场景（DA 仍在运行，只是管道断了）
-    /// 支持 USB 和串口两种传输层。
-    pub(crate) fn reconnect_usb(
-        &mut self, context: &crate::usb::USB上下文
-    ) -> Result<(), String> {
-        if !self.preloader.device.is_libusb() {
-            // 串口模式：关闭并重新打开串口
-            info!("[RECONNECT_USB] 串口模式，关闭并重新打开串口...");
-            self.preloader.device.close_device()?;
-            std::thread::sleep(Duration::from_millis(500));
-
-            // fallback: 扫描 Preloader COM 口
-            let port_name =
-                crate::preloader::SerialPortTransport::find_brom_port_with_timeout(3000)
-                    .and_then(|result| match result {
-                        crate::preloader::BromPortResult::SerialPort(p) => Some(p),
-                        _ => None,
-                    })
-                    .ok_or("无法找到 Preloader 串口端口")?;
-
-            info!("[RECONNECT_USB] 重新打开串口 {}...", port_name);
-            let transport = crate::preloader::SerialPortTransport::new(&port_name, 115200)
-                .map_err(|e| format!("重新打开串口失败: {}", e))?;
-            self.preloader.device = Box::new(transport);
-
-            // 串口重连后同样需要排空残留 + 协议同步 + 确认 DA 存活
-            self.preloader.device.drain_pending();
-            if let Err(e) = self.xflash_sync() {
-                warn!("[RECONNECT_USB] 串口 sync 失败: {}，DA 可能已掉线", e);
-                return Err(format!("串口重连后 sync 失败: {}", e));
-            }
-            std::thread::sleep(Duration::from_millis(50));
-            if !self.da_heartbeat() {
-                return Err("串口重连后 DA 心跳失败，可能需要重新加载 DA".to_string());
-            }
-
-            info!("[RECONNECT_USB] 串口重新连接成功（协议同步完成）");
-            return Ok(());
-        }
-
-        info!("[RECONNECT_USB] 关闭死 USB 连接...");
-        self.preloader.device.close_device()?;
-
-        info!("[RECONNECT_USB] 等待设备重新枚举...");
-        std::thread::sleep(Duration::from_millis(500));
-
-        // 重新打开 USB 设备（使用同一 VID/PID）
-        info!("[RECONNECT_USB] 重新打开 USB 设备...");
-        let max_retries = 5;
-        for attempt in 1..=max_retries {
-            match self.preloader.device.reopen_device(context) {
-                Ok(_) => {
-                    info!("[RECONNECT_USB] 重新连接成功 (第 {} 次尝试)", attempt);
-
-                    // 重连后：清空 USB 管道残留 → 协议同步 → 确认 DA 存活
-                    self.preloader.device.drain_pending();
-                    if let Err(e) = self.xflash_sync() {
-                        warn!("[RECONNECT_USB] sync 失败: {}，DA 可能已掉线", e);
-                        return Err(format!("重连后 sync 失败: {}", e));
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
-                    if !self.da_heartbeat() {
-                        return Err("重连后 DA 心跳失败，可能需要重新加载 DA".to_string());
-                    }
-                    info!("[RECONNECT_USB] 重连后协议同步完成，DA 存活");
-
-                    return Ok(());
-                }
-                Err(e) => {
-                    trace!(
-                        "[RECONNECT_USB] 第 {}/{} 次尝试失败: {}",
-                        attempt, max_retries, e
-                    );
-                    if attempt < max_retries {
-                        std::thread::sleep(Duration::from_millis(500));
-                    }
-                }
-            }
-        }
-
-        Err(format!("USB 重新连接失败（5 次尝试）"))
-    }
 }
 
 // =============================================================================

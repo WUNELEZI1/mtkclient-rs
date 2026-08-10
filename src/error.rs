@@ -10,7 +10,6 @@ pub enum AppError {
     Security(String),
     Io(std::io::Error),
     Parse(String),
-    Config(String),
 }
 
 impl std::fmt::Display for AppError {
@@ -21,7 +20,6 @@ impl std::fmt::Display for AppError {
             AppError::Security(msg) => write!(f, "安全错误: {}", msg),
             AppError::Io(err) => write!(f, "IO 错误: {}", err),
             AppError::Parse(msg) => write!(f, "解析错误: {}", msg),
-            AppError::Config(msg) => write!(f, "配置错误: {}", msg),
         }
     }
 }

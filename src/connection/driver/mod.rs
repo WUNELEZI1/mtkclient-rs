@@ -37,6 +37,6 @@ pub use detect::{
     detect_brom_driver_from_usb_bus, query_com_port_usb_info,
 };
 #[allow(unused_imports)]
-pub use switch::{ensure_winusb_driver, install_winusb_with_wdi, switch_to_winusb};
+pub use switch::switch_to_winusb;
 #[allow(unused_imports)]
-pub use verify::{check_winusb_installed, get_device_instance_id};
+pub use verify::get_device_instance_id;

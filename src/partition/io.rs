@@ -58,7 +58,15 @@ impl<R: Read> Read for PaddedReader<R> {
     }
 }
 
-const GPT_CACHE_FILE: &str = "gpt.bin";
+/// 获取 GPT 缓存文件路径（位于 tmp/ 目录）
+fn gpt_cache_file() -> std::path::PathBuf {
+    crate::system::paths::获取tmp路径("gpt.bin")
+}
+
+/// 获取完整 GPT 数据文件路径（位于 tmp/ 目录）
+fn gpt_full_file() -> std::path::PathBuf {
+    crate::system::paths::获取tmp路径("gpt_full.bin")
+}
 
 impl<'a> DAXFlash<'a> {
     pub(crate) fn save_gpt_cache_file(path: &str, data: &[u8]) -> Result<(), String> {
@@ -127,14 +135,16 @@ impl<'a> DAXFlash<'a> {
         // 保存原始数据供调试模式使用
         self.last_gpt_data = Some(gpt_data.clone());
 
-        // 写入完整原始数据到文件
-        std::fs::write("gpt_full.bin", &gpt_data)
+        // 写入完整原始数据到 tmp/ 目录
+        let gpt_full_path = gpt_full_file();
+        std::fs::write(&gpt_full_path, &gpt_data)
             .map_err(|e| format!("写 gpt_full.bin 失败: {}", e))?;
-        debug!("已写入 gpt_full.bin, {} 字节", gpt_data.len());
+        debug!("已写入 {}, {} 字节", gpt_full_path.display(), gpt_data.len());
 
-        // 备份 gpt.bin（对齐 mtkclient 行为）
-        Self::save_gpt_cache_file(GPT_CACHE_FILE, &gpt_data)?;
-        debug!("已写入 {}, {} 字节", GPT_CACHE_FILE, gpt_data.len());
+        // 备份 gpt.bin 到 tmp/ 目录（对齐 mtkclient 行为）
+        let gpt_cache_path = gpt_cache_file();
+        Self::save_gpt_cache_file(&gpt_cache_path.to_string_lossy(), &gpt_data)?;
+        debug!("已写入 {}, {} 字节", gpt_cache_path.display(), gpt_data.len());
 
         // 只做解析校验。完整分区表输出只在 printgpt 命令中执行，
         // 读分区命令内部读取 GPT 时不应刷屏。
@@ -295,9 +305,15 @@ impl<'a> DAXFlash<'a> {
                     if let Some(first) = gpt.partitions().first() {
                         let inferred = first.start_addr / 2;
                         // 合理性检查：推断值至少 1MB 才使用，否则默认 4MB
-                        let size = if inferred >= 0x10_0000 { inferred } else { 0x400000 };
-                        trace!("{} fallback: GPT 第一个分区起始=0x{:X}, 推断大小=0x{:X}",
-                               name, first.start_addr, size);
+                        let size = if inferred >= 0x10_0000 {
+                            inferred
+                        } else {
+                            0x400000
+                        };
+                        trace!(
+                            "{} fallback: GPT 第一个分区起始=0x{:X}, 推断大小=0x{:X}",
+                            name, first.start_addr, size
+                        );
                         return Some((if lower.starts_with("boot1") { 1 } else { 2 }, 0, size));
                     }
                 }
@@ -621,7 +637,7 @@ impl<'a> DAXFlash<'a> {
                 .map_err(|e| format!("文件 seek 失败: {}", e))?;
         }
 
-        const VERIFY_CHUNK: usize = 0x20000; // 128KB 校验块
+        const VERIFY_CHUNK: usize = 0x100000; // 1MB 校验块（减少读取次数）
         let mut offset = verify_start;
         let mut buf = vec![0u8; VERIFY_CHUNK];
 
@@ -734,7 +750,7 @@ impl<'a> DAXFlash<'a> {
         let remaining = 写入大小.saturating_sub(start_offset);
         let padded_reader =
             PaddedReader::new(file_seekable, 文件大小.saturating_sub(start_offset), 512);
-        let mut reader = std::io::BufReader::new(padded_reader);
+        let mut reader = std::io::BufReader::with_capacity(1024 * 1024, padded_reader);
 
         let write_addr = 地址 + start_offset;
 
@@ -804,12 +820,23 @@ impl<'a> DAXFlash<'a> {
         const STATUS_COMPLETE: u32 = 0x40040005;
         const STATUS_CONTINUE: u32 = 0x40040004;
 
+        let erase_start = std::time::Instant::now();
         let mut status = self.status()?;
         while status == STATUS_CONTINUE {
             // STATUS_CONTINUE 包含等待时间（毫秒）
             let wait_ms = self.status()?;
+            // 进度提示：每 5 秒输出一次等待信息
+            let elapsed = erase_start.elapsed().as_secs();
+            if elapsed > 0 && elapsed % 5 == 0 {
+                info!(
+                    "  擦除中... 已等待 {}s (分区 {}, {:.2} MB)",
+                    elapsed,
+                    分区名,
+                    大小 as f64 / 1024.0 / 1024.0
+                );
+            }
             std::thread::sleep(std::time::Duration::from_millis(wait_ms as u64));
-            let _ = self.ack(); // AckResult 的 Debug 输出已满足日志需求
+            let _ = self.ack();
             status = self.status()?;
         }
 

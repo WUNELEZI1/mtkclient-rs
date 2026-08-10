@@ -237,18 +237,7 @@ fn poll_libusb_ready(max_seconds: u32) -> bool {
     false
 }
 
-/// 确保 WinUSB 驱动已安装（检查 + 切换）
-pub fn ensure_winusb_driver(_vid: u16, _pid: u16) -> Result<(), String> {
-    if current_driver_is_winusb() {
-        return Ok(());
-    }
-    switch_to_winusb()
-}
 
-/// 兼容旧接口
-pub fn install_winusb_with_wdi(_vid: u16, _pid: u16) -> Result<(), String> {
-    switch_to_winusb()
-}
 
 #[cfg(test)]
 mod tests {

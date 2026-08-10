@@ -52,8 +52,6 @@ pub trait BromTransport {
     fn drain_pending(&mut self) {}
     /// 循环排空 IN 管道残留（不 clear_halt，用于 DA 会话复用）
     fn drain_pipes(&mut self) {}
-    /// USB 管道恢复：循环排空 IN 残留 + clear_halt 双端点（HACC 超时后使用）
-    fn recover_usb_pipes(&mut self) {}
     fn set_timeout(&mut self, duration: Duration);
     fn get_timeout(&self) -> Duration;
     fn do_handshake(&mut self) -> Result<bool, String>;
@@ -99,9 +97,6 @@ pub trait BromTransport {
     }
     fn clear_halt_out(&mut self) -> Result<(), String> {
         Err("clear_halt_out not supported on this transport".to_string())
-    }
-    fn clear_halt_ep(&mut self, _ep: u8) -> Result<(), String> {
-        Err("clear_halt_ep not supported on this transport".to_string())
     }
 
     /// USB 总线复位（默认不支持，仅 UsbDevice 实现）
@@ -281,25 +276,21 @@ impl SerialPortTransport {
 impl BromTransport for SerialPortTransport {
     fn write(&mut self, data: &[u8]) -> Result<usize, String> {
         let port = self.port.as_mut().ok_or("串口已关闭")?;
-        port
-            .write_all(data)
+        port.write_all(data)
             .map_err(|e| format!("serial write: {}", e))?;
         Ok(data.len())
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<usize, String> {
         let port = self.port.as_mut().ok_or("串口已关闭")?;
-        port
-            .read_exact(buf)
+        port.read_exact(buf)
             .map_err(|e| format!("serial read_exact: {}", e))?;
         Ok(buf.len())
     }
 
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
         let port = self.port.as_mut().ok_or("串口已关闭")?;
-        port
-            .read(buf)
-            .map_err(|e| format!("serial read: {}", e))
+        port.read(buf).map_err(|e| format!("serial read: {}", e))
     }
 
     fn set_timeout(&mut self, duration: Duration) {
@@ -404,10 +395,6 @@ impl BromTransport for USB设备 {
         USB设备::drain_pipes(self)
     }
 
-    fn recover_usb_pipes(&mut self) {
-        USB设备::recover_usb_pipes(self)
-    }
-
     fn set_timeout(&mut self, duration: Duration) {
         USB设备::设置超时(self, duration);
     }
@@ -465,14 +452,6 @@ impl BromTransport for USB设备 {
 
     fn clear_halt_out(&mut self) -> Result<(), String> {
         USB设备::清除输出端点停顿(self)
-    }
-
-    fn clear_halt_ep(&mut self, ep: u8) -> Result<(), String> {
-        if ep & 0x80 != 0 {
-            USB设备::清除输入端点停顿(self)
-        } else {
-            USB设备::清除输出端点停顿(self)
-        }
     }
 
     fn reset_device(&mut self) -> Result<(), String> {

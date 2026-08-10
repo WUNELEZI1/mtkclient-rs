@@ -58,10 +58,7 @@ pub(crate) const SPDRP_HARDWAREID: u32 = 0x00000001;
 pub(crate) const SPDRP_DEVICEDESC: u32 = 0x00000000;
 pub(crate) const SPDRP_SERVICE: u32 = 0x00000004;
 pub(crate) const SPDRP_MFG: u32 = 0x0000000B;
-pub(crate) const SPDRP_DRIVER: u32 = 0x0000000C;
-pub(crate) const SPDRP_DEVTYPE: u32 = 0x0000001F;
 pub(crate) const SPDRP_COMPATIBLEIDS: u32 = 0x00000002;
-pub(crate) const REG_SZ: u32 = 1;
 pub(crate) const SPDRP_PORTNAME: u32 = 0x0000001C;
 
 // =============================================================================

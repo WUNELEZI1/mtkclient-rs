@@ -83,9 +83,9 @@ pub struct Cli {
 
     #[arg(
         long = "da_x_speed",
-        default_value_t = 1,
+        default_value_t = 3,
         value_parser = clap::value_parser!(u8).range(1..=3),
-        help = "DA 加载速度：1=完整协议、2=快速跳过可选查询、3=极速跳过更多查询但仍执行 USB 高速重连"
+        help = "DA 加载速度：1=完整协议、2=快速跳过可选查询、3=极速（默认，跳过所有可选查询）"
     )]
     pub da_x_speed: u8,
 
@@ -138,6 +138,12 @@ pub struct Cli {
     run <script.json>           从 JSON 脚本文件批量执行命令"
     )]
     pub command: Option<String>,
+
+    #[arg(
+        long = "data-dir",
+        help = "指定数据目录（由 GUI 传入；默认使用程序所在目录下的 data/，含 payload/ 与 bin/ 子目录）"
+    )]
+    pub data_dir: Option<String>,
 
     #[arg(allow_hyphen_values = true, help = "命令参数")]
     pub args: Vec<String>,

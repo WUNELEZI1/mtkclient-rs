@@ -43,26 +43,6 @@ pub struct EmmcInfo {
 }
 
 impl EmmcInfo {
-    /// 是否为合法 EMMC
-    pub fn is_valid(&self) -> bool {
-        self.user_size > 0
-    }
-    /// Boot1 大小（MB）
-    pub fn boot1_size_mb(&self) -> u64 {
-        self.boot1_size / 1024 / 1024
-    }
-    /// Boot2 大小（MB）
-    pub fn boot2_size_mb(&self) -> u64 {
-        self.boot2_size / 1024 / 1024
-    }
-    /// 用户区大小（MB）
-    pub fn user_size_mb(&self) -> u64 {
-        self.user_size / 1024 / 1024
-    }
-    /// 用户区大小（GB）
-    pub fn user_size_gb(&self) -> u64 {
-        self.user_size / 1024 / 1024 / 1024
-    }
 }
 
 /// DAXFlash 结构体，处理 XFlash 协议
@@ -99,7 +79,7 @@ impl<'a> DAXFlash<'a> {
             last_gpt_data: None,
             super_metadata: None,
             patch_da: true,
-            da_x_speed: 1,
+            da_x_speed: 3,
             da_file_data: None,
             preloader_path: None,
             optional_query_failures: Vec::new(),

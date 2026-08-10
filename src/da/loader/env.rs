@@ -10,16 +10,10 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use crate::da::xflash::DAXFlash;
-use crate::da::xflash::protocol::pack3;
-
-// 注意：CMD_* 常量已在 da_xflash_protocol 中定义，这里通过包内引用
-// (由于 pub const 还未在 protocol 模块中 re-export，这里复制以保持完全自包含)
-const CMD_MAGIC: u32 = 0xFEEEEEEF;
-const CMD_SETUP_ENVIRONMENT: u32 = 0x010100;
-const CMD_SETUP_HW_INIT_PARAMS: u32 = 0x010101;
-const CMD_INIT_EXT_RAM: u32 = 0x01000A;
-const CMD_BOOT_TO: u32 = 0x010008;
-const CMD_SYNC_SIGNAL: u32 = 0x434E5953;
+use crate::da::xflash::protocol::{
+    CMD_BOOT_TO, CMD_INIT_EXT_RAM, CMD_MAGIC, CMD_SETUP_ENVIRONMENT, CMD_SETUP_HW_INIT_PARAMS,
+    CMD_SYNC_SIGNAL, pack3,
+};
 
 fn boot_to_should_clear_halt_before_write() -> bool {
     false
@@ -241,18 +235,18 @@ impl<'a> DAXFlash<'a> {
         self.write_with_retry(&pkt1, "boot_to param header")?;
         self.write_with_retry(&param, "boot_to param data")?;
 
-        // Python: self.send_data(da) — 发送 12 字节头 + 分块数据
-        // 动态 chunk：使用端点最大包大小（对齐 Python usblib.write 的 pktsize）
+        // Python: self.send_data(da) — 发送 12 字节头 + 大块数据
+        // USB bulk 传输支持任意大小的 buffer，底层驱动自动拆分
+        // 使用 64KB 分块（而非 EP maxPacketSize 512B），大幅减少系统调用次数
         let pkt2 = pack3(CMD_MAGIC, 0x01, da.len() as u32);
         self.write_with_retry(&pkt2, "boot_to data header")?;
 
-        let maxinsize = self.preloader.device.获取输出端点最大包大小() as usize;
+        const BULK_CHUNK: usize = 0x10000; // 64KB — USB bulk 最佳性能分块
         let mut remaining = da.len();
         let mut pos = 0;
-        let mut send_failed = false;
 
         while remaining > 0 {
-            let chunk_size = std::cmp::min(remaining, maxinsize);
+            let chunk_size = std::cmp::min(remaining, BULK_CHUNK);
             let chunk = &da[pos..pos + chunk_size];
 
             match self.preloader.device.write(chunk) {
@@ -267,38 +261,29 @@ impl<'a> DAXFlash<'a> {
                             remaining, e
                         );
                     }
-                    send_failed = true;
                     break;
                 }
-            }
-
-            if pos % 0x10000 == 0 && !send_failed {
-                self.preloader.device.write(&[]).ok();
-                sleep(Duration::from_millis(1));
             }
         }
 
         // 恢复超时
         self.preloader.device.set_timeout(orig_timeout);
 
-        if !send_failed {
-            // Python send_data: 数据发送完成后直接读 status，不发送 ZLP
-            let _ = self.status();
+        // 对齐 Python boot_to：先 sleep 让设备执行跳转代码，然后只读一次 status。
+        // 不能用轮询——轮询会消耗 SYNC 包，导致后续 DA extensions 的 DEVICE_CTRL
+        // 读到错误状态（SYNC 被提前消费），DA extensions 无法加载。
+        let sleep_ms = (timeout * 1000.0) as u64;
+        if sleep_ms > 0 {
+            sleep(Duration::from_millis(sleep_ms));
         }
 
-        // Python: time.sleep(timeout) — 等待设备执行
-        let sleep_ms = (timeout * 1000.0) as u64;
-        sleep(Duration::from_millis(sleep_ms));
-        trace!("[BOOT_TO DEBUG] slept {}ms, reading status2...", sleep_ms);
-
-        // Python: try: status = self.status() except: ...
-        // 设备可能已经重新枚举，status 读取失败是正常的
+        // Python: status = self.status() — 只读一次
+        // 接受 SYNC (0x434E5953) 或 0x0 作为成功
         match self.status() {
             Ok(st2) => {
-                // Python: 接受 0x434E5953 (SYNC_SIGNAL="CYNS") 或 0x0 作为成功
-                if st2 == 0x434E5953 || st2 == 0x0 {
+                if st2 == CMD_SYNC_SIGNAL || st2 == 0x0 {
                     if display {
-                        trace!("Boot 成功");
+                        trace!("Boot 成功 (status=0x{:08X})", st2);
                     }
                     Ok(true)
                 } else {

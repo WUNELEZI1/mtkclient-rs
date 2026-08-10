@@ -2,30 +2,6 @@
 //!
 //! 通过 nusb 实际打开设备确认 WinUSB 驱动是否已就绪。
 
-use log::info;
-use nusb::MaybeFuture;
-
-use super::setupapi::{MTK_BROM_PID, MTK_VID};
-
-/// 检查 WinUSB 驱动是否已就绪（nusb 实际打开设备）
-pub fn check_winusb_installed() -> bool {
-    let mut devices = match nusb::list_devices().wait() {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
-
-    let found = devices.any(|d| d.vendor_id() == MTK_VID && d.product_id() == MTK_BROM_PID);
-
-    if found {
-        info!(
-            "[DRIVER] nusb 已能枚举设备 (0x{:04X}:0x{:04X})",
-            MTK_VID, MTK_BROM_PID
-        );
-    }
-
-    found
-}
-
 /// 兼容旧接口 — 通过 pnputil 枚举设备实例 ID
 #[allow(dead_code)]
 pub fn get_device_instance_id(vid: u16, pid: u16) -> Result<String, String> {

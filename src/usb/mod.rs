@@ -25,9 +25,7 @@ pub mod log;
 
 // 公共 re-export，保持外部调用方式不变
 #[allow(unused_imports)]
-pub use context::{
-    USB上下文, USB阶段, 是否有联发科设备, 获取第一个联发科VIDPID, 通过libusb检测联发科设备,
-};
+pub use context::{USB上下文, USB阶段, 获取第一个联发科VIDPID};
 pub use device::USB设备;
 #[allow(unused_imports)]
 pub use log::{usb_trace, 设置USB日志开关, 设置USB读取静默};

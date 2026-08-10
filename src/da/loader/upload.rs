@@ -63,7 +63,11 @@ impl<'a> DAXFlash<'a> {
         // Fallback：同步读取 + 解析（使用芯片 da_code 匹配 DA 文件内条目）
         trace!("[DA_PRELOAD] 后台线程未就绪，回退到同步加载");
         let da_data = self.load_da_file()?;
-        let da_code = self.preloader.chip.as_ref().map(|c| c.da_code)
+        let da_code = self
+            .preloader
+            .chip
+            .as_ref()
+            .map(|c| c.da_code)
             .ok_or_else(|| "芯片配置不可用，无法确定 DA code".to_string())?;
         let (_magic, regions, _is_v6) = parse_da_header(&da_data, da_code)?;
         Ok((da_data, regions))

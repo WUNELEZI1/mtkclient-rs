@@ -14,7 +14,3 @@ pub mod cmd;
 pub mod generate;
 #[path = "patch.rs"]
 pub mod patch;
-
-/// DA extensions 模板（预编译的 da_x.bin）
-pub const DA_EXTENSIONS_TEMPLATE: &[u8] =
-    include_bytes!("../../../archive/mtkclient-2.0.1/mtkclient/payloads/da_x.bin");

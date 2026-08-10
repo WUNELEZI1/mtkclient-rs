@@ -50,9 +50,15 @@ pub fn cmd_multi(
         let sub_cmd = parts[0].as_str();
         let sub_args = &parts[1..];
 
-        let result: Result<(), Box<dyn std::error::Error>> =
-            super::dispatch_cmd(da, sub_cmd, sub_args, app_config.verify, log_level, app_config)
-                .map_err(|e| e.into());
+        let result: Result<(), Box<dyn std::error::Error>> = super::dispatch_cmd(
+            da,
+            sub_cmd,
+            sub_args,
+            app_config.verify,
+            log_level,
+            app_config,
+        )
+        .map_err(|e| e.into());
 
         match result {
             Ok(()) => {

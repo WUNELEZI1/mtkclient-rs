@@ -3,6 +3,7 @@ use crate::usb;
 use crate::usb::{USB上下文, USB阶段};
 use colored::Colorize;
 use log::{debug, info, trace, warn};
+use std::collections::HashSet;
 use std::time::Duration;
 
 use super::manager::{ConnectionManager, DeviceMode};
@@ -247,7 +248,7 @@ impl ConnectionManager {
                             && info.vid == 0x0E8D
                             && (info.pid == 0x0003 || info.pid == 0x2000 || info.pid == 0x2001)
                         {
-                            info!(
+                            debug!(
                                 "[PRELOADER] 发现 Preloader COM 口: {} (VID={:04X} PID={:04X})，尝试 DA 会话复用",
                                 p.port_name, info.vid, info.pid
                             );
@@ -281,6 +282,7 @@ impl ConnectionManager {
         }
 
         let mut retry_count = 0u32;
+        let mut reported_ports = HashSet::new();
         const PRELOADER_MAX_RETRY: u32 = 50; // 约 10 秒 (50 * 200ms)
 
         loop {
@@ -298,10 +300,17 @@ impl ConnectionManager {
                         && info.vid == 0x0E8D
                         && info.pid == 0x2000
                     {
-                        info!(
-                            "[PRELOADER] 发现 Preloader COM 口: {} (VID={:04X} PID={:04X})",
-                            p.port_name, info.vid, info.pid
-                        );
+                        if reported_ports.insert(p.port_name.clone()) {
+                            info!(
+                                "[PRELOADER] 发现 Preloader COM 口: {} (VID={:04X} PID={:04X})",
+                                p.port_name, info.vid, info.pid
+                            );
+                        } else {
+                            trace!(
+                                "[PRELOADER] 发现 Preloader COM 口: {} (VID={:04X} PID={:04X})",
+                                p.port_name, info.vid, info.pid
+                            );
+                        }
                         match self.preloader_serial_handshake(&p.port_name) {
                             Ok(preloader) => {
                                 self.mode = DeviceMode::Preloader;
@@ -359,21 +368,29 @@ impl ConnectionManager {
                                     "[PRELOADER] 检测到 BROM COM 口: {}，自动切换到 BROM 模式",
                                     p.port_name
                                 );
-                                return self.smart_init(context, crate::system::config::工作模式::Brom);
+                                return self
+                                    .smart_init(context, crate::system::config::工作模式::Brom);
                             }
                         }
                     }
 
                     // 检测 BROM WinUSB 设备
-                    if let Ok(_usb_device) = usb::USB设备::按VID_PID打开(context, 0x0E8D, 0x0003) {
-                        warn!("[PRELOADER] 检测到 BROM WinUSB 设备 (PID=0x0003)，自动切换到 BROM 模式");
+                    if let Ok(_usb_device) =
+                        usb::USB设备::按VID_PID打开(context, 0x0E8D, 0x0003)
+                    {
+                        warn!(
+                            "[PRELOADER] 检测到 BROM WinUSB 设备 (PID=0x0003)，自动切换到 BROM 模式"
+                        );
                         return self.smart_init(context, crate::system::config::工作模式::Brom);
                     }
 
                     trace!("[PRELOADER] 未检测到 BROM 设备，继续等待 Preloader 设备...");
                 } else {
-                    trace!("[PRELOADER] 等待 {} 次 (约 {} 秒) 未找到 Preloader 设备，继续等待...",
-                           retry_count, (retry_count * 200) / 1000);
+                    trace!(
+                        "[PRELOADER] 等待 {} 次 (约 {} 秒) 未找到 Preloader 设备，继续等待...",
+                        retry_count,
+                        (retry_count * 200) / 1000
+                    );
                 }
 
                 // 重置计数器继续等待（给用户更多时间）
@@ -394,7 +411,7 @@ impl ConnectionManager {
         {
             return Err("串口 Preloader 握手失败".to_string());
         }
-        info!(
+        debug!(
             "{}",
             format!("[PRELOADER] {} 握手成功", port_name).green().bold()
         );

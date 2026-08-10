@@ -6,7 +6,7 @@
 use log::{trace, warn};
 
 use crate::da::DAXFlash;
-use crate::da::ext::{DA_EXTENSIONS_TEMPLATE, patch::find_binary};
+use crate::da::ext::patch::find_binary;
 
 impl<'a> DAXFlash<'a> {
     /// 生成 DA extensions 二进制数据
@@ -15,8 +15,16 @@ impl<'a> DAXFlash<'a> {
         let da2 = &self.da2_data;
         let da2address = self.da2_base_addr;
 
-        // 复制模板
-        let mut daextdata = DA_EXTENSIONS_TEMPLATE.to_vec();
+        // 运行时从 data/generic/da_x.bin 加载模板（不再硬编码进二进制）
+        let mut daextdata = match crate::system::compress::read_file_auto_decompress(
+            std::path::Path::new("data/generic/da_x.bin"),
+        ) {
+            Ok(data) => data,
+            Err(e) => {
+                warn!("加载 DA extensions 模板 da_x.bin 失败: {}", e);
+                return None;
+            }
+        };
 
         // 1. register_devctrl: \x38\xB5\x05\x46\x0C\x20
         let register_devctrl = find_binary(da2, b"\x38\xB5\x05\x46\x0C\x20", 0);
