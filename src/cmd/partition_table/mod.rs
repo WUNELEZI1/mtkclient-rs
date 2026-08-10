@@ -97,8 +97,8 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
             }
             if let Ok(data) = da.get_last_gpt_data() {
                 match generate_scatter_from_gpt(data, "scatter.txt") {
-                    Ok(parts) => info!("  scatter.txt 已生成 ({} 分区)", parts.len()),
-                    Err(e) => info!("  Warning: scatter 生成失败: {}", e),
+                    Ok(parts) => debug!("  scatter.txt 已生成 ({} 分区)", parts.len()),
+                    Err(e) => debug!("  Warning: scatter 生成失败: {}", e),
                 }
             }
         }
@@ -107,7 +107,7 @@ pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
 }
 
 /// 读取 GPT 原始数据到指定路径
-/// 
+///
 /// 如果 `path` 包含文件扩展名（如 .bin/.img），直接保存为该文件；
 /// 否则将其视为目录，在目录下创建 `gpt.bin`。
 pub fn cmd_read_gpt(

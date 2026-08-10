@@ -287,10 +287,6 @@ impl USB设备 {
         Ok((输入端点句柄, 输出端点句柄))
     }
 
-    /// 是否是 nusb（WinUSB）后端
-    pub fn 是libusb(&self) -> bool {
-        true
-    }
 
     /// 获取 EP_OUT 的最大包大小
     #[allow(dead_code)]
@@ -298,10 +294,6 @@ impl USB设备 {
         self.输出端点最大包大小
     }
 
-    /// 获取 EP_IN 的最大包大小
-    pub fn 获取输入端点最大包大小(&self) -> u16 {
-        self.输入端点最大包大小
-    }
 
     pub fn 设置超时(&mut self, duration: Duration) {
         self.超时 = duration;
@@ -417,58 +409,6 @@ impl USB设备 {
         }
     }
 
-    /// USB 管道恢复：循环排空 IN 残留数据 + 重置双端点 HALT 状态
-    /// 用于 HACC 签名等长时间操作超时后的管道恢复。
-    /// 根因：send_devctrl 超时后设备 DA 状态机卡在"等待 status 被读取"，
-    /// 拒绝接受新 OUT 命令。必须循环排空 IN 残留（让设备状态机推进），
-    /// 再 clear_halt 双端点恢复 USB 硬件层。
-    pub fn recover_usb_pipes(&mut self) {
-        self.输入暂存.clear();
-
-        // 先取消挂起的 IN transfer
-        if let Some(ep_in) = self.输入端点句柄.as_mut() {
-            if ep_in.pending() > 0 {
-                trace!("[USB] recover: 取消 {} 个挂起 IN 传输", ep_in.pending());
-                ep_in.cancel_all();
-                while ep_in.pending() > 0 {
-                    let _ = ep_in.wait_next_complete(Duration::from_millis(10));
-                }
-            }
-        }
-
-        // 循环排空 IN 管道残留数据（500ms 超时，循环直到无数据）
-        let orig_timeout = self.超时;
-        self.超时 = Duration::from_millis(500);
-        let mut drain_count = 0;
-        loop {
-            let mut tmp = [0u8; 512];
-            match self.读取(&mut tmp) {
-                Ok(0) => {
-                    break; // 超时无数据，排空完毕
-                }
-                Ok(n) => {
-                    drain_count += 1;
-                    trace!(
-                        "[USB] recover: 排空 {} 字节残留数据 (第 {} 次)",
-                        n, drain_count
-                    );
-                    continue;
-                }
-                Err(_) => break,
-            }
-        }
-        self.超时 = orig_timeout;
-
-        if drain_count > 0 {
-            trace!("[USB] recover: 共排空 {} 次 IN 残留数据", drain_count);
-        }
-
-        // 重置双端点 HALT 状态
-        let _ = self.清除输入端点停顿();
-        let _ = self.清除输出端点停顿();
-
-        debug!("[USB] USB 管道恢复完成 (IN drain + clear_halt_both)");
-    }
 
     /// USB 总线复位（对齐 Python device.reset()）
     /// 注意：nusb 目前没有直接的 reset_device API，
@@ -510,10 +450,6 @@ impl USB设备 {
         Ok(())
     }
 
-    /// 获取 nusb Interface 引用（用于 device_io.rs 的 bulk transfer）
-    pub(crate) fn 获取interface(&self) -> Option<&nusb::Interface> {
-        self.interface.as_ref()
-    }
 
     /// 获取 nusb Interface 可变引用
     pub(crate) fn 获取interface_mut(&mut self) -> Option<&mut nusb::Interface> {

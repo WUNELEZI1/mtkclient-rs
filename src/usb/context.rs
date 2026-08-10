@@ -7,11 +7,8 @@
 //! - `是否有联发科设备` — 判断是否跳过串口扫描
 
 use crate::system::config::DeviceType;
-use log::info;
 use nusb::MaybeFuture;
 
-/// libusb 兼容错误码（保持上层代码不变）
-pub(crate) const LIBUSB错误_超时: i32 = -7;
 
 /// USB 设备阶段
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -45,12 +42,6 @@ impl USB上下文 {
         Ok(USB上下文 { _valid: true })
     }
 
-    /// nusb 兼容：返回非空指针（nusb 不使用裸指针，但 reopen 等接口可能检查）
-    pub fn 获取指针(&self) -> *mut std::ffi::c_void {
-        // nusb 没有裸指针概念，返回一个非空标记值
-        // 此方法仅用于兼容检查，不应被解引用
-        1 as *mut std::ffi::c_void
-    }
 }
 
 /// 枚举 nusb 设备列表，查找 MediaTek BROM 设备
@@ -68,18 +59,6 @@ fn 扫描nusb设备() -> Vec<(u16, u16)> {
     结果
 }
 
-/// 枚举 USB 设备列表,检查是否有任何 MediaTek 设备（BROM 0x0003）
-pub fn 通过libusb检测联发科设备() -> Option<(u16, DeviceType)> {
-    for (vid, pid) in 扫描nusb设备() {
-        let 设备类型 = DeviceType::from_vid_pid(vid, pid);
-        info!(
-            "[USB] 前置检测：发现 BROM 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
-            vid, pid, 设备类型
-        );
-        return Some((pid, 设备类型));
-    }
-    None
-}
 
 /// 枚举 USB 设备列表,返回第一个 MediaTek 设备的 (VID, PID, DeviceType)
 pub fn 获取第一个联发科VIDPID() -> Option<(u16, u16, DeviceType)> {
@@ -96,16 +75,3 @@ pub fn 获取第一个联发科VIDPID() -> Option<(u16, u16, DeviceType)> {
     None
 }
 
-/// 检查当前是否连接了任何 MediaTek USB 设备（VID=0x0E8D）
-pub fn 是否有联发科设备() -> bool {
-    let devices = match nusb::list_devices().wait() {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
-    for dev in devices {
-        if dev.vendor_id() == 0x0E8D {
-            return true;
-        }
-    }
-    false
-}

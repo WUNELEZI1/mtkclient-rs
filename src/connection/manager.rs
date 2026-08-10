@@ -21,9 +21,9 @@ use std::time::Duration;
 
 pub(crate) const RECONNECT_INTERVAL_MS: u64 = 200;
 pub(crate) const RECONNECT_LOG_INTERVAL: u32 = 25;
-const SERIAL_HANDSHAKE_RETRY: u32 = 3;
-const SERIAL_HANDSHAKE_RETRY_DELAY_SECS: u64 = 2;
-const USB_REENUM_DELAY_SECS: u64 = 3;
+const SERIAL_HANDSHAKE_RETRY: u32 = 2; // 从 3 次降至 2 次（串口握手成功率很高）
+const SERIAL_HANDSHAKE_RETRY_DELAY_SECS: u64 = 1; // 保持 1s（串口设备需要时间重置）
+const USB_REENUM_DELAY_SECS: u64 = 1; // 从 2s 降至 1s（WinUSB 驱动切换后设备重枚举很快）
 pub(crate) const USB_REENUM_DELAY_MS: u64 = 500;
 pub(crate) const QUICK_CONNECT_INTERVAL_MS: u64 = 200;
 /// 连续握手失败上限：超过此次数后删除 .state 并退出程序

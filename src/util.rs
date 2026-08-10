@@ -25,7 +25,10 @@ pub fn parse_hex(hex_str: &str) -> Result<Vec<u8>, String> {
     // 移除 0x 前缀
     let s = hex_str.strip_prefix("0x").unwrap_or(hex_str);
     // 移除所有分隔符（空格、冒号等）
-    let s: String = s.chars().filter(|c| !c.is_whitespace() && *c != ':').collect();
+    let s: String = s
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ':')
+        .collect();
 
     if s.is_empty() {
         return Err("HEX 字符串为空".to_string());
@@ -85,7 +88,10 @@ pub fn hex_dump(data: &[u8], base_addr: u64) -> String {
             })
             .collect();
 
-        lines.push(format!("  {:08X}  {}  |{}|", offset, hex_padded, ascii_part));
+        lines.push(format!(
+            "  {:08X}  {}  |{}|",
+            offset, hex_padded, ascii_part
+        ));
     }
     lines.join("\n")
 }

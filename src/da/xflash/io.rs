@@ -16,7 +16,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
 use crate::da::xflash::DAXFlash;
-use crate::da::xflash::protocol::{CMD_MAGIC, CMD_READ_DATA, pack3};
+use crate::da::xflash::protocol::{CMD_MAGIC, CMD_READ_DATA, GET_PKT_LEN, pack3};
 use crate::usb::log::QUIET_USB_READ;
 
 struct UsbReadQuietGuard(bool);
@@ -360,7 +360,7 @@ impl<'a> DAXFlash<'a> {
         } else {
             // 对齐 Python readflash：在 cmd_read_data 之前先查询 get_packet_length
             // send_devctrl 内部已包含完整的 xread + status 握手
-            match self.send_devctrl(0x040007, None) {
+            match self.send_devctrl(GET_PKT_LEN, None) {
                 Ok(data) => {
                     packet_len = parse_packet_length(&data);
                     if let Some(packet_len) = packet_len {
@@ -558,7 +558,7 @@ impl<'a> DAXFlash<'a> {
         parttype: u32,
     ) -> Result<Vec<u8>, String> {
         // 1. get_packet_length — send_devctrl 内部已包含完整的 xread + status 握手
-        let _ = match self.send_devctrl(0x040007, None) {
+        let _ = match self.send_devctrl(GET_PKT_LEN, None) {
             Ok(data) => data,
             Err(e) => {
                 warn!("readflash_data_ex: get_packet_length 失败: {}", e);
@@ -752,58 +752,13 @@ mod tests {
 // =============================================================================
 
 impl<'a> DAXFlash<'a> {
-    /// 通过 DA 重启设备（XFlash CMD_RESET）
-    /// 对齐刷机匣：0x010007 + param(storage, value=0x64)
+    /// 通过 DA 重启设备
+    ///
+    /// 使用 CMD_SHUTDOWN + enablewdt=0x64 触发设备重启。
+    /// 对齐刷机匣 C# 版协议：28 字节参数，enablewdt=0x64 启用看门狗定时器。
     pub fn reset_device(&mut self) -> Result<(), String> {
-        let pkt = pack3(CMD_MAGIC, 0x01, 4);
-        self.preloader.device.write(&pkt)?;
-        self.preloader.device.write(&0x010007u32.to_le_bytes())?;
-        let st = self.status()?;
-        if st != 0 {
-            return Err(format!("CMD_RESET status: 0x{:08X}", st));
-        }
-
-        // 检测设备存储类型：0=eMMC, 1=UFS, 2=SD, 3=MMC, 6=UFS_CARD
-        let storage_type = self
-            .get_emmc_info()
-            .map(|info| match info.emmc_type.as_str() {
-                "UFS" => 1u32,
-                "SD" => 2u32,
-                "MMC" => 3u32,
-                "UFS_CARD" => 6u32,
-                _ => 0u32,
-            })
-            .unwrap_or(0u32);
-
-        // param: storage(4) + value(4) + zeros(20) = 28 字节
-        let mut param = vec![0u8; 28];
-        param[0..4].copy_from_slice(&storage_type.to_le_bytes());
-        param[4..8].copy_from_slice(&100u32.to_le_bytes()); // value=0x64
-        let param_pkt = pack3(CMD_MAGIC, 0x01, 28);
-        self.preloader.device.write(&param_pkt)?;
-        self.preloader.device.write(&param)?;
-
-        let st2 = self.status()?;
-        if st2 != 0 {
-            return Err(format!("CMD_RESET param status: 0x{:08X}", st2));
-        }
-        info!("设备已通过 DA 重启");
-        Ok(())
+        self.da_shutdown(crate::da::xflash::protocol::ShutdownBootMode::Normal)
     }
 
-    pub fn close_device(&mut self, reset: bool) {
-        if reset {
-            if let Err(e) = self.preloader.jump_bl() {
-                warn!("jump_bl 失败: {}", e);
-            } else {
-                info!("已发送 JUMP_BL 命令，设备将重启");
-            }
-        }
-    }
 
-    /// 修补 vbmeta
-    /// 委托给 security::vbmeta::vbmeta_disable 实现（自动处理 vbmeta_a / vbmeta_b / vbmeta）
-    pub fn patch_vbmeta(&mut self, mode: u32) -> Result<(), String> {
-        crate::security::vbmeta::vbmeta_disable(self, mode)
-    }
 }

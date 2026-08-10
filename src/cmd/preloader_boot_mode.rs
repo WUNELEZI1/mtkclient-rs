@@ -18,7 +18,7 @@
 
 use std::time::Duration;
 
-use log::{info, warn};
+use log::{debug, info, warn};
 
 use crate::preloader::transport::BromTransport;
 
@@ -29,60 +29,28 @@ const DISCONNECT_CMD: &[u8] = b"DISCONNECT";
 #[derive(Debug, Clone, Copy)]
 pub enum BootMode {
     Fastboot,
-    Factory,
-    FactoryMenu,
     Meta,
-    AteMeta,
-    AteEvda,
-    AteEvdx,
-    AdvancedMeta,
-    AteFactory,
-    DualTalkSwitch,
 }
 
 impl BootMode {
     fn send_id(&self) -> &'static [u8] {
         match self {
             BootMode::Fastboot => b"FASTBOOT",
-            BootMode::Factory => b"FACTORYM",
-            BootMode::FactoryMenu => b"FACTFACT",
             BootMode::Meta => b"METAMETA",
-            BootMode::AteMeta => b"ATEMATEM",
-            BootMode::AteEvda => b"ATEMEVDA",
-            BootMode::AteEvdx => b"ATEMEVDX",
-            BootMode::AdvancedMeta => b"ADVEMETA",
-            BootMode::AteFactory => b"FACTFACT",
-            BootMode::DualTalkSwitch => b"SWITCHMD",
         }
     }
 
     fn response_ids(&self) -> &'static [&'static [u8]] {
         match self {
             BootMode::Fastboot => &[b"TOOBTSAF"],
-            BootMode::Factory => &[b"MYROTCAF"],
-            BootMode::FactoryMenu => &[b"TCAFTCAF"],
             BootMode::Meta => &[b"ATEMATEM", b"METASLA"],
-            BootMode::AteMeta => &[b"METAMETA", b"ATEMATEM"],
-            BootMode::AteEvda => &[b"ADVEMETA"],
-            BootMode::AteEvdx => &[b"ADXVEMETA", b"ATEMEVDX"],
-            BootMode::AdvancedMeta => &[b"ATEMEVDA"],
-            BootMode::AteFactory => &[b"TCAFTCAF"],
-            BootMode::DualTalkSwitch => &[b"DMHCTIWS"],
         }
     }
 
     pub fn name(&self) -> &'static str {
         match self {
             BootMode::Fastboot => "FASTBOOT",
-            BootMode::Factory => "FACTORY",
-            BootMode::FactoryMenu => "FACTORY_MENU",
             BootMode::Meta => "META",
-            BootMode::AteMeta => "ATE_META",
-            BootMode::AteEvda => "ADV_META",
-            BootMode::AteEvdx => "ADV_META_X",
-            BootMode::AdvancedMeta => "ADVANCED_META",
-            BootMode::AteFactory => "ATE_FACTORY",
-            BootMode::DualTalkSwitch => "DUAL_TALK_SWITCH",
         }
     }
 }
@@ -132,10 +100,7 @@ fn read_packet(device: &mut dyn BromTransport, timeout: Duration) -> Result<Vec<
 /// - 持续读取直到收到回传确认（非 READY）
 /// - 发送 DISCONNECT
 pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Result<(), String> {
-    info!(
-        "[BootAs] Start Pattern protocol... mode={}",
-        mode.name()
-    );
+    info!("[BootAs] Start Pattern protocol... mode={}", mode.name());
 
     let orig_timeout = device.get_timeout();
 
@@ -190,7 +155,11 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
         warn!("[BootAs] 未收到 READY，设备可能已处于就绪状态");
         // 即使没收到 READY 也尝试发送
         let send_id = mode.send_id();
-        info!("[BootAs] 尝试发送模式标识: {} ({})", mode.name(), hex_str(send_id));
+        info!(
+            "[BootAs] 尝试发送模式标识: {} ({})",
+            mode.name(),
+            hex_str(send_id)
+        );
         if let Err(e) = device.write(send_id) {
             warn!("[BootAs] 发送失败: {}", e);
             device.set_timeout(orig_timeout);
@@ -229,9 +198,10 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
         }
 
         // 检查是否包含预期的回传确认（串口模式下可能和其他数据混在一起）
-        let matched = mode.response_ids().iter().any(|id| {
-            resp.windows(id.len()).any(|w| w == *id)
-        });
+        let matched = mode
+            .response_ids()
+            .iter()
+            .any(|id| resp.windows(id.len()).any(|w| w == *id));
 
         if matched {
             info!(
@@ -299,9 +269,7 @@ pub(crate) fn scan_preloader_port() -> Option<String> {
 /// 尝试连接 Preloader 串口并发送 Pattern 协议
 ///
 /// 等待 Preloader VCOM (PID=0x2000) 出现，打开原始串口（不握手），执行 Pattern 协议。
-pub(crate) fn try_preloader_pattern(
-    boot_mode: BootMode,
-) -> Result<(), String> {
+pub(crate) fn try_preloader_pattern(boot_mode: BootMode) -> Result<(), String> {
     use crate::preloader::SerialPortTransport;
     use std::time::Duration;
 
@@ -320,7 +288,7 @@ pub(crate) fn try_preloader_pattern(
 
         // 使用 scan_preloader_port（不做 verify，避免清空缓冲区中的 READY）
         if let Some(port_name) = scan_preloader_port() {
-            info!("发现 Preloader COM 口: {}", port_name);
+            debug!("发现 Preloader COM 口: {}", port_name);
             // 打开原始串口 — 使用 open_raw，不做 verify_port_exists！
             let mut transport = SerialPortTransport::open_raw(&port_name, 115200)
                 .map_err(|e| format!("打开串口失败: {}", e))?;

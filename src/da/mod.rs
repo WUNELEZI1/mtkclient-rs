@@ -10,11 +10,7 @@
 pub mod ext;
 pub mod loader;
 pub mod xflash;
-pub mod xml;
 
 // 核心 re-export：让外部模块通过 crate::da::DAXFlash 使用
 pub use xflash::DAXFlash;
 pub use xflash::EmmcInfo;
-// XML DA V6 re-export（供外部模块使用）
-#[allow(unused_imports)]
-pub use xml::DAXML;

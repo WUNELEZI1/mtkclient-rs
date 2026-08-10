@@ -15,21 +15,21 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const WATCHDOG_TIMEOUT_SECS: u64 = 3;
-const ECHO_TIMEOUT_MS: u64 = 200;
-const BROM_READ_TIMEOUT_MS: u64 = 10000;
-const BROM_READ_RETRY_ATTEMPTS: usize = 4;
-const BROM_READ_RETRY_DELAY_MS: u64 = 100;
-const FLUSH_INPUT_TIMEOUT_MS: u64 = 200;
+// USB 设备响应极快（微秒级），200ms 超时过于保守
+// 50ms 足以覆盖最慢的 USB 控制传输（串口模式下实际超时会被设备驱动覆盖）
+const ECHO_TIMEOUT_MS: u64 = 50;
+// 常规 flush: 100ms 超时，最大 10KB（比原来快 2 倍）
+const FLUSH_INPUT_TIMEOUT_MS: u64 = 100;
 const FLUSH_INPUT_CHUNK: usize = 1024;
-const FLUSH_INPUT_MAX_ITER: usize = 20;
+const FLUSH_INPUT_MAX_ITER: usize = 10;
+// 快速 flush: 20ms 超时，最大 2KB（比原来快 2.5 倍）
+const FLUSH_INPUT_QUICK_TIMEOUT_MS: u64 = 20;
+const FLUSH_INPUT_QUICK_CHUNK: usize = 512;
+const FLUSH_INPUT_QUICK_MAX_ITER: usize = 4;
 const POST_FLUSH_TIMEOUT_MS: u64 = 5000;
 const WDT_MAGIC: u32 = 0x22000000;
 
 impl Preloader {
-    /// 判断是否已经进入 BROM 模式
-    pub fn is_brom_ready(&self) -> bool {
-        self.brom_initialized
-    }
 
     /// BROM 同步序列 (FE, FF, FC)
     /// 用于在握手或漏洞利用后让设备进入就绪状态
@@ -147,7 +147,9 @@ impl Preloader {
     /// 使用 BROM write32 协议将 watchdog 寄存器写入 WDT_MAGIC (0x22000000)。
     /// Preloader 模式下如果不关看门狗，设备会在约 3 秒后自动重启。
     fn disable_watchdog(&mut self) -> Result<(), String> {
-        let chip = self.chip.as_ref()
+        let chip = self
+            .chip
+            .as_ref()
             .ok_or("disable_watchdog: chip 未初始化")?;
 
         trace!("[WD] 开始关闭看门狗流程 (write32协议)");
@@ -223,7 +225,9 @@ impl Preloader {
     ///
     /// 设备重启后 Preloader 发送 READY 信号，Pattern 协议收到后立即发送 FASTBOOT。
     pub fn trigger_meta_reboot(&mut self) -> Result<(), String> {
-        let chip = self.chip.as_ref()
+        let chip = self
+            .chip
+            .as_ref()
             .ok_or("trigger_meta_reboot: chip 未初始化")?;
 
         let reboot_addr = chip.watchdog + 0x14;
@@ -256,7 +260,10 @@ impl Preloader {
         let status = self.rword()?;
         trace!("[META] write32 status: 0x{:04X}", status);
         if status > 0xFF {
-            trace!("[META] write32 status 异常 (0x{:04X})，但设备可能已重启", status);
+            trace!(
+                "[META] write32 status 异常 (0x{:04X})，但设备可能已重启",
+                status
+            );
         }
 
         trace!("{}", "看门狗重启已触发".green().bold());
@@ -290,7 +297,7 @@ impl Preloader {
             }
         }
         let mut buf = [0u8; 1];
-        for i in 0..32 {
+        for i in 0..8 {
             match self.device.read_exact(&mut buf) {
                 Ok(_) => {
                     if buf[0] == cmd {
@@ -320,50 +327,13 @@ impl Preloader {
             }
         }
         trace!(
-            "[ECHO_1] mismatch: expected 0x{:02X}, too much residual data after 32 reads",
+            "[ECHO_1] mismatch: expected 0x{:02X}, too much residual data after 8 reads",
             cmd
         );
-        self.flush_input();
+        self.flush_input_quick();
         Ok(false)
     }
 
-    /// 发送 1 字节命令（4 字节小端），读回 4 字节回显（用于 brom_register_access / read32_brom）
-    pub fn echo_cmd_4byte(&mut self, cmd: u8) -> Result<bool, String> {
-        let le_bytes = [cmd, 0, 0, 0];
-        trace!("[ECHO_CMD_4] 发送: {:02X?}", le_bytes);
-        if let Err(e) = self.device.write(&le_bytes) {
-            if e.contains("err -7") {
-                trace!("[ECHO_CMD_4] write PIPE error, clear_halt_out + retry...");
-                let _ = self.device.clear_halt_out();
-                std::thread::sleep(Duration::from_millis(50));
-                self.device
-                    .write(&le_bytes)
-                    .map_err(|e2| format!("echo_cmd_4byte write: {}", e2))?;
-            } else {
-                return Err(format!("echo_cmd_4byte write: {}", e));
-            }
-        }
-        let mut buf = [0u8; 4];
-        match self.device.read_exact(&mut buf) {
-            Ok(_) => {
-                trace!("[ECHO_CMD_4] 接收: {:02X?} (期望 {:02X?})", buf, le_bytes);
-                if buf == le_bytes {
-                    Ok(true)
-                } else {
-                    trace!(
-                        "[ECHO_CMD_4] mismatch: expected {:02X?}, got {:02X?}",
-                        le_bytes, buf
-                    );
-                    self.flush_input();
-                    Ok(false)
-                }
-            }
-            Err(e) => {
-                trace!("[ECHO_CMD_4] read error for 0x{:02X}: {}", cmd, e);
-                Ok(false)
-            }
-        }
-    }
 
     /// 发送 4 字节大端参数并校验回显（对齐 Python pack(">I", val)）
     /// 支持残余数据容错：逐字节读取并维护 4 字节滑动窗口环缓冲区，
@@ -390,7 +360,7 @@ impl Preloader {
         let mut ring_filled = 0usize;
         let mut buf = [0u8; 1];
 
-        for i in 0..32 {
+        for i in 0..8 {
             match self.device.read_exact(&mut buf) {
                 Ok(_) => {
                     ring[ring_pos] = buf[0];
@@ -420,7 +390,9 @@ impl Preloader {
                             // 还在填充环缓冲区阶段，记录残余字节
                             trace!(
                                 "[ECHO_4] 跳过残余字节 0x{:02X} (第 {} 次)，等待 {:02X?}",
-                                buf[0], i + 1, be
+                                buf[0],
+                                i + 1,
+                                be
                             );
                         } else {
                             trace!(
@@ -436,20 +408,14 @@ impl Preloader {
                     }
                 }
                 Err(e) => {
-                    trace!(
-                        "[ECHO_4] 读取 0x{:08X} 超时/错误 (第 {} 次): {}",
-                        val, i, e
-                    );
+                    trace!("[ECHO_4] 读取 0x{:08X} 超时/错误 (第 {} 次): {}", val, i, e);
                     return Ok(false);
                 }
             }
         }
 
-        trace!(
-            "[ECHO_4] 32 次读取后仍未匹配 {:02X?}，残余数据过多",
-            be
-        );
-        self.flush_input();
+        trace!("[ECHO_4] 8 次读取后仍未匹配 {:02X?}，残余数据过多", be);
+        self.flush_input_quick();
         Ok(false)
     }
 
@@ -543,6 +509,26 @@ impl Preloader {
         }
     }
 
+    /// 快速 flush：短超时（50ms），用于 read32_brom 前置清理
+    /// 比常规 flush 快 4 倍，适用于已确认设备状态正常的场景
+    pub(crate) fn flush_input_quick(&mut self) {
+        self.device
+            .set_timeout(Duration::from_millis(FLUSH_INPUT_QUICK_TIMEOUT_MS));
+        let mut trash = [0u8; FLUSH_INPUT_QUICK_CHUNK];
+        let mut total = 0;
+        for _ in 0..FLUSH_INPUT_QUICK_MAX_ITER {
+            match self.device.read(&mut trash) {
+                Ok(n) if n > 0 => total += n,
+                _ => break,
+            }
+        }
+        self.device
+            .set_timeout(Duration::from_millis(POST_FLUSH_TIMEOUT_MS));
+        if total > 0 {
+            trace!("[FLUSH_QUICK] discarded {} bytes", total);
+        }
+    }
+
     /// 轮询式 flush：用短超时反复读取，直到 USB 缓冲区为空（设备 ready）
     /// 比固定 sleep 更快 — 设备准备好了就立刻返回
     pub fn flush_input_poll(&mut self, interval: Duration, max_iters: u32) -> Result<(), String> {
@@ -566,14 +552,6 @@ impl Preloader {
         Ok(())
     }
 
-    /// 读 n 字节
-    pub fn rbyte(&mut self, n: usize) -> Result<Vec<u8>, String> {
-        let mut buf = vec![0u8; n];
-        self.device
-            .read_exact(&mut buf)
-            .map_err(|e| format!("rbyte({}): {}", n, e))?;
-        Ok(buf)
-    }
 
     /// 读 16 位字（2 字节，big-endian，对齐 Python DeviceHandler.rword(little=False)）
     pub fn rword(&mut self) -> Result<u16, String> {
@@ -582,10 +560,4 @@ impl Preloader {
         Ok(u16::from_be_bytes(buf))
     }
 
-    /// 读 32 位双字（4 字节，big-endian，对齐 Python DeviceHandler.rdword(little=False)）
-    pub fn rdword(&mut self) -> Result<u32, String> {
-        let mut buf = [0u8; 4];
-        self.device.read_exact(&mut buf)?;
-        Ok(u32::from_be_bytes(buf))
-    }
 }

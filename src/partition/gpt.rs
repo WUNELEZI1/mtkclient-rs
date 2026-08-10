@@ -7,8 +7,6 @@
 #[derive(Debug, Clone)]
 pub struct PartitionEntry {
     pub name: String,
-    pub first_lba: u64,
-    pub last_lba: u64,
     pub start_addr: u64,
     pub size: u64,
 }
@@ -18,12 +16,9 @@ pub struct GptInfo<'a> {
     pub num_part_entries: u32,
     pub part_entry_size: u32,
     pub part_entry_start_lba: u64,
-    pub revision: u32,
     pub header_size: u32,
     pub header_crc32: u32,
     pub partition_entries_crc32: u32,
-    pub first_usable_lba: u64,
-    pub current_lba: u64,
     data: &'a [u8],
     pub base_offset: usize,
 }
@@ -69,8 +64,6 @@ impl<'a> GptInfo<'a> {
             .position(|w| w == b"EFI PART")
             .ok_or_else(|| "GPT 数据无效".to_string())?;
 
-        let revision =
-            u32::from_le_bytes(data[base_offset + 8..base_offset + 12].try_into().unwrap());
         let header_size =
             u32::from_le_bytes(data[base_offset + 12..base_offset + 16].try_into().unwrap());
         let header_crc32 =
@@ -83,21 +76,14 @@ impl<'a> GptInfo<'a> {
             u32::from_le_bytes(data[base_offset + 88..base_offset + 92].try_into().unwrap());
         let part_entry_start_lba =
             u64::from_le_bytes(data[base_offset + 72..base_offset + 80].try_into().unwrap());
-        let first_usable_lba =
-            u64::from_le_bytes(data[base_offset + 32..base_offset + 40].try_into().unwrap());
-        let current_lba =
-            u64::from_le_bytes(data[base_offset + 24..base_offset + 32].try_into().unwrap());
 
         Ok(GptInfo {
             num_part_entries,
             part_entry_size,
             part_entry_start_lba,
-            revision,
             header_size,
             header_crc32,
             partition_entries_crc32,
-            first_usable_lba,
-            current_lba,
             data,
             base_offset,
         })
@@ -170,8 +156,6 @@ impl<'a> GptInfo<'a> {
 
         Ok(PartitionEntry {
             name,
-            first_lba,
-            last_lba,
             start_addr,
             size,
         })

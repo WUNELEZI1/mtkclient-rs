@@ -14,10 +14,6 @@ const DA_UPLOAD_TIMEOUT_MS: u64 = 2000;
 const DA_UPLOAD_RETRY: u32 = 5;
 const DA_UPLOAD_RETRY_DELAY_MS: u64 = 50;
 const JUMP_DA_MAX_ATTEMPT: u32 = 5;
-const JUMP_DA_FIRST_DELAY_MS: u64 = 200;
-const JUMP_DA_RETRY_DELAY_MS: u64 = 100;
-const JUMP_DA_RETRY_QUIET_MS: u64 = 30;
-const JUMP_BL_POST_DELAY_MS: u64 = 50;
 
 impl Preloader {
     /// SEND_DA: 发送 Download Agent 到设备
@@ -210,51 +206,5 @@ impl Preloader {
         }
     }
 
-    /// 获取 ME_ID (0xE1)
-    pub fn get_me_id(&mut self) -> Result<Vec<u8>, String> {
-        // FE 不做同字节回显（刷机匣日志：写 FE → 读 0x03）
-        self.device
-            .write(&[0xFE])
-            .map_err(|e| format!("get_me_id: sync FE write: {}", e))?;
-        let mut fe_resp = [0u8; 1];
-        self.device
-            .read_exact(&mut fe_resp)
-            .map_err(|e| format!("get_me_id: sync FE read: {}", e))?;
-        trace!("get_me_id: FE 响应 0x{:02X}", fe_resp[0]);
-        if !self.echo_1byte(0xE1)? {
-            return Err("get_me_id: echo 0xE1 失败".into());
-        }
-        let mut len_buf = [0u8; 4];
-        self.device.read_exact(&mut len_buf)?;
-        let length = u32::from_be_bytes(len_buf) as usize;
-        let mut data = vec![0u8; length];
-        self.device.read_exact(&mut data)?;
-        let _status = self.rword()?;
-        trace!("ME_ID: {:02X?}", data);
-        Ok(data)
-    }
 
-    /// 获取 SOC_ID (0xE7)
-    pub fn get_soc_id(&mut self) -> Result<Vec<u8>, String> {
-        // FE 不做同字节回显（刷机匣日志：写 FE → 读 0x03）
-        self.device
-            .write(&[0xFE])
-            .map_err(|e| format!("get_soc_id: sync FE write: {}", e))?;
-        let mut fe_resp = [0u8; 1];
-        self.device
-            .read_exact(&mut fe_resp)
-            .map_err(|e| format!("get_soc_id: sync FE read: {}", e))?;
-        trace!("get_soc_id: FE 响应 0x{:02X}", fe_resp[0]);
-        if !self.echo_1byte(0xE7)? {
-            return Err("get_soc_id: echo 0xE7 失败".into());
-        }
-        let mut len_buf = [0u8; 4];
-        self.device.read_exact(&mut len_buf)?;
-        let length = u32::from_be_bytes(len_buf) as usize;
-        let mut data = vec![0u8; length];
-        self.device.read_exact(&mut data)?;
-        let _status = self.rword()?;
-        trace!("SOC_ID: {:02X?}", data);
-        Ok(data)
-    }
 }

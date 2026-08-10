@@ -1,6 +1,7 @@
 use log::info;
 
 use crate::da::DAXFlash;
+use crate::system::paths::获取tmp路径;
 
 /// FRP OEM 解锁：修改 frp 分区中 persistent 数据块的 OEM unlock 标志位
 /// OEM unlock 标志位于 frp 分区的最后一个字节：0=锁定(出厂默认), 1=解锁
@@ -8,10 +9,13 @@ use crate::da::DAXFlash;
 pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
     info!("FRP OEM 解锁（修改标志位方式）...");
 
+    let backup_path = 获取tmp路径("frp_backup.bin");
+    let unlocked_path = 获取tmp路径("frp_unlocked.bin");
+
     // 1. 读取 frp 分区
-    da.读取分区("frp", "frp_backup.bin")?;
+    da.读取分区("frp", &backup_path.to_string_lossy())?;
     let mut frp_data =
-        std::fs::read("frp_backup.bin").map_err(|e| format!("读取备份失败: {}", e))?;
+        std::fs::read(&backup_path).map_err(|e| format!("读取备份失败: {}", e))?;
     info!("frp 分区: {} 字节", frp_data.len());
 
     // 2. 修改 OEM unlock 标志位（分区最后一个字节 → 1 = 解锁）
@@ -33,9 +37,9 @@ pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
     patch_frp_data(&mut frp_data);
 
     // 4. 写回
-    std::fs::write("frp_unlocked.bin", &frp_data)
+    std::fs::write(&unlocked_path, &frp_data)
         .map_err(|e| format!("写入临时文件失败: {}", e))?;
-    da.写入分区("frp", "frp_unlocked.bin")?;
+    da.写入分区("frp", &unlocked_path.to_string_lossy())?;
 
     info!("FRP OEM 解锁完成");
     Ok(())
@@ -45,10 +49,13 @@ pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
 pub fn frp_lock(da: &mut DAXFlash) -> Result<(), String> {
     info!("FRP OEM 锁定（修改标志位方式）...");
 
+    let backup_path = 获取tmp路径("frp_backup.bin");
+    let locked_path = 获取tmp路径("frp_locked.bin");
+
     // 1. 读取 frp 分区
-    da.读取分区("frp", "frp_backup.bin")?;
+    da.读取分区("frp", &backup_path.to_string_lossy())?;
     let mut frp_data =
-        std::fs::read("frp_backup.bin").map_err(|e| format!("读取备份失败: {}", e))?;
+        std::fs::read(&backup_path).map_err(|e| format!("读取备份失败: {}", e))?;
     info!("frp 分区: {} 字节", frp_data.len());
 
     // 2. 修改 OEM unlock 标志位（分区最后一个字节 → 0 = 锁定）
@@ -67,29 +74,13 @@ pub fn frp_lock(da: &mut DAXFlash) -> Result<(), String> {
     }
 
     // 3. 写回
-    std::fs::write("frp_locked.bin", &frp_data).map_err(|e| format!("写入临时文件失败: {}", e))?;
-    da.写入分区("frp", "frp_locked.bin")?;
+    std::fs::write(&locked_path, &frp_data).map_err(|e| format!("写入临时文件失败: {}", e))?;
+    da.写入分区("frp", &locked_path.to_string_lossy())?;
 
     info!("FRP OEM 锁定完成");
     Ok(())
 }
 
-fn find_frp_partition(da: &mut DAXFlash) -> Result<String, String> {
-    let candidates = [
-        "frp",
-        "persistent",
-        "config",
-        "nvram",
-        "protect1",
-        "protect2",
-    ];
-    for name in &candidates {
-        if da.find_partition_addr(name).is_ok() {
-            return Ok(name.to_string());
-        }
-    }
-    Err("未找到 FRP 相关分区 (frp/persistent/config/nvram)".to_string())
-}
 
 /// 清除 FRP 账户锁数据（原地修改）
 fn patch_frp_data(data: &mut [u8]) {

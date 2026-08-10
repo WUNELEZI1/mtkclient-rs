@@ -10,12 +10,14 @@
 //! `da_xflash_setup` / `da_xflash_protocol` / `da_extension` 子模块。
 
 use log::{info, trace, warn};
+use std::thread::sleep;
 use std::time::Duration;
 
 use crate::connection::session::{
     mark_optional_query_failed as save_optional_query_failure, optional_query_failed,
 };
 use crate::da::xflash::DAXFlash;
+use crate::da::xflash::protocol::DA_EXT_BOOT_ADDR;
 
 // =============================================================================
 // 公开常量 — 复用子模块的 DA extensions 相关 magic / devctrl
@@ -124,6 +126,11 @@ impl<'a> DAXFlash<'a> {
             return Err("Stage2 上传失败".to_string());
         }
 
+        // DA2 启动后会发送 SYNC 信号（约 0.5-1s 后到达），
+        // 提前等待并清除，避免后续 reinit / get_usb_speed 的 send_devctrl 读到 SYNC 而失败。
+        sleep(Duration::from_millis(800));
+        self.drain_usb_input();
+
         if self.da_x_speed == 1 {
             if self.optional_query_should_skip(QUERY_SLA_STATUS) {
                 trace!("跳过已知失败的可选查询: {}", QUERY_SLA_STATUS);
@@ -175,8 +182,15 @@ impl<'a> DAXFlash<'a> {
         if self.patch_da
             && let Some(ext_data) = self.generate_da_extensions()
         {
-            match self.boot_to(0x4FFF0000, &ext_data, true, 0.5) {
-                Ok(_) => self.load_da_extensions_after_boot(),
+            match self.boot_to(DA_EXT_BOOT_ADDR, &ext_data, true, 0.5) {
+                Ok(_) => {
+                    // boot_to 已读取 SYNC status，DA extension 代码正在执行。
+                    // 等待 DA extensions 完全初始化，然后清空 USB 缓冲区，
+                    // 避免残留数据污染 CUSTOM_ACK 的响应。
+                    sleep(Duration::from_millis(100));
+                    self.drain_usb_input();
+                    self.load_da_extensions_after_boot();
+                }
                 Err(e) => {
                     warn!("boot_to(extensions) 失败: {}", e);
                 }
@@ -223,7 +237,10 @@ impl<'a> DAXFlash<'a> {
                         .unwrap_or(0u32);
                     // Python 第 1256 行：CUSTOM_ACK 成功后立即调用 custom_set_storage
                     if self
-                        .send_devctrl(DA_EXTENSIONS_DEVCTRL_SET_STORAGE, Some(&storage_type.to_le_bytes()))
+                        .send_devctrl(
+                            DA_EXTENSIONS_DEVCTRL_SET_STORAGE,
+                            Some(&storage_type.to_le_bytes()),
+                        )
                         .is_ok()
                     {
                         let type_name = match storage_type {

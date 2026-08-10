@@ -7,7 +7,8 @@ use log::info;
 use sha2::{Digest, Sha256};
 
 use crate::security::sej::{
-    sej_sec_cfg_hw_encrypt, sej_sec_cfg_hw_v3_encrypt, sej_sec_cfg_sw_decrypt, sej_sec_cfg_sw_encrypt,
+    sej_sec_cfg_hw_encrypt, sej_sec_cfg_hw_v3_encrypt, sej_sec_cfg_sw_decrypt,
+    sej_sec_cfg_sw_encrypt,
 };
 
 /// SecCfg V4 解析和修改
@@ -17,7 +18,7 @@ pub(crate) struct SecCfgV4 {
     pub(crate) seccfg_ver: u32,
     pub(crate) seccfg_size: u32,
     pub(crate) lock_state: u32,
-    pub(crate) dm_verity_state: u32,  // 偏移 0x10: dm-verity 状态（0=正常）
+    pub(crate) dm_verity_state: u32, // 偏移 0x10: dm-verity 状态（0=正常）
     pub(crate) sboot_runtime: u32,
     pub(crate) endflag: u32,
     pub(crate) hwtype: String, // "SW", "V2", "V3", "V4"
@@ -165,7 +166,10 @@ impl SecCfgV4 {
             new_dm_verity.to_le_bytes()[1],
             new_dm_verity.to_le_bytes()[2],
             new_dm_verity.to_le_bytes()[3],
-            0u8, 0u8, 0u8, 0u8,  // sboot_runtime = 0
+            0u8,
+            0u8,
+            0u8,
+            0u8, // sboot_runtime = 0
             // 对齐 Python: endflag 固定 0x45454545
             0x45,
             0x45,

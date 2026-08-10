@@ -11,7 +11,7 @@
 //! - 错误信息更聚焦（路径不存在/数据格式问题）
 //! - 不污染主协议层文件大小
 
-use log::{info, trace};
+use log::{debug, trace};
 
 use crate::da::xflash::DAXFlash;
 
@@ -30,7 +30,13 @@ impl<'a> DAXFlash<'a> {
             );
         }
 
-        info!("加载 preloader 文件: {}", preloader_path);
+        debug!(
+            "加载 preloader 文件: {} ({} 字节)",
+            preloader_path,
+            std::fs::metadata(preloader_path)
+                .map(|m| m.len())
+                .unwrap_or(0)
+        );
 
         // 读取 preloader 文件
         let preloader_data = match std::fs::read(preloader_path) {
@@ -40,15 +46,13 @@ impl<'a> DAXFlash<'a> {
             }
         };
 
-        info!("preloader 文件大小: {} 字节", preloader_data.len());
-
         // 提取 EMI 数据
         match self.extract_emi(&preloader_data) {
             Ok((version, emi_data)) => {
                 let emi_len = emi_data.len();
                 self.emi = Some(emi_data);
                 self.emi_version = version;
-                info!(
+                debug!(
                     "成功提取 EMI 数据，版本: {}, 大小: {} 字节",
                     version, emi_len
                 );
@@ -69,14 +73,14 @@ impl<'a> DAXFlash<'a> {
         let mut emi_data = data.to_vec();
 
         if let Some(idx) = idx {
-            info!("找到 EMI 标记，偏移: 0x{:08X}", idx);
+            trace!("[EMI] 找到标记，偏移: 0x{:08X}", idx);
             emi_data = data[idx..].to_vec();
 
             // 读取 mlen 和 siglen
             if emi_data.len() >= 0x30 {
                 let mlen = u32::from_le_bytes(emi_data[0x20..0x24].try_into().unwrap());
                 let siglen = u32::from_le_bytes(emi_data[0x2C..0x30].try_into().unwrap());
-                info!("mlen: 0x{:08X}, siglen: 0x{:08X}", mlen, siglen);
+                trace!("[EMI] mlen=0x{:08X}, siglen=0x{:08X}", mlen, siglen);
 
                 // 截取数据
                 if mlen as usize <= emi_data.len() {
@@ -87,7 +91,7 @@ impl<'a> DAXFlash<'a> {
                 if emi_data.len() >= 4 {
                     let dramsize =
                         u32::from_le_bytes(emi_data[emi_data.len() - 4..].try_into().unwrap());
-                    info!("dramsize: 0x{:08X}", dramsize);
+                    trace!("[EMI] dramsize=0x{:08X}", dramsize);
 
                     if dramsize == 0 && emi_data.len() >= 0x804 {
                         emi_data = emi_data[..emi_data.len() - 0x800].to_vec();
@@ -95,7 +99,7 @@ impl<'a> DAXFlash<'a> {
                             let dramsize = u32::from_le_bytes(
                                 emi_data[emi_data.len() - 4..].try_into().unwrap(),
                             );
-                            info!("调整后 dramsize: 0x{:08X}", dramsize);
+                            trace!("[EMI] 调整后 dramsize=0x{:08X}", dramsize);
                         }
                     }
 
@@ -116,7 +120,7 @@ impl<'a> DAXFlash<'a> {
             .position(|window| window == bldrstring);
 
         if let Some(idx) = idx {
-            info!("找到 MTK_BLOADER_INFO_v，偏移: 0x{:08X}", idx);
+            trace!("[EMI] 找到 MTK_BLOADER_INFO_v，偏移: 0x{:08X}", idx);
 
             // 提取版本号
             let version_str = &emi_data[idx + bldrstring.len()..idx + bldrstring.len() + 2];
@@ -124,13 +128,13 @@ impl<'a> DAXFlash<'a> {
                 .trim_end_matches('\0')
                 .parse::<u32>()
                 .unwrap_or_default();
-            info!("EMI 版本: {}", version);
+            debug!("EMI 版本: {}", version);
 
             // ⚠️ 关键修复：如果 MTK_BLOADER_INFO_v 在偏移 0，返回整个 emi_data
             // 对齐 Python m_extract_emi: if idx == 0 and damode == XFLASH: return ver, data
             if idx == 0 {
                 trace!("MTK_BLOADER_INFO_v 在偏移 0，使用完整 EMI 数据（含 header）");
-                trace!("EMI 数据大小: {} 字节", emi_data.len());
+                debug!("EMI 数据大小: {} 字节", emi_data.len());
                 return Ok((version, emi_data));
             }
 
@@ -138,7 +142,7 @@ impl<'a> DAXFlash<'a> {
             let mtk_bin_idx = emi_data.windows(7).position(|window| window == b"MTK_BIN");
             if let Some(mtk_bin_idx) = mtk_bin_idx {
                 let emi = emi_data[mtk_bin_idx + 0xC..].to_vec();
-                info!("EMI 数据大小: {} 字节", emi.len());
+                debug!("EMI 数据大小: {} 字节", emi.len());
                 return Ok((version, emi));
             }
         }

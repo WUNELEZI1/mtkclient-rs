@@ -14,6 +14,7 @@ pub mod buildprop;
 pub mod cli;
 pub mod detect;
 pub mod dump;
+// 已移除: fastboot 改为独立二进制 fastboot-rs
 pub mod io;
 pub mod multi;
 pub mod partition_table;
@@ -31,8 +32,17 @@ pub fn print_help() {
     use colored::Colorize;
 
     println!("{}", "mtkclient-rs — MTK 设备底层刷机工具".bold());
-    println!("{} {} | {}", "版本:".dimmed(), env!("CARGO_PKG_VERSION").yellow(), "支持 87 种 MediaTek 芯片".green());
-    println!("{} {}", "系统要求:".dimmed(), "Windows 10/11 64-bit | 管理员权限".cyan());
+    println!(
+        "{} {} | {}",
+        "版本:".dimmed(),
+        env!("CARGO_PKG_VERSION").yellow(),
+        "支持 87 种 MediaTek 芯片".green()
+    );
+    println!(
+        "{} {}",
+        "系统要求:".dimmed(),
+        "Windows 10/11 64-bit | 管理员权限".cyan()
+    );
     println!();
     println!("{}", "用法:".bold());
     println!("  mtkclient-rs.exe [全局选项] <命令> [参数...]");
@@ -100,18 +110,70 @@ pub fn print_help() {
     println!("  run <script.json>             从 JSON 脚本文件批量执行命令");
     println!();
     println!("{}", "快速开始示例:".dimmed().bold());
-    println!("  {}                                    查看设备分区表", "mtkclient-rs printgpt".cyan());
-    println!("  {}                     备份 boot 分区", "mtkclient-rs r boot boot.img".cyan());
-    println!("  {}              解锁 Bootloader（自动禁用 dm-verity）", "mtkclient-rs zyb seccfg unlock".cyan());
-    println!("  {}                          恢复出厂设置", "mtkclient-rs zyb erase_data".cyan());
-    println!("  {}                      刷入修改后的 boot", "mtkclient-rs w boot magisk_patched.img".cyan());
-    println!("  {}                    重启到 fastboot 模式", "mtkclient-rs reboot fastboot".cyan());
+    println!(
+        "  {}                                    查看设备分区表",
+        "mtkclient-rs printgpt".cyan()
+    );
+    println!(
+        "  {}                     备份 boot 分区",
+        "mtkclient-rs r boot boot.img".cyan()
+    );
+    println!(
+        "  {}              解锁 Bootloader（自动禁用 dm-verity）",
+        "mtkclient-rs zyb seccfg unlock".cyan()
+    );
+    println!(
+        "  {}                          恢复出厂设置",
+        "mtkclient-rs zyb erase_data".cyan()
+    );
+    println!(
+        "  {}                      刷入修改后的 boot",
+        "mtkclient-rs w boot magisk_patched.img".cyan()
+    );
+    println!(
+        "  {}                    重启到 fastboot 模式",
+        "mtkclient-rs reboot fastboot".cyan()
+    );
     println!();
     println!("{}", "开发示例 (cargo):".dimmed());
     println!("  cargo run -- --mode brom printgpt");
     println!("  cargo run -- --mode brom r boot_a boot_a.img");
     println!("  cargo run -- --mode brom zyb seccfg unlock");
     println!("  cargo run -- --mode preloader reboot fastboot");
+    println!();
+    println!("{}", "作者声明:".dimmed().bold());
+    println!("  {}  无能乐子(wunelezi)", "作者:".dimmed());
+    println!(
+        "  {}  https://gitee.com/WUNELEZI1/mtkclient-rs/releases",
+        "更新:".dimmed()
+    );
+    println!("  {}    3535571067", "QQ:".dimmed());
+    println!(
+        "  {}",
+        "本工具完全免费，请勿被骗！禁止倒卖、逆向破解或去除作者信息。"
+            .red()
+            .dimmed()
+    );
+    println!(
+        "  {}",
+        "基于 Apache License V2 协议开源，衍生作品须保留原作者署名。".dimmed()
+    );
+    println!();
+    println!("{}", "致谢与参考:".dimmed().bold());
+    println!(
+        "  {}  mtkclient by bkerler — {}",
+        "协议参考:".dimmed(),
+        "https://github.com/bkerler/mtkclient".blue()
+    );
+    println!("  {}  刷机匣 GeekFlashTool (C# 实现)", "工具参考:".dimmed());
+    println!(
+        "  {}  payload / DA / EMI 等资源文件来自 mtkclient 项目 (bkerler)",
+        "资源归属:".dimmed()
+    );
+    println!(
+        "  {}",
+        "本项目代码为独立 Rust 实现，与上述项目无代码复用关系。".dimmed()
+    );
 }
 
 /// 预检查命令有效性（在 DA 加载之前）
@@ -140,8 +202,8 @@ fn validate_command(cmd: &str, args: &[String]) -> Result<(), Box<dyn std::error
                 return Err("用法: poke <addr> <hex_data>".into());
             }
             let _addr = io::parse_addr(&args[0])?;
-            let _data = crate::util::parse_hex(&args[1])
-                .map_err(|e| format!("hex 数据解析失败: {}", e))?;
+            let _data =
+                crate::util::parse_hex(&args[1]).map_err(|e| format!("hex 数据解析失败: {}", e))?;
         }
         "r" => {
             if args.is_empty() {
@@ -313,8 +375,11 @@ pub fn handle_command(
                 }
                 Err(e) => {
                     return Err(format!(
-                        "自动提取 preloader 失败: {}。请手动运行 'dumppreloader' 命令获取文件，\n\
-                         然后使用 --preloader <文件> 参数。",
+                        "自动提取 preloader 失败: {}。\n\
+                         请手动运行 'dumppreloader' 命令获取文件，\n\
+                         或使用 --preloader <文件> 参数指定 preloader 文件。\n\
+                         提示: preloader 文件通常位于固件包的 'images' 目录中，\n\
+                         文件名类似 preloader_*.bin。",
                         e
                     )
                     .into());
@@ -337,7 +402,7 @@ pub fn handle_command(
         }
         da.preloader_path = Some(f.clone());
     } else if da.preloader.is_preloader_mode {
-        info!("Preloader 模式：跳过 EMI 加载（DRAM 已由 preloader 初始化）");
+        debug!("Preloader 模式：跳过 EMI 加载（DRAM 已由 preloader 初始化）");
     } else {
         return Err("未找到 preloader 文件，且自动提取失败".into());
     }
@@ -369,10 +434,16 @@ pub fn handle_command(
 
     if log_level >= 2 {
         if let Some(data) = da.get_emi_data() {
-            let _ = std::fs::write("emi_debug.bin", data);
+            let _ = std::fs::write(
+                crate::system::paths::获取tmp路径("emi_debug.bin"),
+                data,
+            );
         }
         if let Some(data) = da.get_extensions_data() {
-            let _ = std::fs::write("extensions_debug.bin", &data);
+            let _ = std::fs::write(
+                crate::system::paths::获取tmp路径("extensions_debug.bin"),
+                &data,
+            );
         }
     }
 
@@ -399,11 +470,17 @@ pub fn handle_command(
     execute_single_command(da, cmd, args, verify, log_level, app_config).map_err(|e| {
         // 命令执行失败时的会话处理策略：
         // - 用户主动取消（Ctrl+C）：不重置，DA 可能仍存活
-        // - 命令格式错误（如"未知命令"）：不重置，DA 会话本身没问题
+        // - 命令格式错误（如"未知命令"、"用法:"）：不重置，DA 会话本身没问题
+        // - 文件不存在（os error 2）：不重置，只是用户指定的文件路径错误
         // - DA 通信错误（USB 断连、DA 超时等）：重置会话，避免复用已失效的 DA
         let err_str = e.to_string();
         let is_command_error = err_str.starts_with("未知命令") || err_str.starts_with("用法:");
-        if !crate::cancel::requested() && !crate::cancel::force_requested() && !is_command_error {
+        let is_file_not_found = err_str.contains("os error 2");
+        let should_keep_session = crate::cancel::requested()
+            || crate::cancel::force_requested()
+            || is_command_error
+            || is_file_not_found;
+        if !should_keep_session {
             warn!("[DA_SESSION] DA 通信错误，重置会话状态");
             crate::connection::reset_session();
             // 清理可能残留的 read resume 文件，避免下次启动死循环
@@ -512,8 +589,7 @@ pub fn dispatch_cmd(
                 .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "e" => {
-            io::cmd_erase(da, args)
-                .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
+            io::cmd_erase(da, args).map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "zyb" => {
             handle_zyb_command(da, args)
@@ -533,8 +609,7 @@ pub fn dispatch_cmd(
             .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "slot" => {
-            io::cmd_slot(da, args)
-                .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
+            io::cmd_slot(da, args).map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "adb" => {
             da.enable_adb_and_reboot()
@@ -542,12 +617,10 @@ pub fn dispatch_cmd(
             info!("{}", "ADB 已启用，设备正在重启进入系统".green());
         }
         "peek" => {
-            io::cmd_peek(da, args)
-                .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
+            io::cmd_peek(da, args).map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "poke" => {
-            io::cmd_poke(da, args)
-                .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
+            io::cmd_poke(da, args).map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "fs_shell" => {
             // 读 GPT 获取 super 分区地址
@@ -563,7 +636,9 @@ pub fn dispatch_cmd(
             let super_entry = gpt_info
                 .find_partition("super")
                 .or_else(|| gpt_info.find_partition("super_b"))
-                .ok_or_else(|| crate::error::AppError::Protocol("GPT 中未找到 super 分区".into()))?;
+                .ok_or_else(|| {
+                    crate::error::AppError::Protocol("GPT 中未找到 super 分区".into())
+                })?;
             let super_addr = super_entry.start_addr;
 
             info!("super 分区地址: 0x{:08X}", super_addr);

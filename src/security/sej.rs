@@ -78,7 +78,10 @@ impl<'a> HaccBackend for DAXFlash<'a> {
     }
 
     fn sej_base(&self) -> u32 {
-        self.preloader.chip.map(|c| c.sej_base).unwrap_or(0x1000_A000)
+        self.preloader
+            .chip
+            .map(|c| c.sej_base)
+            .unwrap_or(0x1000_A000)
     }
 }
 

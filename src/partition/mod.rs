@@ -24,9 +24,7 @@ pub(crate) mod write;
 
 pub use gpt::GptInfo;
 #[allow(unused_imports)]
-pub use partition_table::{
-    generate_scatter_from_gpt, generate_scatter_header, parse_gpt_from_data,
-};
+pub use partition_table::{generate_scatter_from_gpt, generate_scatter_header};
 // 注意：read_gpt / read_partition / write_partition / write_partition_with_verify /
 // erase_partition 是 DAXFlash 的方法（在 输入输出.rs 的 impl 块中定义），
 // 调用方式：crate::partition::io::DAXFlash::read_gpt(&mut da)

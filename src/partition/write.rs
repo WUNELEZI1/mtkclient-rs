@@ -140,6 +140,7 @@ impl<'a> DAXFlash<'a> {
         Err(format_write_status_error(label, status))
     }
 
+
     /// 按原始地址流式写入数据，供分区写入、seccfg/frp 等场景复用。
     /// 接受任意 `Read` 实现（文件、内存缓冲区等），避免大文件全量载入内存。
     /// 带进度条显示：使用 indicatif 实时更新进度，最后输出总耗时和速度。
@@ -189,6 +190,9 @@ impl<'a> DAXFlash<'a> {
 
         let mut pos = 0u64;
         let mut chunk_buf = vec![0u8; write_packet_size];
+        let mut last_resume_pos: u64 = 0;
+        const RESUME_INTERVAL: u64 = 64 * 1024 * 1024; // 64MB 续传保存间隔
+
         while pos < total {
             if crate::cancel::force_requested() || crate::cancel::requested() {
                 self.preloader.device.cancel_pending_transfers();
@@ -213,9 +217,26 @@ impl<'a> DAXFlash<'a> {
                 ));
             }
             let chunk = &chunk_buf[..n];
-            let checksum: u32 = chunk
-                .iter()
-                .fold(0u32, |sum, &byte| sum.wrapping_add(byte as u32));
+
+            // 优化 checksum：按 8 字节批量处理减少循环次数
+            let mut checksum: u32 = 0;
+            let mut i = 0;
+            while i + 8 <= n {
+                checksum = checksum
+                    .wrapping_add(chunk[i] as u32)
+                    .wrapping_add(chunk[i + 1] as u32)
+                    .wrapping_add(chunk[i + 2] as u32)
+                    .wrapping_add(chunk[i + 3] as u32)
+                    .wrapping_add(chunk[i + 4] as u32)
+                    .wrapping_add(chunk[i + 5] as u32)
+                    .wrapping_add(chunk[i + 6] as u32)
+                    .wrapping_add(chunk[i + 7] as u32);
+                i += 8;
+            }
+            while i < n {
+                checksum = checksum.wrapping_add(chunk[i] as u32);
+                i += 1;
+            }
 
             trace!(
                 "[writeflash] chunk offset={} size={} checksum=0x{:08X}",
@@ -224,7 +245,6 @@ impl<'a> DAXFlash<'a> {
 
             let zero = 0u32.to_le_bytes();
             let checksum_bytes = checksum.to_le_bytes();
-            // 捕获 send_param_list_chunked 的取消错误，保存续传状态
             if let Err(e) =
                 self.send_param_list_chunked(&[&zero, &checksum_bytes, chunk], "writeflash chunk")
             {
@@ -245,6 +265,18 @@ impl<'a> DAXFlash<'a> {
 
             pos += n as u64;
             bar.set_position(start_offset + pos);
+
+            // 定期保存续传文件（每 64MB），确保断点可恢复
+            if !resume_input.is_empty() && pos - last_resume_pos >= RESUME_INTERVAL {
+                let _ = write_write_resume_file(
+                    resume_input,
+                    addr.saturating_sub(start_offset),
+                    start_offset + total,
+                    start_offset + pos,
+                    Some(write_packet_size),
+                );
+                last_resume_pos = pos;
+            }
         }
 
         let st = self.read_write_final_status()?;
@@ -252,8 +284,6 @@ impl<'a> DAXFlash<'a> {
             bar.abandon_with_message(format!("写入失败: status=0x{:08X}", st));
             return Err(format_write_status_error("writeflash final", st));
         }
-
-        self.send_devctrl(0x800005, None)?;
 
         let elapsed = start_time.elapsed().as_secs_f64();
         let speed = if elapsed > 0.0 {

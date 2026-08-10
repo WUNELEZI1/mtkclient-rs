@@ -46,10 +46,6 @@ const HEADER_MAGIC: u32 = 0x414C5030;
 ///   offset 48: logical_block_size(u32)
 #[derive(Debug, Clone)]
 pub struct LpMetadataGeometry {
-    pub magic: u32,
-    pub struct_size: u32,
-    pub metadata_max_size: u32,
-    pub metadata_slot_count: u32,
     pub logical_block_size: u32,
 }
 
@@ -83,7 +79,6 @@ pub(crate) struct TableDescriptor {
 ///   offset 132: reserved(pad to 256)
 #[derive(Debug, Clone)]
 pub struct LpMetadataHeader {
-    pub magic: u32,
     pub major_version: u16,
     pub minor_version: u16,
     pub header_size: u32,
@@ -108,15 +103,10 @@ pub struct LpMetadataPartition {
     pub attributes: u32,
     pub first_extent_index: u32,
     pub num_extents: u32,
-    pub group_index: u32,
 }
 
-/// AOSP LP_PARTITION_ATTR 位定义
-pub const LP_PARTITION_ATTR_READONLY: u32 = 0x00000001;
 /// 此分区名会附加当前槽位后缀（如 system → system_a）
 pub const LP_PARTITION_ATTR_SLOT_SUFFIXED: u32 = 0x00000002;
-/// 此分区在所有槽位中唯一（不需要后缀）
-pub const LP_PARTITION_ATTR_UPDATED: u32 = 0x00000004;
 
 impl LpMetadataPartition {
     /// 是否带有槽位后缀（A/B 分区）
@@ -124,17 +114,6 @@ impl LpMetadataPartition {
         (self.attributes & LP_PARTITION_ATTR_SLOT_SUFFIXED) != 0
     }
 
-    /// 提取基础名称（去掉 _a/_b 后缀）
-    pub fn base_name(&self) -> &str {
-        let name = self.name.as_str();
-        if let Some(base) = name.strip_suffix("_a") {
-            base
-        } else if let Some(base) = name.strip_suffix("_b") {
-            base
-        } else {
-            name
-        }
-    }
 }
 
 /// LpMetadataExtent (变长，默认 entry_size = 0x18 = 24 字节)
@@ -147,9 +126,7 @@ impl LpMetadataPartition {
 #[derive(Debug, Clone)]
 pub struct LpMetadataExtent {
     pub num_sectors: u64,
-    pub target_type: u32,
     pub target_data: u64,
-    pub target_source: u32,
 }
 
 /// LpMetadataPartitionGroup (变长，默认 entry_size = 0x30 = 48 字节)
@@ -160,19 +137,13 @@ pub struct LpMetadataExtent {
 ///   offset 40: maximum_size(u64)
 #[derive(Debug, Clone)]
 pub struct LpMetadataGroup {
-    pub name: String,
-    pub maximum_size: u64,
-    pub flags: u32,
 }
 
 /// 解析后的 Super 分区元数据
 #[derive(Debug, Clone)]
 pub struct SuperMetadata {
-    pub geometry: LpMetadataGeometry,
-    pub header: LpMetadataHeader,
     pub partitions: Vec<LpMetadataPartition>,
     pub extents: Vec<LpMetadataExtent>,
-    pub groups: Vec<LpMetadataGroup>,
     /// 逻辑块大小（扇区大小，默认 512 字节）
     pub block_size: u32,
 }
@@ -261,21 +232,9 @@ impl SuperMetadata {
             .map(|g| g.logical_block_size)
             .unwrap_or(512);
 
-        // 构造默认 geometry（如果没找到）
-        let geo = geometry.unwrap_or(LpMetadataGeometry {
-            magic: GEOMETRY_MAGIC,
-            struct_size: 0,
-            metadata_max_size: 0,
-            metadata_slot_count: 1,
-            logical_block_size: block_size,
-        });
-
         Ok(SuperMetadata {
-            geometry: geo,
-            header,
             partitions,
             extents,
-            groups,
             block_size,
         })
     }
@@ -324,28 +283,12 @@ impl SuperMetadata {
             let magic = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
             if magic == GEOMETRY_MAGIC {
                 debug!("找到 LP_METADATA_GEOMETRY_MAGIC at offset 0x{:04X}", offset);
-                let struct_size =
-                    u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap());
-                let metadata_max_size = if offset + 44 <= data.len() {
-                    u32::from_le_bytes(data[offset + 40..offset + 44].try_into().unwrap())
-                } else {
-                    0
-                };
-                let metadata_slot_count = if offset + 48 <= data.len() {
-                    u32::from_le_bytes(data[offset + 44..offset + 48].try_into().unwrap())
-                } else {
-                    1
-                };
                 let logical_block_size = if offset + 52 <= data.len() {
                     u32::from_le_bytes(data[offset + 48..offset + 52].try_into().unwrap())
                 } else {
                     512
                 };
                 return Some(LpMetadataGeometry {
-                    magic,
-                    struct_size,
-                    metadata_max_size,
-                    metadata_slot_count,
                     logical_block_size,
                 });
             }
@@ -391,7 +334,6 @@ impl SuperMetadata {
         let block_devices = Self::read_table_descriptor(data, offset + 116)?;
 
         Ok(LpMetadataHeader {
-            magic,
             major_version,
             minor_version,
             header_size,
@@ -468,7 +410,6 @@ impl SuperMetadata {
                 attributes,
                 first_extent_index,
                 num_extents,
-                group_index,
             });
         }
 
@@ -517,9 +458,7 @@ impl SuperMetadata {
 
             extents.push(LpMetadataExtent {
                 num_sectors,
-                target_type,
                 target_data,
-                target_source,
             });
         }
 
@@ -558,11 +497,7 @@ impl SuperMetadata {
                 i, name, flags, maximum_size
             );
 
-            groups.push(LpMetadataGroup {
-                name,
-                maximum_size,
-                flags,
-            });
+            groups.push(LpMetadataGroup {});
         }
 
         groups
@@ -598,16 +533,6 @@ impl SuperMetadata {
         None
     }
 
-    /// 列出所有 logical partition
-    pub fn list_partitions(&self) -> Vec<(String, u64, u64)> {
-        self.partitions
-            .iter()
-            .map(|p| {
-                let (off, size) = self.find_partition(&p.name).unwrap_or((0, 0));
-                (p.name.clone(), off, size)
-            })
-            .collect()
-    }
 
     /// 智能查找分区，自动处理 A/B 槽位
     pub fn find_partition_smart(&self, name: &str) -> Option<(String, u64, u64)> {

@@ -79,60 +79,6 @@ pub struct ComPortUsbInfo {
     pub driver_mfg: String,
 }
 
-/// 通过硬件 ID 查找 COM 口
-/// 比 find_com_port_for_brom_device 更可靠：不依赖设备描述，直接用 VID/PID 硬件 ID 关联
-#[cfg(target_os = "windows")]
-fn find_com_port_by_hardware_id() -> Option<String> {
-    unsafe {
-        let device_info_set = enum_ports_devices().ok()?;
-        let mut dev_info = SpDevinfoData::new();
-        let mut result = None;
-
-        // 目标硬件 ID 的多种可能格式
-        let target_vid_pid = format!("VID_{:04X}&PID_{:04X}", MTK_VID, MTK_BROM_PID).to_uppercase();
-
-        for index in 0..256 {
-            if setupapi::SetupDiEnumDeviceInfo(device_info_set, index, &mut dev_info) == 0 {
-                break;
-            }
-
-            // 读取所有兼容硬件 ID（SPDRP_COMPATIBLEIDS）
-            // 串口驱动注册的兼容 ID 通常包含 "USB\VID_0E8D&PID_0003" 格式
-            if let Some(compatible_ids) =
-                read_reg_wide(device_info_set, &dev_info, SPDRP_COMPATIBLEIDS)
-                && compatible_ids.to_uppercase().contains(&target_vid_pid)
-                && let Some(port_name) = read_reg_wide(device_info_set, &dev_info, SPDRP_PORTNAME)
-            {
-                let device_desc =
-                    read_reg_wide(device_info_set, &dev_info, SPDRP_DEVICEDESC).unwrap_or_default();
-                trace!(
-                    "[USB_BUS] 通过硬件 ID 找到 COM 口: {} (desc='{}')",
-                    port_name, device_desc
-                );
-                result = Some(port_name);
-                break;
-            }
-
-            // 也检查 SPDRP_HARDWAREID
-            if let Some(hw_id) = read_reg_wide(device_info_set, &dev_info, SPDRP_HARDWAREID)
-                && hw_id.to_uppercase().contains(&target_vid_pid)
-                && let Some(port_name) = read_reg_wide(device_info_set, &dev_info, SPDRP_PORTNAME)
-            {
-                let device_desc =
-                    read_reg_wide(device_info_set, &dev_info, SPDRP_DEVICEDESC).unwrap_or_default();
-                trace!(
-                    "[USB_BUS] 通过 HardwareID 找到 COM 口: {} (desc='{}')",
-                    port_name, device_desc
-                );
-                result = Some(port_name);
-                break;
-            }
-        }
-
-        setupapi::SetupDiDestroyDeviceInfoList(device_info_set);
-        result
-    }
-}
 
 #[cfg(not(target_os = "windows"))]
 fn find_com_port_by_hardware_id() -> Option<String> {
@@ -260,36 +206,6 @@ pub fn detect_brom_driver_from_usb_bus() -> UsbBusDetectionResult {
     UsbBusDetectionResult::NotFound
 }
 
-#[cfg(target_os = "windows")]
-fn find_com_port_for_brom_device() -> Option<String> {
-    unsafe {
-        let device_info_set = enum_ports_devices().ok()?;
-        let mut dev_info = SpDevinfoData::new();
-        let mut result = None;
-
-        for index in 0..256 {
-            if setupapi::SetupDiEnumDeviceInfo(device_info_set, index, &mut dev_info) == 0 {
-                break;
-            }
-
-            if let Some(port_name) = read_reg_wide(device_info_set, &dev_info, SPDRP_PORTNAME)
-                && let Some(device_desc) =
-                    read_reg_wide(device_info_set, &dev_info, SPDRP_DEVICEDESC)
-                && device_desc.to_lowercase().contains("mediatek usb port")
-            {
-                trace!(
-                    "[USB_BUS] 找到 COM 口: {} (desc='{}')",
-                    port_name, device_desc
-                );
-                result = Some(port_name);
-                break;
-            }
-        }
-
-        setupapi::SetupDiDestroyDeviceInfoList(device_info_set);
-        result
-    }
-}
 
 #[cfg(not(target_os = "windows"))]
 fn find_com_port_for_brom_device() -> Option<String> {

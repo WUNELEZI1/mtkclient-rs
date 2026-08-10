@@ -11,40 +11,6 @@ use super::gpt::GptInfo;
 /// scatter 文件分隔符（对齐刷机匣 MT6768_Android_scatter.txt 格式）
 const SEPARATOR: &str = "################################################mtkclient-rs################################################";
 
-/// 解析 GPT 分区表（独立函数，不依赖 USB）
-pub fn parse_gpt_from_data(data: &[u8]) -> Result<(), String> {
-    println!("  数据大小: {} 字节", data.len());
-
-    let gpt_info = GptInfo::parse(data)?;
-
-    println!("GPT 头部 (偏移=0x{:X}):", gpt_info.base_offset);
-
-    if gpt_info.revision != 0x10000 {
-        return Err(format!("GPT revision 不匹配: 0x{:08X}", gpt_info.revision));
-    }
-
-    println!("  修订版本: 0x{:08X}", gpt_info.revision);
-    println!("  头部大小: {} 字节", gpt_info.header_size);
-    println!("  当前 LBA: {}", gpt_info.current_lba);
-    println!("  首个可用 LBA: {}", gpt_info.first_usable_lba);
-    println!("  分区项 LBA: {}", gpt_info.part_entry_start_lba);
-    println!("  分区数量: {}", gpt_info.num_part_entries);
-    println!("  分区项大小: {} 字节", gpt_info.part_entry_size);
-
-    println!("\n分区信息:");
-    println!("{:<30} {:<16} {:<16}", "分区名称", "起始地址", "大小");
-
-    let partitions = gpt_info.partitions();
-    for entry in &partitions {
-        println!(
-            "{:<30} 0x{:014X} 0x{:014X}",
-            entry.name, entry.start_addr, entry.size
-        );
-    }
-
-    println!("\n共 {} 个分区", partitions.len());
-    Ok(())
-}
 
 /// scatter 分区块参数
 struct ScatterEntry<'a> {

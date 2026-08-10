@@ -41,8 +41,8 @@ struct ScriptFile {
 
 /// 解析 JSON 脚本文件（手动解析，不依赖 serde_json）
 fn parse_script(path: &str) -> Result<ScriptFile, Box<dyn std::error::Error>> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("无法读取脚本文件 '{}': {}", path, e))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("无法读取脚本文件 '{}': {}", path, e))?;
 
     // 去除 JSON 中的注释行（// 开头）和尾随逗号，方便手工编辑
     let cleaned: String = content
@@ -198,18 +198,19 @@ pub fn cmd_run(
 
     // 显示脚本信息
     if !script.name.is_empty() {
-        info!(
-            "{}",
-            format!("═══ 脚本: {} ═══", script.name).cyan().bold()
-        );
+        info!("{}", format!("═══ 脚本: {} ═══", script.name).cyan().bold());
     }
     if !script.description.is_empty() {
         info!("  {}", script.description);
     }
     info!(
         "{}",
-        format!("共 {} 条命令, continue_on_error={}", script.commands.len(), script.continue_on_error)
-            .dimmed()
+        format!(
+            "共 {} 条命令, continue_on_error={}",
+            script.commands.len(),
+            script.continue_on_error
+        )
+        .dimmed()
     );
     println!();
 
@@ -237,14 +238,23 @@ pub fn cmd_run(
         let sub_cmd = parts[0].as_str();
         let sub_args = &parts[1..];
 
-        let result: Result<(), Box<dyn std::error::Error>> =
-            super::dispatch_cmd(da, sub_cmd, sub_args, app_config.verify, log_level, app_config)
-                .map_err(|e| e.into());
+        let result: Result<(), Box<dyn std::error::Error>> = super::dispatch_cmd(
+            da,
+            sub_cmd,
+            sub_args,
+            app_config.verify,
+            log_level,
+            app_config,
+        )
+        .map_err(|e| e.into());
 
         match result {
             Ok(()) => {
                 success_count += 1;
-                info!("{}", format!("[{}/{}] ✓ 完成", i + 1, script.commands.len()).green());
+                info!(
+                    "{}",
+                    format!("[{}/{}] ✓ 完成", i + 1, script.commands.len()).green()
+                );
             }
             Err(e) => {
                 fail_count += 1;
@@ -267,7 +277,9 @@ pub fn cmd_run(
         "{}",
         format!(
             "═══ 执行完毕: {} 成功, {} 失败, 共 {} 条命令 ═══",
-            success_count, fail_count, script.commands.len()
+            success_count,
+            fail_count,
+            script.commands.len()
         )
         .cyan()
         .bold()
@@ -286,5 +298,3 @@ pub fn cmd_run(
         Ok(())
     }
 }
-
-

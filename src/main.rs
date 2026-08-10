@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+// #![allow(dead_code)] — removed during dead-code sweep; re-add only if needed
 
 use clap::Parser;
 use colored::Colorize;
@@ -99,14 +99,13 @@ impl log::Log for TeeLogger {
 }
 
 mod cancel;
-mod error;
 #[path = "cmd/mod.rs"]
 mod cmd;
-mod util;
 #[path = "connection/mod.rs"]
 mod connection;
 #[path = "da/mod.rs"]
 mod da;
+mod error;
 #[path = "exploit/mod.rs"]
 mod exploit;
 #[path = "partition/mod.rs"]
@@ -118,6 +117,7 @@ mod security;
 mod system;
 #[path = "usb/mod.rs"]
 mod usb;
+mod util;
 
 use connection::ConnectionManager;
 use usb::USB上下文;
@@ -215,7 +215,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "{}",
-        "Copyright (c) wunelezi | Licensed under GPL-3.0".dimmed()
+        "Copyright (c) 无能乐子(wunelezi) | Licensed under Apache-2.0".dimmed()
+    );
+    println!(
+        "{} {}  {} {}",
+        "获取更新:".dimmed(),
+        "https://gitee.com/WUNELEZI1/mtkclient-rs/releases"
+            .blue()
+            .underline(),
+        "QQ:".dimmed(),
+        "3535571067".green()
+    );
+    println!(
+        "{}",
+        "本工具完全免费，请勿被骗！禁止任何形式的倒卖、破解或去除作者信息。违者必究。"
+            .red()
+            .dimmed()
     );
     println!();
 
@@ -228,10 +243,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = cmd::cli::Cli::parse();
 
-    // === 后台预加载 tar.gz（多线程解压，不阻塞主线程）===
-    if let Some(tar_path) = system::compress::find_tar_gz_path() {
-        debug!("发现 tar.gz: {}, 启动后台加载线程...", tar_path.display());
-        system::compress::init_tar_cache_async(tar_path);
+    // === --data-dir 覆盖（GUI 传入的解压数据目录）===
+    if let Some(ref data_dir) = cli.data_dir {
+        let data_path = std::path::PathBuf::from(data_dir);
+        if data_path.is_dir() {
+            debug!("使用 --data-dir: {}", data_path.display());
+            system::paths::set_data_dir(data_path);
+        } else {
+            warn!("--data-dir 路径不存在或不是目录: {}", data_dir);
+        }
     }
 
     // Windows: 驱动安装 (pnputil / wdi-rs) 必须管理员，提前提权
@@ -289,14 +309,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
     if cli.usb_log {
-        // TeeLogger：终端 + usb_debug.log（覆盖模式）
+        // TeeLogger：终端 + tmp/usb_debug.log（覆盖模式）
         let terminal_logger = builder.build();
+        let usb_log_path = crate::system::paths::获取tmp路径("usb_debug.log");
         let file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
-            .open("usb_debug.log")
-            .map_err(|e| format!("无法创建 usb_debug.log: {}", e))?;
+            .open(&usb_log_path)
+            .map_err(|e| format!("无法创建 {}: {}", usb_log_path.display(), e))?;
 
         let tee_logger = TeeLogger {
             terminal: terminal_logger,

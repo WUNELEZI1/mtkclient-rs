@@ -22,11 +22,11 @@ use crate::da::xflash::DAXFlash;
 
 /// 所有 XFlash 包头的 magic 标识
 pub const CMD_MAGIC: u32 = 0xFEEEEEEF;
-const CMD_SYNC_SIGNAL: u32 = 0x434E5953;
-const CMD_SETUP_ENVIRONMENT: u32 = 0x010100;
-const CMD_SETUP_HW_INIT_PARAMS: u32 = 0x010101;
-const CMD_INIT_EXT_RAM: u32 = 0x01000A;
-const CMD_BOOT_TO: u32 = 0x010008;
+pub const CMD_SYNC_SIGNAL: u32 = 0x434E5953;
+pub const CMD_SETUP_ENVIRONMENT: u32 = 0x010100;
+pub const CMD_SETUP_HW_INIT_PARAMS: u32 = 0x010101;
+pub const CMD_INIT_EXT_RAM: u32 = 0x01000A;
+pub const CMD_BOOT_TO: u32 = 0x010008;
 pub const CMD_READ_DATA: u32 = 0x010005; // XFlash 读分区命令
 pub const CMD_WRITE_DATA: u32 = 0x010004; // 写入数据命令
 
@@ -37,62 +37,30 @@ pub const CMD_FORMAT: u32 = 0x010003; // 格式化命令
 // =============================================================================
 
 // --- 基础命令 (0x01xxxx) ---
-pub const CMD_DOWNLOAD: u32 = 0x010001; // 下载
-pub const CMD_UPLOAD: u32 = 0x010002; // 上传
-pub const CMD_FORMAT_PART: u32 = 0x010006; // 格式化分区
 pub const CMD_SHUTDOWN: u32 = 0x010007; // ★ 关机/reboot（含 bootmode 参数）
-pub const CMD_DEVICE_CTRL: u32 = 0x010009; // 设备控制（总入口，子命令通过此发送）
-pub const CMD_SWITCH_USB: u32 = 0x01000B; // 切换 USB 速度
-pub const CMD_READ_OTP: u32 = 0x01000C; // 读 OTP
-pub const CMD_WRITE_OTP: u32 = 0x01000D; // 写 OTP
-pub const CMD_WRITE_EFUSE: u32 = 0x01000E; // 写 eFuse
-pub const CMD_READ_EFUSE: u32 = 0x01000F; // 读 eFuse
-pub const CMD_NAND_BMT: u32 = 0x010010; // NAND BMT
 
 // --- 设备控制子命令 (0x02xxxx) — 通过 CMD_DEVICE_CTRL 发送 ---
-pub const SET_BMT: u32 = 0x020001; // 设置 BMT 百分比
-pub const SET_BATTERY: u32 = 0x020002; // 设置电池优化
-pub const SET_CHECKSUM: u32 = 0x020003; // 设置校验级别
-pub const SET_RESET_KEY: u32 = 0x020004; // 设置 Reset Key
-pub const SET_HOST_INFO: u32 = 0x020005; // 设置主机信息
 pub const SET_META_BOOT_MODE: u32 = 0x020006; // ★ 设置 Meta Boot Mode
-pub const SET_EMMC_RST: u32 = 0x020007; // 设置 eMMC HW Reset
-pub const SET_GEN_GPX: u32 = 0x020008; // 设置生成 GPX
-pub const SET_REG_VAL: u32 = 0x020009; // 设置寄存器值
-pub const SET_EXT_SIG: u32 = 0x02000A; // 设置外部签名
-pub const SET_SEC_POL: u32 = 0x02000B; // ★ 设置远程安全策略 (SLA)
-pub const SET_AIO_SIG: u32 = 0x02000C; // 设置一体化签名
-pub const SET_RSC_INFO: u32 = 0x02000D; // 设置 RSC 信息
-pub const SET_UPDATE_FW: u32 = 0x020010; // 设置更新固件
-pub const SET_UFS_CFG: u32 = 0x020011; // 设置 UFS 配置
 
 // --- 信息获取子命令 (0x04xxxx) ---
-pub const GET_EMMC_INFO: u32 = 0x040001; // 获取 eMMC 信息
-pub const GET_NAND_INFO: u32 = 0x040002; // 获取 NAND 信息
-pub const GET_NOR_INFO: u32 = 0x040003; // 获取 NOR 信息
-pub const GET_UFS_INFO: u32 = 0x040004; // 获取 UFS 信息
-pub const GET_DA_VER: u32 = 0x040005; // 获取 DA 版本
-pub const GET_EXPIRE: u32 = 0x040006; // 获取过期日期
 pub const GET_PKT_LEN: u32 = 0x040007; // 获取包长度
-pub const GET_RANDOM_ID: u32 = 0x040008; // 获取随机 ID
-pub const GET_PART_TBL: u32 = 0x040009; // 获取分区表
-pub const GET_CONN: u32 = 0x04000A; // 获取连接代理
-pub const GET_USB_SPD: u32 = 0x04000B; // 获取 USB 速度
-pub const GET_RAM_INFO: u32 = 0x04000C; // 获取 RAM 信息
-pub const GET_CHIP_ID: u32 = 0x04000D; // 获取芯片 ID
-pub const GET_OTP_LOCK: u32 = 0x04000E; // 获取 OTP 锁定状态
-pub const GET_BATT_VOLT: u32 = 0x04000F; // 获取电池电压
-pub const GET_RPMB: u32 = 0x040010; // 获取 RPMB 状态
-pub const GET_EXPIRE_DT: u32 = 0x040011; // 获取过期日期
-pub const GET_DRAM_TYPE: u32 = 0x040012; // 获取 DRAM 类型
-pub const GET_DEV_FW: u32 = 0x040013; // 获取设备固件信息
-pub const GET_HRID: u32 = 0x040014; // 获取 HRID
-pub const GET_ERR_DET: u32 = 0x040015; // 获取错误详情
-pub const SLA_ENABLED: u32 = 0x040016; // SLA 启用状态
 
-// --- 下载信息 (0x08xxxx) ---
-pub const START_DL_INFO: u32 = 0x080001; // 开始下载信息
-pub const END_DL_INFO: u32 = 0x080002; // 结束下载信息
+// --- 其他命令 ---
+pub const GET_DA_VER_CMD: u32 = 0x010106; // 获取 DA 版本/芯片信息
+
+// --- DA 扩展启动地址 ---
+pub const DA_EXT_BOOT_ADDR: u32 = 0x4FFF0000;
+
+// =============================================================================
+// 超时常量 (ms)
+// =============================================================================
+
+/// xread 临时超时 (ms)
+const XREAD_TIMEOUT_MS: u64 = 1000;
+/// 可选查询短超时 (ms)
+const SHORT_QUERY_TIMEOUT_MS: u64 = 200;
+/// SLA 查询超时 (ms)
+const SLA_QUERY_TIMEOUT_MS: u64 = 50;
 
 // =============================================================================
 // Shutdown bootmode 枚举（对齐 xflash_lib.py ShutDownModes）
@@ -103,10 +71,6 @@ pub const END_DL_INFO: u32 = 0x080002; // 结束下载信息
 pub enum ShutdownBootMode {
     /// 关机
     Normal = 0,
-    /// 重启到 home screen (系统)
-    Reboot = 1,
-    /// ★ 重启到 fastboot
-    Fastboot = 2,
 }
 
 // =============================================================================
@@ -118,7 +82,6 @@ pub enum ShutdownBootMode {
 pub enum XmlBootMode {
     Fastboot = 0,
     Meta = 1,
-    TestMode = 2,
 }
 
 impl XmlBootMode {
@@ -126,7 +89,6 @@ impl XmlBootMode {
         match self {
             XmlBootMode::Fastboot => "FASTBOOT",
             XmlBootMode::Meta => "META",
-            XmlBootMode::TestMode => "ANDROID-TEST-MODE",
         }
     }
 }
@@ -232,7 +194,7 @@ impl<'a> DAXFlash<'a> {
         let orig_timeout = self.preloader.device.get_timeout();
         self.preloader
             .device
-            .set_timeout(Duration::from_millis(1000));
+            .set_timeout(Duration::from_millis(XREAD_TIMEOUT_MS));
 
         let result = self.xread_inner();
         self.preloader.device.set_timeout(orig_timeout);
@@ -423,6 +385,18 @@ impl<'a> DAXFlash<'a> {
         let st = self.status()?;
         let stage1_ok = st == 0;
         if !stage1_ok {
+            // SYNC (0x434E5953) = DA 初始化信号残留在 USB 缓冲区
+            // 对齐 Python send_devctrl：stage1 != 0 时不发送 cmd，直接返回空
+            // 这样避免 cmd 响应被排入队列导致后续命令读到过期数据
+            if st == CMD_SYNC_SIGNAL {
+                trace!(
+                    "[send_devctrl] stage1=SYNC (DA init residual), 跳过 cmd 0x{:06X}",
+                    cmd
+                );
+                // 只读取并丢弃一个残留包（不用 drain 循环，避免消耗后续命令的响应）
+                let _ = self.status();
+                return Ok(vec![]);
+            }
             // 已知正常状态码：静默处理
             // 0x00010009 = DEVICE_CTRL 不支持（部分设备/DA版本）
             // 0xC0010004 = 命令不支持
@@ -432,7 +406,7 @@ impl<'a> DAXFlash<'a> {
             trace!("[send_devctrl] stage1 status=0x{:08X}, 继续完成握手...", st);
         }
 
-        // xsend(cmd) — 无论 stage1 是否成功都必须发送，否则 DA 状态机卡住
+        // xsend(cmd) — stage1 成功时发送（SYNC 已在上方提前返回）
         let pkt2 = pack3(CMD_MAGIC, 0x01, 4);
         self.preloader.device.write(&pkt2)?;
         self.preloader.device.write(&cmd.to_le_bytes())?;
@@ -450,19 +424,26 @@ impl<'a> DAXFlash<'a> {
         }
 
         // 只有 param 模式需要两个阶段都成功才继续
-        // read 模式：即使 stage1/stage2 返回非零状态码，仍尝试 xread（部分设备如此）
+        // read 模式：stage1/stage2 都成功时才尝试 xread
+        // 如果 stage2 返回 0xC0010004（命令不支持）或 0x00010009，DA 不会发送 xread 数据
         if param.is_none() {
-            // xread 模式：对齐 Python mtkclient，send_devctrl(cmd, None)
-            // 在 xread() 后还需读取一次 status（DA 协议规定）。
-            // 如果不读，USB 缓冲区会残留 status 包，导致后续命令状态流错位。
-            let resp = self.xread_data()?;
-            let _ = self.status(); // 消费 DA 发送的额外 status 包
-            trace!(
-                "[send_devctrl] cmd=0x{:06X} xread returned {} bytes",
-                cmd,
-                resp.len()
-            );
-            return Ok(resp);
+            if stage2_ok {
+                let resp = self.xread_data()?;
+                let _ = self.status();
+                trace!(
+                    "[send_devctrl] cmd=0x{:06X} xread returned {} bytes",
+                    cmd,
+                    resp.len()
+                );
+                return Ok(resp);
+            } else {
+                // 命令不支持或设备不支持，返回空数据（对齐 Python: 任何阶段都返回 b""）
+                trace!(
+                    "[send_devctrl] cmd=0x{:06X} stage2 不支持(0x{:08X})，返回空",
+                    cmd, st2
+                );
+                return Ok(vec![]);
+            }
         }
 
         // param 模式：两个阶段都成功才继续发送 param
@@ -495,7 +476,11 @@ impl<'a> DAXFlash<'a> {
 
     /// 临时设置短超时执行回调，完成后恢复原超时
     /// 用于可选查询：命令不支持时快速失败，不等 5 秒
-    pub(crate) fn with_short_timeout<T>(&mut self, ms: u64, f: impl FnOnce(&mut Self) -> Result<T, String>) -> Result<T, String> {
+    pub(crate) fn with_short_timeout<T>(
+        &mut self,
+        ms: u64,
+        f: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
         let orig = self.preloader.device.get_timeout();
         self.preloader.device.set_timeout(Duration::from_millis(ms));
         let result = f(self);
@@ -506,7 +491,8 @@ impl<'a> DAXFlash<'a> {
     /// 获取连接代理（brom 或 preloader）
     /// Python: 返回 b"" 或 None 时视为失败
     pub(crate) fn get_connection_agent(&mut self) -> Result<String, String> {
-        let data = self.with_short_timeout(200, |da| da.send_devctrl(0x010102, None))?;
+        let data =
+            self.with_short_timeout(SHORT_QUERY_TIMEOUT_MS, |da| da.send_devctrl(0x010102, None))?;
         if data.is_empty() {
             return Err("get_connection_agent returned empty".to_string());
         }
@@ -623,7 +609,8 @@ impl<'a> DAXFlash<'a> {
 
     /// 获取过期日期（短超时：200ms，不支持时快速跳过）
     pub(crate) fn get_expire_date(&mut self) -> Result<Vec<u8>, String> {
-        let data = self.with_short_timeout(200, |da| da.send_devctrl(0x010105, None))?;
+        let data =
+            self.with_short_timeout(SHORT_QUERY_TIMEOUT_MS, |da| da.send_devctrl(0x010105, None))?;
         if data.is_empty() {
             return Err("get_expire_date returned empty".to_string());
         }
@@ -632,7 +619,8 @@ impl<'a> DAXFlash<'a> {
 
     /// 获取 SLA 状态（短超时：200ms，不支持时快速跳过）
     pub(crate) fn get_sla_status(&mut self) -> Result<u32, String> {
-        let data = self.with_short_timeout(200, |da| da.send_devctrl(0x01010E, None))?; // SLA_ENABLED_STATUS
+        let data =
+            self.with_short_timeout(SLA_QUERY_TIMEOUT_MS, |da| da.send_devctrl(0x01010E, None))?; // SLA_ENABLED_STATUS
         if data.len() >= 4 {
             Ok(u32::from_le_bytes(data[..4].try_into().unwrap()))
         } else {
@@ -640,24 +628,6 @@ impl<'a> DAXFlash<'a> {
         }
     }
 
-    /// 设置 OEM 解锁开关状态（对齐 C# 版）
-    /// 命令 0x040009 用于控制 OEM 解锁状态
-    /// enable: true=解锁, false=锁定
-    pub fn set_oem_unlock(&mut self, enable: bool) -> Result<(), String> {
-        let value = if enable { 1u32 } else { 0u32 };
-        let _ = self.send_devctrl(0x040009, Some(&value.to_le_bytes()))?;
-        info!(
-            "OEM 解锁状态已设置: {}",
-            if enable { "解锁" } else { "锁定" }
-        );
-        // set_oem_unlock 后排空残留数据并同步 DA 状态，避免影响后续写入命令
-        self.preloader.device.drain_pending();
-        if let Err(e) = self.xflash_sync() {
-            trace!("[set_oem_unlock] xflash_sync 失败: {}", e);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        Ok(())
-    }
 
     /// 设置 Meta Boot Mode（对齐 Python set_meta_boot_mode）
     /// 命令: CMD_DEVICE_CTRL(0x010009) + SET_META_BOOT_MODE(0x020006)
@@ -668,13 +638,41 @@ impl<'a> DAXFlash<'a> {
     }
 
     /// 查询当前 USB 速度（对齐 Python get_usb_speed）
-    /// 返回 "full-speed" / "high-speed" / "hyper-speed" 或空字符串
+    /// 返回 "full-speed" / "high-speed" / "super-speed" 或 "unknown"
     pub(crate) fn get_usb_speed(&mut self) -> Result<String, String> {
         let data = self.send_devctrl(0x010115, None)?; // GET_USB_SPEED
         if data.is_empty() {
             return Err("get_usb_speed 返回空".to_string());
         }
-        let speed = String::from_utf8_lossy(&data).trim().to_string();
+        // 设备可能返回数值 (u32 LE) 或字符串，需要兼容两种格式
+        let speed = if data.len() >= 4 {
+            let val = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+            match val {
+                0 => "full-speed",
+                1 => "high-speed",
+                2 => "super-speed",
+                _ => {
+                    // 不是已知数值，尝试作为 UTF-8 字符串解析
+                    let s = String::from_utf8_lossy(&data).trim().to_string();
+                    if s.is_empty() || !s.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+                        trace!("  USB 速度: 未知值 0x{:08X}, raw={:02X?}", val, &data);
+                        return Ok("unknown".to_string());
+                    }
+                    // 返回有效的字符串（使用 intern 避免分配）
+                    return Ok(s);
+                }
+            }
+            .to_string()
+        } else {
+            // 数据不足 4 字节，尝试字符串解析
+            let s = String::from_utf8_lossy(&data).trim().to_string();
+            if s.is_empty() || !s.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+                trace!("  USB 速度: raw={:02X?}", &data);
+                "unknown".to_string()
+            } else {
+                s
+            }
+        };
         trace!("  USB 速度: {}", speed);
         Ok(speed)
     }
@@ -720,14 +718,12 @@ impl<'a> DAXFlash<'a> {
     ///   响应: status(4)
     ///
     /// bootmode 枚举：
-    ///   0 = 关机 (NORMAL)
+    ///   0 = 关机/重启 (NORMAL) — 配合 enablewdt 触发重启
     ///   1 = 重启到系统 (REBOOT)
     ///   2 = ★ 重启到 fastboot (FASTBOOT)
     pub fn da_shutdown(&mut self, bootmode: ShutdownBootMode) -> Result<(), String> {
         let mode_name = match bootmode {
-            ShutdownBootMode::Normal => "关机",
-            ShutdownBootMode::Reboot => "重启到系统",
-            ShutdownBootMode::Fastboot => "重启到 fastboot",
+            ShutdownBootMode::Normal => "关机/重启",
         };
         info!("[DA SHUTDOWN] bootmode={} ({})", bootmode as u32, mode_name);
 
@@ -748,32 +744,29 @@ impl<'a> DAXFlash<'a> {
             return Err(format!("SHUTDOWN 命令状态: 0x{:08X}", st));
         }
 
-        // 构建 32 字节参数体 — 对齐 Python xflash_lib.shutdown()
-        // 偏移   大小   Fastboot    Normal    Reboot    含义
-        // 0x00   4B    0x00000001  0x00000000  0x00000001  hasflags
-        // 0x04   4B    0x00000000  0x00000000  0x00000000  enablewdt (Disable)
-        // 0x08   4B    0x00000000  0x00000000  0x00000000  async_mode
-        // 0x0C   4B    0x00000002  0x00000000  0x00000001  bootmode
-        // 0x10   4B    0x00000000  0x00000000  0x00000000  dl_bit
-        // 0x14   4B    0x00000000  0x00000000  0x00000000  dont_resetrtc
-        // 0x18   4B    0x00000000  0x00000000  0x00000000  leaveusb
-        // 0x1C   4B    0x00000000  0x00000000  0x00000000  reserved
-        let hasflags: u32 = if bootmode != ShutdownBootMode::Normal {
-            1
-        } else {
-            0
-        };
-        let mut param = [0u8; 32];
-        param[0x00..0x04].copy_from_slice(&hasflags.to_le_bytes()); // hasflags
-        param[0x04..0x08].copy_from_slice(&0u32.to_le_bytes()); // enablewdt = 0 (Disable)
+        // 构建 28 字节参数体 — 对齐刷机匣 C# 版 (GeekFlashTool) 实际协议
+        // 关键：enablewdt = 0x64 启用看门狗定时器，这是触发设备重启的核心参数
+        //
+        // 偏移   大小   值          含义
+        // 0x00   4B    0x00000001  hasflags (启用参数标志)
+        // 0x04   4B    0x00000064  enablewdt (100 = 启用 WDT，触发重启)
+        // 0x08   4B    0x00000000  async_mode
+        // 0x0C   4B    bootmode    启动模式
+        // 0x10   4B    0x00000000  dl_bit
+        // 0x14   4B    0x00000000  dont_resetrtc
+        // 0x18   4B    0x00000000  leaveusb
+        let enablewdt: u32 = 0x64; // 100 — 启用看门狗，确保设备重启
+        let mut param = [0u8; 28];
+        param[0x00..0x04].copy_from_slice(&1u32.to_le_bytes()); // hasflags = 1
+        param[0x04..0x08].copy_from_slice(&enablewdt.to_le_bytes()); // enablewdt = 0x64
         param[0x08..0x0C].copy_from_slice(&0u32.to_le_bytes()); // async_mode = 0
         param[0x0C..0x10].copy_from_slice(&(bootmode as u32).to_le_bytes()); // bootmode
-        // 0x10-0x1C: zeros (dl_bit + dont_resetrtc + leaveusb + reserved)
+        // 0x10-0x18: zeros (dl_bit + dont_resetrtc + leaveusb)
 
-        trace!("[DA SHUTDOWN] param: {}", hex_str(&param));
+        trace!("[DA SHUTDOWN] param (28B): {}", hex_str(&param));
 
-        // 发送参数体
-        let param_pkt = pack3(CMD_MAGIC, 0x01, 32);
+        // 发送参数体（28 字节）
+        let param_pkt = pack3(CMD_MAGIC, 0x01, 28);
         self.preloader
             .device
             .write(&param_pkt)
@@ -789,26 +782,13 @@ impl<'a> DAXFlash<'a> {
             return Err(format!("SHUTDOWN 参数状态: 0x{:08X}", st2));
         }
 
-        info!("[DA SHUTDOWN] 成功 (bootmode={})", bootmode as u32);
+        info!(
+            "[DA SHUTDOWN] 成功 (bootmode={}, enablewdt=0x{:02X})",
+            bootmode as u32, enablewdt
+        );
         Ok(())
     }
 
-    /// Layer 2: 通过 XFlash SHUTDOWN 重启到 fastboot
-    ///
-    /// 发送 SHUTDOWN(bootmode=FASTBOOT) → 设备重启到 fastboot
-    pub fn da_reboot_fastboot(&mut self) -> Result<(), String> {
-        self.da_shutdown(ShutdownBootMode::Fastboot)
-    }
-
-    /// Layer 2: 通过 XFlash SHUTDOWN 正常重启到系统
-    pub fn da_reboot_system(&mut self) -> Result<(), String> {
-        self.da_shutdown(ShutdownBootMode::Reboot)
-    }
-
-    /// Layer 2: 通过 XFlash SHUTDOWN 关机
-    pub fn da_power_off(&mut self) -> Result<(), String> {
-        self.da_shutdown(ShutdownBootMode::Normal)
-    }
 
     /// Layer 3: 发送 XML DA 命令（新平台 MT6789+）
     ///

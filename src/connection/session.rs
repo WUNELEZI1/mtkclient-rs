@@ -2,13 +2,14 @@ use log::{info, trace, warn};
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
-use std::path::Path;
 
-/// DA 会话状态文件路径
-const STATE_FILE: &str = ".state";
+use crate::system::paths::获取tmp路径;
 
-/// DA 会话最大存活时间（秒），超过此时间 .state 视为过期
-const SESSION_MAX_AGE_SECS: u64 = 300; // 5 分钟
+/// 获取 DA 会话状态文件路径（位于 tmp/ 目录）
+fn state_file_path() -> std::path::PathBuf {
+    获取tmp路径(".state")
+}
+
 
 /// DA 初始化模式：记录 DA 是通过哪种路径加载的，
 /// 会话复用时根据此字段选择对应的重握手方案
@@ -137,18 +138,20 @@ impl SessionState {
 
     /// 写入 .state 文件（原子写入：先写临时文件再 rename）
     pub fn save(&self) -> Result<(), String> {
-        let tmp = format!("{}.tmp", STATE_FILE);
+        let state_path = state_file_path();
+        let tmp = format!("{}.tmp", state_path.display());
         fs::write(&tmp, self.to_string()).map_err(|e| format!("写入 .state.tmp 失败: {}", e))?;
-        fs::rename(&tmp, STATE_FILE).map_err(|e| format!("rename .state.tmp 失败: {}", e))?;
+        fs::rename(&tmp, &state_path).map_err(|e| format!("rename .state.tmp 失败: {}", e))?;
         Ok(())
     }
 
     /// 读取 .state 文件
     pub fn load() -> Option<Self> {
-        if !Path::new(STATE_FILE).exists() {
+        let state_path = state_file_path();
+        if !state_path.exists() {
             return None;
         }
-        match fs::read_to_string(STATE_FILE) {
+        match fs::read_to_string(&state_path) {
             Ok(content) => {
                 let state = Self::from_string(&content)?;
                 trace!(
@@ -166,8 +169,9 @@ impl SessionState {
 
     /// 删除 .state 文件
     pub fn remove() {
-        if Path::new(STATE_FILE).exists() {
-            let _ = fs::remove_file(STATE_FILE);
+        let state_path = state_file_path();
+        if state_path.exists() {
+            let _ = fs::remove_file(&state_path);
             trace!("[session] .state 已删除");
         }
     }

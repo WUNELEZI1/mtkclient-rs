@@ -227,25 +227,19 @@ pub fn cmd_reboot(
 
     match mode {
         "system" => {
-            if is_brom {
-                // BROM 模式：使用 JUMP_BL 直接重启
-                info!("通过 JUMP_BL 重启到系统...");
-                match da.preloader.jump_bl() {
-                    Ok(_) => {
-                        info!("{}", "设备已重启到系统 (JUMP_BL)".green());
-                        crate::connection::reset_session();
-                    }
-                    Err(e) => {
-                        warn!("JUMP_BL 失败: {}，回退到 para...", e);
-                        set_boot_mode_via_para(da, mode)?;
-                        do_reboot(da, mode)?;
-                    }
+            // system 模式：对齐刷机匣 SYNC + CMD_SHUTDOWN 协议
+            info!("通过 DA SHUTDOWN 重启到系统...");
+            match da.reset_device() {
+                Ok(_) => {
+                    info!("{}", "设备已重启到系统".green());
+                    info!("{}", "请断开 USB 连接，等待设备自动重启".cyan());
+                    crate::connection::reset_session();
                 }
-            } else {
-                // Preloader 模式：使用 para 分区写入 boot_mode=0 后 CMD_RESET
-                info!("Preloader 模式：通过 para 分区重启到系统...");
-                set_boot_mode_via_para(da, mode)?;
-                do_reboot(da, mode)?;
+                Err(e) => {
+                    warn!("重启失败: {}", e);
+                    crate::connection::reset_session();
+                    info!("{}", "请手动重启设备（断开 USB 或按电源键）".yellow());
+                }
             }
         }
         "fastboot" => {
@@ -385,7 +379,10 @@ fn cmd_reboot_via_preloader(
     std::thread::sleep(Duration::from_millis(1000));
 
     // 步骤 2: 等待 Preloader VCOM → Pattern 协议
-    info!("  [{}] 步骤 2/2: 等待 Preloader VCOM → Pattern 协议...", tag);
+    info!(
+        "  [{}] 步骤 2/2: 等待 Preloader VCOM → Pattern 协议...",
+        tag
+    );
     match preloader_boot_mode::try_preloader_pattern(boot_mode) {
         Ok(_) => {
             info!(
@@ -404,22 +401,17 @@ fn cmd_reboot_via_preloader(
 }
 
 /// 执行实际重启
-/// 优先使用 CMD_RESET (DA 协议重启命令)，失败则提示用户手动重启
+/// 使用刷机匣协议（SYNC + CMD_SHUTDOWN），失败则提示用户手动重启
 fn do_reboot(da: &mut DAXFlash, mode: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // 尝试 CMD_RESET（DA 协议的设备重启命令）
     match da.reset_device() {
         Ok(()) => {
-            info!(
-                "{}",
-                format!("设备已重启到 {} 模式 (CMD_RESET)", mode).green()
-            );
+            info!("{}", format!("设备已重启到 {} 模式", mode).green());
+            info!("{}", "请断开 USB 连接，等待设备自动重启".cyan());
             crate::connection::reset_session();
             Ok(())
         }
         Err(e) => {
-            warn!("CMD_RESET 失败: {}", e);
-            // CMD_RESET 失败时不再尝试 da_shutdown（已知无效）和 jump_bl（DA 模式下 echo 不匹配）
-            // 提示用户手动重启
+            warn!("重启失败: {}", e);
             crate::connection::reset_session();
             info!("{}", format!(
                 "misc/para 分区已写入，请手动重启设备（断开 USB 重新连接或按电源键重启），设备将启动到 {} 模式",
@@ -500,7 +492,7 @@ fn set_bootloader_message(da: &mut DAXFlash, mode: &str) -> Result<(), String> {
 /// 这是 misc 分区之外的第二种方案，部分设备的 LK 只识别 para
 fn set_boot_mode_via_para(da: &mut DAXFlash, mode: &str) -> Result<(), String> {
     let boot_mode: u32 = match mode {
-        "system" => 0,   // 正常启动
+        "system" => 0, // 正常启动
         "recovery" => 1,
         "fastbootd" => 2,
         "fastboot" => 5, // BROM download mode，等同于 bootloader
@@ -582,10 +574,12 @@ fn set_slot(da: &mut DAXFlash, slot: char) -> Result<(), String> {
     info!("设置 A/B 槽位为 {}...", slot);
 
     // 读取 misc 分区到内存
-    let (misc_addr, misc_size) = da.find_partition_addr("misc")
+    let (misc_addr, misc_size) = da
+        .find_partition_addr("misc")
         .map_err(|e| format!("查找 misc 分区失败: {}", e))?;
 
-    let mut new_misc = da.readflash_data(misc_addr, misc_size)
+    let mut new_misc = da
+        .readflash_data(misc_addr, misc_size)
         .map_err(|e| format!("读取 misc 分区失败: {}", e))?;
 
     // 优先检查 bootctrl 结构（偏移 0x2000）
@@ -690,19 +684,6 @@ fn write_partition_from_memory(
     Ok(())
 }
 
-/// 在字节数组中替换槽位标记
-fn replace_slot_markers(data: &mut [u8], from: &[u8], to: &[u8]) -> usize {
-    let mut count = 0;
-    let mut i = 0;
-    while i + from.len() <= data.len() {
-        if &data[i..i + from.len()] == from {
-            data[i..i + to.len()].copy_from_slice(to);
-            count += 1;
-        }
-        i += 1;
-    }
-    count
-}
 
 // =============================================================================
 // peek / poke — 设备内存读写
@@ -740,12 +721,7 @@ pub fn cmd_peek(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
 
     println!(
         "{}",
-        format!(
-            "[peek] 地址 0x{:08X}, 读取 {} 字节:",
-            addr,
-            data.len()
-        )
-        .cyan()
+        format!("[peek] 地址 0x{:08X}, 读取 {} 字节:", addr, data.len()).cyan()
     );
     println!("{}", crate::util::hex_dump(&data, addr));
 
@@ -765,8 +741,7 @@ pub fn cmd_poke(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
     }
 
     let addr = parse_addr(&args[0])?;
-    let data = crate::util::parse_hex(&args[1])
-        .map_err(|e| format!("hex 数据解析失败: {}", e))?;
+    let data = crate::util::parse_hex(&args[1]).map_err(|e| format!("hex 数据解析失败: {}", e))?;
 
     if data.is_empty() {
         return Err("hex 数据为空".into());
@@ -784,12 +759,7 @@ pub fn cmd_poke(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
 
     info!(
         "{}",
-        format!(
-            "已成功写入 {} 字节到 0x{:08X}",
-            data.len(),
-            addr
-        )
-        .green()
+        format!("已成功写入 {} 字节到 0x{:08X}", data.len(), addr).green()
     );
 
     Ok(())

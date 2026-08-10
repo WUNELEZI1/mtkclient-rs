@@ -6,10 +6,9 @@
 //! - `DAXFlash::patch_da1` — DA1 单独 patches
 //! - `DAXFlash::patch_da2` — DA2 单独 patches
 
-use log::{info, warn};
+use log::{debug, info, warn};
 
 use crate::da::DAXFlash;
-use crate::da::ext::DA_EXTENSIONS_TEMPLATE;
 
 /// 在二进制数据中搜索模式（支持 `.` 0x2E 作为单字节通配符）
 /// 对齐 Python utils.py find_binary()
@@ -116,25 +115,35 @@ const COMMON_PATCHES: &[(&[u8], &[u8], &str)] = &[
     ),
 ];
 
-/// 应用修补 patches
-fn apply_patches(data: &mut [u8], patches: &[(&[u8], &[u8], &str)], tag: &str) -> bool {
-    let mut patched = false;
+/// 应用修补 patches，返回成功应用的补丁数量
+/// `log_individual` = true 时每条补丁输出 info!，否则仅输出 debug!
+fn apply_patches(
+    data: &mut [u8],
+    patches: &[(&[u8], &[u8], &str)],
+    tag: &str,
+    log_individual: bool,
+) -> u32 {
+    let mut count: u32 = 0;
     for (pattern, replacement, name) in patches {
         if let Some(idx) = find_binary(data, pattern, 0) {
             let end = idx + replacement.len();
             if end <= data.len() {
                 data[idx..end].copy_from_slice(replacement);
-                info!("已修补 {}: {}", tag, name);
-                patched = true;
+                if log_individual {
+                    info!("已修补 {}: {}", tag, name);
+                } else {
+                    debug!("已修补 {}: {}", tag, name);
+                }
+                count += 1;
             }
         }
     }
-    patched
+    count
 }
 
 /// DA1 patch：对齐 Python patch_da1 + patch_preloader_security_da1
 pub fn patch_da1(data: &mut [u8]) {
-    let mut patched = apply_patches(data, COMMON_PATCHES, "DA1");
+    let mut patch_count = apply_patches(data, COMMON_PATCHES, "DA1", false);
 
     // DA1 独有：hash_check3
     let hash3_pattern = b"\x14\x2C\xF6\x2E\xFE\xE7";
@@ -143,16 +152,16 @@ pub fn patch_da1(data: &mut [u8]) {
         let end = idx + replacement.len();
         if end <= data.len() {
             data[idx..end].copy_from_slice(replacement);
-            info!("已修补 DA1: hash_check3");
-            patched = true;
+            debug!("已修补 DA1: hash_check3");
+            patch_count += 1;
         }
     }
 
     // DA1 独有：da_version_check
     if let Some(idx) = find_binary(data, b"\x1F\xB5\x00\x23\x01\xA8\x00\x93\x00\xF0", 0) {
         data[idx..idx + 4].copy_from_slice(b"\x00\x20\x70\x47");
-        info!("已修补 DA1: 版本检查");
-        patched = true;
+        debug!("已修补 DA1: 版本检查");
+        patch_count += 1;
     } else {
         warn!("DA1 version check 模式未找到");
     }
@@ -162,8 +171,8 @@ pub fn patch_da1(data: &mut [u8]) {
         let end = idx + 4;
         if end <= data.len() {
             data[idx..end].copy_from_slice(b"\x00\x00\x00\x00");
-            info!("已修补 DA1: hash_check");
-            patched = true;
+            debug!("已修补 DA1: hash_check");
+            patch_count += 1;
         }
     }
 
@@ -173,25 +182,27 @@ pub fn patch_da1(data: &mut [u8]) {
         let end = idx + replacement.len();
         if end <= data.len() {
             data[idx..end].copy_from_slice(replacement);
-            info!("已修补 DA1: hash_check2");
-            patched = true;
+            debug!("已修补 DA1: hash_check2");
+            patch_count += 1;
         }
     }
 
-    if !patched {
+    if patch_count == 0 {
         warn!("DA1 无修补应用");
+    } else {
+        info!("已修补 DA1: {} 个补丁已应用", patch_count);
     }
 }
 
 /// DA2 patch：对齐 Python patch_da2 + patch_preloader_security_da2
 pub fn patch_da2(data: &mut [u8]) {
-    let mut patched = apply_patches(data, COMMON_PATCHES, "DA2");
+    let mut patch_count = apply_patches(data, COMMON_PATCHES, "DA2", true);
 
     // DA2 独有：huawei security
     if let Some(idx) = find_binary(data, b"\x01\x2B\x03\xD1\x01\x23", 0) {
         data[idx..idx + 4].copy_from_slice(b"\x00\x00\x00\x00");
         info!("已修补 DA2: huawei security");
-        patched = true;
+        patch_count += 1;
     }
 
     // DA2 独有：oppo security（复杂逻辑）
@@ -204,7 +215,7 @@ pub fn patch_da2(data: &mut [u8]) {
                 "已修补 DA2: oppo security (mt6765, ptr=0x{:08X})",
                 auth_flag_ptr
             );
-            patched = true;
+            patch_count += 1;
         }
 
         let mut oppo_pos = 0;
@@ -224,7 +235,7 @@ pub fn patch_da2(data: &mut [u8]) {
         }
         if oppo_patched {
             info!("已修补 DA2: oppo security (loop)");
-            patched = true;
+            patch_count += 1;
         }
     }
 
@@ -232,18 +243,18 @@ pub fn patch_da2(data: &mut [u8]) {
     if let Some(idx) = find_binary(data, b"\x01\x23\x03\x60\x00\x20\x70\x47\x70\xB5", 0) {
         data[idx..idx + 1].copy_from_slice(b"\x00");
         info!("已修补 DA2: hash binding");
-        patched = true;
+        patch_count += 1;
     }
 
     // DA2 独有：hash check
     if let Some(idx) = find_binary(data, &0xC0070004u32.to_le_bytes(), 0) {
         data[idx..idx + 4].copy_from_slice(&0u32.to_le_bytes());
         info!("已修补 DA2: hash check (0xC0070004)");
-        patched = true;
+        patch_count += 1;
     } else if let Some(idx) = find_binary(data, b"\x4F\xF0\x04\x09\xCC\xF2\x07\x09", 0) {
         data[idx..idx + 8].copy_from_slice(b"\x4F\xF0\x00\x09\x4F\xF0\x00\x09");
         info!("已修补 DA2: hash check (arm pattern)");
-        patched = true;
+        patch_count += 1;
     } else if let Some(idx) = find_binary(
         data,
         b"\x4F\xF0\x04\x09\x32\x46\x01\x98\x03\x99\xCC\xF2\x07\x09",
@@ -252,7 +263,7 @@ pub fn patch_da2(data: &mut [u8]) {
         data[idx..idx + 14]
             .copy_from_slice(b"\x4F\xF0\x00\x09\x32\x46\x01\x98\x03\x99\x4F\xF0\x00\x09");
         info!("已修补 DA2: hash check (arm pattern 2)");
-        patched = true;
+        patch_count += 1;
     } else {
         warn!("DA2 hash check 未找到");
     }
@@ -261,28 +272,28 @@ pub fn patch_da2(data: &mut [u8]) {
     if let Some(idx) = find_binary(data, b"\x01\x23\x03\x60\x00\x20\x70\x47\x70\xB5", 0) {
         data[idx..idx + 2].copy_from_slice(b"\x00\x23");
         info!("已修补 DA2: security check");
-        patched = true;
+        patch_count += 1;
     }
 
     // DA2 独有：anti-rollback
     if let Some(idx) = find_binary(data, &0xC0020053u32.to_le_bytes(), 0) {
         data[idx..idx + 4].copy_from_slice(&0u32.to_le_bytes());
         info!("已修补 DA2: DA version anti-rollback");
-        patched = true;
+        patch_count += 1;
     }
 
     // DA2 独有：SBC
     if let Some(idx) = find_binary(data, b"\x02\x4B\x18\x68\xC0\xF3\x40\x00\x70\x47", 0) {
         data[idx + 4..idx + 8].copy_from_slice(b"\x4F\xF0\x00\x00");
         info!("已修补 DA2: SBC");
-        patched = true;
+        patch_count += 1;
     }
 
     // DA2 独有：register read/write
     if let Some(idx) = find_binary(data, &0xC004000Du32.to_le_bytes(), 0) {
         data[idx..idx + 4].copy_from_slice(&0u32.to_le_bytes());
         info!("已修补 DA2: register read/write");
-        patched = true;
+        patch_count += 1;
     }
 
     // DA2 独有：write not allowed pattern 1
@@ -299,7 +310,7 @@ pub fn patch_da2(data: &mut [u8]) {
     }
     if write_patched {
         info!("已修补 DA2: write not allowed (pattern 1)");
-        patched = true;
+        patch_count += 1;
     }
 
     // DA2 独有：write not allowed pattern 2
@@ -309,11 +320,13 @@ pub fn patch_da2(data: &mut [u8]) {
             data[idx2..idx2 + 6].copy_from_slice(b"\x00\x23\x00\x23\x00\x23");
         }
         info!("已修补 DA2: write not allowed (pattern 2)");
-        patched = true;
+        patch_count += 1;
     }
 
-    if !patched {
+    if patch_count == 0 {
         warn!("DA2 无修补应用");
+    } else {
+        info!("已修补 DA2: 共 {} 个补丁", patch_count);
     }
 }
 
@@ -331,10 +344,4 @@ impl<'a> DAXFlash<'a> {
     pub(crate) fn patch_da2(data: &mut [u8]) {
         patch_da2(data);
     }
-}
-
-// 让 DA_EXTENSIONS_TEMPLATE 在子模块中可访问（防止未使用的导入警告）
-#[allow(dead_code)]
-fn _ensure_template_loaded() {
-    let _ = DA_EXTENSIONS_TEMPLATE.len();
 }

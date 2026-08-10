@@ -4,7 +4,6 @@
 use crate::system::config::ChipConfig;
 
 pub const CHIP_CONFIGS: &[ChipConfig] = &[
-
     // MT6797/MT6767 (Helio X23/X25/X27) [XFLASH]
     ChipConfig {
         hw_code: 0x279,
@@ -37,7 +36,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xa354),
         ptr_send_addr: Some(0x9eac),
     },
-
     // MT6735/T,MT8735A [LEGACY]
     ChipConfig {
         hw_code: 0x321,
@@ -70,7 +68,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0x9a94),
         ptr_send_addr: Some(0x95f8),
     },
-
     // MT6755/MT6750/M/T/S (Helio P10/P15/P18) [XFLASH]
     ChipConfig {
         hw_code: 0x326,
@@ -103,7 +100,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0x9f14),
         ptr_send_addr: Some(0x9a6c),
     },
-
     // MT6737M/MT6735G [LEGACY]
     ChipConfig {
         hw_code: 0x335,
@@ -136,7 +132,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0x9aa4),
         ptr_send_addr: Some(0x9608),
     },
-
     // MT6753 [LEGACY]
     ChipConfig {
         hw_code: 0x337,
@@ -169,7 +164,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0x9b04),
         ptr_send_addr: Some(0x9668),
     },
-
     // MT6759 (Helio P30) [LEGACY]
     ChipConfig {
         hw_code: 0x507,
@@ -202,7 +196,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6757/MT6757D (Helio P20) [XFLASH]
     ChipConfig {
         hw_code: 0x551,
@@ -235,7 +228,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xa0e8),
         ptr_send_addr: Some(0x9c2c),
     },
-
     // MT6799 (Helio X30/X35) [XFLASH]
     ChipConfig {
         hw_code: 0x562,
@@ -268,7 +260,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xfa78),
         ptr_send_addr: Some(0xf5ac),
     },
-
     // MT0571 [LEGACY]
     ChipConfig {
         hw_code: 0x571,
@@ -301,7 +292,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // ELBRUS/MT0598 [LEGACY]
     ChipConfig {
         hw_code: 0x598,
@@ -334,7 +324,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6750 [XFLASH]
     ChipConfig {
         hw_code: 0x601,
@@ -367,7 +356,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6570/MT8321 [XFLASH]
     ChipConfig {
         hw_code: 0x633,
@@ -400,7 +388,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6758 (Helio P30) [XFLASH]
     ChipConfig {
         hw_code: 0x688,
@@ -433,7 +420,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xdd2c),
         ptr_send_addr: Some(0xd860),
     },
-
     // MT6763 (Helio P23) [XFLASH]
     ChipConfig {
         hw_code: 0x690,
@@ -466,7 +452,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xdb38),
         ptr_send_addr: Some(0xd66c),
     },
-
     // MT6739/MT6731/MT8765 [XFLASH]
     ChipConfig {
         hw_code: 0x699,
@@ -499,7 +484,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xe3e8),
         ptr_send_addr: Some(0xdf1c),
     },
-
     // MT6768/MT6769 (Helio P65/G85 k68v1) [XFLASH]
     ChipConfig {
         hw_code: 0x707,
@@ -532,7 +516,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xc650),
         ptr_send_addr: Some(0xc190),
     },
-
     // MT6761/MT6762/MT3369/MT8766B (Helio A20/P22/A22/A25/G25) [XFLASH]
     ChipConfig {
         hw_code: 0x717,
@@ -565,7 +548,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xc158),
         ptr_send_addr: Some(0xbc8c),
     },
-
     // MT6779 (Helio P90 k79v1) [XFLASH]
     ChipConfig {
         hw_code: 0x725,
@@ -598,7 +580,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xe50c),
         ptr_send_addr: Some(0xe04c),
     },
-
     // MT6765/MT8768t (Helio P35/G35) [XFLASH]
     ChipConfig {
         hw_code: 0x766,
@@ -631,7 +612,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xc28c),
         ptr_send_addr: Some(0xbdc0),
     },
-
     // MT6771/MT8385/MT8183/MT8666 (Helio P60/P70/G80) [XFLASH]
     ChipConfig {
         hw_code: 0x788,
@@ -664,7 +644,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xe388),
         ptr_send_addr: Some(0xdebc),
     },
-
     // MT6785 (Helio G90) [XFLASH]
     ChipConfig {
         hw_code: 0x813,
@@ -697,7 +676,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xe764),
         ptr_send_addr: Some(0xe2a4),
     },
-
     // MT6885/MT6883/MT6889/MT6880/MT6890 (Dimensity 1000L/1000) [XFLASH]
     ChipConfig {
         hw_code: 0x816,
@@ -730,7 +708,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xebbc),
         ptr_send_addr: Some(0xE6FC),
     },
-
     // MT6873 (Dimensity 800/820 5G) [XFLASH]
     ChipConfig {
         hw_code: 0x886,
@@ -763,7 +740,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xef38),
         ptr_send_addr: Some(0xea78),
     },
-
     // MT6983 (Dimensity 9000/9000+) [XML]
     ChipConfig {
         hw_code: 0x907,
@@ -796,7 +772,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xec5c),
         ptr_send_addr: Some(0xE79C),
     },
-
     // MT8696 [XFLASH]
     ChipConfig {
         hw_code: 0x908,
@@ -829,7 +804,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT8195 Chromebook [XFLASH]
     ChipConfig {
         hw_code: 0x930,
@@ -862,7 +836,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6893 (Dimensity 1200) [XFLASH]
     ChipConfig {
         hw_code: 0x950,
@@ -895,7 +868,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xec5c),
         ptr_send_addr: Some(0xE79C),
     },
-
     // MT6877/MT6877V (Dimensity 900/1080) [XFLASH]
     ChipConfig {
         hw_code: 0x959,
@@ -928,7 +900,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xed90),
         ptr_send_addr: Some(0xe8d0),
     },
-
     // MT6833 (Dimensity 700 5G k6833) [XFLASH]
     ChipConfig {
         hw_code: 0x989,
@@ -961,7 +932,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xe4a0),
         ptr_send_addr: Some(0xdfe0),
     },
-
     // MT6880/MT6890 [XFLASH]
     ChipConfig {
         hw_code: 0x992,
@@ -994,7 +964,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6853 (Dimensity 720 5G) [XFLASH]
     ChipConfig {
         hw_code: 0x996,
@@ -1027,7 +996,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xef24),
         ptr_send_addr: Some(0xea64),
     },
-
     // MT6781 (Helio G96) [XFLASH]
     ChipConfig {
         hw_code: 0x1066,
@@ -1060,7 +1028,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xea94),
         ptr_send_addr: Some(0xe5d8),
     },
-
     // MT6855 (Dimensity 8100) [XML]
     ChipConfig {
         hw_code: 0x1129,
@@ -1093,7 +1060,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xec5c),
         ptr_send_addr: Some(0xE79C),
     },
-
     // MT6895 (Dimensity 8200) [XML]
     ChipConfig {
         hw_code: 0x1172,
@@ -1126,7 +1092,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xec5c),
         ptr_send_addr: Some(0xE79C),
     },
-
     // MT6897 (Dimensity 8300 Ultra) [XML]
     ChipConfig {
         hw_code: 0x1203,
@@ -1159,7 +1124,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xec5c),
         ptr_send_addr: Some(0xE79C),
     },
-
     // MT6789/MT8781V (MTK Helio G99) [XML]
     ChipConfig {
         hw_code: 0x1208,
@@ -1192,7 +1156,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xfa0c),
         ptr_send_addr: Some(0xE79C),
     },
-
     // MT6886 (Dimensity 7200 Ultra) [XML]
     ChipConfig {
         hw_code: 0x1229,
@@ -1225,7 +1188,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xfa0c),
         ptr_send_addr: Some(0xE79C),
     },
-
     // MT6985 (Dimensity 9200/9200+) [XML]
     ChipConfig {
         hw_code: 0x1296,
@@ -1258,7 +1220,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xfa0c),
         ptr_send_addr: Some(0xE79C),
     },
-
     // MT2601 [LEGACY]
     ChipConfig {
         hw_code: 0x2601,
@@ -1291,7 +1252,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0x40befc),
         ptr_send_addr: Some(0xba68),
     },
-
     // MT3967 [LEGACY]
     ChipConfig {
         hw_code: 0x3967,
@@ -1324,7 +1284,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6255 [LEGACY]
     ChipConfig {
         hw_code: 0x6255,
@@ -1357,7 +1316,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6261 [LEGACY]
     ChipConfig {
         hw_code: 0x6261,
@@ -1390,7 +1348,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: Some(0x700058EC),
     },
-
     // MT6280 [LEGACY]
     ChipConfig {
         hw_code: 0x6280,
@@ -1423,7 +1380,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6516 [LEGACY]
     ChipConfig {
         hw_code: 0x6516,
@@ -1456,7 +1412,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6571 [LEGACY]
     ChipConfig {
         hw_code: 0x6571,
@@ -1489,7 +1444,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6572 [LEGACY]
     ChipConfig {
         hw_code: 0x6572,
@@ -1522,7 +1476,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0x40befc),
         ptr_send_addr: Some(0x40ba68),
     },
-
     // MT6573/MT6260 [LEGACY]
     ChipConfig {
         hw_code: 0x6573,
@@ -1555,7 +1508,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6575/MT6577/MT8317 [LEGACY]
     ChipConfig {
         hw_code: 0x6575,
@@ -1588,7 +1540,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6577 [LEGACY]
     ChipConfig {
         hw_code: 0x6577,
@@ -1621,7 +1572,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6580 [LEGACY]
     ChipConfig {
         hw_code: 0x6580,
@@ -1654,7 +1604,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xba94),
         ptr_send_addr: Some(0xb60c),
     },
-
     // MT6582/MT6574/MT8382 [LEGACY]
     ChipConfig {
         hw_code: 0x6582,
@@ -1687,7 +1636,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xaa84),
         ptr_send_addr: Some(0xa5fc),
     },
-
     // MT6583/6589 [LEGACY]
     ChipConfig {
         hw_code: 0x6583,
@@ -1720,7 +1668,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6592/MT8392 [LEGACY]
     ChipConfig {
         hw_code: 0x6592,
@@ -1753,7 +1700,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xa9ec),
         ptr_send_addr: Some(0xa564),
     },
-
     // MT6595 [LEGACY]
     ChipConfig {
         hw_code: 0x6595,
@@ -1786,7 +1732,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xb6a0),
         ptr_send_addr: Some(0xb218),
     },
-
     // MT6752 [LEGACY]
     ChipConfig {
         hw_code: 0x6752,
@@ -1819,7 +1764,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0x9da8),
         ptr_send_addr: Some(0x990c),
     },
-
     // MT6795 (Helio X10) [LEGACY]
     ChipConfig {
         hw_code: 0x6795,
@@ -1852,7 +1796,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0x9c28),
         ptr_send_addr: Some(0x978c),
     },
-
     // MT8127/MT3367 [LEGACY]
     ChipConfig {
         hw_code: 0x8127,
@@ -1885,7 +1828,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xb740),
         ptr_send_addr: Some(0xb2b8),
     },
-
     // MT8135 [LEGACY]
     ChipConfig {
         hw_code: 0x8135,
@@ -1918,7 +1860,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT8163 [LEGACY]
     ChipConfig {
         hw_code: 0x8163,
@@ -1951,7 +1892,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xc5c8),
         ptr_send_addr: Some(0xc12c),
     },
-
     // MT8167/MT8516/MT8362 [XFLASH]
     ChipConfig {
         hw_code: 0x8167,
@@ -1984,7 +1924,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xd7ac),
         ptr_send_addr: Some(0xd2e4),
     },
-
     // MT8168/MT6357 [XFLASH]
     ChipConfig {
         hw_code: 0x8168,
@@ -2017,7 +1956,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0x13d78),
         ptr_send_addr: Some(0x13834),
     },
-
     // MT8173 [LEGACY]
     ChipConfig {
         hw_code: 0x8172,
@@ -2050,7 +1988,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xa580),
         ptr_send_addr: Some(0xa0e4),
     },
-
     // MT8176 [LEGACY]
     ChipConfig {
         hw_code: 0x8176,
@@ -2083,7 +2020,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xa580),
         ptr_send_addr: Some(0xa0e4),
     },
-
     // MT8512 [XFLASH]
     ChipConfig {
         hw_code: 0x8512,
@@ -2116,7 +2052,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xd194),
         ptr_send_addr: Some(0xcc44),
     },
-
     // MT8518 VoiceAssistant [XFLASH]
     ChipConfig {
         hw_code: 0x8518,
@@ -2149,7 +2084,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT8590/MT7683/MT8521/MT7623 [LEGACY]
     ChipConfig {
         hw_code: 0x8590,
@@ -2182,7 +2116,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xc06c),
         ptr_send_addr: Some(0xbbe4),
     },
-
     // MT8695 [XFLASH]
     ChipConfig {
         hw_code: 0x8695,
@@ -2215,7 +2148,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xc3f8),
         ptr_send_addr: Some(0xbeec),
     },
-
     // MT6835V/ZA (MTK Dimensity 6100+) [XML]
     ChipConfig {
         hw_code: 0x1209,
@@ -2248,7 +2180,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xfa0c),
         ptr_send_addr: Some(0xE79C),
     },
-
     // MT6989W (Dimensity 9300 Plus) [XML]
     ChipConfig {
         hw_code: 0x1236,
@@ -2281,7 +2212,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xfa0c),
         ptr_send_addr: Some(0xE79C),
     },
-
     // MT6878 (Dimensity 7300) [XML]
     ChipConfig {
         hw_code: 0x1375,
@@ -2314,7 +2244,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xfa0c),
         ptr_send_addr: Some(0xE79C),
     },
-
     // MT6899 (Dimensity 8400 Turbo) [XML]
     ChipConfig {
         hw_code: 0x6899,
@@ -2347,7 +2276,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xfa0c),
         ptr_send_addr: Some(0xE79C),
     },
-
     // MT6993 (Dimensity 9500) [XML]
     ChipConfig {
         hw_code: 0x1471,
@@ -2380,7 +2308,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: Some(0xfa0c),
         ptr_send_addr: Some(0xE79C),
     },
-
     // MT2523 [LEGACY]
     ChipConfig {
         hw_code: 0x2523,
@@ -2413,7 +2340,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: Some(0xba68),
     },
-
     // MT2625 [LEGACY]
     ChipConfig {
         hw_code: 0x2625,
@@ -2446,7 +2372,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT5932 [LEGACY]
     ChipConfig {
         hw_code: 0x5932,
@@ -2479,7 +2404,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT7682 [LEGACY]
     ChipConfig {
         hw_code: 0x7682,
@@ -2512,7 +2436,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6225 [LEGACY]
     ChipConfig {
         hw_code: 0x6225,
@@ -2545,7 +2468,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6226 [LEGACY]
     ChipConfig {
         hw_code: 0x6226,
@@ -2578,7 +2500,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6236 [LEGACY]
     ChipConfig {
         hw_code: 0x6236,
@@ -2611,7 +2532,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6238 [LEGACY]
     ChipConfig {
         hw_code: 0x6238,
@@ -2644,7 +2564,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6253 [LEGACY]
     ChipConfig {
         hw_code: 0x6253,
@@ -2677,7 +2596,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6256 [LEGACY]
     ChipConfig {
         hw_code: 0x6256,
@@ -2710,7 +2628,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT625a [LEGACY]
     ChipConfig {
         hw_code: 0x625a,
@@ -2743,7 +2660,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6268 [LEGACY]
     ChipConfig {
         hw_code: 0x6268,
@@ -2776,7 +2692,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6270 [LEGACY]
     ChipConfig {
         hw_code: 0x6270,
@@ -2809,7 +2724,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6276 [LEGACY]
     ChipConfig {
         hw_code: 0x6276,
@@ -2842,7 +2756,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
     // MT6291 [LEGACY]
     ChipConfig {
         hw_code: 0x6291,
@@ -2875,7 +2788,6 @@ pub const CHIP_CONFIGS: &[ChipConfig] = &[
         ptr_da_bra: None,
         ptr_send_addr: None,
     },
-
 ];
 
 // Total: 87 chip configurations

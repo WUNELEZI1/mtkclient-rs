@@ -231,14 +231,23 @@ pub(crate) fn parse_da_header(
 /// 返回 true 表示 DA 已打补丁（不易受 Carbonara 攻击）
 pub fn detect_carbonara_patch(da1_data: &[u8]) -> (bool, &'static str) {
     // V6 patched patterns
-    if da1_data.windows(8).any(|w| w == b"\x01\x01\x54\xE3\x01\x14\xA0\xE3") {
+    if da1_data
+        .windows(8)
+        .any(|w| w == b"\x01\x01\x54\xE3\x01\x14\xA0\xE3")
+    {
         return (true, "V6 Carbonara patched (pattern 1)");
     }
-    if da1_data.windows(8).any(|w| w == b"\x08\x00\xa8\x52\xff\x02\x08\xeb") {
+    if da1_data
+        .windows(8)
+        .any(|w| w == b"\x08\x00\xa8\x52\xff\x02\x08\xeb")
+    {
         return (true, "V6 Carbonara patched (pattern 2)");
     }
     // V5 patched pattern
-    if da1_data.windows(8).any(|w| w == b"\x06\x9B\x4F\xF0\x80\x40\x02\xA9") {
+    if da1_data
+        .windows(8)
+        .any(|w| w == b"\x06\x9B\x4F\xF0\x80\x40\x02\xA9")
+    {
         return (true, "V5 Carbonara patched");
     }
     (false, "Carbonara vulnerable")
@@ -255,13 +264,22 @@ pub fn detect_hash_check(da1_data: &[u8]) -> (bool, &'static str) {
     if da1_data.windows(4).any(|w| w == b"\xCC\xF2\x07\x09") {
         return (true, "Hash check v2 found");
     }
-    if da1_data.windows(6).any(|w| &w[..2] == b"\x14\x2C" && w[4..6] == [0xFE, 0xE7]) {
+    if da1_data
+        .windows(6)
+        .any(|w| &w[..2] == b"\x14\x2C" && w[4..6] == [0xFE, 0xE7])
+    {
         return (true, "Hash check v3 found");
     }
-    if da1_data.windows(8).any(|w| w == b"\x04\x50\x00\xE3\x07\x50\x4C\xE3") {
+    if da1_data
+        .windows(8)
+        .any(|w| w == b"\x04\x50\x00\xE3\x07\x50\x4C\xE3")
+    {
         return (true, "Hash check v4 (V6) found");
     }
-    if da1_data.windows(8).any(|w| w == b"\x01\x10\x81\xE2\x00\x00\x51\xE1") {
+    if da1_data
+        .windows(8)
+        .any(|w| w == b"\x01\x10\x81\xE2\x00\x00\x51\xE1")
+    {
         return (true, "Hash check v5 (V6) found");
     }
     (false, "No hash check detected")

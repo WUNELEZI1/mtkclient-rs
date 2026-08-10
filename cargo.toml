@@ -1,8 +1,8 @@
 [package]
 name = "mtkclient-rs"
-version = "0.1.4"
+version = "0.1.5"
 authors = ["wunelezi <https://gitee.com/WUNELEZI1>"]
-license = "GPL-3.0"
+license = "Apache-2.0"
 edition = "2024"
 
 [lints.rust]
@@ -25,7 +25,7 @@ sha2 = "0.11"
 aes = "0.9"
 cbc = "0.2"
 # USB 通信（nusb: 纯 Rust USB 库，Windows WinUSB 后端）
-nusb = "0.2.5"
+nusb = { version = "0.2.5", features = ["tokio"] }
 # Windows 驱动自动安装（WinUSB）
 wdi-rs = "0.1.1"
 # Windows 管理员权限检测
@@ -34,10 +34,11 @@ is_elevated = "0.1"
 indicatif = "0.18"
 # Ctrl+C 优雅中断
 ctrlc = "3.5"
-flate2 = "1.0"
-tar = "0.4"
 # SIMD 字节搜索（build.prop 属性提取）
 memchr = "2.7"
+# Fastboot 异步运行时
+tokio = { version = "1", features = ["rt", "macros"] }
+anyhow = "1.0"
 
 [profile.dev]
 # 开发模式：编译最快，不优化，保留完整调试信息
