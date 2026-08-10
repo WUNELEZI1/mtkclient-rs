@@ -17,3 +17,9 @@ archive/
 .idea/
 *.img
 *.bin
+
+# 代理/工具内部数据（agent 记忆、技能等）不进库
+.workbuddy/
+
+# 运行时资源目录（payload/DA/sdata.json 等），由打包/部署时放置，不进库
+data/
