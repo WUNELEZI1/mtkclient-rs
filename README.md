@@ -1,7 +1,7 @@
 # MTKClient-RS
 
 > 一个基于 Rust 开发的 MediaTek 芯片底层刷机工具，纯原生编译、单文件运行、零运行时依赖。
-> A native, single-binary MediaTek flash tool written in Rust — no runtime dependencies.
+> sky&cfk99
 
 ---
 
@@ -36,13 +36,13 @@
 | MT6771 | Helio P60 / P70 | ✅ 已支持 |
 | MT8183 / MT8385 / MT8666 | Helio P60/P70/G80 系 | ✅ 已支持 |
 
-此外通过 `sdata.json` 的动态芯片表支持 **87+ 种** MediaTek 芯片。具体以 `data/sdata.json` 中 `support_chip` 字段为准。
+此外通过 `sdata.json` 的动态芯片表支持 **6 种** MediaTek 芯片。具体以 `data/sdata.json` 中 `support_chip` 字段为准。
 
 ### 下载与安装
 
 1. 从 [Releases](../../releases) 下载最新版压缩包并解压到任意目录。
-2. 设备关机，按住 **音量下键** 插入 USB 进入 **BROM 模式**（或音量上键进入 Preloader 模式）。
-3. 右键以 **管理员身份** 打开终端（PowerShell / CMD）。
+2. 设备关机，按住 **音量上与下键** 插入 USB 进入 **BROM 模式**（或啥也不按进入 Preloader 模式）。
+3. 右键以 **管理员身份** 打开终端（推荐PowerShell ）。
 4. 首次运行会自动安装 WinUSB 驱动；若失败可用 `drivers/installer_x64.exe` 手动安装。
 
 ### 快速开始
