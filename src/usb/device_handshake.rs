@@ -38,6 +38,10 @@ impl USB设备 {
 
         // Python retries handshakes with delays between attempts
         for 尝试次数 in 0..握手最大尝试次数 {
+            // 用户取消（Ctrl+C）时立即退出，避免跑完所有重试才停止
+            if crate::cancel::force_requested() || crate::cancel::requested() {
+                return Err("握手已取消".to_string());
+            }
             if 尝试次数 > 0 {
                 info!(
                     "[USB] handshake attempt {}/{}, waiting {}ms...",
