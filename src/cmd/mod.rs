@@ -361,28 +361,52 @@ pub fn handle_command(
                 .map_err(|e| format!("bypass_security 失败: {}", e))?;
         }
 
-        // 2. 如果没有指定 preloader 文件，通过非破坏性 read32 从 RAM 提取
+        // 2. 如果没有指定 preloader 文件，自动提取 preloader
+        //    策略（智能）：先试非破坏性 read32（Mem Read Auth 关闭时秒出）；
+        //    失败（Mem Read Auth=True，read32 无法访问受保护内存）则自动
+        //    fallback 到 exploit payload 提取（与 dumppreloader 同款，
+        //    在设备内部读取 RAM，不受主机 read32 授权限制），随后恢复 BROM 状态。
         if preloader_file.is_empty() {
-            info!("未指定 --preloader，自动从 RAM 提取 preloader...");
+            info!("未指定 --preloader，自动提取 preloader...");
             match da.preloader.dump_preloader_via_brom_read() {
                 Ok((data, filename)) => {
                     auto_dumped_file = Some(filename);
                     info!(
-                        "Preloader 已自动提取: {} ({} 字节)",
+                        "Preloader 已自动提取 (read32): {} ({} 字节)",
                         auto_dumped_file.as_ref().unwrap(),
                         data.len()
                     );
                 }
-                Err(e) => {
-                    return Err(format!(
-                        "自动提取 preloader 失败: {}。\n\
-                         请手动运行 'dumppreloader' 命令获取文件，\n\
-                         或使用 --preloader <文件> 参数指定 preloader 文件。\n\
-                         提示: preloader 文件通常位于固件包的 'images' 目录中，\n\
-                         文件名类似 preloader_*.bin。",
-                        e
-                    )
-                    .into());
+                Err(read32_err) => {
+                    warn!(
+                        "read32 提取失败（可能 Mem Read Auth=True）: {}，改用 exploit payload 提取...",
+                        read32_err
+                    );
+                    match da.preloader.dump_preloader_payload(_context) {
+                        Ok((data, filename)) => {
+                            info!(
+                                "Preloader 已自动提取 (exploit): {} ({} 字节)",
+                                filename, data.len()
+                            );
+                            auto_dumped_file = Some(filename);
+                            // dump payload 注入后设备 BROM 状态改变，
+                            // 必须重新握手恢复，否则后续 DA 上传会失败
+                            da.preloader.restore_brom_state().map_err(|e| {
+                                format!("exploit 提取后恢复 BROM 失败: {}", e)
+                            })?;
+                        }
+                        Err(e) => {
+                            return Err(format!(
+                                "自动提取 preloader 失败: {}。\n\
+                                 请手动运行 'dumppreloader' 命令获取文件，\n\
+                                 或使用 --preloader <文件> 参数指定 preloader 文件。\n\
+                                 提示: preloader 文件通常位于固件包的 'images' 目录中，\n\
+                                 文件名类似 preloader_*.bin。",
+                                e
+                            )
+                            .into());
+                        }
+                    }
                 }
             }
         }

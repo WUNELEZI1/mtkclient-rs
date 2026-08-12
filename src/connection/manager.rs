@@ -176,6 +176,15 @@ impl ConnectionManager {
                             }
                         }
                     }
+                    UsbBusDetectionResult::Unknown(driver_mfg) => {
+                        warn!(
+                            "[AUTO] BROM 设备驱动未知: {}，主动安装 WinUSB 驱动...",
+                            driver_mfg
+                        );
+                        if let Err(e) = crate::connection::driver::switch_to_winusb() {
+                            warn!("[AUTO] WinUSB 驱动安装失败: {}，将继续重试", e);
+                        }
+                    }
                     _ => {}
                 }
 
@@ -303,9 +312,17 @@ impl ConnectionManager {
                     continue;
                 }
                 UsbBusDetectionResult::Unknown(driver_mfg) => {
-                    warn!("[USB] 未知驱动: {}，尝试 WinUSB 直连", driver_mfg);
-                    return self
-                        .fallback_to_winusb_with_retry(context, consecutive_handshake_failures);
+                    warn!(
+                        "[USB] 未知/未安装驱动: {}，主动安装 WinUSB 驱动...",
+                        driver_mfg
+                    );
+                    // Unknown 表示设备未绑定 WinUSB（可能根本没装驱动），
+                    // 必须安装而非直接尝试 libusb 打开（否则永远打不开）。
+                    // switch_to_winusb 基于硬件 ID 强制安装，装完设备重枚举，
+                    // 下一轮循环检测为 WinUsbReady 后自动直连。
+                    if let Err(e) = crate::connection::driver::switch_to_winusb() {
+                        warn!("[USB] WinUSB 驱动安装失败: {}，将继续重试", e);
+                    }
                 }
                 UsbBusDetectionResult::NotFound => {
                     trace!("[USB] 未找到 BROM 设备，尝试枚举 COM 口...");
