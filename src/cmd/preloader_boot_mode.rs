@@ -67,7 +67,7 @@ fn read_packet(device: &mut dyn BromTransport, timeout: Duration) -> Result<Vec<
     let deadline = std::time::Instant::now();
 
     loop {
-        if crate::cancel::requested() {
+        if crate::cancel::requested() || crate::cancel::force_requested() {
             return Err("用户取消".to_string());
         }
         let remaining = timeout.saturating_sub(deadline.elapsed());
@@ -112,7 +112,7 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
     let max_wait = Duration::from_secs(10);
 
     loop {
-        if crate::cancel::requested() {
+        if crate::cancel::requested() || crate::cancel::force_requested() {
             return Err("用户取消".to_string());
         }
         if deadline.elapsed() > max_wait {
@@ -172,7 +172,7 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
     let resp_max_wait = Duration::from_secs(3);
 
     loop {
-        if crate::cancel::requested() {
+        if crate::cancel::requested() || crate::cancel::force_requested() {
             return Err("用户取消".to_string());
         }
         if resp_deadline.elapsed() > resp_max_wait {
@@ -279,7 +279,7 @@ pub(crate) fn try_preloader_pattern(boot_mode: BootMode) -> Result<(), String> {
     let max_wait = Duration::from_secs(15);
 
     loop {
-        if crate::cancel::requested() {
+        if crate::cancel::requested() || crate::cancel::force_requested() {
             return Err("用户取消".to_string());
         }
         if deadline.elapsed() > max_wait {

@@ -4,6 +4,7 @@
 // - 第一次：设置 `CANCEL_REQUESTED`，代码应在合适时机检查并优雅退出
 // - 第二次：设置 `FORCE_REQUESTED`，代码应立即中断并退出
 
+use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -13,9 +14,11 @@ static FORCE_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub fn install_ctrlc_handler() {
     let _ = ctrlc::set_handler(move || {
         if CANCEL_REQUESTED.swap(true, Ordering::SeqCst) {
-            // 第二次 Ctrl+C：强制取消
+            // 第二次 Ctrl+C：强制取消——真正终止进程，不做任何清理等待
+            // （第一次 Ctrl+C 走优雅取消路径，由各循环的 requested() 检查响应）
             FORCE_REQUESTED.store(true, Ordering::SeqCst);
             eprintln!("再次收到 Ctrl+C，正在强制退出...");
+            process::exit(130);
         } else {
             // 第一次 Ctrl+C：请求取消
             eprintln!("\n收到 Ctrl+C，正在取消...");
