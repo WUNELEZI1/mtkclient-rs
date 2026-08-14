@@ -160,6 +160,10 @@ impl SerialPortTransport {
             "[SERIAL] {} 已打开(raw, DTR=off): baud={}, 8N1, no_flow_control",
             port_name, baud_rate
         );
+        // 打开后等待设备固件/驱动就绪的短延时，降低弱连接下“端口刚出现即握手”
+        // 的竞态（设备枚举后需要数十毫秒稳定）。仅 sleep，不清空接收缓冲区，
+        // 故不影响 Pattern 协议的 READY 信号。
+        std::thread::sleep(Duration::from_millis(150));
         Ok(SerialPortTransport {
             port: Some(port),
             timeout: Duration::from_millis(SERIAL_OPEN_TIMEOUT_MS),
@@ -307,12 +311,39 @@ impl BromTransport for SerialPortTransport {
     fn do_handshake(&mut self) -> Result<bool, String> {
         // BROM 握手协议: 逐字节发送 [A0, 0A, 50, 05]，每字节期望取反回复
         // 参考 mtkclient Port.py 实现
+        // 先排空串口接收缓冲区中残留的历史数据：前一次失败尝试残留、或设备尚未
+        // 进入握手态时发送的杂散字节会被误判为握手响应（典型现象：期望 0x5F 却
+        // 读到 0x52 'R'），导致“字节 0: 期望 0x5F, 收到 0x52”式握手失败与连接抖动。
+        self.drain_pipes();
         for (i, &cmd) in SERIAL_HANDSHAKE_BYTES.iter().enumerate() {
             self.write(&[cmd])?;
             let mut buf = [0u8; 1];
-            self.read_exact(&mut buf)?;
+            match self.read_exact(&mut buf) {
+                Ok(_) => {}
+                Err(e) => {
+                    // 读失败（端口被设备瞬断重枚举）时，重试一次前再排空缓冲，
+                    // 避免把残留字节当成下一次握手的响应。
+                    self.drain_pipes();
+                    return Err(format!("握手失败: 字节 {} 读取失败: {}", i, e));
+                }
+            }
             let expected = !cmd;
             if buf[0] != expected {
+                // 首字节不匹配时，多半是缓冲区里还残留一个旧字节；排空后再读一次，
+                // 跳过这一个残留字节后继续，提升弱连接下的握手成功率。
+                if i == 0 {
+                    self.drain_pipes();
+                    let mut buf2 = [0u8; 1];
+                    if let Ok(_) = self.read_exact(&mut buf2) {
+                        if buf2[0] == expected {
+                            continue;
+                        }
+                        return Err(format!(
+                            "握手失败: 字节 {}: 期望 0x{:02X}, 收到 0x{:02X}（已尝试跳过残留字节）",
+                            i, expected, buf[0]
+                        ));
+                    }
+                }
                 return Err(format!(
                     "握手失败: 字节 {}: 期望 0x{:02X}, 收到 0x{:02X}",
                     i, expected, buf[0]
