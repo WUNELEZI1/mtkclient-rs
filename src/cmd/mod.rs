@@ -295,6 +295,39 @@ fn validate_command(cmd: &str, args: &[String]) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+/// 判断错误是否为 DA/USB 传输层失败（设备断连、超时、端点错误等）。
+///
+/// 仅传输层失败才应重置 DA 会话；命令格式错误、参数错误、文件不存在、
+/// 解析错误、安全错误等业务错误都属于"DA 会话本身健康"，不应重置
+/// （重置会强制下次重新握手/Bypass，纯属浪费）。
+///
+/// 判定优先级：
+/// 1. `AppError::Usb` —— 真正的 USB/DA 传输失败 → 是
+/// 2. 其余 `AppError`(Protocol/Security/Parse/Io) 与业务错误 → 默认否，
+///    仅当消息文本明显指示传输失败（含超时/断连/端点错误等关键词）时才判为是。
+///
+/// 注意：错误经 `AppError` 包裹后 `Display` 会加"协议错误:""USB 错误:"等前缀，
+/// 因此用 `contains` 而非 `starts_with` 判断文本关键词。
+pub fn is_transport_error(e: &(dyn std::error::Error + 'static)) -> bool {
+    let is_usb = e
+        .downcast_ref::<crate::error::AppError>()
+        .map_or(false, |ae| matches!(ae, crate::error::AppError::Usb(_)));
+    let err_str = e.to_string();
+    is_usb
+        || err_str.contains("USB 错误")
+        || err_str.contains("超时")
+        || err_str.contains("timeout")
+        || err_str.contains("断开")
+        || err_str.contains("disconnect")
+        || err_str.contains("read err")
+        || err_str.contains("write err")
+        || err_str.contains("LIBUSB")
+        || err_str.contains("端点")
+        || err_str.contains("endpoint")
+        || err_str.contains("设备未找到")
+        || err_str.contains("device not found")
+}
+
 /// 单命令执行入口
 pub fn handle_command(
     da: &mut DAXFlash,
@@ -481,20 +514,21 @@ pub fn handle_command(
     }
 
     execute_single_command(da, cmd, args, verify, log_level, app_config).map_err(|e| {
-        // 命令执行失败时的会话处理策略：
-        // - 用户主动取消（Ctrl+C）：不重置，DA 可能仍存活
-        // - 命令格式错误（如"未知命令"、"用法:"）：不重置，DA 会话本身没问题
-        // - 文件不存在（os error 2）：不重置，只是用户指定的文件路径错误
-        // - DA 通信错误（USB 断连、DA 超时等）：重置会话，避免复用已失效的 DA
+        // 会话重置策略（关键修正）：只有 DA/USB 传输层真正失效时才重置会话。
+        //
+        // 旧逻辑靠字符串前缀（"未知命令"/"用法:"）判断"非通信错误"，但错误经 AppError
+        // 包裹后 Display 会加"协议错误:""USB 错误:"等前缀，starts_with 判断完全失效，
+        // 导致几乎所有命令级错误（参数错、分区找不到、文件错、解析错、安全错）都被误判为
+        // DA 通信错误而重置会话——这是没必要的，会强制下次重新握手/Bypass，浪费时间。
+        //
+        // 新逻辑：默认保留会话；仅当错误确为传输层失败（USB 断连、DA 超时、端点错误等）才重置。
+        // 判定：① 用户取消(Ctrl+C) → 保留；② AppError::Usb（真实传输失败）→ 重置；
+        // ③ 其余 AppError(Protocol/Security/Parse/Io)与业务错误 → 保留，仅当消息含传输关键词才重置。
         let err_str = e.to_string();
-        let is_command_error = err_str.starts_with("未知命令") || err_str.starts_with("用法:");
-        let is_file_not_found = err_str.contains("os error 2");
-        let should_keep_session = crate::cancel::requested()
-            || crate::cancel::force_requested()
-            || is_command_error
-            || is_file_not_found;
-        if !should_keep_session {
-            warn!("[DA_SESSION] DA 通信错误，重置会话状态");
+        let is_user_cancel = crate::cancel::requested() || crate::cancel::force_requested();
+        let is_transport_error = is_transport_error(&*e);
+        if is_transport_error && !is_user_cancel {
+            warn!("[DA_SESSION] DA 通信错误，重置会话状态: {}", err_str);
             crate::connection::reset_session();
             // 清理可能残留的 read resume 文件，避免下次启动死循环
             // 注意：write resume 文件不在此时清理，保留供断点续写使用
@@ -504,6 +538,9 @@ pub fn handle_command(
                     let _ = std::fs::remove_file(&resume_path);
                 }
             }
+        } else if !is_user_cancel {
+            // 非传输错误：DA 会话本身健康，仅记录日志，不重置
+            debug!("[DA_SESSION] 非传输错误，保留 DA 会话（不重置）: {}", err_str);
         }
         e
     })?;
@@ -766,6 +803,52 @@ fn handle_zyb_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::AppError;
+
+    #[test]
+    fn transport_error_detection() {
+        // 真实传输层失败 → 应判为需要重置会话
+        assert!(
+            is_transport_error(&AppError::Usb("device disconnected".into())),
+            "AppError::Usb 应判为传输错误"
+        );
+        assert!(
+            is_transport_error(&AppError::Protocol("read data: read err: timeout".into())),
+            "USB 读取超时(含 read err/timeout)应判为传输错误"
+        );
+        assert!(
+            is_transport_error(&AppError::Protocol("写入超时".into())),
+            "写入超时(含 超时)应判为传输错误"
+        );
+
+        // 业务/命令/参数/文件/解析/安全错误 → 不应重置会话
+        assert!(
+            !is_transport_error(&AppError::Protocol(
+                "用法: mtkclient slot show|a|b（未知槽位操作: shwo）".into()
+            )),
+            "命令拼写错误不应重置会话"
+        );
+        assert!(
+            !is_transport_error(&AppError::Parse("解析 GPT 失败: ...".into())),
+            "解析错误不应重置会话"
+        );
+        assert!(
+            !is_transport_error(&AppError::Security("安全错误: ...".into())),
+            "安全错误不应重置会话"
+        );
+        assert!(
+            !is_transport_error(&AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "os error 2"
+            ))),
+            "文件不存在(os error 2)不应重置会话"
+        );
+        assert!(
+            !is_transport_error(&AppError::Protocol("GPT 中未找到 super 分区".into())),
+            "分区找不到不应重置会话"
+        );
+    }
+
 
     #[test]
     fn active_read_resume_detects_sidecar_file() {
