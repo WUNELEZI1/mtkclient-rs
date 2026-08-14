@@ -509,23 +509,6 @@ impl Preloader {
         }
     }
 
-    /// 注入 payload（patcher / dump payload）后恢复 BROM 协议状态
-    ///
-    /// payload 运行会改变设备状态，必须重新握手才能继续响应 0xD1 命令。
-    /// 与 `bypass_security` 的恢复步骤完全一致（flush → 短延时 → 重新握手）。
-    /// 自动提取 preloader 的 exploit fallback 在注入 dump payload 后调用本方法，
-    /// 以恢复干净 BROM 状态，保证后续 DA 上传正常。
-    pub(crate) fn restore_brom_state(&mut self) -> Result<(), String> {
-        // 清理 payload 运行后 USB 管道残留数据
-        self.flush_input();
-        std::thread::sleep(Duration::from_millis(100));
-        // 重新握手恢复 BROM 协议状态
-        if !self.device.do_handshake()? {
-            return Err("payload 注入后重新握手失败".into());
-        }
-        Ok(())
-    }
-
     /// 快速 flush：短超时（50ms），用于 read32_brom 前置清理
     /// 比常规 flush 快 4 倍，适用于已确认设备状态正常的场景
     pub(crate) fn flush_input_quick(&mut self) {
