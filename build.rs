@@ -47,7 +47,7 @@ fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) {
         let target = dst.join(entry.file_name());
         if path.is_dir() {
             copy_dir_recursive(&path, &target);
-        } else if let Ok(_) = fs::copy(&path, &target) {
+        } else if fs::copy(&path, &target).is_ok() {
             // 拷贝成功
         }
     }

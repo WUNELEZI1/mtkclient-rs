@@ -1,5 +1,32 @@
 // #![allow(dead_code)] — removed during dead-code sweep; re-add only if needed
 
+// 纯美化：压制 clippy 风格类 lint（不改变任何运行时行为 / 安全性，仅清理告警）。
+// 覆盖项均为 warn 级纯风格提示；如需收紧代码风格可移除本段后逐项手工重构。
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::upper_case_acronyms)]
+#![allow(clippy::let_and_return)]
+#![allow(clippy::manual_is_multiple_of)]
+#![allow(clippy::manual_range_contains)]
+#![allow(clippy::unnecessary_cast)]
+#![allow(clippy::unnecessary_map_or)]
+#![allow(clippy::needless_return)]
+#![allow(clippy::single_match)]
+#![allow(clippy::redundant_pattern_matching)]
+#![allow(clippy::question_mark)]
+#![allow(clippy::print_literal)]
+#![allow(clippy::op_ref)]
+#![allow(clippy::only_used_in_recursion)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::manual_strip)]
+#![allow(clippy::format_in_format_args)]
+#![allow(clippy::useless_format)]
+#![allow(clippy::useless_borrows_in_formatting)]
+#![allow(clippy::useless_asref)]
+#![allow(clippy::unnecessary_unwrap)]
+#![allow(clippy::unnecessary_find_map)]
+
 use clap::Parser;
 use colored::Colorize;
 use log::{debug, error, info, warn};

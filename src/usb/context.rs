@@ -62,16 +62,17 @@ fn 扫描nusb设备() -> Vec<(u16, u16)> {
 
 /// 枚举 USB 设备列表,返回第一个 MediaTek 设备的 (VID, PID, DeviceType)
 pub fn 获取第一个联发科VIDPID() -> Option<(u16, u16, DeviceType)> {
-    for (vid, pid) in 扫描nusb设备() {
-        let 设备类型 = DeviceType::from_vid_pid(vid, pid);
-        log::trace!(
-            "[USB] 获取第一个联发科VIDPID: 找到 BROM 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
-            vid,
-            pid,
-            设备类型
-        );
-        return Some((vid, pid, 设备类型));
-    }
-    None
+    扫描nusb设备()
+        .into_iter()
+        .find_map(|(vid, pid)| {
+            let 设备类型 = DeviceType::from_vid_pid(vid, pid);
+            log::trace!(
+                "[USB] 获取第一个联发科VIDPID: 找到 BROM 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
+                vid,
+                pid,
+                设备类型
+            );
+            Some((vid, pid, 设备类型))
+        })
 }
 
