@@ -748,12 +748,15 @@ impl<'a> DAXFlash<'a> {
         //   pack("<IIIIIIII", hasflags, enablewdt, async_mode, bootmode,
         //        dl_bit, dont_resetrtc, leaveusb, 0)
         // 关键修正（对比旧实现）：
-        //   - enablewdt = 0（禁用看门狗）；重启由 SHUTDOWN 命令本身(bootmode)触发，
-        //     旧实现 enablewdt=0x64 与 mtkclient 不符，且部分 DA 会拒绝该命令。
+        //   - enablewdt = 1（启用看门狗）；重启由看门狗超时触发硬件重启，
+        //     对齐 mtkclient shutdown(enablewdt=True=1)。
+        //     旧实现 enablewdt=0x64 被 DA 拒绝(返回 0x00010007 命令码回显)；
+        //     曾试 enablewdt=0 虽被 DA 接受但"禁用看门狗"导致设备根本不重启（假成功），
+        //     故此处必须用 1 才能真正触发重启（reboot 到系统在 brom/preloader 模式均依赖此）。
         //   - 参数体 32 字节(8×u32)，旧实现仅 28 字节(缺末尾保留字段)。
         // 字段顺序(均为 u32 LE)：
         //   0x00 hasflags      非 NORMAL 模式 / async / dl_bit 时为 1，否则 0
-        //   0x04 enablewdt     0 = 禁用 WDT
+        //   0x04 enablewdt     1 = 启用 WDT（触发硬件重启）
         //   0x08 async_mode    0
         //   0x0C bootmode      0 = NORMAL(关机/重启)
         //   0x10 dl_bit        0
@@ -767,7 +770,7 @@ impl<'a> DAXFlash<'a> {
         } else {
             0
         };
-        let enablewdt: u32 = 0; // 禁用看门狗，由 SHUTDOWN 命令触发重启（对齐 mtkclient）
+        let enablewdt: u32 = 1; // 启用看门狗，由 SHUTDOWN 触发硬件重启（对齐 mtkclient shutdown(enablewdt=True)）
         let mut param = [0u8; 32];
         param[0x00..0x04].copy_from_slice(&hasflags.to_le_bytes());
         param[0x04..0x08].copy_from_slice(&enablewdt.to_le_bytes());
