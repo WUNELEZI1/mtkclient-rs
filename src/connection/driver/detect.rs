@@ -79,7 +79,6 @@ pub struct ComPortUsbInfo {
     pub driver_mfg: String,
 }
 
-
 #[cfg(not(target_os = "windows"))]
 fn find_com_port_by_hardware_id() -> Option<String> {
     None
@@ -205,7 +204,6 @@ pub fn detect_brom_driver_from_usb_bus() -> UsbBusDetectionResult {
 pub fn detect_brom_driver_from_usb_bus() -> UsbBusDetectionResult {
     UsbBusDetectionResult::NotFound
 }
-
 
 #[cfg(not(target_os = "windows"))]
 fn find_com_port_for_brom_device() -> Option<String> {

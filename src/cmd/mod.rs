@@ -62,7 +62,9 @@ pub fn print_help() {
     println!();
     println!("{}", "分区操作:".bold());
     println!("  printgpt                     打印 GPT 分区表 + eMMC 信息 + super动态分区树");
-    println!("  r <分区名> <文件|目录>         读取分区到文件（自动识别动态分区；目录则写入 <目录>/<分区名>.img）");
+    println!(
+        "  r <分区名> <文件|目录>         读取分区到文件（自动识别动态分区；目录则写入 <目录>/<分区名>.img）"
+    );
     println!("       r boot boot.img          读取 boot 分区");
     println!("       r boot1 boot1.bin        读取 eMMC boot1（特殊分区）");
     println!("       r system system.img      自动从 super 读取动态分区");
@@ -242,7 +244,7 @@ fn validate_command(cmd: &str, args: &[String]) -> Result<(), Box<dyn std::error
                 other => {
                     return Err(
                         format!("用法: mtkclient slot show|a|b（未知槽位操作: {}）", other).into(),
-                    )
+                    );
                 }
             }
         }
@@ -413,11 +415,7 @@ pub fn handle_command(
             match da.preloader.dump_preloader_via_brom_read() {
                 Ok((data, filename)) => {
                     auto_dumped_file = Some(filename.clone());
-                    info!(
-                        "Preloader 已自动提取: {} ({} 字节)",
-                        filename,
-                        data.len()
-                    );
+                    info!("Preloader 已自动提取: {} ({} 字节)", filename, data.len());
                 }
                 Err(e) => {
                     return Err(format!(
@@ -480,10 +478,7 @@ pub fn handle_command(
 
     if log_level >= 2 {
         if let Some(data) = da.get_emi_data() {
-            let _ = std::fs::write(
-                crate::system::paths::获取tmp路径("emi_debug.bin"),
-                data,
-            );
+            let _ = std::fs::write(crate::system::paths::获取tmp路径("emi_debug.bin"), data);
         }
         if let Some(data) = da.get_extensions_data() {
             let _ = std::fs::write(
@@ -534,13 +529,16 @@ pub fn handle_command(
             // 注意：write resume 文件不在此时清理，保留供断点续写使用
             if cmd == "r" {
                 if let Some(output) = app_config.cmd_args.get(1) {
-                    let resume_path = format!("{}.resume", output);
+                    let resume_path = crate::resume::read_resume_path(output);
                     let _ = std::fs::remove_file(&resume_path);
                 }
             }
         } else if !is_user_cancel {
             // 非传输错误：DA 会话本身健康，仅记录日志，不重置
-            debug!("[DA_SESSION] 非传输错误，保留 DA 会话（不重置）: {}", err_str);
+            debug!(
+                "[DA_SESSION] 非传输错误，保留 DA 会话（不重置）: {}",
+                err_str
+            );
         }
         e
     })?;
@@ -552,18 +550,14 @@ fn active_read_resume_exists(args: &[String]) -> bool {
     let Some(output) = args.get(1) else {
         return false;
     };
-    let path = format!("{}.resume", output);
+    let path = crate::resume::read_resume_path(output);
     let Ok(content) = std::fs::read_to_string(&path) else {
         return false;
     };
-    if !content.lines().any(|line| line == "active_read=true") {
+    if !crate::resume::is_active_read(&content) {
         return false;
     }
-    let Some(written) = content
-        .lines()
-        .find_map(|line| line.strip_prefix("written="))
-        .and_then(|value| value.parse::<u64>().ok())
-    else {
+    let Some(written) = crate::resume::parse_u64_field(&content, "written=") else {
         return false;
     };
     match std::fs::metadata(output) {
@@ -588,10 +582,7 @@ fn active_write_resume_exists(args: &[String]) -> bool {
     let Ok(content) = std::fs::read_to_string(&resume_path) else {
         return false;
     };
-    let written = content
-        .lines()
-        .find_map(|line| line.strip_prefix("written="))
-        .and_then(|v| v.parse::<u64>().ok());
+    let written = crate::resume::parse_u64_field(&content, "written=");
     written.map(|w| w > 0).unwrap_or(false)
 }
 
@@ -625,7 +616,7 @@ pub fn pending_read_resume_in_dir(dir: &str) -> Vec<PendingRead> {
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
         };
-        if !content.lines().any(|line| line == "active_read=true") {
+        if !crate::resume::is_active_read(&content) {
             continue;
         }
         let output = content
@@ -633,16 +624,8 @@ pub fn pending_read_resume_in_dir(dir: &str) -> Vec<PendingRead> {
             .find_map(|line| line.strip_prefix("output="))
             .map(|s| s.to_string())
             .unwrap_or_else(|| path.with_extension("").to_string_lossy().to_string());
-        let size = content
-            .lines()
-            .find_map(|line| line.strip_prefix("size="))
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(0);
-        let written = content
-            .lines()
-            .find_map(|line| line.strip_prefix("written="))
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(0);
+        let size = crate::resume::parse_u64_field(&content, "size=").unwrap_or(0);
+        let written = crate::resume::parse_u64_field(&content, "written=").unwrap_or(0);
         result.push(PendingRead {
             output,
             size,
@@ -910,7 +893,6 @@ mod tests {
             "分区找不到不应重置会话"
         );
     }
-
 
     #[test]
     fn active_read_resume_detects_sidecar_file() {

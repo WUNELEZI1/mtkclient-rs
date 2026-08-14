@@ -30,7 +30,6 @@ const POST_FLUSH_TIMEOUT_MS: u64 = 5000;
 const WDT_MAGIC: u32 = 0x22000000;
 
 impl Preloader {
-
     /// BROM 同步序列 (FE, FF, FC)
     /// 用于在握手或漏洞利用后让设备进入就绪状态
     pub fn sync_brom(&mut self) -> Result<(), String> {
@@ -334,7 +333,6 @@ impl Preloader {
         Ok(false)
     }
 
-
     /// 发送 4 字节大端参数并校验回显（对齐 Python pack(">I", val)）
     /// 支持残余数据容错：逐字节读取并维护 4 字节滑动窗口环缓冲区，
     /// 跳过残余字节后匹配期望回显（与 echo_1byte 跳过机制一致）。
@@ -552,12 +550,10 @@ impl Preloader {
         Ok(())
     }
 
-
     /// 读 16 位字（2 字节，big-endian，对齐 Python DeviceHandler.rword(little=False)）
     pub fn rword(&mut self) -> Result<u16, String> {
         let mut buf = [0u8; 2];
         self.device.read_exact(&mut buf)?;
         Ok(u16::from_be_bytes(buf))
     }
-
 }

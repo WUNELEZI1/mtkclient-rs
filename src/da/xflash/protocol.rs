@@ -628,7 +628,6 @@ impl<'a> DAXFlash<'a> {
         }
     }
 
-
     /// 设置 Meta Boot Mode（对齐 Python set_meta_boot_mode）
     /// 命令: CMD_DEVICE_CTRL(0x010009) + SET_META_BOOT_MODE(0x020006)
     /// 参数: boot_mode (u32, 0=fastboot, 1=meta)
@@ -806,7 +805,6 @@ impl<'a> DAXFlash<'a> {
         );
         Ok(())
     }
-
 
     /// Layer 3: 发送 XML DA 命令（新平台 MT6789+）
     ///

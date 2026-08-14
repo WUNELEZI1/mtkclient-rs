@@ -91,7 +91,8 @@ pub fn resolve_chip_payload(hw_code: u32, fallback_loader: &str) -> std::path::P
 pub fn resolve_named_payload(sdata_key: &str, fallback_filename: &str) -> std::path::PathBuf {
     if let Some(sd) = sdata() {
         if let Some(rel) = sd.payloads.get(sdata_key) {
-            let data_path = 获取可执行文件相对路径(&format!("data/{}", normalize_sep(rel)));
+            let data_path =
+                获取可执行文件相对路径(&format!("data/{}", normalize_sep(rel)));
             if data_path.exists() {
                 return data_path;
             }
@@ -135,7 +136,10 @@ fn load_sdata() -> Option<SData> {
             payloads.insert(k, s);
         }
     }
-    Some(SData { support_chip, payloads })
+    Some(SData {
+        support_chip,
+        payloads,
+    })
 }
 
 // ---------- 最小化 JSON 解析器（无第三方依赖，离线可用） ----------

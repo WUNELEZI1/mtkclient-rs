@@ -11,7 +11,6 @@ use super::gpt::GptInfo;
 /// scatter 文件分隔符（对齐刷机匣 MT6768_Android_scatter.txt 格式）
 const SEPARATOR: &str = "################################################mtkclient-rs################################################";
 
-
 /// scatter 分区块参数
 struct ScatterEntry<'a> {
     idx: usize,

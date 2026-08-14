@@ -113,7 +113,6 @@ impl LpMetadataPartition {
     pub fn is_slot_suffixed(&self) -> bool {
         (self.attributes & LP_PARTITION_ATTR_SLOT_SUFFIXED) != 0
     }
-
 }
 
 /// LpMetadataExtent (变长，默认 entry_size = 0x18 = 24 字节)
@@ -136,8 +135,7 @@ pub struct LpMetadataExtent {
 ///   offset 36: flags(u32)
 ///   offset 40: maximum_size(u64)
 #[derive(Debug, Clone)]
-pub struct LpMetadataGroup {
-}
+pub struct LpMetadataGroup {}
 
 /// 解析后的 Super 分区元数据
 #[derive(Debug, Clone)]
@@ -288,9 +286,7 @@ impl SuperMetadata {
                 } else {
                     512
                 };
-                return Some(LpMetadataGeometry {
-                    logical_block_size,
-                });
+                return Some(LpMetadataGeometry { logical_block_size });
             }
         }
         warn!("未找到 LP_METADATA_GEOMETRY_MAGIC，使用默认值");
@@ -532,7 +528,6 @@ impl SuperMetadata {
         }
         None
     }
-
 
     /// 智能查找分区，自动处理 A/B 槽位
     pub fn find_partition_smart(&self, name: &str) -> Option<(String, u64, u64)> {

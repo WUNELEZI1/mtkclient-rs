@@ -287,13 +287,11 @@ impl USB设备 {
         Ok((输入端点句柄, 输出端点句柄))
     }
 
-
     /// 获取 EP_OUT 的最大包大小
     #[allow(dead_code)]
     pub fn 获取输出端点最大包大小(&self) -> u16 {
         self.输出端点最大包大小
     }
-
 
     pub fn 设置超时(&mut self, duration: Duration) {
         self.超时 = duration;
@@ -409,7 +407,6 @@ impl USB设备 {
         }
     }
 
-
     /// USB 总线复位（对齐 Python device.reset()）
     /// 注意：nusb 目前没有直接的 reset_device API，
     /// 这里通过关闭并重新打开来模拟
@@ -449,7 +446,6 @@ impl USB设备 {
         info!("USB 重连成功");
         Ok(())
     }
-
 
     /// 获取 nusb Interface 可变引用
     pub(crate) fn 获取interface_mut(&mut self) -> Option<&mut nusb::Interface> {

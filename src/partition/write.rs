@@ -140,7 +140,6 @@ impl<'a> DAXFlash<'a> {
         Err(format_write_status_error(label, status))
     }
 
-
     /// 按原始地址流式写入数据，供分区写入、seccfg/frp 等场景复用。
     /// 接受任意 `Read` 实现（文件、内存缓冲区等），避免大文件全量载入内存。
     /// 带进度条显示：使用 indicatif 实时更新进度，最后输出总耗时和速度。
