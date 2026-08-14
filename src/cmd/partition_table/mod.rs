@@ -190,10 +190,34 @@ pub fn cmd_read_all(
             entry.size,
             entry.start_addr
         );
-        let data = da
-            .readflash_data(entry.start_addr, entry.size)
-            .map_err(|e| format!("读取 {} 失败: {}", entry.name, e))?;
-        std::fs::write(&output, &data).map_err(|e| format!("写入失败: {}", e))?;
+
+        // 带进度条的分区块读取（对齐 io::cmd_read 单分区读取体验，
+        // parttype=8 对应 GPT 物理分区；流式写文件避免大分区整块读进内存）
+        use indicatif::{ProgressBar, ProgressStyle};
+        let bar = if crate::usb::log::QUIET_USB_READ
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            ProgressBar::hidden()
+        } else {
+            ProgressBar::new(entry.size)
+        };
+        bar.set_style(
+            ProgressStyle::with_template(
+                "  {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] \
+                 {binary_bytes}/{binary_total_bytes} ({percent}%) {msg}",
+            )
+            .unwrap()
+            .progress_chars("█▓░"),
+        );
+        bar.set_message(format!("读取: {}", entry.name));
+        da.readflash_to_file(entry.start_addr, entry.size, 8, &output, 0, {
+            let bar = bar.clone();
+            move |bytes_read| {
+                bar.set_position(bytes_read);
+            }
+        })
+        .map_err(|e| format!("读取 {} 失败: {}", entry.name, e))?;
+        bar.finish_and_clear();
         info!("{}", format!("  {} -> {}", entry.name, output).green());
         read_count += 1;
     }
