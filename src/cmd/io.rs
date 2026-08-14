@@ -210,6 +210,36 @@ pub fn cmd_reboot(
         }
     }
 
+    // 未完成读取保护：若存在活跃读取续传（Ctrl+C 中断但未完成的分区读取），
+    // reboot 会销毁 DA 会话，导致已读取进度无法续传，且复用会话下 DA SHUTDOWN
+    // 常返回 0x00010007 而失败。此时保持会话，提示用户先完成分区读取，
+    // 而非尝试 DA SHUTDOWN。
+    let pending = crate::cmd::pending_read_resume_cwd();
+    if !pending.is_empty() {
+        warn!(
+            "{}",
+            "检测到未完成的读取任务，已跳过重启以保持 DA 会话".yellow().bold()
+        );
+        for p in &pending {
+            let pct = if p.size > 0 {
+                format!("（{:.1}% 已完成）", p.written as f64 / p.size as f64 * 100.0)
+            } else {
+                String::new()
+            };
+            warn!("  - {}：已读取 {}/{} 字节 {}", p.output, p.written, p.size, pct);
+        }
+        warn!(
+            "{}",
+            "请先完成分区读取（重新运行对应的 r <分区> <文件> 命令，会自动从断点续传）后再重启。"
+                .yellow()
+        );
+        warn!(
+            "{}",
+            "若确定要放弃读取并强制重启，请先删除对应的 .img 与 .resume 文件后重试。".dimmed()
+        );
+        return Ok(());
+    }
+
     // --via preloader: Pattern 协议路径（支持 fastboot 和 meta）
     if via == "preloader" {
         return cmd_reboot_via_preloader(da, mode, is_brom, is_preloader);
