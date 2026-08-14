@@ -468,10 +468,12 @@ impl<'a> DAXFlash<'a> {
         let 上次速度采样: Arc<Mutex<u64>> = Arc::new(Mutex::new(start_offset));
 
         // 流式读取：每个 USB 包写入文件后立即更新进度条
-        let read_addr = addr + start_offset;
+        // 注意：readflash_to_file 内部会在非活跃续传分支按 (addr + start_offset) 重新下发
+        // READ_DATA，故此处必须传“分区基址”(addr) 而非已偏移地址，否则会出现双重偏移、
+        // 读到分区之外的错误区域（数据损坏）。活跃续传分支只发 ACK，不使用 addr。
         let 分区名clone = 分区名.to_string();
         let total =
-            self.readflash_to_file(read_addr, size, parttype, 输出文件, start_offset, {
+            self.readflash_to_file(addr, size, parttype, 输出文件, start_offset, {
                 let bar = bar.clone();
                 let 速度窗口 = 速度窗口.clone();
                 let 上次速度采样 = 上次速度采样.clone();
@@ -546,34 +548,23 @@ impl<'a> DAXFlash<'a> {
             逻辑分区名, actual_name, super_addr, logical_offset, 物理地址, logical_size
         );
 
-        // 4. 断点续传检查：对齐到 512 字节边界
-        let 输出路径 = std::path::Path::new(输出文件);
-        let existing_size = if 输出路径.exists() {
-            std::fs::metadata(输出文件).map(|m| m.len()).unwrap_or(0)
-        } else {
-            0
-        };
-        let start_offset = if existing_size > 0 {
-            let aligned = (existing_size / 512) * 512;
-            if aligned != existing_size {
-                info!("  断点续传: 截断到 512 对齐 {} 字节", aligned);
-                let file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(输出文件)
-                    .map_err(|e| format!("打开文件失败: {}", e))?;
-                file.set_len(aligned)
-                    .map_err(|e| format!("截断文件失败: {}", e))?;
-            }
+        // 4. 断点续传检查：对齐到 512 字节边界（复用统一辅助 compute_read_resume_offset，
+        //    与 读取分区 / rl 共用同一“截断对齐 + 已完成跳过”逻辑，避免行为漂移；
+        //    且该辅助在 existing >= size 时返回 size，可避免 start_offset 越界导致
+        //    后续 readflash_to_file 中 size - start_offset 的 u64 下溢）。
+        let start_offset = compute_read_resume_offset(输出文件, logical_size);
+        if start_offset > 0 && start_offset < logical_size {
             info!(
                 "  断点续传: 已有 {} 字节 ({}%)，还需读取 {} 字节",
-                aligned,
-                aligned as f64 / logical_size as f64 * 100.0,
-                logical_size - aligned
+                start_offset,
+                start_offset as f64 / logical_size as f64 * 100.0,
+                logical_size - start_offset
             );
-            aligned
-        } else {
-            0
-        };
+        }
+        if start_offset >= logical_size {
+            info!("  文件已存在且完整 ({} 字节)，跳过读取", start_offset);
+            return Ok(());
+        }
 
         // 5. 创建进度条并流式读取
         use indicatif::{ProgressBar, ProgressStyle};
