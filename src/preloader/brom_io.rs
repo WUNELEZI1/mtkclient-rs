@@ -205,6 +205,4 @@ impl Preloader {
             Ok(false)
         }
     }
-
-
 }

@@ -171,12 +171,20 @@ impl<'a> DAXFlash<'a> {
         let gpt_full_path = gpt_full_file();
         std::fs::write(&gpt_full_path, &gpt_data)
             .map_err(|e| format!("写 gpt_full.bin 失败: {}", e))?;
-        debug!("已写入 {}, {} 字节", gpt_full_path.display(), gpt_data.len());
+        debug!(
+            "已写入 {}, {} 字节",
+            gpt_full_path.display(),
+            gpt_data.len()
+        );
 
         // 备份 gpt.bin 到 tmp/ 目录（对齐 mtkclient 行为）
         let gpt_cache_path = gpt_cache_file();
         Self::save_gpt_cache_file(&gpt_cache_path.to_string_lossy(), &gpt_data)?;
-        debug!("已写入 {}, {} 字节", gpt_cache_path.display(), gpt_data.len());
+        debug!(
+            "已写入 {}, {} 字节",
+            gpt_cache_path.display(),
+            gpt_data.len()
+        );
 
         // 只做解析校验。完整分区表输出只在 printgpt 命令中执行，
         // 读分区命令内部读取 GPT 时不应刷屏。
@@ -400,11 +408,7 @@ impl<'a> DAXFlash<'a> {
             || 输出文件.ends_with('\\')
             || (!输出路径.exists() && 输出路径.extension().is_none())
         {
-            format!(
-                "{}/{}.img",
-                输出文件.trim_end_matches(['/', '\\']),
-                分区名
-            )
+            format!("{}/{}.img", 输出文件.trim_end_matches(['/', '\\']), 分区名)
         } else {
             输出文件.to_string()
         };
@@ -598,7 +602,7 @@ impl<'a> DAXFlash<'a> {
         //   会通过 ACK 接续；如果设备已断开，active_resume ACK 失败后会
         //   自动 fallback 到非活跃路径发新 READ_DATA）
         if start_offset == 0 {
-            let resume_path = format!("{}.resume", 输出文件);
+            let resume_path = crate::resume::read_resume_path(输出文件);
             let _ = std::fs::remove_file(&resume_path);
         }
         self.readflash_to_file(
@@ -959,8 +963,7 @@ mod tests {
 
     #[test]
     fn compute_read_resume_offset_handles_states() {
-        let path = std::env::temp_dir()
-            .join(format!("resume_offset_{}.bin", std::process::id()));
+        let path = std::env::temp_dir().join(format!("resume_offset_{}.bin", std::process::id()));
         let p = path.to_str().unwrap();
         let _ = std::fs::remove_file(p);
 

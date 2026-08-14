@@ -2,10 +2,6 @@
 //!
 //! 使用 nusb 设备枚举替代 libusb unsafe 代码
 
-
-
-
-
 /// 检测 nusb 错误类型并给出诊断信息
 #[allow(dead_code)]
 pub fn 分类libusb错误(err: &str) -> &'static str {
@@ -23,6 +19,3 @@ pub fn 分类libusb错误(err: &str) -> &'static str {
         "未知错误"
     }
 }
-
-
-

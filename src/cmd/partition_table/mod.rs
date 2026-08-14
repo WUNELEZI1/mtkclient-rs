@@ -195,7 +195,7 @@ pub fn cmd_read_all(
         //    必须走“重新发送 READ_DATA 从断点续读”，而非“ACK 续接活跃流”（避免续接失败）。
         // 2) compute_read_resume_offset：文件已完整 → 返回 size（跳过）；部分存在 →
         //    截断到 512 对齐边界并返回偏移（续传）。
-        let _ = std::fs::remove_file(format!("{}.resume", output));
+        let _ = std::fs::remove_file(crate::resume::read_resume_path(&output));
         let start_offset = crate::partition::io::compute_read_resume_offset(&output, entry.size);
         if start_offset >= entry.size {
             info!(
@@ -225,9 +225,7 @@ pub fn cmd_read_all(
         // 带进度条的分区块读取（对齐 io::cmd_read 单分区读取体验，
         // parttype=8 对应 GPT 物理分区；流式写文件避免大分区整块读进内存）
         use indicatif::{ProgressBar, ProgressStyle};
-        let bar = if crate::usb::log::QUIET_USB_READ
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
+        let bar = if crate::usb::log::QUIET_USB_READ.load(std::sync::atomic::Ordering::Relaxed) {
             ProgressBar::hidden()
         } else {
             ProgressBar::new(entry.size)

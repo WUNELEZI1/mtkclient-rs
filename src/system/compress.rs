@@ -18,8 +18,7 @@ pub fn read_file_auto_decompress(path: &Path) -> Result<Vec<u8>, String> {
     // 1. 原始路径（已解析的绝对路径或本就存在的相对路径）
     if path.exists() {
         debug!("读取资源文件: {}", path.display());
-        return std::fs::read(path)
-            .map_err(|e| format!("读取文件失败 {}: {}", path.display(), e));
+        return std::fs::read(path).map_err(|e| format!("读取文件失败 {}: {}", path.display(), e));
     }
 
     // 2. 兼容传入裸文件名：按 data/ 目录规则解析

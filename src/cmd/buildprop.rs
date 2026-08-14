@@ -335,8 +335,6 @@ fn read_current_slot(da: &mut DAXFlash) -> u32 {
     }
 }
 
-
-
 /// 查找分区地址
 fn find_partition_with_smart(
     da: &mut DAXFlash,

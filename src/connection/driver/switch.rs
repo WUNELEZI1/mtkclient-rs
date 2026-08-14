@@ -237,8 +237,6 @@ fn poll_libusb_ready(max_seconds: u32) -> bool {
     false
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

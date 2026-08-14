@@ -10,7 +10,6 @@ fn state_file_path() -> std::path::PathBuf {
     获取tmp路径(".state")
 }
 
-
 /// DA 初始化模式：记录 DA 是通过哪种路径加载的，
 /// 会话复用时根据此字段选择对应的重握手方案
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

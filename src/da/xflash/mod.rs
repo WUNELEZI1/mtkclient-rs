@@ -42,8 +42,7 @@ pub struct EmmcInfo {
     pub cid: Vec<u8>,
 }
 
-impl EmmcInfo {
-}
+impl EmmcInfo {}
 
 /// DAXFlash 结构体，处理 XFlash 协议
 pub struct DAXFlash<'a> {

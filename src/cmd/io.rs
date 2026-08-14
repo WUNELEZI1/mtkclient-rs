@@ -218,15 +218,23 @@ pub fn cmd_reboot(
     if !pending.is_empty() {
         warn!(
             "{}",
-            "检测到未完成的读取任务，已跳过重启以保持 DA 会话".yellow().bold()
+            "检测到未完成的读取任务，已跳过重启以保持 DA 会话"
+                .yellow()
+                .bold()
         );
         for p in &pending {
             let pct = if p.size > 0 {
-                format!("（{:.1}% 已完成）", p.written as f64 / p.size as f64 * 100.0)
+                format!(
+                    "（{:.1}% 已完成）",
+                    p.written as f64 / p.size as f64 * 100.0
+                )
             } else {
                 String::new()
             };
-            warn!("  - {}：已读取 {}/{} 字节 {}", p.output, p.written, p.size, pct);
+            warn!(
+                "  - {}：已读取 {}/{} 字节 {}",
+                p.output, p.written, p.size, pct
+            );
         }
         warn!(
             "{}",
@@ -579,7 +587,7 @@ pub fn cmd_slot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
         "a" => set_slot(da, 'a')?,
         "b" => set_slot(da, 'b')?,
         _ => {
-            return Err(format!("用法: mtkclient slot show|a|b（未知槽位操作: {}）", action).into())
+            return Err(format!("用法: mtkclient slot show|a|b（未知槽位操作: {}）", action).into());
         }
     }
 
@@ -715,7 +723,6 @@ fn write_partition_from_memory(
         .map_err(|e| format!("写入分区 {} 失败: {}", part_name, e))?;
     Ok(())
 }
-
 
 // =============================================================================
 // peek / poke — 设备内存读写

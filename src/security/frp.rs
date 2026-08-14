@@ -14,8 +14,7 @@ pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
 
     // 1. 读取 frp 分区
     da.读取分区("frp", &backup_path.to_string_lossy())?;
-    let mut frp_data =
-        std::fs::read(&backup_path).map_err(|e| format!("读取备份失败: {}", e))?;
+    let mut frp_data = std::fs::read(&backup_path).map_err(|e| format!("读取备份失败: {}", e))?;
     info!("frp 分区: {} 字节", frp_data.len());
 
     // 2. 修改 OEM unlock 标志位（分区最后一个字节 → 1 = 解锁）
@@ -37,8 +36,7 @@ pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
     patch_frp_data(&mut frp_data);
 
     // 4. 写回
-    std::fs::write(&unlocked_path, &frp_data)
-        .map_err(|e| format!("写入临时文件失败: {}", e))?;
+    std::fs::write(&unlocked_path, &frp_data).map_err(|e| format!("写入临时文件失败: {}", e))?;
     da.写入分区("frp", &unlocked_path.to_string_lossy())?;
 
     info!("FRP OEM 解锁完成");
@@ -54,8 +52,7 @@ pub fn frp_lock(da: &mut DAXFlash) -> Result<(), String> {
 
     // 1. 读取 frp 分区
     da.读取分区("frp", &backup_path.to_string_lossy())?;
-    let mut frp_data =
-        std::fs::read(&backup_path).map_err(|e| format!("读取备份失败: {}", e))?;
+    let mut frp_data = std::fs::read(&backup_path).map_err(|e| format!("读取备份失败: {}", e))?;
     info!("frp 分区: {} 字节", frp_data.len());
 
     // 2. 修改 OEM unlock 标志位（分区最后一个字节 → 0 = 锁定）
@@ -80,7 +77,6 @@ pub fn frp_lock(da: &mut DAXFlash) -> Result<(), String> {
     info!("FRP OEM 锁定完成");
     Ok(())
 }
-
 
 /// 清除 FRP 账户锁数据（原地修改）
 fn patch_frp_data(data: &mut [u8]) {

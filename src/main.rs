@@ -139,6 +139,7 @@ mod exploit;
 mod partition;
 #[path = "preloader/mod.rs"]
 mod preloader;
+mod resume;
 #[path = "security/mod.rs"]
 mod security;
 mod system;

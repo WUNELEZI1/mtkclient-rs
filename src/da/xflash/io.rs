@@ -57,7 +57,7 @@ fn parse_packet_length(data: &[u8]) -> Option<usize> {
 }
 
 fn resume_path_for(output_file: &str) -> String {
-    format!("{}.resume", output_file)
+    crate::resume::read_resume_path(output_file)
 }
 
 fn write_resume_file(
@@ -93,11 +93,8 @@ fn active_resume_matches(output_file: &str, start_offset: u64) -> bool {
         return false;
     };
 
-    let has_active_read = content.lines().any(|line| line == "active_read=true");
-    let resume_written = content
-        .lines()
-        .find_map(|line| line.strip_prefix("written="))
-        .and_then(|value| value.parse::<u64>().ok());
+    let has_active_read = crate::resume::is_active_read(&content);
+    let resume_written = crate::resume::parse_u64_field(&content, "written=");
 
     match resume_written {
         Some(written) => {
@@ -772,6 +769,4 @@ impl<'a> DAXFlash<'a> {
     pub fn reset_device(&mut self) -> Result<(), String> {
         self.da_shutdown(crate::da::xflash::protocol::ShutdownBootMode::Normal)
     }
-
-
 }
