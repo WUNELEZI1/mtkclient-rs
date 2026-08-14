@@ -557,13 +557,26 @@ impl<'a> DAXFlash<'a> {
         size: u64,
         parttype: u32,
     ) -> Result<Vec<u8>, String> {
+        // 防御：禁止把超大分区整块读入内存（避免 OOM 崩溃）。
+        // 大分区请走流式读取（readflash_to_file / r <分区> <文件> / rl <目录>）。
+        const MAX_IN_MEMORY_READ: u64 = 256 * 1024 * 1024; // 256 MiB
+        if size > MAX_IN_MEMORY_READ {
+            return Err(format!(
+                "分区过大 ({:.2} GiB)，无法整块读入内存。请使用流式读取：r <分区> <文件> 或 rl <目录>",
+                size as f64 / 1024.0 / 1024.0 / 1024.0
+            ));
+        }
+
         // 1. get_packet_length — send_devctrl 内部已包含完整的 xread + status 握手
-        let _ = match self.send_devctrl(GET_PKT_LEN, None) {
-            Ok(data) => data,
-            Err(e) => {
-                warn!("readflash_data_ex: get_packet_length 失败: {}", e);
-                return Err(e);
-            }
+        //    注意：部分设备/DA（尤其 Preloader 模式会话复用）对 GET_PKT_LEN 返回异常
+        //    status，但包长度仅用于优化分块，读取循环按设备实际返回的分包处理，
+        //    故失败时不中断（对齐 readflash_to_file 的容错行为），避免 printgpt 等命令无谓失败。
+        match self.send_devctrl(GET_PKT_LEN, None) {
+            Ok(_) => {}
+            Err(e) => warn!(
+                "readflash_data_ex: get_packet_length 获取失败（已忽略，继续读取）: {}",
+                e
+            ),
         };
 
         // 2. 发送 READ_DATA 命令及参数

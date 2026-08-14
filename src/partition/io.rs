@@ -360,10 +360,24 @@ impl<'a> DAXFlash<'a> {
                 (8u32, addr, size)
             };
 
+        // 解析输出路径：若为目录（已存在目录 / 以路径分隔符结尾 / 无扩展名且不存在），
+        // 则在该目录内写入 <分区名>.img，对齐 rl 命令行为，避免误报“输出路径是目录”。
         let 输出路径 = std::path::Path::new(输出文件);
-        if 输出路径.is_dir() {
-            return Err(format!("输出路径是目录，不是文件: {}", 输出文件));
-        }
+        let 实际输出: String = if 输出路径.is_dir()
+            || 输出文件.ends_with('/')
+            || 输出文件.ends_with('\\')
+            || (!输出路径.exists() && 输出路径.extension().is_none())
+        {
+            format!(
+                "{}/{}.img",
+                输出文件.trim_end_matches(['/', '\\']),
+                分区名
+            )
+        } else {
+            输出文件.to_string()
+        };
+        let 输出文件 = 实际输出.as_str();
+        let 输出路径 = std::path::Path::new(输出文件);
         if let Some(parent) = 输出路径.parent()
             && !parent.as_os_str().is_empty()
             && !parent.exists()

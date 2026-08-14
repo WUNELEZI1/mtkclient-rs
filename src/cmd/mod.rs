@@ -62,7 +62,7 @@ pub fn print_help() {
     println!();
     println!("{}", "分区操作:".bold());
     println!("  printgpt                     打印 GPT 分区表 + eMMC 信息 + super动态分区树");
-    println!("  r <分区名> <文件>             读取分区到文件（自动识别动态分区）");
+    println!("  r <分区名> <文件|目录>         读取分区到文件（自动识别动态分区；目录则写入 <目录>/<分区名>.img）");
     println!("       r boot boot.img          读取 boot 分区");
     println!("       r boot1 boot1.bin        读取 eMMC boot1（特殊分区）");
     println!("       r system system.img      自动从 super 读取动态分区");
