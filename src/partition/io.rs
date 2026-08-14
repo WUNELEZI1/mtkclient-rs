@@ -68,6 +68,38 @@ fn gpt_full_file() -> std::path::PathBuf {
     crate::system::paths::获取tmp路径("gpt_full.bin")
 }
 
+/// 计算分区读取的断点续传起始偏移（供单分区 `读取分区` 与 `rl` 批量读取共用）。
+///
+/// 规则：
+/// - 输出文件不存在或为空 → 返回 `0`（从头读取）。
+/// - 文件已完整（现有大小 >= 目标大小）→ 返回 `目标大小`，调用方据此判定“已完成”并跳过。
+/// - 文件部分存在 → **截断到 512 字节对齐边界**（避免续读错位），并返回该对齐偏移作为续传起点。
+///
+/// 注意：本函数对“部分存在”的文件有副作用（可能 `set_len` 截断到 512 对齐点），
+/// 以确保从对齐点续读时数据不重叠、不错位。
+pub(crate) fn compute_read_resume_offset(output: &str, size: u64) -> u64 {
+    let path = std::path::Path::new(output);
+    let existing = if path.exists() {
+        std::fs::metadata(output).map(|m| m.len()).unwrap_or(0)
+    } else {
+        0
+    };
+    if existing == 0 {
+        return 0;
+    }
+    if existing >= size {
+        return size; // 调用方据此跳过
+    }
+    // 部分存在：截断到 512 字节对齐边界，从对齐点续读
+    let aligned = (existing / 512) * 512;
+    if aligned != existing {
+        if let Ok(file) = std::fs::OpenOptions::new().write(true).open(output) {
+            let _ = file.set_len(aligned);
+        }
+    }
+    aligned
+}
+
 impl<'a> DAXFlash<'a> {
     pub(crate) fn save_gpt_cache_file(path: &str, data: &[u8]) -> Result<(), String> {
         GptInfo::parse(data).map_err(|e| format!("GPT 缓存数据无效: {}", e))?;
@@ -386,40 +418,20 @@ impl<'a> DAXFlash<'a> {
                 .map_err(|e| format!("创建输出目录失败 '{}': {}", parent.display(), e))?;
         }
 
-        // 断点续传检查
-        let existing_size = if 输出路径.exists() {
-            std::fs::metadata(输出文件).map(|m| m.len()).unwrap_or(0)
-        } else {
-            0
-        };
-
-        if existing_size >= size {
-            info!("  文件已存在且完整 ({} 字节)，跳过读取", existing_size);
+        // 断点续传检查（复用统一辅助函数：完整则跳过、部分则截断到 512 对齐并返回偏移）
+        let start_offset = compute_read_resume_offset(输出文件, size);
+        if start_offset >= size {
+            info!("  文件已存在且完整 ({} 字节)，跳过读取", start_offset);
             return Ok(());
         }
-
-        // 对齐到 512 字节边界
-        let start_offset = if existing_size > 0 {
-            let aligned = (existing_size / 512) * 512;
-            if aligned != existing_size {
-                info!("  断点续传: 截断到 512 对齐 {} 字节", aligned);
-                let file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(输出文件)
-                    .map_err(|e| format!("打开文件失败: {}", e))?;
-                file.set_len(aligned)
-                    .map_err(|e| format!("截断文件失败: {}", e))?;
-            }
+        if start_offset > 0 {
             info!(
-                "  断点续传: 已有 {} 字节 ({}%)，还需读取 {} 字节",
-                aligned,
-                aligned as f64 / size as f64 * 100.0,
-                size - aligned
+                "  断点续传: 已有 {} 字节 ({}%)，从 0x{:X} 继续读取",
+                start_offset,
+                start_offset as f64 / size as f64 * 100.0,
+                start_offset
             );
-            aligned
-        } else {
-            0
-        };
+        }
 
         // 创建进度条（输出到 stderr，与日志统一流，避免视觉交织）
         let bar = if QUIET_USB_READ.load(Ordering::Relaxed) {
@@ -943,5 +955,35 @@ mod tests {
 
         assert!(err.contains("GPT 缓存数据无效"));
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn compute_read_resume_offset_handles_states() {
+        let path = std::env::temp_dir()
+            .join(format!("resume_offset_{}.bin", std::process::id()));
+        let p = path.to_str().unwrap();
+        let _ = std::fs::remove_file(p);
+
+        // 不存在 → 从头读取
+        assert_eq!(compute_read_resume_offset(p, 1000), 0);
+
+        // 已完整 → 返回 size（调用方据此跳过，不再重读）
+        std::fs::write(p, vec![0u8; 1000]).unwrap();
+        assert_eq!(compute_read_resume_offset(p, 1000), 1000);
+
+        // 偏大（极端情况）→ 仍返回 size
+        std::fs::write(p, vec![0u8; 2000]).unwrap();
+        assert_eq!(compute_read_resume_offset(p, 1000), 1000);
+
+        // 部分且 512 对齐 → 返回对齐偏移
+        std::fs::write(p, vec![0u8; 1024]).unwrap();
+        assert_eq!(compute_read_resume_offset(p, 2000), 1024);
+
+        // 部分且未对齐 → 截断到 512 对齐点并返回（rl 续传关键路径）
+        std::fs::write(p, vec![0u8; 1500]).unwrap();
+        assert_eq!(compute_read_resume_offset(p, 2000), 1024);
+        assert_eq!(std::fs::metadata(p).unwrap().len(), 1024);
+
+        let _ = std::fs::remove_file(p);
     }
 }
