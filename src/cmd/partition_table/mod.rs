@@ -170,25 +170,56 @@ pub fn cmd_read_all(
 
     let gpt_data = da.get_last_gpt_data()?.clone();
     let gpt_info = crate::partition::GptInfo::parse(&gpt_data)?;
-    let mut read_count = 0usize;
-    let mut skip_count = 0usize;
+    let mut read_count = 0usize; // 实际读取/续传成功（用于汇总）
+    let mut done_count = 0usize; // 已存在且完整、本次跳过未重读
+    let mut idx = 0usize; // [n/total] 连续序号（含 DONE 跳过，保证续跑编号连续）
+
+    // 预先统计被 --skip 的分区数，避免循环内递增导致分母随迭代变化
+    let skip_count = gpt_info
+        .iter_partitions()
+        .filter(|e| skip_set.contains(&e.name.to_lowercase()))
+        .count();
+    let total = gpt_info.partitions().len() - skip_count;
 
     for entry in gpt_info.iter_partitions() {
         // 跳过指定分区（大小写不敏感比较）
         if skip_set.contains(&entry.name.to_lowercase()) {
             info!("  [SKIP] {} (0x{:X})", entry.name, entry.size);
-            skip_count += 1;
-            continue;
+            continue; // skip_count 已预先统计，此处不再递增
         }
 
         let output = format!("{}/{}.img", dir, entry.name);
+
+        // 断点续传 / 已完成跳过：
+        // 1) 移除可能残留的 `.resume` 活跃读取标记——跨进程重跑时设备已不在推送旧数据流，
+        //    必须走“重新发送 READ_DATA 从断点续读”，而非“ACK 续接活跃流”（避免续接失败）。
+        // 2) compute_read_resume_offset：文件已完整 → 返回 size（跳过）；部分存在 →
+        //    截断到 512 对齐边界并返回偏移（续传）。
+        let _ = std::fs::remove_file(format!("{}.resume", output));
+        let start_offset = crate::partition::io::compute_read_resume_offset(&output, entry.size);
+        if start_offset >= entry.size {
+            info!(
+                "  [DONE] {} 已存在且完整 ({} 字节)，跳过",
+                entry.name, entry.size
+            );
+            idx += 1;
+            done_count += 1;
+            continue;
+        }
+
+        idx += 1;
         info!(
-            "  [{}/{}] 读取 {} (0x{:X} @ 0x{:X})",
-            read_count + 1,
-            gpt_info.partitions().len() - skip_count,
+            "  [{}/{}] 读取 {} (0x{:X} @ 0x{:X}){}",
+            idx,
+            total,
             entry.name,
             entry.size,
-            entry.start_addr
+            entry.start_addr,
+            if start_offset > 0 {
+                format!(" 断点续传 @0x{:X}", start_offset)
+            } else {
+                String::new()
+            }
         );
 
         // 带进度条的分区块读取（对齐 io::cmd_read 单分区读取体验，
@@ -210,12 +241,23 @@ pub fn cmd_read_all(
             .progress_chars("█▓░"),
         );
         bar.set_message(format!("读取: {}", entry.name));
-        da.readflash_to_file(entry.start_addr, entry.size, 8, &output, 0, {
-            let bar = bar.clone();
-            move |bytes_read| {
-                bar.set_position(bytes_read);
-            }
-        })
+        if start_offset > 0 {
+            bar.set_position(start_offset);
+        }
+        // 续传时从 start_offset 处继续读取（addr 同步偏移；size 保持全量以便进度条正确）
+        da.readflash_to_file(
+            entry.start_addr + start_offset,
+            entry.size,
+            8,
+            &output,
+            start_offset,
+            {
+                let bar = bar.clone();
+                move |bytes_read| {
+                    bar.set_position(bytes_read);
+                }
+            },
+        )
         .map_err(|e| format!("读取 {} 失败: {}", entry.name, e))?;
         bar.finish_and_clear();
         info!("{}", format!("  {} -> {}", entry.name, output).green());
@@ -225,8 +267,8 @@ pub fn cmd_read_all(
     info!(
         "{}",
         format!(
-            "分区读取完成: {} 成功, {} 跳过, 目录={}",
-            read_count, skip_count, dir
+            "分区读取完成: {} 实际读取/续传, {} 已存在跳过(未重读), {} 指定跳过, 目录={}",
+            read_count, done_count, skip_count, dir
         )
         .green()
     );
