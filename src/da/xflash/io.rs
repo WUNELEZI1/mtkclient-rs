@@ -374,7 +374,10 @@ impl<'a> DAXFlash<'a> {
             }
 
             // 发送 READ_DATA 命令及参数
-            self.send_read_data_cmd(addr, target_remaining, parttype)?;
+            // 关键修复：非活跃续传分支(start_offset>0 但 resume 不匹配)下，文件以
+            // append 模式打开（spawn_dump_writer），必须从 addr+start_offset 续读，
+            // 否则会读取分区开头段并追加到已有前缀后，生成内容错乱的损坏镜像。
+            self.send_read_data_cmd(addr + start_offset, target_remaining, parttype)?;
             write_resume_file(
                 output_file,
                 addr,
@@ -635,6 +638,18 @@ impl<'a> DAXFlash<'a> {
             }
         }
 
+        // 完整性校验：① 设备可能提前结束（ZLP / 读错误 / 坏 magic / ACK 失败）；
+        // ② 心跳包(slength==4 全零)与零长包被 continue 跳过，不计入 buffer。
+        // 若实际收到的真实数据字节数 < size，静默返回会让上层（GPT 解析、
+        // preloader 提取、分区校验等）拿到不完整的“假成功”结果，故显式报错。
+        if buffer.len() != size as usize {
+            return Err(format!(
+                "读取数据不完整: 期望 {} 字节，实际仅收到 {} 字节（设备提前结束数据传输）",
+                size,
+                buffer.len()
+            ));
+        }
+
         self.readflash_final_status()?;
         trace!("[readflash_data] total read {} bytes", buffer.len());
         Ok(buffer)
@@ -762,10 +777,12 @@ mod tests {
 // =============================================================================
 
 impl<'a> DAXFlash<'a> {
-    /// 通过 DA 重启设备
+    /// 通过 DA 重启设备（reboot 到系统）。
     ///
-    /// 使用 CMD_SHUTDOWN + enablewdt=0x64 触发设备重启。
-    /// 对齐刷机匣 C# 版协议：28 字节参数，enablewdt=0x64 启用看门狗定时器。
+    /// 内部调用 `da_shutdown(Normal)`；真正的硬件重启由 `da_shutdown` 的
+    /// `enablewdt=1` 触发看门狗超时完成（详见 `da_shutdown`）。
+    /// 注意：设备须处于可下发 SHUTDOWN 的 idle 状态（不在 mid-read 数据流态），
+    /// 否则 DA 会拒绝该命令 —— 调用方（cmd_reboot）已对“未完成的读取”做拦截。
     pub fn reset_device(&mut self) -> Result<(), String> {
         self.da_shutdown(crate::da::xflash::protocol::ShutdownBootMode::Normal)
     }

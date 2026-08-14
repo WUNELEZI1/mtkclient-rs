@@ -303,31 +303,47 @@ fn validate_command(cmd: &str, args: &[String]) -> Result<(), Box<dyn std::error
 /// 解析错误、安全错误等业务错误都属于"DA 会话本身健康"，不应重置
 /// （重置会强制下次重新握手/Bypass，纯属浪费）。
 ///
-/// 判定优先级：
+/// 判定优先级（按 `AppError` 变体精确分支，避免关键词误判）：
 /// 1. `AppError::Usb` —— 真正的 USB/DA 传输失败 → 是
-/// 2. 其余 `AppError`(Protocol/Security/Parse/Io) 与业务错误 → 默认否，
-///    仅当消息文本明显指示传输失败（含超时/断连/端点错误等关键词）时才判为是。
+/// 2. `AppError::Parse` / `AppError::Security` —— 业务层面错误，绝不可能是传输层
+///    失败 → 否（即便消息含"超时"等词也不重置会话，杜绝误判）
+/// 3. `AppError::Protocol` / `AppError::Io` → 默认否，仅消息文本明显指示传输失败
+///    （含超时/断连/端点错误等关键词，大小写不敏感）时才判为是（兜底）
+/// 4. 非 `AppError`（第三方/标准库错误）→ 仅关键词命中才判为是。
 ///
 /// 注意：错误经 `AppError` 包裹后 `Display` 会加"协议错误:""USB 错误:"等前缀，
 /// 因此用 `contains` 而非 `starts_with` 判断文本关键词。
+/// 判定“是否为 DA/USB 传输层失败”的关键词（大小写不敏感）。
+/// 仅作为 Protocol/Io 类错误的兜底判断；Usb/Parse/Security 走精确分支。
+const TRANSPORT_KEYWORDS: &[&str] = &[
+    "usb 错误",
+    "超时",
+    "timeout",
+    "断开",
+    "disconnect",
+    "read err",
+    "write err",
+    "libusb",
+    "端点",
+    "endpoint",
+    "设备未找到",
+    "device not found",
+];
+
 pub fn is_transport_error(e: &(dyn std::error::Error + 'static)) -> bool {
-    let is_usb = e
-        .downcast_ref::<crate::error::AppError>()
-        .map_or(false, |ae| matches!(ae, crate::error::AppError::Usb(_)));
-    let err_str = e.to_string();
-    is_usb
-        || err_str.contains("USB 错误")
-        || err_str.contains("超时")
-        || err_str.contains("timeout")
-        || err_str.contains("断开")
-        || err_str.contains("disconnect")
-        || err_str.contains("read err")
-        || err_str.contains("write err")
-        || err_str.contains("LIBUSB")
-        || err_str.contains("端点")
-        || err_str.contains("endpoint")
-        || err_str.contains("设备未找到")
-        || err_str.contains("device not found")
+    match e.downcast_ref::<crate::error::AppError>() {
+        Some(crate::error::AppError::Usb(_)) => true,
+        Some(crate::error::AppError::Parse(_)) | Some(crate::error::AppError::Security(_)) => false,
+        Some(crate::error::AppError::Protocol(_)) | Some(crate::error::AppError::Io(_)) => {
+            let err_str = e.to_string().to_lowercase();
+            TRANSPORT_KEYWORDS.iter().any(|kw| err_str.contains(kw))
+        }
+        None => {
+            // 非 AppError（第三方/标准库错误）：仅关键词命中才判为传输失败
+            let err_str = e.to_string().to_lowercase();
+            TRANSPORT_KEYWORDS.iter().any(|kw| err_str.contains(kw))
+        }
+    }
 }
 
 /// 单命令执行入口
@@ -975,5 +991,35 @@ mod tests {
         let _ = std::fs::remove_file(dir.join("expdb.img.resume"));
         let _ = std::fs::remove_file(dir.join("note.txt"));
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn is_transport_error_precise_by_variant() {
+        use crate::error::AppError;
+        use std::io;
+
+        // 1) Usb 变体：精确命中，必须重置会话
+        assert!(is_transport_error(&AppError::Usb("设备断连".into())));
+
+        // 2) Parse/Security：即便消息含传输关键词也不应重置（回归：旧版按关键词误判）
+        assert!(!is_transport_error(&AppError::Parse(
+            "读取超时：分区表校验失败".into()
+        )));
+        assert!(!is_transport_error(&AppError::Security("解锁超时".into())));
+
+        // 3) Protocol/Io：仍走关键词兜底（含超时/端点等，大小写不敏感）
+        assert!(is_transport_error(&AppError::Protocol(
+            "DA 端点错误 timeout".into()
+        )));
+        let io_err = AppError::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            "device not found",
+        ));
+        assert!(is_transport_error(&io_err));
+
+        // 4) 普通 Protocol 业务错误（无传输关键词）→ 不重置
+        assert!(!is_transport_error(&AppError::Protocol(
+            "未知命令: foo".into()
+        )));
     }
 }
