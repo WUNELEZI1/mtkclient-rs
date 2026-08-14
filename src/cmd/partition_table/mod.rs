@@ -242,9 +242,11 @@ pub fn cmd_read_all(
         if start_offset > 0 {
             bar.set_position(start_offset);
         }
-        // 续传时从 start_offset 处继续读取（addr 同步偏移；size 保持全量以便进度条正确）
+        // 续传时从 start_offset 处继续读取。
+        // 注意：readflash_to_file 内部会在非活跃续传分支按 (addr + start_offset) 重新下发
+        // READ_DATA，故此处传“分区基址”entry.start_addr（而非已偏移地址），避免双重偏移。
         da.readflash_to_file(
-            entry.start_addr + start_offset,
+            entry.start_addr,
             entry.size,
             8,
             &output,

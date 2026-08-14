@@ -688,6 +688,22 @@ impl<'a> DAXFlash<'a> {
     }
 }
 
+// =============================================================================
+// 设备重置 / 关闭 / vbmeta 修补
+// =============================================================================
+
+impl<'a> DAXFlash<'a> {
+    /// 通过 DA 重启设备（reboot 到系统）。
+    ///
+    /// 内部调用 `da_shutdown(Normal)`；真正的硬件重启由 `da_shutdown` 的
+    /// `enablewdt=1` 触发看门狗超时完成（详见 `da_shutdown`）。
+    /// 注意：设备须处于可下发 SHUTDOWN 的 idle 状态（不在 mid-read 数据流态），
+    /// 否则 DA 会拒绝该命令 —— 调用方（cmd_reboot）已对“未完成的读取”做拦截。
+    pub fn reset_device(&mut self) -> Result<(), String> {
+        self.da_shutdown(crate::da::xflash::protocol::ShutdownBootMode::Normal)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,21 +785,5 @@ mod tests {
         let err = final_read_status_from_payload(&1u32.to_le_bytes()).unwrap_err();
         assert!(err.contains("0x00000001"));
         assert!(final_read_status_from_payload(&[]).is_ok());
-    }
-}
-
-// =============================================================================
-// 设备重置 / 关闭 / vbmeta 修补
-// =============================================================================
-
-impl<'a> DAXFlash<'a> {
-    /// 通过 DA 重启设备（reboot 到系统）。
-    ///
-    /// 内部调用 `da_shutdown(Normal)`；真正的硬件重启由 `da_shutdown` 的
-    /// `enablewdt=1` 触发看门狗超时完成（详见 `da_shutdown`）。
-    /// 注意：设备须处于可下发 SHUTDOWN 的 idle 状态（不在 mid-read 数据流态），
-    /// 否则 DA 会拒绝该命令 —— 调用方（cmd_reboot）已对“未完成的读取”做拦截。
-    pub fn reset_device(&mut self) -> Result<(), String> {
-        self.da_shutdown(crate::da::xflash::protocol::ShutdownBootMode::Normal)
     }
 }
