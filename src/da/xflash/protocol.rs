@@ -744,29 +744,44 @@ impl<'a> DAXFlash<'a> {
             return Err(format!("SHUTDOWN 命令状态: 0x{:08X}", st));
         }
 
-        // 构建 28 字节参数体 — 对齐刷机匣 C# 版 (GeekFlashTool) 实际协议
-        // 关键：enablewdt = 0x64 启用看门狗定时器，这是触发设备重启的核心参数
-        //
-        // 偏移   大小   值          含义
-        // 0x00   4B    0x00000001  hasflags (启用参数标志)
-        // 0x04   4B    0x00000064  enablewdt (100 = 启用 WDT，触发重启)
-        // 0x08   4B    0x00000000  async_mode
-        // 0x0C   4B    bootmode    启动模式
-        // 0x10   4B    0x00000000  dl_bit
-        // 0x14   4B    0x00000000  dont_resetrtc
-        // 0x18   4B    0x00000000  leaveusb
-        let enablewdt: u32 = 0x64; // 100 — 启用看门狗，确保设备重启
-        let mut param = [0u8; 28];
-        param[0x00..0x04].copy_from_slice(&1u32.to_le_bytes()); // hasflags = 1
-        param[0x04..0x08].copy_from_slice(&enablewdt.to_le_bytes()); // enablewdt = 0x64
-        param[0x08..0x0C].copy_from_slice(&0u32.to_le_bytes()); // async_mode = 0
-        param[0x0C..0x10].copy_from_slice(&(bootmode as u32).to_le_bytes()); // bootmode
-        // 0x10-0x18: zeros (dl_bit + dont_resetrtc + leaveusb)
+        // 构建 32 字节参数体 — 严格对齐 mtkclient xflash_lib.py shutdown：
+        //   pack("<IIIIIIII", hasflags, enablewdt, async_mode, bootmode,
+        //        dl_bit, dont_resetrtc, leaveusb, 0)
+        // 关键修正（对比旧实现）：
+        //   - enablewdt = 0（禁用看门狗）；重启由 SHUTDOWN 命令本身(bootmode)触发，
+        //     旧实现 enablewdt=0x64 与 mtkclient 不符，且部分 DA 会拒绝该命令。
+        //   - 参数体 32 字节(8×u32)，旧实现仅 28 字节(缺末尾保留字段)。
+        // 字段顺序(均为 u32 LE)：
+        //   0x00 hasflags      非 NORMAL 模式 / async / dl_bit 时为 1，否则 0
+        //   0x04 enablewdt     0 = 禁用 WDT
+        //   0x08 async_mode    0
+        //   0x0C bootmode      0 = NORMAL(关机/重启)
+        //   0x10 dl_bit        0
+        //   0x14 dont_resetrtc 0
+        //   0x18 leaveusb      0
+        //   0x1C 保留          0
+        let async_mode: u32 = 0;
+        let dl_bit: u32 = 0;
+        let hasflags: u32 = if (bootmode as u32) != 0 || async_mode != 0 || dl_bit != 0 {
+            1
+        } else {
+            0
+        };
+        let enablewdt: u32 = 0; // 禁用看门狗，由 SHUTDOWN 命令触发重启（对齐 mtkclient）
+        let mut param = [0u8; 32];
+        param[0x00..0x04].copy_from_slice(&hasflags.to_le_bytes());
+        param[0x04..0x08].copy_from_slice(&enablewdt.to_le_bytes());
+        param[0x08..0x0C].copy_from_slice(&async_mode.to_le_bytes());
+        param[0x0C..0x10].copy_from_slice(&(bootmode as u32).to_le_bytes());
+        param[0x10..0x14].copy_from_slice(&dl_bit.to_le_bytes());
+        param[0x14..0x18].copy_from_slice(&0u32.to_le_bytes()); // dont_resetrtc
+        param[0x18..0x1C].copy_from_slice(&0u32.to_le_bytes()); // leaveusb
+        // 0x1C..0x20 保留 0
 
-        trace!("[DA SHUTDOWN] param (28B): {}", hex_str(&param));
+        trace!("[DA SHUTDOWN] param (32B): {}", hex_str(&param));
 
-        // 发送参数体（28 字节）
-        let param_pkt = pack3(CMD_MAGIC, 0x01, 28);
+        // 发送参数体（32 字节）
+        let param_pkt = pack3(CMD_MAGIC, 0x01, 32);
         self.preloader
             .device
             .write(&param_pkt)
