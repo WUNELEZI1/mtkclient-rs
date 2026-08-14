@@ -595,6 +595,68 @@ fn active_write_resume_exists(args: &[String]) -> bool {
     written.map(|w| w > 0).unwrap_or(false)
 }
 
+/// 未完成读取任务信息（供 reboot 等会销毁 DA 会话的命令做保护提示）
+#[derive(Debug, Clone)]
+pub struct PendingRead {
+    /// 输出文件路径（来自 resume 文件的 output= 字段，回退为去 .resume 后缀）
+    pub output: String,
+    /// 分区总大小（字节）
+    pub size: u64,
+    /// 已写入字节数
+    pub written: u64,
+}
+
+/// 扫描指定目录，返回所有"活跃读取未完成"的分区读取任务。
+///
+/// 判定条件：存在 `<output>.resume` 状态文件且其内容含 `active_read=true`。
+/// 该状态由 `readflash_to_file` 在用户取消（Ctrl+C）续传写出；正常完成会被删除，
+/// 读取出错则写为 `active_read=false`。只有 `active_read=true` 代表"可续传但未完成"，
+/// 此时若执行 reboot 等会销毁 DA 会话的命令，已读取进度将无法续传。
+pub fn pending_read_resume_in_dir(dir: &str) -> Vec<PendingRead> {
+    let mut result = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return result;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("resume") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !content.lines().any(|line| line == "active_read=true") {
+            continue;
+        }
+        let output = content
+            .lines()
+            .find_map(|line| line.strip_prefix("output="))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| path.with_extension("").to_string_lossy().to_string());
+        let size = content
+            .lines()
+            .find_map(|line| line.strip_prefix("size="))
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        let written = content
+            .lines()
+            .find_map(|line| line.strip_prefix("written="))
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        result.push(PendingRead {
+            output,
+            size,
+            written,
+        });
+    }
+    result
+}
+
+/// 扫描当前工作目录的未完成读取任务
+pub fn pending_read_resume_cwd() -> Vec<PendingRead> {
+    pending_read_resume_in_dir(".")
+}
+
 /// 统一命令分发函数（所有命令 match 逻辑的唯一来源）
 ///
 /// 被 `execute_single_command`、`multi::cmd_multi`、`script::dispatch_command` 共同调用，
@@ -893,5 +955,43 @@ mod tests {
 
         let _ = std::fs::remove_file(&output);
         let _ = std::fs::remove_file(format!("{}.resume", output));
+    }
+
+    #[test]
+    fn pending_read_resume_in_dir_detects_active_only() {
+        let dir = std::env::temp_dir().join(format!("pending_read_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        // 1) active_read=true → 应被检测
+        let out1 = dir.join("super.img");
+        std::fs::write(
+            dir.join("super.img.resume"),
+            "output=super.img\nsize=10737418240\nwritten=11403264\nactive_read=true\n",
+        )
+        .unwrap();
+
+        // 2) active_read=false（读取出错）→ 不应被检测
+        let out2 = dir.join("expdb.img");
+        std::fs::write(
+            dir.join("expdb.img.resume"),
+            "output=expdb.img\nsize=10485760\nwritten=4096\nactive_read=false\n",
+        )
+        .unwrap();
+
+        // 3) 非 resume 文件 → 忽略
+        std::fs::write(dir.join("note.txt"), "hello").unwrap();
+
+        let pending = pending_read_resume_in_dir(dir.to_str().unwrap());
+        assert_eq!(pending.len(), 1, "只应检测到 active_read=true 的任务");
+        assert_eq!(pending[0].output, "super.img");
+        assert_eq!(pending[0].size, 10737418240);
+        assert_eq!(pending[0].written, 11403264);
+
+        let _ = std::fs::remove_file(out1);
+        let _ = std::fs::remove_file(dir.join("super.img.resume"));
+        let _ = std::fs::remove_file(out2);
+        let _ = std::fs::remove_file(dir.join("expdb.img.resume"));
+        let _ = std::fs::remove_file(dir.join("note.txt"));
+        let _ = std::fs::remove_dir(&dir);
     }
 }
