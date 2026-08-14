@@ -548,7 +548,9 @@ pub fn cmd_slot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
         "show" => show_slot(da)?,
         "a" => set_slot(da, 'a')?,
         "b" => set_slot(da, 'b')?,
-        _ => return Err(format!("未知槽位操作: {}。支持: show, a, b", action).into()),
+        _ => {
+            return Err(format!("用法: mtkclient slot show|a|b（未知槽位操作: {}）", action).into())
+        }
     }
 
     Ok(())

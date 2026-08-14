@@ -235,6 +235,16 @@ fn validate_command(cmd: &str, args: &[String]) -> Result<(), Box<dyn std::error
             if args.is_empty() {
                 return Err("用法: mtkclient slot show|a|b".into());
             }
+            // 提前校验槽位子操作，命令拼错时直接返回用法提示，
+            // 不加载 DA、也不触发会话重置（对齐用户: 仅命令错了就告诉用户怎么用）
+            match args[0].as_str() {
+                "show" | "a" | "b" => {}
+                other => {
+                    return Err(
+                        format!("用法: mtkclient slot show|a|b（未知槽位操作: {}）", other).into(),
+                    )
+                }
+            }
         }
         "zyb" => {
             if args.is_empty() {
