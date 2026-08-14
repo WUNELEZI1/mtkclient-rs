@@ -238,48 +238,20 @@ impl ConnectionManager {
     ) -> Result<(Preloader, DeviceMode), String> {
         info!("等待 Preloader VCOM 设备连接 (PID=0x2000)，无需按任何按键...");
 
-        // 0. 尝试复用已有 DA 会话（设备已在 DA 模式，跳过 BROM 握手）
-        // PID=0x2000（Preloader VCOM）也可复用：Preloader 模式下加载 DA 后 USB 仍为 0x2000
-        if let Some(state) = crate::connection::session::SessionState::load() {
-            if state.da_loaded {
-                if let Ok(ports) = serialport::available_ports() {
-                    for p in &ports {
-                        if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
-                            && info.vid == 0x0E8D
-                            && (info.pid == 0x0003 || info.pid == 0x2000 || info.pid == 0x2001)
-                        {
-                            debug!(
-                                "[PRELOADER] 发现 Preloader COM 口: {} (VID={:04X} PID={:04X})，尝试 DA 会话复用",
-                                p.port_name, info.vid, info.pid
-                            );
-                            match SerialPortTransport::new(&p.port_name, 115200) {
-                                Ok(transport) => {
-                                    let mut preloader = Preloader::new(Box::new(transport));
-                                    preloader.is_preloader_mode = true;
-                                    preloader.brom_initialized = true;
-                                    // 从 .state 恢复 chip 配置（供后续 save_session_state 使用）
-                                    if let Some(chip) = crate::system::config::CHIP_CONFIGS
-                                        .iter()
-                                        .find(|c| c.hw_code == state.hw_code)
-                                    {
-                                        preloader.chip = Some(*chip);
-                                    }
-                                    self.mode = DeviceMode::Preloader;
-                                    self.stage = USB阶段::Preloader;
-                                    self.port_name = Some(p.port_name.clone());
-                                    self.da_session_reused_in_init = true;
-                                    info!("[PRELOADER] DA 会话复用：跳过 BROM 握手，直接返回");
-                                    return Ok((preloader, DeviceMode::Preloader));
-                                }
-                                Err(e) => {
-                                    warn!("[PRELOADER] 复用会话时打开串口失败: {}", e);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // 0. Preloader 模式的 DA 会话复用已禁用（不再尝试）。
+        //
+        // 根因：Preloader 串口（VCOM, PID=0x2000）在进程退出时因 DTR 掉线会导致设备
+        // 复位，并重新枚举为同一 PID=0x2000 的 Preloader 握手态——此时 DA 早已死掉，
+        // 但 PID 与“DA 模式串口”完全一样，无法仅凭 PID 区分。旧逻辑据此盲目复用
+        // .state(da_loaded) + PID=0x2000，向一个处于 Preloader 握手态（无 DA）的设备
+        // 直接发 DA SHUTDOWN，被误读后 status 巧合返回 0 → 假成功 → 设备毫无反应
+        // （典型表现：reboot 日志显示“DA SHUTDOWN 成功”但设备不重启）。
+        //
+        // 由于 Preloader 串口的 DA 不跨进程存活，会话复用在此模式下本质上永远无效，
+        // 故统一改为“每次都重新握手 + 重载 DA”，保证发往的是活着的、已验证的 DA 链路
+        // （与你 run 3 的 printgpt 走的是同一条已被验证可用的新鲜路径）。
+        // 注：BROM 模式（WinUSB, PID=0x0003）的 DA 跨进程稳定存活，其复用逻辑在
+        // manager.rs 中单独处理，不受此处影响。
 
         let mut retry_count = 0u32;
         let mut reported_ports = HashSet::new();
