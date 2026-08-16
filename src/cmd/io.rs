@@ -160,19 +160,27 @@ pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error
 ///   reboot meta                     → 重启到 META 模式
 ///   reboot <mode> --via <method>    → 指定重启方式
 ///
-/// --via 参数:
+/// --via 参数（仅对 fastboot/recovery/fastbootd/meta 有意义；system 默认忽略 --via）:
 ///   para      (默认) 通过 para 分区设置 boot_mode（最稳定）
 ///   misc      通过 misc 分区设置 bootloader_message
 ///   da        通过 DA SHUTDOWN 命令直接重启
 ///   xml       通过 XML DA SET-BOOT-MODE 重启（新平台）
 ///   preloader 通过 Preloader Pattern 协议（fastboot/meta，无需加载 DA）
 ///
+/// system 重启说明（reboot / reboot system，默认路径）:
+///   走硬件看门狗硬复位（write32(wdt+0x14, 0x1209)），不加载 DA、不写任何分区，
+///   设备硬件复位后按默认 boot_mode(normal) 进入系统。brom 与 preloader 走同一
+///   BROM WRITE32 原语，行为一致、最稳，且不受活 DA 会话是否存活影响。
+///   --via 对该模式无效（即便指定 --via preloader 仍是看门狗，不再走 jump_bl）。
+///
 /// --via preloader 支持的模式:
 ///   fastboot  → Pattern FASTBOOT（BROM: 先 reset 到 Preloader，再 Pattern）
 ///   meta      → Pattern METAMETA（同上）
-///   recovery/fastbootd/system → 不支持 Pattern，回退到 para
+///   recovery/fastbootd → 不支持 Pattern，回退到 para
 ///
 /// 模式与工作模式的关系:
+///   --mode brom / --mode preloader（reboot system，默认）:
+///     直接在 BROM/Preloader 握手态 trigger_meta_reboot（看门狗）→ 硬件复位进系统
 ///   --mode brom:
 ///     --via preloader: BROM write32 触发看门狗重启 → 等 Preloader → 握手 → trigger_meta_reboot → Pattern
 ///     --via para/misc/da/xml: 加载 DA → 写分区 → 重启
@@ -265,18 +273,30 @@ pub fn cmd_reboot(
 
     match mode {
         "system" => {
-            // system 模式：对齐刷机匣 SYNC + CMD_SHUTDOWN 协议
-            info!("通过 DA SHUTDOWN 重启到系统...");
-            match da.reset_device() {
-                Ok(_) => {
-                    info!("{}", "设备已重启到系统".green());
-                    info!("{}", "请断开 USB 连接，等待设备自动重启".cyan());
+            // system 模式：通过硬件看门狗硬复位（write32(wdt+0x14, 0x1209)）。
+            // 不依赖活 DA —— 本命令在 handle_command 中已提前 return（DA 未加载），
+            // 设备仍处 BROM/Preloader 握手态，可直接下发 BROM WRITE32；设备硬件复位后
+            // 按默认 boot_mode(normal) 进入系统。brom 与 preloader 走同一原语，行为一致。
+            info!("通过看门狗硬复位重启到系统（无需加载 DA）...");
+            // 兜底：brom 模式下连接可能未初始化 chip（trigger_meta_reboot 需要 chip）
+            if da.preloader.chip.is_none() {
+                if let Err(e) = da.preloader.get_hw_code() {
+                    warn!("获取芯片信息失败（{}），无法触发看门狗", e);
                     crate::connection::reset_session();
+                    info!("{}", "请手动重启设备（断开 USB 重新连接或按电源键）".yellow());
+                    return Ok(());
+                }
+            }
+            match da.preloader.trigger_meta_reboot() {
+                Ok(_) => {
+                    info!("{}", "看门狗已触发，设备正在硬件复位...".green());
+                    crate::connection::reset_session();
+                    info!("{}", "请保持或断开 USB，等待设备重启进入系统".cyan());
                 }
                 Err(e) => {
-                    warn!("重启失败: {}", e);
+                    warn!("看门狗触发失败: {}", e);
                     crate::connection::reset_session();
-                    info!("{}", "请手动重启设备（断开 USB 或按电源键）".yellow());
+                    info!("{}", "请手动重启设备（断开 USB 重新连接或按电源键）".yellow());
                 }
             }
         }
@@ -378,15 +398,23 @@ fn cmd_reboot_via_preloader(
             );
             match mode {
                 "system" => {
-                    // system 模式直接 jump_bl
-                    info!("通过 JUMP_BL 重启到系统...");
-                    match da.preloader.jump_bl() {
+                    // system 模式：统一走硬件看门狗硬复位（与默认 reboot system 一致）
+                    info!("通过看门狗硬复位重启到系统...");
+                    if da.preloader.chip.is_none() {
+                        if let Err(e) = da.preloader.get_hw_code() {
+                            warn!("获取芯片信息失败（{}），无法触发看门狗", e);
+                            crate::connection::reset_session();
+                            info!("{}", "请手动重启设备".yellow());
+                            return Ok(());
+                        }
+                    }
+                    match da.preloader.trigger_meta_reboot() {
                         Ok(_) => {
-                            info!("{}", "设备已重启到系统 (JUMP_BL)".green());
+                            info!("{}", "看门狗已触发，设备正在硬件复位...".green());
                             crate::connection::reset_session();
                         }
                         Err(e) => {
-                            warn!("JUMP_BL 失败: {}", e);
+                            warn!("看门狗触发失败: {}", e);
                             crate::connection::reset_session();
                             info!("{}", "请手动重启设备".yellow());
                         }

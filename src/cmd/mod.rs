@@ -363,15 +363,47 @@ pub fn handle_command(
     // 预检查：在 DA 加载之前验证命令有效性，避免浪费时间后才发现命令错误
     validate_command(cmd, &app_config.cmd_args)?;
 
-    // --via preloader 拦截：在 DA 加载之前执行 Pattern 协议
-    // DA 加载后 BROM echo 协议失效（设备已进入 DA 模式），必须在握手状态下执行
+    // reboot 命令：system 模式走硬件看门狗硬复位（无需加载 DA），必须在握手态执行。
+    // DA 加载后 BROM echo 协议失效（设备已进入 DA 模式），故在 upload_da 之前拦截。
+    //
+    // 为何统一走看门狗而非 DA SHUTDOWN：
+    //   1. DA SHUTDOWN 依赖“活着的 DA 会话”，而 Preloader 串口的 DA 不跨进程存活、
+    //      BROM 模式下 DA 语义（bootmode）历史上出错，两者行为不一致且易假成功；
+    //   2. 硬件看门狗（write32(wdt+0x14, 0x1209)）是纯硬件复位，不依赖任何软件状态，
+    //      设备复位后按默认 boot_mode(normal) 进入系统，brom 与 preloader 两条路径
+    //      都走同一个 BROM WRITE32 原语，行为一致、最稳。
+    // 注意：fastboot/recovery/fastbootd/meta 仍需写 para/misc 分区（必须 DA），
+    //       不在此拦截，继续走原 upload_da + 写分区 + DA SHUTDOWN 流程。
     if cmd == "reboot" {
-        let has_via_preloader = app_config
-            .cmd_args
-            .windows(2)
-            .any(|w| w[0] == "--via" && w[1] == "preloader");
+        // 解析 reboot 目标模式（默认 system）与是否 --via preloader
+        let mut reboot_mode = "system";
+        let mut has_via_preloader = false;
+        let args = &app_config.cmd_args;
+        let mut i = 0;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--via" => {
+                    if let Some(v) = args.get(i + 1) {
+                        if v == "preloader" {
+                            has_via_preloader = true;
+                        }
+                    }
+                    i += 2;
+                }
+                "system" | "fastboot" | "recovery" | "fastbootd" | "meta" => {
+                    reboot_mode = args[i].as_str();
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+        // system（含默认）且非 --via preloader：看门狗硬复位，无需 DA，提前返回
+        if reboot_mode == "system" && !has_via_preloader {
+            return io::cmd_reboot(da, args, is_brom, !is_brom);
+        }
+        // --via preloader（fastboot/meta Pattern，或显式 system 走该路径）同样提前返回
         if has_via_preloader {
-            return io::cmd_reboot(da, &app_config.cmd_args, is_brom, !is_brom);
+            return io::cmd_reboot(da, args, is_brom, !is_brom);
         }
     }
 
