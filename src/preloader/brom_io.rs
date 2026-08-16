@@ -191,6 +191,10 @@ impl Preloader {
 
     /// JUMP_BL: 跳转到 Bootloader
     /// Python: echo(JUMP_BL) → rword() → if <=0xFF → rword() → if <=0xFF → True
+    ///
+    /// 注：system 重启路径已统一改用硬件看门狗（trigger_meta_reboot），jump_bl 不再被
+    /// 调用；作为 BROM 直接跳 bootloader 的独立原语（不经看门狗复位）予以保留。
+    #[allow(dead_code)]
     pub fn jump_bl(&mut self) -> Result<bool, String> {
         if !self.echo_1byte(0xD6)? {
             return Err("jump_bl: echo 0xD6 不匹配".into());
