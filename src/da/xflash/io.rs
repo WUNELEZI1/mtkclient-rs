@@ -695,12 +695,14 @@ impl<'a> DAXFlash<'a> {
 impl<'a> DAXFlash<'a> {
     /// 通过 DA 重启设备（reboot 到系统）。
     ///
-    /// 内部调用 `da_shutdown(Normal)`；真正的硬件重启由 `da_shutdown` 的
-    /// `enablewdt=1` 触发看门狗超时完成（详见 `da_shutdown`）。
+    /// 内部调用 `da_shutdown(Reboot)`（bootmode=1）；真正的硬件重启由
+    /// `da_shutdown` 的 `enablewdt=1` 触发看门狗超时完成（详见 `da_shutdown`）。
+    /// 注意：必须用 Reboot(1) 而非 Normal(0) —— Normal 在 DA 语义下是"关机/断电"，
+    /// 设备虽被看门狗复位但不会进入系统（即"重启没用"），此点与 v0.1.3 一致。
     /// 注意：设备须处于可下发 SHUTDOWN 的 idle 状态（不在 mid-read 数据流态），
     /// 否则 DA 会拒绝该命令 —— 调用方（cmd_reboot）已对“未完成的读取”做拦截。
     pub fn reset_device(&mut self) -> Result<(), String> {
-        self.da_shutdown(crate::da::xflash::protocol::ShutdownBootMode::Normal)
+        self.da_shutdown(crate::da::xflash::protocol::ShutdownBootMode::Reboot)
     }
 }
 

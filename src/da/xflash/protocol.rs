@@ -69,8 +69,14 @@ const SLA_QUERY_TIMEOUT_MS: u64 = 50;
 /// DA Shutdown 命令的 bootmode 参数
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ShutdownBootMode {
-    /// 关机
+    /// 关机/断电（看门狗复位后不进入系统）
+    #[allow(dead_code)] // 协议保留值：供 da_power_off / --via da 等未来路径使用
     Normal = 0,
+    /// 重启到系统 (home screen)
+    Reboot = 1,
+    /// ★ 重启到 fastboot
+    #[allow(dead_code)] // 协议保留值：供 --via da fastboot 路径未来使用
+    Fastboot = 2,
 }
 
 // =============================================================================
@@ -723,6 +729,8 @@ impl<'a> DAXFlash<'a> {
     pub fn da_shutdown(&mut self, bootmode: ShutdownBootMode) -> Result<(), String> {
         let mode_name = match bootmode {
             ShutdownBootMode::Normal => "关机/重启",
+            ShutdownBootMode::Reboot => "重启到系统",
+            ShutdownBootMode::Fastboot => "重启到 fastboot",
         };
         info!("[DA SHUTDOWN] bootmode={} ({})", bootmode as u32, mode_name);
 
