@@ -267,12 +267,13 @@ impl<'a> DAXFlash<'a> {
             return Err(format!("READ_DATA status=0x{:08X}", st));
         }
 
-        let mut param = Vec::with_capacity(56);
-        param.extend_from_slice(&1u32.to_le_bytes());
-        param.extend_from_slice(&parttype.to_le_bytes());
-        param.extend_from_slice(&addr.to_le_bytes());
-        param.extend_from_slice(&size.to_le_bytes());
-        param.extend_from_slice(&[0u8; 32]);
+        // 56B 参数直接在栈上构造，避免每次读取都堆分配一个 Vec
+        let mut param = [0u8; 56];
+        param[..4].copy_from_slice(&1u32.to_le_bytes());
+        param[4..8].copy_from_slice(&parttype.to_le_bytes());
+        param[8..16].copy_from_slice(&addr.to_le_bytes());
+        param[16..24].copy_from_slice(&size.to_le_bytes());
+        // param[24..56] 保持为零填充（[0u8; 56] 初值）
         let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
         self.write_with_retry(&param_pkt, "readflash param_hdr")?;
         self.write_with_retry(&param, "readflash param")?;
@@ -285,20 +286,13 @@ impl<'a> DAXFlash<'a> {
 
     /// 读取 flash 数据到文件（流水线多线程：USB读取与磁盘写入并行）
     ///
-    /// 架构（对齐 Python mtkclient 的 writedata 线程）：
+    /// 架构：
     /// - 主线程：USB 读取循环（读头 → 读数据 → 放入 channel → 发 ACK）
-    /// - 写入线程：从 channel 取数据 → 写文件 → 8MB 缓冲
+    /// - 写入线程：从 channel 取数据 → 写文件（64MB BufWriter 缓冲）
     ///
-    /// channel 容量上限 32 包（约 128MB @ 4MB/包），主线程满了会等待写入线程消费
-    /// 这样 USB 读取不会被磁盘写入阻塞，实现真正的流水线并行
-    /// 激进优化版：读取 flash 数据到文件
-    /// 优化点：
-    ///   1. BufWriter 64MB 写入缓冲（Python open(wb, buffering=8MB) 的 8 倍）
-    ///   2. Batch 累积 8MB 后一次性 channel send（减少同步开销）
-    ///   3. Channel 容量 64（512MB 总缓冲 @ 8MB/包）
-    ///   4. 进度条更新间隔 16MB（减少锁竞争）
-    ///   5. 预分配 buffer 16MB（覆盖更大的 USB 包）
-    ///   6. 文件预分配 set_len（避免写入时动态分配磁盘空间）
+    /// channel 容量 128（约 512MB @ 4MB/包），主线程满时阻塞等待写入线程消费，
+    /// 使 USB 读取不被磁盘写入阻塞，实现真正的流水线并行。
+    /// 数据包缓冲通过 recycle channel 复用，避免逐包堆分配（心跳包用栈缓冲短路，不占回收池）。
     pub(crate) fn readflash_to_file<F>(
         &mut self,
         addr: u64,
@@ -439,17 +433,20 @@ impl<'a> DAXFlash<'a> {
             }
 
             if slength == 4 {
-                let mut data = acquire_dump_buffer(&recycle_rx, 4);
+                // 先以栈缓冲判定心跳：心跳包(全零)直接跳过，不占用/泄漏 recycle 缓冲池，
+                // 否则长读取过程中反复心跳会耗尽回收池、退化为逐包新分配。
+                let mut tiny = [0u8; 4];
                 self.preloader
                     .device
-                    .read_exact(&mut data)
+                    .read_exact(&mut tiny)
                     .map_err(|e| format!("read data: {}", e))?;
-                if data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 0 {
+                if tiny.iter().all(|&b| b == 0) {
                     trace!("[readflash] 心跳包，跳过");
                     continue;
                 }
+                // 非心跳的 4 字节真实小包极少见，这里直接小分配走回收池
                 writer_tx
-                    .send(Some(data))
+                    .send(Some(tiny.to_vec()))
                     .map_err(|_| "写入线程已退出".to_string())?;
                 bytes_received += 4;
                 total_read += 4;
@@ -612,21 +609,33 @@ impl<'a> DAXFlash<'a> {
                 break;
             }
 
-            let mut data = vec![0u8; slength as usize];
-            if slength > 0
-                && let Err(e) = self.preloader.device.read_exact(&mut data)
-            {
-                trace!("[readflash_data] read data error: {}", e);
-                break;
+            if slength == 4 {
+                // 4 字节小包/心跳：栈上临时缓冲，避免逐包堆分配；全零心跳直接跳过不计入 buffer
+                let mut tiny = [0u8; 4];
+                if let Err(e) = self.preloader.device.read_exact(&mut tiny) {
+                    trace!("[readflash_data] read data(small) error: {}", e);
+                    break;
+                }
+                if tiny.iter().all(|&b| b == 0) {
+                    trace!("[readflash_data] 心跳包，跳过");
+                    continue;
+                }
+                buffer.extend_from_slice(&tiny);
+                remaining = remaining.saturating_sub(4);
+            } else {
+                // 正常数据：直接读入 buffer 尾部增长区，消除逐包 vec! 堆分配
+                let slen = slength as usize;
+                let old_len = buffer.len();
+                buffer.resize(old_len + slen, 0);
+                if slen > 0
+                    && let Err(e) = self.preloader.device.read_exact(&mut buffer[old_len..])
+                {
+                    trace!("[readflash_data] read data error: {}", e);
+                    buffer.truncate(old_len);
+                    break;
+                }
+                remaining = remaining.saturating_sub(slen);
             }
-
-            if slength == 4 && data.iter().all(|&b| b == 0) {
-                trace!("[readflash_data] 心跳包，跳过");
-                continue;
-            }
-
-            buffer.extend_from_slice(&data);
-            remaining = remaining.saturating_sub(data.len());
 
             if let Err(e) = self.ack_silent() {
                 trace!("[readflash_data] send_ack failed: {}", e);
