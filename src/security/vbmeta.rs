@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use colored::Colorize;
+use crate::color::Colorize;
 use log::info;
 
 use crate::da::DAXFlash;

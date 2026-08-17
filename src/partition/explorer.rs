@@ -9,7 +9,7 @@
 //!            → LpTranslator (逻辑偏移 → super.img 物理偏移)
 //!            → FnMut(u64,u64) 回调读取
 
-use colored::Colorize;
+use crate::color::Colorize;
 use std::fs;
 
 // ============================================================================

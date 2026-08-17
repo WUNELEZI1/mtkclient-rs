@@ -8,7 +8,7 @@
 //! 私有助手：
 //! - `print_gpt_table`  — 表格格式化输出
 
-use colored::Colorize;
+use crate::color::Colorize;
 use log::{debug, error, info, trace, warn};
 use std::time::SystemTime;
 

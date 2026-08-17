@@ -8,7 +8,7 @@
 //! - `cmd_peek`     — 读取设备内存（hex dump 输出）
 //! - `cmd_poke`     — 写入设备内存（hex 数据输入）
 
-use colored::Colorize;
+use crate::color::Colorize;
 use log::{info, warn};
 use std::time::Duration;
 

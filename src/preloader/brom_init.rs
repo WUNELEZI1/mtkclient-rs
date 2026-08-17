@@ -9,7 +9,7 @@
 
 use super::core::Preloader;
 use crate::system::config::{CHIP_CONFIGS, TargetConfig};
-use colored::Colorize;
+use crate::color::Colorize;
 use log::trace;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

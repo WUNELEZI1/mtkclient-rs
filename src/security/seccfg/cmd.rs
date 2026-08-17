@@ -3,7 +3,7 @@
 //! 流程：读 seccfg 分区 → 识别 V3/V4 → 修改 lock_state → SEJ 签名 → 写回
 //! 优化：如果 seccfg 状态已匹配目标，直接退出不执行 HACC/写入
 
-use colored::Colorize;
+use crate::color::Colorize;
 use log::info;
 
 use crate::da::DAXFlash;
