@@ -9,9 +9,8 @@ edition = "2024"
 non_snake_case = "allow"
 
 [dependencies]
-# 日志
-log = "0.4"
-env_logger = "0.11"
+# 日志（log 仅作 Log trait 来源；格式器与按模块过滤均为自研；std 特性提供 set_boxed_logger）
+log = { version = "0.4", features = ["std"] }
 # 命令行参数解析
 clap = { version = "4", features = ["derive"] }
 # 串口通信

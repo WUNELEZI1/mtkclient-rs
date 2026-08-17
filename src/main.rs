@@ -89,9 +89,52 @@ fn get_local_timestamp() -> String {
     }
 }
 
-/// TeeLogger：同时输出到终端（env_logger）和文件（usb_debug.log）
+/// 自研终端日志器，替代 env_logger::Logger。
+/// 复刻原 env_logger 终端格式：[时间戳] [LEVEL] 消息，并保留按模块过滤（nusb 限定至 Warn）。
+struct TerminalLogger {
+    /// 全局默认日志级别（mtkclient_rs 及其它模块）
+    level: log::LevelFilter,
+}
+
+impl TerminalLogger {
+    /// 返回指定 target 的实际生效级别：nusb 强制不超过 Warn，其余用全局默认。
+    fn level_for(&self, target: &str) -> log::LevelFilter {
+        if target == "nusb" {
+            log::LevelFilter::Warn
+        } else {
+            self.level
+        }
+    }
+}
+
+impl log::Log for TerminalLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= self.level_for(metadata.target())
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let level = match record.level() {
+            log::Level::Error => "ERROR",
+            log::Level::Warn => "WARN ",
+            log::Level::Info => "INFO ",
+            log::Level::Debug => "DEBUG",
+            log::Level::Trace => "TRACE",
+        };
+        let timestamp = get_local_timestamp();
+        let _ = writeln!(std::io::stderr(), "[{}] [{}] {}", timestamp, level, record.args());
+    }
+
+    fn flush(&self) {
+        let _ = std::io::stderr().flush();
+    }
+}
+
+/// TeeLogger：同时输出到终端（TerminalLogger）和文件（usb_debug.log）
 struct TeeLogger {
-    terminal: env_logger::Logger,
+    terminal: TerminalLogger,
     file: Mutex<std::fs::File>,
 }
 
@@ -101,10 +144,10 @@ impl log::Log for TeeLogger {
     }
 
     fn log(&self, record: &log::Record) {
-        // 1. 终端输出（保持 env_logger 原有格式）
+        // 1. 终端输出（保持原有格式）
         self.terminal.log(record);
 
-        // 2. 文件输出（简化格式）
+        // 2. 文件输出（简化格式，含 target 便于排查）
         let line = format!(
             "[{}] [{}] [{}] {}\n",
             get_local_timestamp(),
@@ -318,27 +361,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         app_config.log_level
     };
 
-    let mut builder = env_logger::Builder::new();
-    builder
-        .filter_level(log_level)
-        .filter_module("mtkclient_rs", log_level) // 明确指定本 crate 的日志级别
-        .filter_module("nusb", log::LevelFilter::Warn)
-        .format(|buf, record| {
-            use std::io::Write;
-            let level = match record.level() {
-                log::Level::Error => "ERROR",
-                log::Level::Warn => "WARN ",
-                log::Level::Info => "INFO ",
-                log::Level::Debug => "DEBUG",
-                log::Level::Trace => "TRACE",
-            };
-            let timestamp = get_local_timestamp();
-            writeln!(buf, "[{}] [{}] {}", timestamp, level, record.args())
-        });
+    let terminal_logger = TerminalLogger { level: log_level };
 
     if cli.usb_log {
         // TeeLogger：终端 + tmp/usb_debug.log（覆盖模式）
-        let terminal_logger = builder.build();
         let usb_log_path = crate::system::paths::获取tmp路径("usb_debug.log");
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -353,10 +379,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         log::set_boxed_logger(Box::new(tee_logger))
             .map_err(|e| format!("设置全局 logger 失败: {}", e))?;
-        log::set_max_level(log_level);
     } else {
-        builder.init();
+        log::set_boxed_logger(Box::new(terminal_logger))
+            .map_err(|e| format!("设置全局 logger 失败: {}", e))?;
     }
+    // 全局最大级别取各模块过滤指令的最大值（nusb=Warn 可能高于默认）
+    log::set_max_level(std::cmp::max(log_level, log::LevelFilter::Warn));
 
     let cmd = app_config.command.as_deref().unwrap_or("");
 
