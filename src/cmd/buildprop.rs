@@ -66,7 +66,7 @@ pub fn extract_buildprop(data: &[u8]) -> HashMap<String, String> {
         let mut last_value: Option<String> = None;
 
         while search_start < data.len() {
-            if let Some(pos) = memchr::memmem::find(&data[search_start..], pattern_bytes) {
+            if let Some(pos) = crate::util::memmem_find(&data[search_start..], pattern_bytes) {
                 let abs_pos = search_start + pos + pattern_bytes.len();
                 let value_start = abs_pos;
                 let value_end = data[value_start..]

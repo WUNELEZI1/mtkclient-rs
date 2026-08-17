@@ -95,3 +95,26 @@ pub fn hex_dump(data: &[u8], base_addr: u64) -> String {
     }
     lines.join("\n")
 }
+
+/// 在 `haystack` 中查找子串 `needle` 首次出现的位置（相对 `haystack` 起点的偏移）。
+///
+/// 自研替代 `memchr::memmem::find`，用于 build.prop 属性提取等小规模字节序列搜索。
+/// 采用简单线性扫描，对单分区属性扫描（KB~MB 级）性能足够；如需大文本高频搜索
+/// 可后续引入 SIMD 优化，但本项目场景下无必要。返回 `None` 表示未找到。
+pub fn memmem_find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if needle.len() > haystack.len() {
+        return None;
+    }
+    let last = haystack.len() - needle.len();
+    let mut i = 0;
+    while i <= last {
+        if &haystack[i..i + needle.len()] == needle {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
