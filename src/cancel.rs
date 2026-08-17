@@ -10,12 +10,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
 static FORCE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-/// 安装 Ctrl+C 处理器
-pub fn install_ctrlc_handler() {
-    let _ = ctrlc::set_handler(move || {
+// Ctrl+C 处理器的 Windows FFI 声明（替代 ctrlc crate：纯 FFI，无额外依赖）
+#[cfg(target_os = "windows")]
+#[link(name = "Kernel32")]
+unsafe extern "system" {
+    fn SetConsoleCtrlHandler(handler: extern "system" fn(u32) -> i32, add: i32) -> i32;
+}
+
+/// 控制台控制处理器：CTRL_C_EVENT(0) / CTRL_BREAK_EVENT(1) 触发两级取消逻辑，
+/// 运行在控制台控制线程（非主线程），`eprintln` / `process::exit` 均安全。
+#[cfg(target_os = "windows")]
+extern "system" fn ctrl_handler(ctrl_type: u32) -> i32 {
+    // CTRL_C_EVENT = 0, CTRL_BREAK_EVENT = 1
+    if ctrl_type == 0 || ctrl_type == 1 {
         if CANCEL_REQUESTED.swap(true, Ordering::SeqCst) {
             // 第二次 Ctrl+C：强制取消——真正终止进程，不做任何清理等待
-            // （第一次 Ctrl+C 走优雅取消路径，由各循环的 requested() 检查响应）
             FORCE_REQUESTED.store(true, Ordering::SeqCst);
             eprintln!("再次收到 Ctrl+C，正在强制退出...");
             process::exit(130);
@@ -23,7 +32,28 @@ pub fn install_ctrlc_handler() {
             // 第一次 Ctrl+C：请求取消
             eprintln!("\n收到 Ctrl+C，正在取消...");
         }
-    });
+        1
+    } else {
+        0
+    }
+}
+
+/// 安装 Ctrl+C 处理器
+///
+/// 自研实现：通过 Windows API `SetConsoleCtrlHandler` 注册控制台控制处理器，
+/// 替代第三方 `ctrlc` crate（纯 FFI，无额外依赖）。处理器运行在控制台控制线程，
+/// `eprintln` / `process::exit` 均安全。两次 Ctrl+C 机制与原 `ctrlc` 实现一致：
+/// 第一次设置 `CANCEL_REQUESTED`（优雅取消），第二次设置 `FORCE_REQUESTED` 并退出。
+pub fn install_ctrlc_handler() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        // add = 1 注册；控制台控制线程调用 ctrl_handler
+        SetConsoleCtrlHandler(ctrl_handler, 1);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 项目仅面向 Windows；非 Windows 平台不注册 Ctrl+C 处理器
+    }
 }
 
 /// 第一次 Ctrl+C 已按下（优雅取消）

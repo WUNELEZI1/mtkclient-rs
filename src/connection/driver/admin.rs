@@ -7,9 +7,50 @@
 use log::info;
 
 /// 检查当前进程是否以管理员身份运行
+///
+/// 自研实现：通过 Windows API `OpenProcessToken` + `GetTokenInformation(TokenElevation)`
+/// 查询当前进程令牌的提升状态，替代第三方 `is_elevated` crate（纯 FFI，无额外依赖）。
 #[cfg(target_os = "windows")]
 pub fn is_admin() -> bool {
-    is_elevated::is_elevated()
+    #[link(name = "Advapi32")]
+    unsafe extern "system" {
+        fn OpenProcessToken(
+            hprocess: *mut std::ffi::c_void,
+            dwaccess: u32,
+            htoken: *mut *mut std::ffi::c_void,
+        ) -> i32;
+        fn GetTokenInformation(
+            tokenhandle: *mut std::ffi::c_void,
+            tokeninformationclass: u32,
+            tokendata: *mut std::ffi::c_void,
+            tokendatasize: u32,
+            returnsize: *mut u32,
+        ) -> i32;
+    }
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut std::ffi::c_void;
+        fn CloseHandle(hobject: *mut std::ffi::c_void) -> i32;
+    }
+    const TOKEN_QUERY: u32 = 0x0008;
+    const TOKEN_ELEVATION: u32 = 20;
+    unsafe {
+        let mut token: *mut std::ffi::c_void = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut elevation: u32 = 0;
+        let mut retsize: u32 = 0;
+        let ok = GetTokenInformation(
+            token,
+            TOKEN_ELEVATION,
+            &mut elevation as *mut u32 as *mut std::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+            &mut retsize,
+        );
+        CloseHandle(token);
+        ok != 0 && elevation != 0
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
