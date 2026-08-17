@@ -2,7 +2,7 @@
 //!
 //! - `cmd_dumppreloader`— 提取 Preloader（通过 Exploit 注入 payload）
 
-use colored::Colorize;
+use crate::color::Colorize;
 use log::{info, warn};
 
 use crate::da::DAXFlash;

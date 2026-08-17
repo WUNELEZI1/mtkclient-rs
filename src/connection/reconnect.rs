@@ -1,7 +1,7 @@
 use crate::preloader::Preloader;
 use crate::usb;
 use crate::usb::{USB上下文, USB阶段};
-use colored::Colorize;
+use crate::color::Colorize;
 use log::{debug, info, trace, warn};
 use std::collections::HashSet;
 use std::time::Duration;

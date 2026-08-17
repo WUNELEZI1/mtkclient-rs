@@ -21,7 +21,7 @@ pub mod partition_table;
 pub mod preloader_boot_mode;
 pub mod script;
 
-use colored::Colorize;
+use crate::color::Colorize;
 use log::{debug, error, info, warn};
 
 use crate::da::DAXFlash;
@@ -29,7 +29,7 @@ use crate::system::config::AppConfig;
 use crate::usb::USB上下文;
 
 pub fn print_help() {
-    use colored::Colorize;
+    use crate::color::Colorize;
 
     println!("{}", "mtkclient-rs — MTK 设备底层刷机工具".bold());
     println!(

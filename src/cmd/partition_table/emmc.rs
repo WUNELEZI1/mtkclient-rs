@@ -1,4 +1,4 @@
-use colored::Colorize;
+use crate::color::Colorize;
 
 /// 打印完整 EMMC 信息（对齐 C# 版输出格式）
 pub fn print_emmc_info(info: &crate::da::EmmcInfo) {

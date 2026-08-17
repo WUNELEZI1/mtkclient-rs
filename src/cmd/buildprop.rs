@@ -7,7 +7,7 @@
 //!
 //! 支持从设备分区或本地镜像文件读取。
 
-use colored::Colorize;
+use crate::color::Colorize;
 use log::{info, warn};
 use std::collections::HashMap;
 

@@ -25,7 +25,7 @@
 //! - `continue_on_error`: 单条命令失败后是否继续执行后续命令（默认 true）
 //! - `commands`: 命令数组，每个元素格式与命令行完全一致
 
-use colored::Colorize;
+use crate::color::Colorize;
 use log::{error, info};
 
 use crate::da::DAXFlash;

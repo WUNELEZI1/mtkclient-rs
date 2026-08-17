@@ -2,7 +2,7 @@
 //!
 //! 对齐 Python mtkclient 的 multi 命令：分号分隔的多个命令在同一 DA 会话中依次执行。
 
-use colored::Colorize;
+use crate::color::Colorize;
 use log::{error, info};
 
 use crate::da::DAXFlash;

@@ -28,7 +28,7 @@
 #![allow(clippy::unnecessary_find_map)]
 
 use clap::Parser;
-use colored::Colorize;
+use crate::color::Colorize;
 use log::{debug, error, info, warn};
 use std::io::Write;
 use std::sync::Mutex;
@@ -146,6 +146,7 @@ mod system;
 #[path = "usb/mod.rs"]
 mod usb;
 mod util;
+mod color;
 
 use connection::ConnectionManager;
 use usb::USB上下文;
@@ -224,13 +225,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             SetConsoleOutputCP(65001);
         }
         // 3. 启用 Windows ANSI 转义序列支持（CMD.exe 默认关闭）
-        colored::control::set_virtual_terminal(true).ok();
+        crate::color::enable_virtual_terminal();
     }
 
     #[cfg(not(target_os = "windows"))]
     {
         eprintln!("警告: 本程序仅在 Windows 10/11 上经过充分测试。");
-        colored::control::set_override(true);
     }
 
     cancel::install_ctrlc_handler();

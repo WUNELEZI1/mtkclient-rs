@@ -2,7 +2,7 @@
 //!
 //! - `print_gpt_table` — ASCII 表格风格打印分区表
 
-use colored::Colorize;
+use crate::color::Colorize;
 use unicode_width::UnicodeWidthStr;
 
 use super::emmc;

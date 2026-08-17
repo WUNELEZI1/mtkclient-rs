@@ -15,7 +15,7 @@ use crate::connection::driver::{UsbBusDetectionResult, detect_brom_driver_from_u
 use crate::preloader::{Preloader, SerialPortTransport};
 use crate::system::config::工作模式;
 use crate::usb::{USB上下文, USB阶段};
-use colored::Colorize;
+use crate::color::Colorize;
 use log::{error, info, trace, warn};
 use std::time::Duration;
 
