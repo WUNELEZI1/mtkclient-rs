@@ -12,10 +12,6 @@ non_snake_case = "allow"
 # 日志
 log = "0.4"
 env_logger = "0.11"
-# 终端彩色输出
-colored = "3.1"
-# 终端显示宽度（中文双宽表格对齐）
-unicode-width = "0.2"
 # 命令行参数解析
 clap = { version = "4", features = ["derive"] }
 # 串口通信
@@ -28,14 +24,8 @@ cbc = "0.2"
 nusb = { version = "0.2.5", features = ["tokio"] }
 # Windows 驱动自动安装（WinUSB）
 wdi-rs = "0.1.1"
-# Windows 管理员权限检测
-is_elevated = "0.1"
 # 进度条显示
 indicatif = "0.18"
-# Ctrl+C 优雅中断
-ctrlc = "3.5"
-# SIMD 字节搜索（build.prop 属性提取）
-memchr = "2.7"
 
 [profile.dev]
 # 开发模式：编译最快，不优化，保留完整调试信息

@@ -3,7 +3,6 @@
 //! - `print_gpt_table` — ASCII 表格风格打印分区表
 
 use crate::color::Colorize;
-use unicode_width::UnicodeWidthStr;
 
 use super::emmc;
 use crate::partition::GptInfo;
@@ -11,7 +10,7 @@ use crate::partition::GptInfo;
 /// 打印 GPT 表格到控制台（含 eMMC_Boot1/Boot2 显示）
 /// 使用 ASCII 表格风格: | 和 - 作为分隔符，列标签中文
 fn pad_display_width(input: &str, width: usize, align_right: bool) -> String {
-    let display_width = UnicodeWidthStr::width(input);
+    let display_width = crate::util::display_width(input);
     if display_width >= width {
         input.to_string()
     } else {
@@ -208,8 +207,8 @@ pub fn print_gpt_table(
     // 底部分隔线 + 总计
     println!("{}", sep);
     let total_label = format!("| 共 {} 个分区", row);
-    let sep_display_width = UnicodeWidthStr::width(sep.as_str());
-    let label_display_width = UnicodeWidthStr::width(total_label.as_str());
+    let sep_display_width = crate::util::display_width(sep.as_str());
+    let label_display_width = crate::util::display_width(total_label.as_str());
     let padding_needed = sep_display_width.saturating_sub(label_display_width + 1); // +1 for trailing " |"
     let total_text = format!("{}{} |", total_label, " ".repeat(padding_needed));
     println!("{}", total_text.green().bold());
@@ -220,13 +219,12 @@ pub fn print_gpt_table(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use unicode_width::UnicodeWidthStr;
 
     #[test]
     fn pad_display_width_counts_chinese_as_double_width() {
         let padded = pad_display_width("起始地址", 10, false);
 
-        assert_eq!(UnicodeWidthStr::width(padded.as_str()), 10);
+        assert_eq!(crate::util::display_width(padded.as_str()), 10);
     }
 
     #[test]
