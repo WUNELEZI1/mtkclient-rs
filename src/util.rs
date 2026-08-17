@@ -118,3 +118,46 @@ pub fn memmem_find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     }
     None
 }
+
+/// 计算字符串的终端显示宽度（字符单元格数）。
+///
+/// 自研替代 `unicode_width::UnicodeWidthStr::width`，用于分区表的中文双宽对齐。
+/// 规则：ASCII 及半数常见符号宽度 1；CJK 统一表意文字、全角标点、Hangul 音节块等
+/// 东亚全角字符宽度 2；其余未覆盖的非 ASCII 字符保守按宽度 2 处理（避免中文标签
+/// 对齐错位——宁可略宽也不致重叠）。仅影响显示对齐，不影响任何功能逻辑。
+pub fn display_width(input: &str) -> usize {
+    input
+        .chars()
+        .map(|c| if is_fullwidth(c) { 2 } else { 1 })
+        .sum()
+}
+
+/// 判断字符是否为东亚全角（显示宽度 2）。
+///
+/// 覆盖 Unicode 中主要全宽区块：CJK 符号与标点、Hiragana/Katakana、Bopomofo、
+/// CJK 统一表意文字（含扩展 A）、Hangul 音节、全角 ASCII 变体、CJK 兼容字形、
+/// 全角形式等。未在列范围内的非 ASCII 字符（如 emoji、阿拉伯文等）保守视为全宽，
+/// 以保证以 CJK 为主的分区表对齐不会因估窄而重叠。
+fn is_fullwidth(c: char) -> bool {
+    let code = c as u32;
+    // ASCII 及 C0/C1 控制字符：窄
+    if code < 0x1100 {
+        return false;
+    }
+    matches!(
+        code,
+        0x1100..=0x115F       // Hangul Jamo
+        | 0x2E80..=0x303E     // CJK 部首补充 + 康熙部首 + 表意描述符
+        | 0x3041..=0x33FF     // Hiragana/Katakana + 半/全角形 + 谚文兼容 Jamo
+        | 0x3400..=0x4DBF     // CJK 扩展 A
+        | 0x4E00..=0x9FFF     // CJK 统一表意文字
+        | 0xA000..=0xA4CF     // 彝文 + 谚文音节
+        | 0xAC00..=0xD7A3     // Hangul 音节
+        | 0xF900..=0xFAFF     // CJK 兼容象形
+        | 0xFE30..=0xFE4F     // CJK 兼容形式
+        | 0xFF00..=0xFF60     // 全角 ASCII
+        | 0xFFE0..=0xFFE6     // 全角符号
+        | 0x1F300..=0x1FAFF   // 符号与 Pictograph（emoji 等，保守全宽）
+        | 0x20000..=0x3FFFD   // CJK 扩展 B+ 及超大字符集
+    )
+}
