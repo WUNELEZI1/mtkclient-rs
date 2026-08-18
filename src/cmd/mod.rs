@@ -363,23 +363,17 @@ pub fn handle_command(
     // 预检查：在 DA 加载之前验证命令有效性，避免浪费时间后才发现命令错误
     validate_command(cmd, &app_config.cmd_args)?;
 
-    // reboot 命令：system 模式走硬件看门狗硬复位（无需加载 DA），必须在握手态执行。
-    // DA 加载后 BROM echo 协议失效（设备已进入 DA 模式），故在 upload_da 之前拦截。
+    // reboot 命令分流：
+    //   - 仅 --via preloader 需要在 DA 加载前拦截（依赖原始 Preloader/BROM 握手态的
+    //     Pattern 协议：先触发看门狗再握手 Preloader 发模式标识）。
+    //   - 其余 reboot 模式（system/fastboot/recovery/fastbootd/meta）一律放过，
+    //     由 handle_command 完成 bypass→dump→EMI→upload_da 后，在 cmd_reboot 内
+    //     通过 DA SHUTDOWN(bootmode=HOME_SCREEN) 可靠重启进系统。
     //
-    // 分流逻辑（在 cmd_reboot 的 system 分支内实现）：
-    //   - daext=true（DA 会话活跃，例如复用了既有 DA 会话）：设备已不在原始 BROM echo
-    //     态，BROM WRITE32 会报"echo 0xD4 不匹配"。此时改走 DA 层 SHUTDOWN(enablewdt=1)
-    //     触发硬件重启到系统。
-    //   - daext=false（原始 BROM/Preloader 握手态，未加载 DA）：走 BROM WRITE32
-    //     (wdt+0x14, 0x1209) 硬复位。
-    // 为何 system 默认不用 DA SHUTDOWN：避免为一次纯重启额外加载 DA；且 Preloader 串口
-    // 的 DA 不跨进程存活、BROM 模式下 DA 语义历史上出错，行为不一致。仅在 DA 已活跃时
-    // 顺势复用 DA SHUTDOWN，不主动加载 DA。
-    // 注意：fastboot/recovery/fastbootd/meta 仍需写 para/misc 分区（必须 DA），
-    //       不在此拦截，继续走原 upload_da + 写分区 + DA SHUTDOWN 流程。
+    // 为何不再用裸看门狗作为 system 默认：MTK 在 USB 连接下裸看门狗硬件复位会重新掉回
+    // Preloader/BROM 下载模式而非进系统（表现为"日志显示重启成功但设备没进系统"）。
+    // 只有 DA SHUTDOWN 能干净地让设备跳过下载态直接 boot 到系统，行为对齐 mtkclient。
     if cmd == "reboot" {
-        // 解析 reboot 目标模式（默认 system）与是否 --via preloader
-        let mut reboot_mode = "system";
         let mut has_via_preloader = false;
         let args = &app_config.cmd_args;
         let mut i = 0;
@@ -393,18 +387,10 @@ pub fn handle_command(
                     }
                     i += 2;
                 }
-                "system" | "fastboot" | "recovery" | "fastbootd" | "meta" => {
-                    reboot_mode = args[i].as_str();
-                    i += 1;
-                }
                 _ => i += 1,
             }
         }
-        // system（含默认）且非 --via preloader：看门狗硬复位，无需 DA，提前返回
-        if reboot_mode == "system" && !has_via_preloader {
-            return io::cmd_reboot(da, args, is_brom, !is_brom);
-        }
-        // --via preloader（fastboot/meta Pattern，或显式 system 走该路径）同样提前返回
+        // --via preloader 必须在 DA 加载前执行（依赖原始握手态的 Pattern 协议）
         if has_via_preloader {
             return io::cmd_reboot(da, args, is_brom, !is_brom);
         }

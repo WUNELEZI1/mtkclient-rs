@@ -168,21 +168,21 @@ pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error
 ///   preloader 通过 Preloader Pattern 协议（fastboot/meta，无需加载 DA）
 ///
 /// system 重启说明（reboot / reboot system，默认路径）:
-///   走硬件看门狗硬复位（write32(wdt+0x14, 0x1209)），不加载 DA、不写任何分区，
-///   设备硬件复位后按默认 boot_mode(normal) 进入系统。brom 与 preloader 走同一
-///   BROM WRITE32 原语，行为一致、最稳，且不受活 DA 会话是否存活影响。
+///   优先走 DA SHUTDOWN(bootmode=HOME_SCREEN)——MTK 在 USB 连接下能可靠重启进系统的
+///   唯一方式（DA 干净地跳过下载态直接 boot 到系统）。命令会先加载 DA（bypass→dump→
+///   EMI→upload_da）再下发 SHUTDOWN，不写任何分区。裸看门狗仅作为 DA 不可用时的兜底。
 ///   --via 对该模式无效（即便指定 --via preloader 仍是看门狗，不再走 jump_bl）。
 ///
 /// --via preloader 支持的模式:
 ///   fastboot  → Pattern FASTBOOT（BROM: 先 reset 到 Preloader，再 Pattern）
 ///   meta      → Pattern METAMETA（同上）
-///   recovery/fastbootd → 不支持 Pattern，回退到 para
+///   recovery/fastbootd/system → 不支持 Pattern，回退到 para/看门狗
 ///
 /// 模式与工作模式的关系:
 ///   --mode brom / --mode preloader（reboot system，默认）:
-///     直接在 BROM/Preloader 握手态 trigger_meta_reboot（看门狗）→ 硬件复位进系统
+///     加载 DA → DA SHUTDOWN(bootmode=HOME_SCREEN) → 重启进系统
 ///   --mode brom:
-///     --via preloader: BROM write32 触发看门狗重启 → 等 Preloader → 握手 → trigger_meta_reboot → Pattern
+///     --via preloader: BROM write32 触发看门狗重启 → 等 Preloader → 握手 → Pattern
 ///     --via para/misc/da/xml: 加载 DA → 写分区 → 重启
 ///   --mode preloader:
 ///     --via preloader: trigger_meta_reboot → Pattern
@@ -273,54 +273,33 @@ pub fn cmd_reboot(
 
     match mode {
         "system" => {
-            // system 模式重启：按设备当前协议状态选择重启原语。
+            // system 重启：优先 DA SHUTDOWN(bootmode=HOME_SCREEN) —— 这是 MTK 在 USB
+            // 连接下能可靠重启进系统的唯一方式。裸看门狗硬件复位会让设备重新掉回下载模式
+            // （表现为"日志显示重启成功但设备没进系统"），故仅作为 DA 不可用时的兜底。
             //
-            // 关键修正：当 DA 会话处于活跃态（daext=true，设备已进入 DA 模式，例如本次
-            // 连接复用了既有 DA 会话），BROM 原始 WRITE32 看门狗协议会失效——设备不再
-            // 响应原始 BROM echo(0xD4)，表现为"echo 0xD4 不匹配"。此场景下必须走 DA 层
-            // 的 SHUTDOWN(enablewdt=1) 触发硬件重启到系统，不能用 BROM WRITE32。
-            //
-            // 反之，设备处于原始 BROM/Preloader 握手态（daext=false，未加载 DA）时，
-            // 才走 BROM WRITE32(wdt+0x14, 0x1209) 硬复位。
+            // daext=true（DA 已加载，含本次刚 upload_da 或复用既有会话）：直接 DA SHUTDOWN。
+            // daext=false（极端：DA 未能加载）：退化为裸看门狗硬复位并明确提示风险。
             if da.daext {
-                // DA 活跃：DA SHUTDOWN(enablewdt=1) → 看门狗超时 → 硬件重启到系统
-                info!("通过 DA SHUTDOWN 触发硬件重启到系统（设备处于 DA 模式）...");
+                info!("通过 DA SHUTDOWN 触发重启到系统（bootmode=HOME_SCREEN）...");
                 match da.reset_device() {
                     Ok(_) => {
-                        info!("{}", "设备正在硬件复位...".green());
+                        info!("{}", "设备正在重启进入系统...".green());
                         crate::connection::reset_session();
-                        info!("{}", "请保持或断开 USB，等待设备重启进入系统".cyan());
+                        info!("{}", "请保持或断开 USB，等待设备启动到系统".cyan());
                     }
                     Err(e) => {
-                        warn!("重启失败: {}", e);
-                        crate::connection::reset_session();
-                        info!("{}", "请手动重启设备（断开 USB 重新连接或按电源键）".yellow());
+                        warn!("DA SHUTDOWN 失败: {}，退化为裸看门狗兜底", e);
+                        watchdog_reboot(da)?;
                     }
                 }
             } else {
-                // 原始 BROM/Preloader 握手态（未加载 DA）：BROM WRITE32 看门狗硬复位
-                info!("通过看门狗硬复位重启到系统（无需加载 DA）...");
-                // 兜底：brom 模式下连接可能未初始化 chip（trigger_meta_reboot 需要 chip）
-                if da.preloader.chip.is_none() {
-                    if let Err(e) = da.preloader.get_hw_code() {
-                        warn!("获取芯片信息失败（{}），无法触发看门狗", e);
-                        crate::connection::reset_session();
-                        info!("{}", "请手动重启设备（断开 USB 重新连接或按电源键）".yellow());
-                        return Ok(());
-                    }
-                }
-                match da.preloader.trigger_meta_reboot() {
-                    Ok(_) => {
-                        info!("{}", "看门狗已触发，设备正在硬件复位...".green());
-                        crate::connection::reset_session();
-                        info!("{}", "请保持或断开 USB，等待设备重启进入系统".cyan());
-                    }
-                    Err(e) => {
-                        warn!("看门狗触发失败: {}", e);
-                        crate::connection::reset_session();
-                        info!("{}", "请手动重启设备（断开 USB 重新连接或按电源键）".yellow());
-                    }
-                }
+                warn!(
+                    "{}",
+                    "DA 未加载，退化为裸看门狗硬复位（USB 连接下设备可能重新进入下载模式）"
+                        .yellow()
+                        .bold()
+                );
+                watchdog_reboot(da)?;
             }
         }
         "fastboot" => {
@@ -487,6 +466,38 @@ fn cmd_reboot_via_preloader(
             return Ok(());
         }
     }
+}
+
+/// 裸看门狗硬复位兜底（MTK BROM WRITE32 wdt+0x14 = 0x1209）。
+///
+/// 注意：USB 连接下裸看门狗会让设备重新掉回 Preloader/BROM 下载模式而非进系统，
+/// 因此仅作为 DA SHUTDOWN 不可用时的最后兜底，并明确提示用户该风险。
+fn watchdog_reboot(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error>> {
+    if da.preloader.chip.is_none() {
+        if let Err(e) = da.preloader.get_hw_code() {
+            warn!("获取芯片信息失败（{}），无法触发看门狗", e);
+            crate::connection::reset_session();
+            info!("{}", "请手动重启设备（断开 USB 重新连接或按电源键）".yellow());
+            return Ok(());
+        }
+    }
+    match da.preloader.trigger_meta_reboot() {
+        Ok(_) => {
+            info!("{}", "看门狗已触发，设备正在硬件复位...".green());
+            crate::connection::reset_session();
+            info!(
+                "{}",
+                "若设备仍停在下载模式（VCOM/Preloader），请手动重启或断开 USB 后重连"
+                    .cyan()
+            );
+        }
+        Err(e) => {
+            warn!("看门狗触发失败: {}", e);
+            crate::connection::reset_session();
+            info!("{}", "请手动重启设备（断开 USB 重新连接或按电源键）".yellow());
+        }
+    }
+    Ok(())
 }
 
 /// 执行实际重启
