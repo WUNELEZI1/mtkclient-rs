@@ -190,6 +190,7 @@ mod system;
 mod usb;
 mod util;
 mod color;
+mod progress;
 
 use connection::ConnectionManager;
 use usb::USB上下文;

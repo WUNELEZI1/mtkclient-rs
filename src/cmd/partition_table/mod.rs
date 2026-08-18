@@ -224,7 +224,7 @@ pub fn cmd_read_all(
 
         // 带进度条的分区块读取（对齐 io::cmd_read 单分区读取体验，
         // parttype=8 对应 GPT 物理分区；流式写文件避免大分区整块读进内存）
-        use indicatif::{ProgressBar, ProgressStyle};
+        use crate::progress::{ProgressBar, ProgressStyle};
         let bar = if crate::usb::log::QUIET_USB_READ.load(std::sync::atomic::Ordering::Relaxed) {
             ProgressBar::hidden()
         } else {
