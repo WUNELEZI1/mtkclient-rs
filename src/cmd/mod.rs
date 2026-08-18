@@ -366,12 +366,15 @@ pub fn handle_command(
     // reboot 命令：system 模式走硬件看门狗硬复位（无需加载 DA），必须在握手态执行。
     // DA 加载后 BROM echo 协议失效（设备已进入 DA 模式），故在 upload_da 之前拦截。
     //
-    // 为何统一走看门狗而非 DA SHUTDOWN：
-    //   1. DA SHUTDOWN 依赖“活着的 DA 会话”，而 Preloader 串口的 DA 不跨进程存活、
-    //      BROM 模式下 DA 语义（bootmode）历史上出错，两者行为不一致且易假成功；
-    //   2. 硬件看门狗（write32(wdt+0x14, 0x1209)）是纯硬件复位，不依赖任何软件状态，
-    //      设备复位后按默认 boot_mode(normal) 进入系统，brom 与 preloader 两条路径
-    //      都走同一个 BROM WRITE32 原语，行为一致、最稳。
+    // 分流逻辑（在 cmd_reboot 的 system 分支内实现）：
+    //   - daext=true（DA 会话活跃，例如复用了既有 DA 会话）：设备已不在原始 BROM echo
+    //     态，BROM WRITE32 会报"echo 0xD4 不匹配"。此时改走 DA 层 SHUTDOWN(enablewdt=1)
+    //     触发硬件重启到系统。
+    //   - daext=false（原始 BROM/Preloader 握手态，未加载 DA）：走 BROM WRITE32
+    //     (wdt+0x14, 0x1209) 硬复位。
+    // 为何 system 默认不用 DA SHUTDOWN：避免为一次纯重启额外加载 DA；且 Preloader 串口
+    // 的 DA 不跨进程存活、BROM 模式下 DA 语义历史上出错，行为不一致。仅在 DA 已活跃时
+    // 顺势复用 DA SHUTDOWN，不主动加载 DA。
     // 注意：fastboot/recovery/fastbootd/meta 仍需写 para/misc 分区（必须 DA），
     //       不在此拦截，继续走原 upload_da + 写分区 + DA SHUTDOWN 流程。
     if cmd == "reboot" {
