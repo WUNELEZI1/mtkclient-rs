@@ -277,6 +277,109 @@ impl SerialPortTransport {
     }
 }
 
+/// 串口握手内核：逐字节发送 [A0,0A,50,05]，期望逐字节取反回复。
+///
+/// 与 usb/device_handshake.rs 的 USB 握手保持一致的健壮性：
+/// 多次重试 + 间隔 + 排空 + 错位计数重置(i=0) + 残留DA流检测。
+/// 设备进入握手态前可能持续发出杂散字节/文本（典型：期望 0x5F 却读到 0x52 'R'），
+/// 故需容忍错位并在最终失败时回显原始字节，便于定位根因：
+///   - 连续 0x52('R') 等文本字节 → 设备未在握手态（可能阶段/驱动/DTR 问题）
+///   - 收到 0x5F 0x0F 0xA0 0x0A → 表明是 MTK 标准同步变体（非逐字节取反）
+fn serial_do_handshake(
+    transport: &mut SerialPortTransport,
+    max_attempts: u32,
+    retry_delay_ms: u64,
+    max_mismatch: u32,
+    residual_window: usize,
+) -> Result<bool, String> {
+    let mut last_received: Vec<u8> = Vec::with_capacity(16);
+
+    for attempt in 0..max_attempts {
+        if crate::cancel::force_requested() || crate::cancel::requested() {
+            return Err("握手已取消".to_string());
+        }
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(retry_delay_ms));
+        }
+
+        // 每次尝试前排空残留
+        transport.drain_pipes();
+
+        let mut ok = true;
+        let mut mismatch: u32 = 0;
+        let mut residual: Vec<u8> = Vec::with_capacity(residual_window);
+        last_received.clear();
+        let mut i = 0usize;
+        while i < SERIAL_HANDSHAKE_BYTES.len() {
+            if let Err(e) = transport.write(&[SERIAL_HANDSHAKE_BYTES[i]]) {
+                trace!("[SERIAL] handshake write error at byte {}: {}", i, e);
+                ok = false;
+                break;
+            }
+            let mut r = [0u8; 1];
+            match transport.read_exact(&mut r) {
+                Ok(_) => {
+                    let b = r[0];
+                    last_received.push(b);
+                    if last_received.len() > 16 {
+                        last_received.remove(0);
+                    }
+                    let expected = !SERIAL_HANDSHAKE_BYTES[i];
+                    if b == expected {
+                        mismatch = 0;
+                        i += 1;
+                    } else {
+                        mismatch += 1;
+                        residual.push(b);
+                        if residual.len() > residual_window {
+                            residual.remove(0);
+                        }
+                        // 残留DA流检测（A1/0B 模式）
+                        if residual.len() >= residual_window
+                            && residual.iter().all(|x| *x == 0xA1 || *x == 0x0B)
+                        {
+                            return Err(
+                                "Preloader 握手读到疑似残留/错位响应流 (A1/0B)。请重新插拔或长按电源 10 秒，确认设备重新进入干净 Preloader 后再试。".to_string(),
+                            );
+                        }
+                        if mismatch >= max_mismatch {
+                            trace!(
+                                "[SERIAL] handshake 连续 {} 次错位，重新开始本轮",
+                                mismatch
+                            );
+                            ok = false;
+                            break;
+                        }
+                        // 容忍错位：重置到字节 0 继续寻找真正的同步序列
+                        i = 0;
+                    }
+                }
+                Err(e) => {
+                    trace!("[SERIAL] handshake read error at byte {}: {}", i, e);
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok {
+            trace!("SerialPort BROM 握手成功 (attempt {})", attempt + 1);
+            return Ok(true);
+        }
+    }
+
+    // 最终失败：回显最近收到的原始字节，便于定位（如 0x52='R' 表示设备未进入握手态）
+    let hex: Vec<String> = last_received.iter().map(|b| format!("0x{:02X}", b)).collect();
+    let diagnostic = if hex.is_empty() {
+        "（未收到任何握手响应字节，可能是波特率不匹配或端口未就绪）".to_string()
+    } else {
+        format!("最近收到字节: {}", hex.join(" "))
+    };
+    Err(format!(
+        "Preloader 握手失败：连续 {} 次尝试均未收到正确的同步响应。{}",
+        max_attempts, diagnostic
+    ))
+}
+
 impl BromTransport for SerialPortTransport {
     fn write(&mut self, data: &[u8]) -> Result<usize, String> {
         let port = self.port.as_mut().ok_or("串口已关闭")?;
@@ -309,49 +412,26 @@ impl BromTransport for SerialPortTransport {
     }
 
     fn do_handshake(&mut self) -> Result<bool, String> {
-        // BROM 握手协议: 逐字节发送 [A0, 0A, 50, 05]，每字节期望取反回复
-        // 参考 mtkclient Port.py 实现
-        // 先排空串口接收缓冲区中残留的历史数据：前一次失败尝试残留、或设备尚未
-        // 进入握手态时发送的杂散字节会被误判为握手响应（典型现象：期望 0x5F 却
-        // 读到 0x52 'R'），导致“字节 0: 期望 0x5F, 收到 0x52”式握手失败与连接抖动。
-        self.drain_pipes();
-        for (i, &cmd) in SERIAL_HANDSHAKE_BYTES.iter().enumerate() {
-            self.write(&[cmd])?;
-            let mut buf = [0u8; 1];
-            match self.read_exact(&mut buf) {
-                Ok(_) => {}
-                Err(e) => {
-                    // 读失败（端口被设备瞬断重枚举）时，重试一次前再排空缓冲，
-                    // 避免把残留字节当成下一次握手的响应。
-                    self.drain_pipes();
-                    return Err(format!("握手失败: 字节 {} 读取失败: {}", i, e));
-                }
-            }
-            let expected = !cmd;
-            if buf[0] != expected {
-                // 首字节不匹配时，多半是缓冲区里还残留一个旧字节；排空后再读一次，
-                // 跳过这一个残留字节后继续，提升弱连接下的握手成功率。
-                if i == 0 {
-                    self.drain_pipes();
-                    let mut buf2 = [0u8; 1];
-                    if let Ok(_) = self.read_exact(&mut buf2) {
-                        if buf2[0] == expected {
-                            continue;
-                        }
-                        return Err(format!(
-                            "握手失败: 字节 {}: 期望 0x{:02X}, 收到 0x{:02X}（已尝试跳过残留字节）",
-                            i, expected, buf[0]
-                        ));
-                    }
-                }
-                return Err(format!(
-                    "握手失败: 字节 {}: 期望 0x{:02X}, 收到 0x{:02X}",
-                    i, expected, buf[0]
-                ));
-            }
-        }
-        trace!("SerialPort BROM 握手成功");
-        Ok(true)
+        // BROM/Preloader 握手协议: 逐字节发送 [A0, 0A, 50, 05]，每字节期望取反回复。
+        // 与 usb/device_handshake.rs 的 USB 握手保持一致的健壮性：
+        // 多次重试 + 间隔 + 排空 + 错位计数重置(i=0) + 残留DA流检测。
+        //
+        // 设备进入握手态前可能持续发出杂散字节/文本（典型：期望 0x5F 却读到 0x52 'R'），
+        // 故需容忍错位并在最终失败时回显原始字节，便于定位根因：
+        //   - 连续 0x52('R') 等文本字节 → 设备未在握手态（可能阶段/驱动/DTR 问题）
+        //   - 收到 0x5F 0x0F 0xA0 0x0A → 表明是 MTK 标准同步变体（非逐字节取反）
+        const MAX_ATTEMPTS: u32 = 10;
+        const RETRY_DELAY_MS: u64 = 300;
+        const MAX_MISMATCH: u32 = 8;
+        const RESIDUAL_WINDOW: usize = 4;
+        const HANDSHAKE_TIMEOUT_MS: u64 = 500;
+
+        // 缩短每字节响应超时，避免弱连接下 10 次重试累积成几十秒空等
+        let orig_timeout = self.get_timeout();
+        self.set_timeout(Duration::from_millis(HANDSHAKE_TIMEOUT_MS));
+        let result = serial_do_handshake(self, MAX_ATTEMPTS, RETRY_DELAY_MS, MAX_MISMATCH, RESIDUAL_WINDOW);
+        self.set_timeout(orig_timeout);
+        result
     }
 
     fn is_libusb(&self) -> bool {
