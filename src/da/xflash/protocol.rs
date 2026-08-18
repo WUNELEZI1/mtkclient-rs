@@ -66,13 +66,13 @@ const SLA_QUERY_TIMEOUT_MS: u64 = 50;
 // Shutdown bootmode 枚举（对齐 xflash_lib.py ShutDownModes）
 // =============================================================================
 
-/// DA Shutdown 命令的 bootmode 参数
+/// DA Shutdown 命令的 bootmode 参数（对齐 mtkclient xflash_lib.py ShutDownModes）
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ShutdownBootMode {
-    /// 关机/断电（看门狗复位后不进入系统）
+    /// 标准关机/重启（Standard shutdown，对齐 mtkclient NORMAL=0）
     #[allow(dead_code)] // 协议保留值：供 da_power_off / --via da 等未来路径使用
     Normal = 0,
-    /// 重启到系统 (home screen)
+    /// 重启到系统 (HOME_SCREEN / home screen)
     Reboot = 1,
     /// ★ 重启到 fastboot
     #[allow(dead_code)] // 协议保留值：供 --via da fastboot 路径未来使用
@@ -754,21 +754,21 @@ impl<'a> DAXFlash<'a> {
         // 构建 32 字节参数体 — 严格对齐 mtkclient xflash_lib.py shutdown：
         //   pack("<IIIIIIII", hasflags, enablewdt, async_mode, bootmode,
         //        dl_bit, dont_resetrtc, leaveusb, 0)
-        // 关键修正（对比旧实现）：
-        //   - enablewdt = 1（启用看门狗）；重启由看门狗超时触发硬件重启，
-        //     对齐 mtkclient shutdown(enablewdt=True=1)。
-        //     旧实现 enablewdt=0x64 被 DA 拒绝(返回 0x00010007 命令码回显)；
-        //     曾试 enablewdt=0 虽被 DA 接受但"禁用看门狗"导致设备根本不重启（假成功），
-        //     故此处必须用 1 才能真正触发重启（reboot 到系统在 brom/preloader 模式均依赖此）。
-        //   - 参数体 32 字节(8×u32)，旧实现仅 28 字节(缺末尾保留字段)。
+        // 关键修正（对比旧实现，已对照 mtkclient 权威源码）：
+        //   - enablewdt = 0（禁用看门狗）。MTK DA 的 reboot-to-system 由 bootmode 控制：
+        //     DA 收到 SHUTDOWN 后直接跳转到下一启动阶段（preloader → system），
+        //     无需看门狗硬复位。mtkclient 源码固定 enablewdt=0 且 reboot 正常；
+        //     旧实现误用 enablewdt=1，看门狗触发硬件复位后设备（USB 仍连接）会重新
+        //     掉回 Preloader/下载模式而非进入系统，表现为"日志显示重启成功但设备未进系统"。
+        //   - 参数体 32 字节(8×u32)，字段顺序严格对齐 mtkclient（含末尾保留字段）。
         // 字段顺序(均为 u32 LE)：
         //   0x00 hasflags      非 NORMAL 模式 / async / dl_bit 时为 1，否则 0
-        //   0x04 enablewdt     1 = 启用 WDT（触发硬件重启）
+        //   0x04 enablewdt     0 = 禁用 WDT（DA 跳转重启，不靠看门狗）
         //   0x08 async_mode    0
-        //   0x0C bootmode      0 = NORMAL(关机/重启)
+        //   0x0C bootmode      1 = HOME_SCREEN（重启到系统）
         //   0x10 dl_bit        0
         //   0x14 dont_resetrtc 0
-        //   0x18 leaveusb      0
+        //   0x18 leaveusb      0（重启后断开 USB，便于设备重新枚举）
         //   0x1C 保留          0
         let async_mode: u32 = 0;
         let dl_bit: u32 = 0;
@@ -777,7 +777,7 @@ impl<'a> DAXFlash<'a> {
         } else {
             0
         };
-        let enablewdt: u32 = 1; // 启用看门狗，由 SHUTDOWN 触发硬件重启（对齐 mtkclient shutdown(enablewdt=True)）
+        let enablewdt: u32 = 0; // 禁用看门狗：DA 收到 SHUTDOWN 后直接跳转重启到系统（对齐 mtkclient shutdown 固定 enablewdt=0）
         let mut param = [0u8; 32];
         param[0x00..0x04].copy_from_slice(&hasflags.to_le_bytes());
         param[0x04..0x08].copy_from_slice(&enablewdt.to_le_bytes());
