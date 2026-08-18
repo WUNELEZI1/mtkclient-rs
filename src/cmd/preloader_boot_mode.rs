@@ -168,6 +168,12 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
     }
 
     // Step 2: 读取回传确认（设备可能立即重启，读错误视为成功）
+    //
+    // 关键修正：设备的回传确认（如 FASTBOOT 的 "TOOBTSAF"）可能被拆成多个 USB/串口事务分片到达
+    // （例如首次读得 "TOOBT"、二次读得 "SAF"）。原先对每个独立 packet 做 windows() 匹配，8 字节的
+    // TOOBTSAF 永远无法在拆片中匹配，于是降级为误导性的"收到非预期回传: 53 41 46" + "等待回传确认超时"
+    // （设备其实已重启成功）。改为把多次读取累积到同一缓冲区，再在累积缓冲上做窗口匹配。
+    let mut acc: Vec<u8> = Vec::new();
     let resp_deadline = std::time::Instant::now();
     let resp_max_wait = Duration::from_secs(3);
 
@@ -179,7 +185,7 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
             info!("[BootAs] 等待回传确认超时，设备可能已重启");
             break;
         }
-        let resp = match read_packet(device, Duration::from_millis(1000)) {
+        let chunk = match read_packet(device, Duration::from_millis(1000)) {
             Ok(r) => r,
             Err(_) => {
                 info!("[BootAs] 读取中断（设备可能已重启）");
@@ -187,51 +193,45 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
             }
         };
 
-        // 模式标识发送后可能继续收到 READY，跳过
-        if resp.windows(5).any(|w| w == b"READY") {
-            log::trace!("[BootAs] 收到 READY（模式标识发送后），继续等待...");
+        if chunk.is_empty() {
             continue;
         }
+        acc.extend_from_slice(&chunk);
 
-        if resp.is_empty() {
-            continue;
-        }
-
-        // 检查是否包含预期的回传确认（串口模式下可能和其他数据混在一起）
+        // 在累积缓冲区上检查预期的回传确认（目标标识可能和其他数据混排在一起）
         let matched = mode
             .response_ids()
             .iter()
-            .any(|id| resp.windows(id.len()).any(|w| w == *id));
+            .any(|id| acc.windows(id.len()).any(|w| w == *id));
 
         if matched {
             info!(
                 "[BootAs] 收到回传确认: {} ✓",
-                String::from_utf8_lossy(&resp)
+                String::from_utf8_lossy(&acc)
             );
 
-            // ATEMATEM 流程处理
-            if resp == b"ATEM0001" {
+            // ATEMATEM 流程处理（在累积缓冲上做子串匹配，避免拆片漏判）
+            if acc.windows(8).any(|w| w == b"ATEM0001") {
                 device
                     .write(&[
                         0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xC0,
                     ])
                     .ok();
-                continue;
-            } else if resp == b"ATEM0002" {
+            } else if acc.windows(8).any(|w| w == b"ATEM0002") {
                 device
                     .write(&[
                         0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xC0,
                         0x00, 0x80, 0x00, 0x00,
                     ])
                     .ok();
-                continue;
-            } else if resp == b"ATEMATEX" {
+            } else if acc.windows(8).any(|w| w == b"ATEMATEX") {
                 info!("[BootAs] ATEMATEM 握手完成");
             }
             break;
         }
 
-        warn!("[BootAs] 收到非预期回传: {} (继续等待...)", hex_str(&resp));
+        // 未匹配时仅 trace，避免把拆片回传刷成噪音（设备已重启常见的非完整分片）
+        log::trace!("[BootAs] 累积缓冲（未匹配）: {}", hex_str(&acc));
     }
 
     // Step 4: 发送 DISCONNECT（设备可能已重启，失败忽略）
