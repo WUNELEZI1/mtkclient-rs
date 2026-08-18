@@ -309,8 +309,17 @@ pub fn cmd_reboot(
                         info!("{}", "请保持或断开 USB，等待设备启动到系统".cyan());
                     }
                     Err(e) => {
-                        warn!("DA SHUTDOWN 失败: {}，退化为裸看门狗兜底", e);
-                        watchdog_reboot(da)?;
+                        // DA 模式下裸看门狗不可用——BROM echo 协议已随 DA 接管而失效，
+                        // 必报 meta_reset: echo 0xD4 不匹配，走裸看门狗只会输出误导性日志。
+                        // 直接报告失败并重置会话，请用户重新运行本命令：届时 manager 会重新
+                        // Preloader 握手 + 重载 DA，绝大多数情况下可恢复正常重启。
+                        warn!("DA SHUTDOWN 失败: {}", e);
+                        crate::connection::reset_session();
+                        info!(
+                            "{}",
+                            "DA 重启失败，请重新运行本 reboot 命令（将重新握手并加载 DA 后再试）"
+                                .yellow()
+                        );
                     }
                 }
             } else {
