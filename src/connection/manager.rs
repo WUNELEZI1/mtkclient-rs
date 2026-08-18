@@ -134,42 +134,22 @@ impl ConnectionManager {
                             && info.vid == 0x0E8D
                             && info.pid == 0x2000
                         {
-                            // 优先尝试 DA 会话复用（设备已加载 DA）
-                            if let Some(state) = crate::connection::session::SessionState::load() {
-                                if state.da_loaded {
-                                    info!(
-                                        "[AUTO] 检测到 Preloader (PID={:04X})，尝试 DA 会话复用...",
-                                        info.pid
-                                    );
-                                    match SerialPortTransport::new(&p.port_name, 115200) {
-                                        Ok(transport) => {
-                                            let mut preloader = Preloader::new(Box::new(transport));
-                                            preloader.is_preloader_mode = true;
-                                            preloader.brom_initialized = true;
-                                            if let Some(chip) = crate::system::config::CHIP_CONFIGS
-                                                .iter()
-                                                .find(|c| c.hw_code == state.hw_code)
-                                            {
-                                                preloader.chip = Some(*chip);
-                                            }
-                                            self.mode = DeviceMode::Preloader;
-                                            self.stage = USB阶段::Preloader;
-                                            self.port_name = Some(p.port_name.clone());
-                                            self.da_session_reused_in_init = true;
-                                            info!("[AUTO] DA 会话复用成功");
-                                            return Ok((preloader, DeviceMode::Preloader));
-                                        }
-                                        Err(e) => {
-                                            warn!(
-                                                "[AUTO] DA 会话复用失败: {}，尝试 Preloader 握手",
-                                                e
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-
-                            // DA 会话复用失败，尝试 Preloader 握手
+                            // 注意：本分支不再尝试“串口 DA 会话复用”。
+                            //
+                            // 根因（与 reconnect.rs smart_init_preloader 注释一致）：
+                            // Preloader 串口的 DA 不跨进程存活——进程退出会触发设备复位、
+                            // 重新枚举回 Preloader 握手态，DA 早已死掉。旧逻辑盲开 COM 口并
+                            // 置 daext=true，会把 DA SHUTDOWN 等命令发往无 DA 的设备，导致
+                            // 阶段 1 直接返回 0x40040005（典型报错：reboot 日志“SHUTDOWN
+                            // 命令状态: 0x40040005”后 watchdog 兜底也失效）。
+                            //
+                            // 修正：统一改为每次重新 Preloader 握手 + 重载 DA（与
+                            // --mode preloader 同一条已被验证可用的新鲜路径）。仅当设备以
+                            // WinUSB(PID=0x0003) 呈现且 .state 匹配时，才由 main.rs 的
+                            // connect_to_da_mode 走 WinUSB DA 复用（那条路径 DA 稳定存活）。
+                            //
+                            // 若 .state 标记 da_loaded，说明上一次是 DA 会话，但 PID=0x2000
+                            // 表明设备已回到 Preloader 握手态 → 直接重握手即可，无需复用。
                             info!(
                                 "[AUTO] 检测到 Preloader 设备: {} (PID={:04X})",
                                 p.port_name, info.pid
