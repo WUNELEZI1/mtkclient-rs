@@ -6,7 +6,7 @@
 //!   V3→sej_sec_cfg_hw_V3(legacy=False), V4→sej_sec_cfg_hw_V3(legacy=True)
 
 use log::info;
-use sha2::{Digest, Sha256};
+use crate::sha::Sha256;
 
 use crate::da::DAXFlash;
 use crate::security::sej::{

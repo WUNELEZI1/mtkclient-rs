@@ -4,7 +4,7 @@
 //! - 构建：修改 lock_state + dm_verity_state，对齐 Python mtkclient
 
 use log::info;
-use sha2::{Digest, Sha256};
+use crate::sha::Sha256;
 
 use crate::security::sej::{
     sej_sec_cfg_hw_encrypt, sej_sec_cfg_hw_v3_encrypt, sej_sec_cfg_sw_decrypt,

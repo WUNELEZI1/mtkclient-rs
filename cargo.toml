@@ -15,8 +15,7 @@ log = { version = "0.4", features = ["std"] }
 clap = { version = "4", features = ["derive"] }
 # 串口通信
 serialport = "4.7"
-# 加密算法
-sha2 = "0.11"
+# 加密算法（sha256 已自研，见 src/sha.rs）
 aes = "0.9"
 cbc = "0.2"
 # USB 通信（nusb: 纯 Rust USB 库，Windows WinUSB 后端）
