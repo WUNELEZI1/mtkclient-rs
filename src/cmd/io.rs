@@ -160,38 +160,46 @@ pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error
 ///   reboot meta                     → 重启到 META 模式
 ///   reboot <mode> --via <method>    → 指定重启方式
 ///
-/// --via 参数（仅对 fastboot/recovery/fastbootd/meta 有意义；system 默认忽略 --via）:
-///   para      (默认) 通过 para 分区设置 boot_mode（最稳定）
-///   misc      通过 misc 分区设置 bootloader_message
-///   da        通过 DA SHUTDOWN 命令直接重启
-///   xml       通过 XML DA SET-BOOT-MODE 重启（新平台）
-///   preloader 通过 Preloader Pattern 协议（fastboot/meta，无需加载 DA）
+/// --via 参数:
+///   para      (默认) 通过 para 分区设置 boot_mode（最稳定，需 DA）
+///   misc      通过 misc 分区设置 bootloader_message（需 DA）
+///   da        通过 DA SHUTDOWN 命令直接重启（需 DA）
+///   xml       通过 XML DA SET-BOOT-MODE 重启（新平台，需 DA）
+///   preloader 通过 Preloader Pattern 协议（fastboot/meta，纯 Preloader，不加载 DA）
 ///
-/// system 重启说明（reboot / reboot system，默认路径）:
+/// 设计原则（唯一纯 Preloader 路径）:
+///   —— 只有 `reboot <mode> --via preloader` 才是纯 Preloader 路径：在 DA 加载之前拦截，
+///       直接走 Preloader Pattern 协议（fastboot/meta）/ Preloader 看门狗（system），
+///       全程不加载 DA、不写任何分区。
+///   —— 其余所有 reboot（默认 system、fastboot/recovery/fastbootd/meta，以及
+///       --via para/misc/da/xml）：
+///       一律经过 bypass→upload_da，最终由 DA SHUTDOWN / DA 命令完成重启，绝不走纯 Preloader。
+///
+/// system 重启说明（reboot / reboot system，默认路径，属于“其余路径”→ 走 DA）:
 ///   实测（本设备 MT6768）两种原语行为：
 ///     - 裸看门狗（BROM WRITE32 wdt）在「无 DA 活跃」时可靠重启进系统；
 ///     - DA SHUTDOWN(bootmode=HOME_SCREEN) 在「DA 活跃」时使用，且**成功发送后必须
 ///       立即关闭设备端口**（对齐 mtkclient shutdown 末尾的 port.close(reset=True)），
 ///       否则 DA 软跳回 preloader 后设备因主机仍挂着 USB/串口而停在下载态，表现为
 ///       “日志显示重启成功但设备没进系统 / 没效果”。
-///   分流：daext=false（DA 未加载）→ 裸看门狗硬复位；daext=true（DA 活跃，含复用会话
+///   分流：daext=false（DA 未加载，防御性兜底）→ 裸看门狗硬复位；daext=true（DA 活跃，含复用会话
 ///   或刚 upload_da）→ DA SHUTDOWN + close_device。命令仅在 DA 活跃时加载/复用 DA，
 ///   不写任何分区。
-///   --via 对该模式无效（即便指定 --via preloader 仍是看门狗，不再走 jump_bl）。
 ///
-/// --via preloader 支持的模式:
+/// --via preloader 支持的模式（纯 Preloader，不看 DA）:
 ///   fastboot  → Pattern FASTBOOT（BROM: 先 reset 到 Preloader，再 Pattern）
 ///   meta      → Pattern METAMETA（同上）
-///   recovery/fastbootd/system → 不支持 Pattern，回退到 para/看门狗
+///   system    → Preloader watchdog 硬复位（同样不加载 DA）
+///   recovery/fastbootd → 不支持 Pattern，回退到 para（此时会加载 DA）
 ///
 /// 模式与工作模式的关系:
-///   --mode brom / --mode preloader（reboot system，默认）:
+///   --mode brom / --mode preloader（reboot system，默认，非 --via preloader）:
 ///     加载 DA → DA SHUTDOWN(bootmode=HOME_SCREEN) → 重启进系统
 ///   --mode brom:
-///     --via preloader: BROM write32 触发看门狗重启 → 等 Preloader → 握手 → Pattern
-///     --via para/misc/da/xml: 加载 DA → 写分区 → 重启
+///     --via preloader: 纯 Preloader（BROM write32 触发看门狗 → 等 Preloader → 握手 → Pattern）
+///     --via para/m,isc/da/xml: 加载 DA → 写分区 → 重启
 ///   --mode preloader:
-///     --via preloader: trigger_meta_reboot → Pattern
+///     --via preloader: 纯 Preloader（trigger_meta_reboot → Pattern）
 ///     --via para/misc: 加载 DA → 写分区 → 重启
 pub fn cmd_reboot(
     da: &mut DAXFlash,
