@@ -273,30 +273,53 @@ pub fn cmd_reboot(
 
     match mode {
         "system" => {
-            // system 模式：通过硬件看门狗硬复位（write32(wdt+0x14, 0x1209)）。
-            // 不依赖活 DA —— 本命令在 handle_command 中已提前 return（DA 未加载），
-            // 设备仍处 BROM/Preloader 握手态，可直接下发 BROM WRITE32；设备硬件复位后
-            // 按默认 boot_mode(normal) 进入系统。brom 与 preloader 走同一原语，行为一致。
-            info!("通过看门狗硬复位重启到系统（无需加载 DA）...");
-            // 兜底：brom 模式下连接可能未初始化 chip（trigger_meta_reboot 需要 chip）
-            if da.preloader.chip.is_none() {
-                if let Err(e) = da.preloader.get_hw_code() {
-                    warn!("获取芯片信息失败（{}），无法触发看门狗", e);
-                    crate::connection::reset_session();
-                    info!("{}", "请手动重启设备（断开 USB 重新连接或按电源键）".yellow());
-                    return Ok(());
+            // system 模式重启：按设备当前协议状态选择重启原语。
+            //
+            // 关键修正：当 DA 会话处于活跃态（daext=true，设备已进入 DA 模式，例如本次
+            // 连接复用了既有 DA 会话），BROM 原始 WRITE32 看门狗协议会失效——设备不再
+            // 响应原始 BROM echo(0xD4)，表现为"echo 0xD4 不匹配"。此场景下必须走 DA 层
+            // 的 SHUTDOWN(enablewdt=1) 触发硬件重启到系统，不能用 BROM WRITE32。
+            //
+            // 反之，设备处于原始 BROM/Preloader 握手态（daext=false，未加载 DA）时，
+            // 才走 BROM WRITE32(wdt+0x14, 0x1209) 硬复位。
+            if da.daext {
+                // DA 活跃：DA SHUTDOWN(enablewdt=1) → 看门狗超时 → 硬件重启到系统
+                info!("通过 DA SHUTDOWN 触发硬件重启到系统（设备处于 DA 模式）...");
+                match da.reset_device() {
+                    Ok(_) => {
+                        info!("{}", "设备正在硬件复位...".green());
+                        crate::connection::reset_session();
+                        info!("{}", "请保持或断开 USB，等待设备重启进入系统".cyan());
+                    }
+                    Err(e) => {
+                        warn!("重启失败: {}", e);
+                        crate::connection::reset_session();
+                        info!("{}", "请手动重启设备（断开 USB 重新连接或按电源键）".yellow());
+                    }
                 }
-            }
-            match da.preloader.trigger_meta_reboot() {
-                Ok(_) => {
-                    info!("{}", "看门狗已触发，设备正在硬件复位...".green());
-                    crate::connection::reset_session();
-                    info!("{}", "请保持或断开 USB，等待设备重启进入系统".cyan());
+            } else {
+                // 原始 BROM/Preloader 握手态（未加载 DA）：BROM WRITE32 看门狗硬复位
+                info!("通过看门狗硬复位重启到系统（无需加载 DA）...");
+                // 兜底：brom 模式下连接可能未初始化 chip（trigger_meta_reboot 需要 chip）
+                if da.preloader.chip.is_none() {
+                    if let Err(e) = da.preloader.get_hw_code() {
+                        warn!("获取芯片信息失败（{}），无法触发看门狗", e);
+                        crate::connection::reset_session();
+                        info!("{}", "请手动重启设备（断开 USB 重新连接或按电源键）".yellow());
+                        return Ok(());
+                    }
                 }
-                Err(e) => {
-                    warn!("看门狗触发失败: {}", e);
-                    crate::connection::reset_session();
-                    info!("{}", "请手动重启设备（断开 USB 重新连接或按电源键）".yellow());
+                match da.preloader.trigger_meta_reboot() {
+                    Ok(_) => {
+                        info!("{}", "看门狗已触发，设备正在硬件复位...".green());
+                        crate::connection::reset_session();
+                        info!("{}", "请保持或断开 USB，等待设备重启进入系统".cyan());
+                    }
+                    Err(e) => {
+                        warn!("看门狗触发失败: {}", e);
+                        crate::connection::reset_session();
+                        info!("{}", "请手动重启设备（断开 USB 重新连接或按电源键）".yellow());
+                    }
                 }
             }
         }

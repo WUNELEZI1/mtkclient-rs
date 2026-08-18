@@ -84,13 +84,50 @@ impl ConnectionManager {
 
         if 工作模式 == 工作模式::Auto {
             info!("[AUTO] 自动检测模式：等待 BROM 或 Preloader 设备出现...");
-            // 同时检测 BROM 和 Preloader，哪个先出现就用哪个
+            // auto 模式检测顺序：BROM(PID=0x0003) 优先，Preloader(PID=0x2000) 兜底。
+            // 设备若处于 BROM 下载态应直接用 BROM，避免被 Preloader 分支抢先/忽略。
             loop {
                 if crate::cancel::requested() {
                     return Err("用户取消等待".to_string());
                 }
 
-                // 1. 先检查是否有 Preloader VCOM (PID=0x2000)
+                // 1. 先检查 BROM 设备 (PID=0x0003)
+                let detection_result = detect_brom_driver_from_usb_bus();
+                match detection_result {
+                    UsbBusDetectionResult::WinUsbReady => {
+                        info!("{}", "[AUTO] 检测到 BROM WinUSB 设备".green().bold());
+                        return self.fallback_to_winusb_with_retry(context, 0);
+                    }
+                    UsbBusDetectionResult::SerialPort(ref port_name) => {
+                        if !port_name.is_empty() {
+                            info!("[AUTO] 检测到 BROM COM 口: {}", port_name);
+                            match self.serial_handshake_and_switch(port_name, context) {
+                                Ok(preloader) => {
+                                    info!("{}", "[AUTO] BROM 串口握手成功".green().bold());
+                                    self.mode = DeviceMode::Brom;
+                                    self.stage = USB阶段::Brom;
+                                    self.port_name = Some(port_name.clone());
+                                    return Ok((preloader, DeviceMode::Brom));
+                                }
+                                Err(e) => {
+                                    trace!("[AUTO] BROM 串口握手失败: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    UsbBusDetectionResult::Unknown(driver_mfg) => {
+                        warn!(
+                            "[AUTO] BROM 设备驱动未知: {}，主动安装 WinUSB 驱动...",
+                            driver_mfg
+                        );
+                        if let Err(e) = crate::connection::driver::switch_to_winusb() {
+                            warn!("[AUTO] WinUSB 驱动安装失败: {}，将继续重试", e);
+                        }
+                    }
+                    _ => {}
+                }
+
+                // 2. 检查 Preloader VCOM (PID=0x2000)（仅在 BROM 未出现时尝试）
                 if let Ok(ports) = serialport::available_ports() {
                     for p in &ports {
                         if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
@@ -150,42 +187,6 @@ impl ConnectionManager {
                             }
                         }
                     }
-                }
-
-                // 2. 检查 BROM 设备 (PID=0x0003)
-                let detection_result = detect_brom_driver_from_usb_bus();
-                match detection_result {
-                    UsbBusDetectionResult::WinUsbReady => {
-                        info!("{}", "[AUTO] 检测到 BROM WinUSB 设备".green().bold());
-                        return self.fallback_to_winusb_with_retry(context, 0);
-                    }
-                    UsbBusDetectionResult::SerialPort(ref port_name) => {
-                        if !port_name.is_empty() {
-                            info!("[AUTO] 检测到 BROM COM 口: {}", port_name);
-                            match self.serial_handshake_and_switch(port_name, context) {
-                                Ok(preloader) => {
-                                    info!("{}", "[AUTO] BROM 串口握手成功".green().bold());
-                                    self.mode = DeviceMode::Brom;
-                                    self.stage = USB阶段::Brom;
-                                    self.port_name = Some(port_name.clone());
-                                    return Ok((preloader, DeviceMode::Brom));
-                                }
-                                Err(e) => {
-                                    trace!("[AUTO] BROM 串口握手失败: {}", e);
-                                }
-                            }
-                        }
-                    }
-                    UsbBusDetectionResult::Unknown(driver_mfg) => {
-                        warn!(
-                            "[AUTO] BROM 设备驱动未知: {}，主动安装 WinUSB 驱动...",
-                            driver_mfg
-                        );
-                        if let Err(e) = crate::connection::driver::switch_to_winusb() {
-                            warn!("[AUTO] WinUSB 驱动安装失败: {}，将继续重试", e);
-                        }
-                    }
-                    _ => {}
                 }
 
                 std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
