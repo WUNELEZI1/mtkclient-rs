@@ -168,9 +168,15 @@ pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error
 ///   preloader 通过 Preloader Pattern 协议（fastboot/meta，无需加载 DA）
 ///
 /// system 重启说明（reboot / reboot system，默认路径）:
-///   优先走 DA SHUTDOWN(bootmode=HOME_SCREEN)——MTK 在 USB 连接下能可靠重启进系统的
-///   唯一方式（DA 干净地跳过下载态直接 boot 到系统）。命令会先加载 DA（bypass→dump→
-///   EMI→upload_da）再下发 SHUTDOWN，不写任何分区。裸看门狗仅作为 DA 不可用时的兜底。
+///   实测（本设备 MT6768）两种原语行为：
+///     - 裸看门狗（BROM WRITE32 wdt）在「无 DA 活跃」时可靠重启进系统；
+///     - DA SHUTDOWN(bootmode=HOME_SCREEN) 在「DA 活跃」时使用，且**成功发送后必须
+///       立即关闭设备端口**（对齐 mtkclient shutdown 末尾的 port.close(reset=True)），
+///       否则 DA 软跳回 preloader 后设备因主机仍挂着 USB/串口而停在下载态，表现为
+///       “日志显示重启成功但设备没进系统 / 没效果”。
+///   分流：daext=false（DA 未加载）→ 裸看门狗硬复位；daext=true（DA 活跃，含复用会话
+///   或刚 upload_da）→ DA SHUTDOWN + close_device。命令仅在 DA 活跃时加载/复用 DA，
+///   不写任何分区。
 ///   --via 对该模式无效（即便指定 --via preloader 仍是看门狗，不再走 jump_bl）。
 ///
 /// --via preloader 支持的模式:
@@ -284,6 +290,13 @@ pub fn cmd_reboot(
                 match da.reset_device() {
                     Ok(_) => {
                         info!("{}", "设备正在重启进入系统...".green());
+                        // 关键：DA SHUTDOWN 是软跳转，DA 跳回 preloader 后设备若发现主机仍
+                        // 挂着 USB/串口（且启动原因为下载模式）会停在下载态，表现为“没效果”。
+                        // 必须显式关闭设备端口（对齐 mtkclient shutdown 末尾的
+                        // port.close(reset=True)），释放句柄让设备干净重枚举并启动到系统。
+                        let _ = da.preloader.device.close_device();
+                        // 短暂等待设备电气重枚举，避免操作系统侧句柄残留
+                        std::thread::sleep(Duration::from_millis(500));
                         crate::connection::reset_session();
                         info!("{}", "请保持或断开 USB，等待设备启动到系统".cyan());
                     }
@@ -310,6 +323,9 @@ pub fn cmd_reboot(
                         da.da_xml_reboot_fastboot()
                             .map_err(|e| format!("XML DA fastboot 失败: {}", e))?;
                         info!("{}", "设备已通过 XML DA 重启到 fastboot".green());
+                        // 关闭设备端口（对齐 mtkclient shutdown 末尾 close）
+                        let _ = da.preloader.device.close_device();
+                        std::thread::sleep(Duration::from_millis(500));
                         crate::connection::reset_session();
                         return Ok(());
                     }
@@ -355,6 +371,9 @@ pub fn cmd_reboot(
                     da.da_xml_reboot_meta()
                         .map_err(|e| format!("XML DA meta 失败: {}", e))?;
                     info!("{}", "设备已通过 XML DA 重启到 meta".green());
+                    // 关闭设备端口（对齐 mtkclient shutdown 末尾 close）
+                    let _ = da.preloader.device.close_device();
+                    std::thread::sleep(Duration::from_millis(500));
                     crate::connection::reset_session();
                     return Ok(());
                 }
@@ -506,6 +525,10 @@ fn do_reboot(da: &mut DAXFlash, mode: &str) -> Result<(), Box<dyn std::error::Er
     match da.reset_device() {
         Ok(()) => {
             info!("{}", format!("设备已重启到 {} 模式", mode).green());
+            // 同 reboot system：DA SHUTDOWN 为软跳转，必须关闭设备端口释放句柄，
+            // 否则设备停在下载态（主机仍挂 USB），表现为“没效果”。对齐 mtkclient close。
+            let _ = da.preloader.device.close_device();
+            std::thread::sleep(Duration::from_millis(500));
             info!("{}", "请断开 USB 连接，等待设备自动重启".cyan());
             crate::connection::reset_session();
             Ok(())
