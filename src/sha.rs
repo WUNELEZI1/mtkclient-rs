@@ -213,7 +213,7 @@ mod tests {
         h.update(&data[500..]);
         let streamed = h.finalize();
         assert_eq!(streamed, Sha256::digest(&data[..]));
-        // 与标准库参考比对（hashbrown 不可用，这里仅校验长度与确定性）
+        // 摘要长度固定 32 字节
         assert_eq!(streamed.len(), 32);
     }
 }

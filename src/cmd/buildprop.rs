@@ -106,19 +106,6 @@ fn save_buildprop_file(data: &[u8]) {
     }
 }
 
-/// 计算字符串的终端显示宽度（中文字符算 2 列）
-fn display_width(s: &str) -> usize {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii() {
-                1
-            } else {
-                2 // CJK 字符占 2 列
-            }
-        })
-        .sum()
-}
-
 /// 格式化输出 build.prop 属性
 pub fn print_buildprop(props: &HashMap<String, String>, source: &str) {
     let mut found = 0;
@@ -127,7 +114,7 @@ pub fn print_buildprop(props: &HashMap<String, String>, source: &str) {
     let max_label_width = BUILDPROP_KEYS
         .iter()
         .filter(|(key, _)| props.contains_key(*key))
-        .map(|(_, label)| display_width(label))
+        .map(|(_, label)| crate::util::display_width(label))
         .max()
         .unwrap_or(10);
 
@@ -138,7 +125,7 @@ pub fn print_buildprop(props: &HashMap<String, String>, source: &str) {
     for &(key, label) in BUILDPROP_KEYS {
         if let Some(value) = props.get(key) {
             found += 1;
-            let label_width = display_width(label);
+            let label_width = crate::util::display_width(label);
             let padding = max_label_width.saturating_sub(label_width);
             let display_value = if value.len() > 50 {
                 format!("{}...", &value[..47])

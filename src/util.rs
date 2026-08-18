@@ -132,12 +132,14 @@ pub fn display_width(input: &str) -> usize {
         .sum()
 }
 
-/// 判断字符是否为东亚全角（显示宽度 2）。
+/// 判断字符是否为东亚全宽（显示宽度 2）。
 ///
-/// 覆盖 Unicode 中主要全宽区块：CJK 符号与标点、Hiragana/Katakana、Bopomofo、
-/// CJK 统一表意文字（含扩展 A）、Hangul 音节、全角 ASCII 变体、CJK 兼容字形、
-/// 全角形式等。未在列范围内的非 ASCII 字符（如 emoji、阿拉伯文等）保守视为全宽，
-/// 以保证以 CJK 为主的分区表对齐不会因估窄而重叠。
+/// 仅对列出的 Unicode 全宽区块返回 `true`：Hangul Jamo、CJK 部首/康熙部首、
+/// 假名、CJK 统一表意文字（含扩展 A/B+）、Hangul 音节、全角 ASCII 变体、
+/// CJK 兼容字形与兼容形式、符号与 Pictograph（emoji）等。
+/// 其余字符（含 ASCII，以及阿拉伯文/希腊文/西里尔文等 sub-0x1100 非 ASCII）
+/// 一律视为宽度 1。该实现面向以 CJK 为主的分区表对齐场景，对未覆盖的非 ASCII
+/// 字符宁可估窄（宽度 1）也不过度占位；仅影响显示对齐，不影响任何功能逻辑。
 fn is_fullwidth(c: char) -> bool {
     let code = c as u32;
     // ASCII 及 C0/C1 控制字符：窄
