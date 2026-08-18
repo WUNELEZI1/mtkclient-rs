@@ -390,8 +390,10 @@ pub fn handle_command(
                 _ => i += 1,
             }
         }
-        // --via preloader 必须在 DA 加载前执行（依赖原始握手态的 Pattern 协议）
-        if has_via_preloader {
+        // --via preloader 必须在 DA 加载前执行（依赖原始握手态的 Pattern 协议）。
+        // 但若设备已处于 DA 模式（daext=true，含 DA 复用/fallback），Pattern 协议不可用，
+        // 此时不放行提前拦截，改走下方 DA 路径（cmd_reboot 内部会降级为 DA 默认重启）。
+        if has_via_preloader && !da.daext {
             return io::cmd_reboot(da, args, is_brom, !is_brom);
         }
     }
