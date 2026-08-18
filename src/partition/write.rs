@@ -10,7 +10,7 @@
 //! - `remove_write_resume_file`    — 删除续传状态文件
 //! - `check_write_resume`          — 检查续传状态是否匹配
 
-use indicatif::{ProgressBar, ProgressStyle};
+use crate::progress::{ProgressBar, ProgressStyle};
 use log::{info, trace, warn};
 
 use crate::da::xflash::{CMD_MAGIC, CMD_WRITE_DATA, DAXFlash, pack3};
@@ -142,7 +142,7 @@ impl<'a> DAXFlash<'a> {
 
     /// 按原始地址流式写入数据，供分区写入、seccfg/frp 等场景复用。
     /// 接受任意 `Read` 实现（文件、内存缓冲区等），避免大文件全量载入内存。
-    /// 带进度条显示：使用 indicatif 实时更新进度，最后输出总耗时和速度。
+    /// 带进度条显示：使用自研进度条（src/progress.rs）实时更新进度，最后输出总耗时和速度。
     ///
     /// 断点续传参数：
     /// - `start_offset`: 本次调用前已写入的字节数（用于进度条初始化和恢复文件记录）

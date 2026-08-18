@@ -376,9 +376,9 @@ impl<'a> DAXFlash<'a> {
     /// 读取分区数据到文件
     /// 支持断点续传：检测已有文件大小，从断点继续读取
     /// 流式写入：每个 USB 数据包收到后立即写入磁盘，内存占用极低
-    /// 进度显示：使用 indicatif 进度条，每包更新
+    /// 进度显示：使用自研进度条（src/progress.rs），每包更新
     pub fn 读取分区(&mut self, 分区名: &str, 输出文件: &str) -> Result<(), String> {
-        use indicatif::{ProgressBar, ProgressStyle};
+        use crate::progress::{ProgressBar, ProgressStyle};
 
         // 解析分区信息（特殊分区或 GPT 分区）
         let (parttype, addr, size) =
@@ -567,7 +567,7 @@ impl<'a> DAXFlash<'a> {
         }
 
         // 5. 创建进度条并流式读取
-        use indicatif::{ProgressBar, ProgressStyle};
+        use crate::progress::{ProgressBar, ProgressStyle};
         use std::sync::atomic::Ordering;
         let bar = if crate::usb::log::QUIET_USB_READ.load(Ordering::Relaxed) {
             ProgressBar::hidden()
