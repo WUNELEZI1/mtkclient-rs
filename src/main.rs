@@ -191,6 +191,7 @@ mod usb;
 mod util;
 mod color;
 mod progress;
+mod sha;
 
 use connection::ConnectionManager;
 use usb::USB上下文;
