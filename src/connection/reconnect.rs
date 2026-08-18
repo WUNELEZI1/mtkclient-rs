@@ -231,10 +231,15 @@ impl ConnectionManager {
 
     /// Preloader 模式初始化：等待 Preloader VCOM (PID=0x2000)，握手后直接返回
     /// allow_brom_fallback: 当找不到 Preloader 时是否尝试 fallback 到 BROM（--mode auto 用 true，--mode preloader 用 false）
+    /// allow_da_fallback:  当串口 Preloader 握手长时间失败、但 .state 标记 da_loaded 时，
+    ///                     改用 WinUSB 直接复用活 DA 会话（--mode preloader 用 true）。
+    ///                     典型场景：先做 DA 操作后 device 仍停在 DA 模式（进程退出未必复位），
+    ///                     此时串口 Preloader 握手必然失败，应降级复用 DA 而非死等 Preloader。
     pub(crate) fn smart_init_preloader(
         &mut self,
         context: &USB上下文,
         allow_brom_fallback: bool,
+        allow_da_fallback: bool,
     ) -> Result<(Preloader, DeviceMode), String> {
         info!("等待 Preloader VCOM 设备连接 (PID=0x2000)，无需按任何按键...");
 
@@ -357,6 +362,49 @@ impl ConnectionManager {
                     }
 
                     trace!("[PRELOADER] 未检测到 BROM 设备，继续等待 Preloader 设备...");
+                } else if allow_da_fallback {
+                    // --mode preloader 的 DA 复用 fallback：
+                    // 串口 Preloader 握手长时间失败，但 .state 标记 da_loaded，说明上一次是
+                    // DA 会话、设备很可能仍停在 DA 模式（进程退出未必复位），串口 Preloader
+                    // 握手必然失败。改用 WinUSB 直接打开 DA 模式设备并复用活 DA 会话。
+                    //
+                    // 用有界探测（直接按 VID/PID 打开，不进入 reconnect_loop 无限等待）：
+                    // 优先 .state 记录的 VID/PID，其次 DA/BROM WinUSB 常用 PID。任一打开成功
+                    // 即视为可复用；全部失败则继续等待 Preloader 设备（不破坏"等待接入"UX）。
+                    if let Some(state) = crate::connection::SessionState::load() {
+                        if state.da_loaded {
+                            let candidate = usb::USB设备::按VID_PID打开(
+                                context, state.usb_vid, state.usb_pid,
+                            )
+                            .or_else(|_| usb::USB设备::按VID_PID打开(context, 0x0E8D, 0x0003))
+                            .or_else(|_| usb::USB设备::按VID_PID打开(context, 0x0E8D, 0x2001));
+                            if let Ok(usb_device) = candidate {
+                                info!(
+                                    "[PRELOADER] 串口 Preloader 握手超时，改复用 DA 会话 (VID={:04X} PID={:04X})",
+                                    usb_device.vid, usb_device.pid
+                                );
+                                let mut preloader = Preloader::new(Box::new(usb_device));
+                                preloader.is_preloader_mode = true;
+                                preloader.brom_initialized = true;
+                                if let Some(chip) = crate::system::config::CHIP_CONFIGS
+                                    .iter()
+                                    .find(|c| c.hw_code == state.hw_code)
+                                {
+                                    preloader.chip = Some(*chip);
+                                }
+                                self.mode = DeviceMode::Brom;
+                                self.stage = USB阶段::Preloader;
+                                self.da_session_reused_in_init = true;
+                                info!(
+                                    "{}",
+                                    "[PRELOADER] DA 会话复用成功（WinUSB fallback）".green().bold()
+                                );
+                                return Ok((preloader, DeviceMode::Brom));
+                            } else {
+                                trace!("[PRELOADER] 未检测到 DA 模式 WinUSB 设备，继续等待 Preloader...");
+                            }
+                        }
+                    }
                 } else {
                     trace!(
                         "[PRELOADER] 等待 {} 次 (约 {} 秒) 未找到 Preloader 设备，继续等待...",

@@ -174,6 +174,9 @@ pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error
 ///   —— 其余所有 reboot（默认 system、fastboot/recovery/fastbootd/meta，以及
 ///       --via para/misc/da/xml）：
 ///       一律经过 bypass→upload_da，最终由 DA SHUTDOWN / DA 命令完成重启，绝不走纯 Preloader。
+///   —— 例外（降级）：若设备已处于 DA 模式（daext=true，含 DA 复用 / --mode preloader 的
+///       DA fallback），则 `--via preloader` 的 Pattern 协议因依赖原始握手态而不可用，
+///       自动降级为 DA 默认重启（写 para/misc + DA SHUTDOWN）并提示，不再走必败的 Pattern 路径。
 ///
 /// system 重启说明（reboot / reboot system，默认路径，属于“其余路径”→ 走 DA）:
 ///   实测（本设备 MT6768）两种原语行为：
@@ -271,8 +274,20 @@ pub fn cmd_reboot(
     }
 
     // --via preloader: Pattern 协议路径（支持 fastboot 和 meta）
+    // 注意：若设备已处于 DA 模式（daext=true，DA 复用/fallback 后），Pattern 协议依赖的
+    // 原始 Preloader/BROM 握手态已不存在，无法执行。此时降级为 DA 默认重启方式
+    // （写 para/misc + DA SHUTDOWN），并明确提示，避免静默走必败的 Pattern 路径。
     if via == "preloader" {
-        return cmd_reboot_via_preloader(da, mode, is_brom, is_preloader);
+        if da.daext {
+            warn!(
+                "{}",
+                "设备处于 DA 模式，--via preloader 的 Pattern 协议不可用，已降级为 DA 默认重启"
+                    .yellow()
+            );
+            via = "para";
+        } else {
+            return cmd_reboot_via_preloader(da, mode, is_brom, is_preloader);
+        }
     }
 
     // 非 preloader 路径：需要加载 DA

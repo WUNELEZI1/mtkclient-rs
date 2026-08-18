@@ -78,8 +78,10 @@ impl ConnectionManager {
         工作模式: 工作模式,
     ) -> Result<(Preloader, DeviceMode), String> {
         if 工作模式 == 工作模式::Preloader {
-            // --mode preloader：只检测 preloader，不 fallback 到 brom
-            return self.smart_init_preloader(context, false);
+            // --mode preloader：优先 Preloader 串口握手；若长时间失败且 .state 标记
+            // da_loaded（上一次是 DA 操作、设备仍停在 DA 模式），则 fallback 到 WinUSB
+            // 复用活 DA 会话，而非死等 Preloader 握手。
+            return self.smart_init_preloader(context, false, true);
         }
 
         if 工作模式 == 工作模式::Auto {
