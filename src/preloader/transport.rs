@@ -302,8 +302,13 @@ fn serial_do_handshake(
             std::thread::sleep(Duration::from_millis(retry_delay_ms));
         }
 
-        // 每次尝试前排空残留
-        transport.drain_pipes();
+        // 仅在重试时排空残留；首次 attempt 必须保留接收缓冲中的 Preloader "READY" 同步
+        // 信号（设备进入握手态时配合主机节奏逐字节输出 READY，刷机匣成功日志
+        // 0x52/45/41/44/59 = "READY"）。若首 attempt 即 drain，会清掉这些字节，
+        // 导致后续握手"未收到任何响应字节"。
+        if attempt > 0 {
+            transport.drain_pipes();
+        }
 
         let mut ok = true;
         let mut mismatch: u32 = 0;
