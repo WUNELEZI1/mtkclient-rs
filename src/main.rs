@@ -476,12 +476,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    match 工作模式 {
-        crate::system::config::工作模式::Preloader => {
-            info!("{}", "连接成功 (Preloader 模式)".green().bold());
-        }
-        _ => {
-            info!("{}", "连接成功 (BROM 模式)".green().bold());
+    if da_session_reused {
+        // 实际复用既有 DA 会话（设备停留在 DA 模式），与命令行 --mode 未必一致，
+        // 如实显示，避免"--mode preloader 却打印 BROM 模式"的误导。
+        info!("{}", "连接成功 (复用既有 DA 会话)".green().bold());
+    } else {
+        match 工作模式 {
+            crate::system::config::工作模式::Preloader => {
+                info!("{}", "连接成功 (Preloader 模式)".green().bold());
+            }
+            _ => {
+                info!("{}", "连接成功 (BROM 模式)".green().bold());
+            }
         }
     }
 
