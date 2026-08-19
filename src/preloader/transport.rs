@@ -315,6 +315,11 @@ fn serial_do_handshake(
         let mut residual: Vec<u8> = Vec::with_capacity(residual_window);
         last_received.clear();
         let mut i = 0usize;
+        // 对齐刷机匣行为：设备进入握手态前，写 A0 可能暂时无响应（Preloader 设备在输出
+        // READY 前不响应 A0，需持续写 A0 试探）。对"字节 0 同步试探"阶段的连续无响应设上限，
+        // 防止死循环；上限内持续写 A0，直到设备开始输出 READY/取反响应。
+        const SYNC_PROBE_LIMIT: u32 = 25; // 25 次无响应 = 25 * 500ms ≈ 12.5s（设备输出 READY 前的试探期）
+        let mut sync_probe = 0u32;
         while i < SERIAL_HANDSHAKE_BYTES.len() {
             if let Err(e) = transport.write(&[SERIAL_HANDSHAKE_BYTES[i]]) {
                 trace!("[SERIAL] handshake write error at byte {}: {}", i, e);
@@ -334,6 +339,19 @@ fn serial_do_handshake(
                         mismatch = 0;
                         i += 1;
                     } else {
+                        // Preloader 设备在正式响应前会逐字节输出 "READY"（0x52/45/41/44/59）
+                        // 同步文本（刷机匣日志：完整两遍 R E A D Y R E A D Y 后才进入取反握手）。
+                        // 这些是设备的正常同步输出，不应计入 mismatch（否则两遍 READY=10 字节
+                        // 会超过 max_mismatch=8 导致误判失败），也不应触发残留DA流检测。
+                        // 注：字节已在上面统一 push 进 last_received，这里无需重复。
+                        if matches!(b, b'R' | b'E' | b'A' | b'D' | b'Y') {
+                            trace!(
+                                "[SERIAL] 读到 READY 同步文本字节 0x{:02X}('{}')，忽略",
+                                b,
+                                b as char
+                            );
+                            continue;
+                        }
                         mismatch += 1;
                         residual.push(b);
                         if residual.len() > residual_window {
@@ -360,6 +378,25 @@ fn serial_do_handshake(
                     }
                 }
                 Err(e) => {
+                    // 仅在"仍处于字节 0 同步试探阶段"容忍无响应（设备输出 READY 前不响应 A0，
+                    // 需持续写 A0 试探，对齐刷机匣）；进入正式握手(i>0)后才失败。
+                    if i == 0 {
+                        sync_probe += 1;
+                        if sync_probe >= SYNC_PROBE_LIMIT {
+                            trace!(
+                                "[SERIAL] 同步试探 {} 次无响应，放弃本轮",
+                                sync_probe
+                            );
+                            ok = false;
+                            break;
+                        }
+                        trace!(
+                            "[SERIAL] handshake 写 A0 无响应 (attempt {}, probe {})，继续试探...",
+                            attempt + 1,
+                            sync_probe
+                        );
+                        continue;
+                    }
                     trace!("[SERIAL] handshake read error at byte {}: {}", i, e);
                     ok = false;
                     break;
