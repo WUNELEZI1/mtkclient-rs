@@ -281,8 +281,10 @@ pub fn cmd_reboot(
         if da.daext {
             warn!(
                 "{}",
-                "设备处于 DA 模式，--via preloader 的 Pattern 协议不可用，已降级为 DA 默认重启"
-                    .yellow()
+                format!(
+                    "设备处于 DA 模式，--via preloader 的 Pattern 协议不可用；--mode 仍为 {mode}，已降级为经 DA 重启（写 para/misc + DA SHUTDOWN）"
+                )
+                .yellow()
             );
             via = "para";
         } else {
