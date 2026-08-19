@@ -423,7 +423,12 @@ impl ConnectionManager {
 
     /// Preloader 串口握手：打开 COM 口 → init_preloader
     pub(crate) fn preloader_serial_handshake(&self, port_name: &str) -> Result<Preloader, String> {
-        let transport = SerialPortTransport::new(port_name, 115200)?;
+        // 必须用 open_raw 而非 new：new 会先 verify_port_exists（打开→关闭 COM 口），
+        // 打开串口会清空接收缓冲区中的 Preloader "READY" 同步信号；Preloader 设备在
+        // 进入握手态时持续发送 READY（刷机匣成功日志 0x52/45/41/44/59 = "READY"），
+        // verify 的打开-关闭会消耗掉这些字节，导致后续握手"未收到任何响应字节"。
+        // 对齐 preloader_boot_mode.rs 的成功做法（open_raw 不清缓冲）。
+        let transport = SerialPortTransport::open_raw(port_name, 115200)?;
         let mut preloader = Preloader::new(Box::new(transport));
         if !preloader
             .init_preloader()
