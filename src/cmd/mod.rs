@@ -419,18 +419,10 @@ pub fn handle_command(
         }
 
         // 1. 获取 target config 判断是否需要 bypass
-        let needs_bypass = match da.preloader.get_target_config() {
+        let has_security = match da.preloader.get_target_config() {
             Ok(cfg) => {
                 info!("{}", cfg.format_info());
-                if cfg.needs_bypass() {
-                    info!("设备有安全保护，执行 Kamakiri2 bypass...");
-                    true
-                } else {
-                    info!(
-                        "设备无安全保护（SBC/SLA/DAA/MemRead 全关），跳过 Kamakiri2，直接进入 DA 模式"
-                    );
-                    false
-                }
+                cfg.needs_bypass()
             }
             Err(e) => {
                 warn!("获取 target config 失败: {}", e);
@@ -439,16 +431,36 @@ pub fn handle_command(
             }
         };
 
+        // 自动提取 preloader（未指定 --preloader）依赖 read32(0xD1) 从 RAM 读 preloader。
+        // MTK BROM 对 SRAM 的读取限制与 SBC/SLA/DAA 这套安全标志无关：即便 0x0 无保护，
+        // read32 仍可能被 BROM 拒绝（实测 --mode brom printgpt 自动提取报
+        // "read32 无法访问该内存区域"），必须先用 Kamakiri2 解除内存读取限制。
+        // bypass_security 注入 patcher 后会重新握手恢复 BROM 状态，不污染后续 DA 上传，
+        // 因此仅在"需要自动提取"时窄范围强制 bypass，通用 DA 加载路径不受影响。
+        let auto_extract = preloader_file.is_empty();
+        let needs_bypass = has_security || auto_extract;
+
         if needs_bypass {
+            if auto_extract && !has_security {
+                info!(
+                    "未指定 --preloader，需自动提取；设备虽为 0x0 无保护，但 read32 仍受 BROM 限制，先执行 Kamakiri2 解锁内存读取"
+                );
+            } else if has_security {
+                info!("设备有安全保护，执行 Kamakiri2 bypass...");
+            }
             da.preloader
                 .bypass_security(_context)
                 .map_err(|e| format!("bypass_security 失败: {}", e))?;
+        } else {
+            info!(
+                "设备无安全保护（SBC/SLA/DAA/MemRead 全关）且已指定 --preloader，跳过 Kamakiri2，直接进入 DA 模式"
+            );
         }
 
-        // 2. 如果没有指定 preloader 文件，自动从 RAM 提取 preloader（非破坏性 read32）
-        //    对齐可用的旧版行为：直接 read32 扫描候选地址的 preloader 签名。
-        //    Kamakiri2 bypass 已解除 Mem Read Auth，post-bypass 的 read32 可正常读取；
-        //    若设备内存确不可读（极罕见），给出明确指引让用户用 dumppreloader 或 --preloader。
+        // 2. 如果没有指定 preloader 文件，自动从 RAM 提取 preloader（非破坏性 read32）。
+        //    上方已对 auto_extract 场景窄范围强制 Kamakiri2，post-bypass 的 read32 可正常
+        //    读取 preloader；若设备内存仍不可读（极罕见，如 patcher 不兼容），给出明确指引
+        //    让用户用 dumppreloader 或 --preloader。
         if preloader_file.is_empty() {
             info!("未指定 --preloader，自动从 RAM 提取 preloader...");
             match da.preloader.dump_preloader_via_brom_read() {
