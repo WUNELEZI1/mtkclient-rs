@@ -40,20 +40,21 @@ impl<'a> DAXFlash<'a> {
 
     /// USB 高速重连：检测当前速度，如果是 full-speed 则切换并重连
     /// 串口模式下自动跳过（无 USB 速度概念）。
-    /// 老平台 DA（MT6771/0x788、MT6768/0x707、MT6765/0x676 等）在 full-speed 下
-    /// 切换 USB 速度会 stall 端点，而 WinUSB/nusb 的 clear_halt 恢复不了该 stall，
-    /// 表现为 setup_env 的 write 报 "os error 31" (ERROR_GEN_FAILURE)，DA 加载卡死。
-    /// mtkclient Python 实现也仅在明确支持高速切换的新 DA 上调用 set_usb_speed，
-    /// 老平台 DA 默认在 full-speed 直接工作，不切速度。这里据此跳过以避免 os error 31。
+    ///
+    /// 注意：仅对**实测确认在 WinUSB 上切高速会 stall** 的平台跳过 set_usb_speed。
+    /// 这里的判定依据是"是否在 WinUSB 下出现 os error 31 (ERROR_GEN_FAILURE)"，
+    /// 而非芯片发布年代——发布更晚的 MT6768(0x707) 已实测可正常高速重连，
+    /// 不应被误伤而损失读取提速；MT6771(0x788, 2018) 比 MT6768(0x707, 2019) 更老，
+    /// 且正是它在 WinUSB 上触发 os error 31 的平台，故仅将其及更早平台列入跳过名单。
     fn chip_skips_usb_speed_switch(hw_code: u16) -> bool {
         matches!(
             hw_code,
-            // 老平台（full-speed 工作稳定，切高速必 stall）
-            0x788 | // MT6771/MT8385/MT8183/MT8666 (Helio P60/P70/G80)
-            0x707 | // MT6768/MT6769
-            0x676 | // MT6765/MT6762 (Helio A25/P22)
-            0x762 | // MT6763 (Helio P23)
+            // 仅在 WinUSB 上切高速会 stall 的平台（实测 os error 31）
+            0x788 | // MT6771/MT8385/MT8183/MT8666 (Helio P60/P70/G80, 2018) — 已确认 stall
+            0x676 | // MT6765/MT6762 (Helio A25/P22, 2018)
+            0x762 | // MT6763 (Helio P23, 2017)
             0x0699 // MT6799 等更早平台
+                  // 注：MT6768/0x707 (2019) 不在此列，已实测可正常高速重连
         )
     }
 
@@ -63,11 +64,11 @@ impl<'a> DAXFlash<'a> {
             return;
         }
 
-        // 老平台 DA 跳过 USB 速度切换，避免 WinUSB clear_halt 触发 os error 31
+        // 在 WinUSB 上切高速会 stall 的平台跳过 USB 速度切换，避免 clear_halt 触发 os error 31
         let hw_code = self.preloader.chip.map(|c| c.hw_code).unwrap_or(0);
         if Self::chip_skips_usb_speed_switch(hw_code) {
             trace!(
-                "[RECONNECT] HW Code 0x{:04X} 为老平台，跳过 USB 速度切换（避免 os error 31）",
+                "[RECONNECT] HW Code 0x{:04X} 在 WinUSB 上切高速会 stall，跳过 USB 速度切换（避免 os error 31）",
                 hw_code
             );
             return;
