@@ -320,8 +320,11 @@ pub fn cmd_reboot(
                         // 必须显式关闭设备端口（对齐 mtkclient shutdown 末尾的
                         // port.close(reset=True)），释放句柄让设备干净重枚举并启动到系统。
                         let _ = da.preloader.device.close_device();
-                        // 短暂等待设备电气重枚举，避免操作系统侧句柄残留
-                        std::thread::sleep(Duration::from_millis(500));
+                        // 等待设备物理复位重枚举：MTK DA 收到 SHUTDOWN 后会跳回 preloader
+                        // 再启动到系统，主机必须让出 USB 总线足够长时间（对齐 mtkclient
+                        // shutdown 末尾的 close + time.sleep）。500ms 过短会导致操作系统侧
+                        // 句柄残留、设备停在下载态（日志显示成功但设备不重启）。
+                        std::thread::sleep(Duration::from_millis(2000));
                         crate::connection::reset_session();
                         info!("{}", "请保持或断开 USB，等待设备启动到系统".cyan());
                     }
@@ -359,7 +362,7 @@ pub fn cmd_reboot(
                         info!("{}", "设备已通过 XML DA 重启到 fastboot".green());
                         // 关闭设备端口（对齐 mtkclient shutdown 末尾 close）
                         let _ = da.preloader.device.close_device();
-                        std::thread::sleep(Duration::from_millis(500));
+                        std::thread::sleep(Duration::from_millis(2000));
                         crate::connection::reset_session();
                         return Ok(());
                     }
