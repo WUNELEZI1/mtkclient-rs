@@ -20,11 +20,19 @@ fn boot_to_should_clear_halt_before_write() -> bool {
 }
 
 impl<'a> DAXFlash<'a> {
-    /// 带重试的 USB 写入：第2次起尝试 clear_halt_out 恢复 stalled endpoint
+    /// 带重试的 USB 写入：第2次起先等待再纯重试。
+    ///
+    /// 注意：WinUSB/nusb 下**不要**主动 clear_halt_out 来"恢复" stalled endpoint。
+    /// 老平台 DA（MT6771/0x788 等）在 setup_env 阶段的端点 stall 由 DA 自身流控处理，
+    /// 主动发 CLEAR_FEATURE control transfer 反而会让 WinUSB 返回 ERROR_GEN_FAILURE(31)，
+    /// 把一次可重试的写失败升级成不可逆的 os error 31（对齐 brom_reg_access.rs 的约定）。
+    /// 因此 clear_halt 仅作为 libusb 后端、且前序纯重试均失败后的最后手段，且吞掉其错误。
     pub(crate) fn write_with_retry(&mut self, data: &[u8], label: &str) -> Result<(), String> {
         const MAX_RETRY: u32 = 5;
         const RETRY_DELAY_MS: u64 = 100;
+        let mut last_err = String::new();
         for attempt in 1..=MAX_RETRY {
+            let _ = &last_err; // 仅用于最终错误信息
             if crate::cancel::force_requested() || crate::cancel::requested() {
                 self.preloader.device.cancel_pending_transfers();
                 return Err(format!("{} write 已取消", label));
@@ -32,21 +40,22 @@ impl<'a> DAXFlash<'a> {
             match self.preloader.device.write(data) {
                 Ok(_) => return Ok(()),
                 Err(e) => {
+                    last_err = e.to_string();
                     trace!(
                         "[RETRY] {} write fail (attempt {}/{}): {}",
-                        label, attempt, MAX_RETRY, e
+                        label, attempt, MAX_RETRY, last_err
                     );
-                    if attempt >= 2 {
-                        // 第2次起尝试 clear_halt_out 恢复 stalled endpoint
-                        trace!("[RETRY] clear_halt_out for {}", label);
-                        let _ = self.preloader.device.clear_halt_out();
-                    }
                     if attempt < MAX_RETRY {
+                        // 先等待，让 DA 流控自行恢复端点，再纯重试（不主动 clear_halt）
                         sleep(Duration::from_millis(RETRY_DELAY_MS));
+                        if attempt == MAX_RETRY - 1 && self.preloader.device.is_libusb() {
+                            // 最后手段：仅 libusb 后端尝试 clear_halt，错误吞掉不传播
+                            let _ = self.preloader.device.clear_halt_out();
+                        }
                     } else {
                         return Err(format!(
                             "{} write 失败 ({}次重试后): {}",
-                            label, MAX_RETRY, e
+                            label, MAX_RETRY, last_err
                         ));
                     }
                 }
