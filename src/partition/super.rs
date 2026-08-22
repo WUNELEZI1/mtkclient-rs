@@ -26,8 +26,10 @@ use log::{debug, trace, warn};
 // AOSP 标准 Magic 值
 // ============================================================================
 
-/// LP_METADATA_GEOMETRY_MAGIC = 0x674C4164 ("gDla" in LE)
-const GEOMETRY_MAGIC: u32 = 0x674C4164;
+/// LP_METADATA_GEOMETRY_MAGIC = 0x616C4467 ("gDla" in LE)
+/// 注：AOSP metadata_format.h 定义为小端 0x616C4467。此前误写为 0x674C4164
+/// （那是 "gDla" 的大端表示），而扫描用 from_le_bytes 小端读取，导致永远匹配不上。
+const GEOMETRY_MAGIC: u32 = 0x616C4467;
 /// LP_METADATA_HEADER_MAGIC = 0x414C5030 ("0PLA" in LE)
 const HEADER_MAGIC: u32 = 0x414C5030;
 
@@ -38,7 +40,7 @@ const HEADER_MAGIC: u32 = 0x414C5030;
 /// LpMetadataGeometry (4096 字节，对齐到 LP_SECTOR_SIZE)
 ///
 /// AOSP 布局：
-///   offset 0:  magic(u32) = 0x674C4164
+///   offset 0:  magic(u32) = 0x616C4467
 ///   offset 4:  struct_size(u32)
 ///   offset 8:  checksum(SHA256, 32 字节)
 ///   offset 40: metadata_max_size(u32)
@@ -155,7 +157,7 @@ impl SuperMetadata {
     ///
     /// 策略：
     /// 1. 扫描 "0PLA" (LP_METADATA_HEADER_MAGIC = 0x414C5030)
-    /// 2. 向前回溯找到 Geometry (magic = 0x674C4164)
+    /// 2. 向前回溯找到 Geometry (magic = 0x616C4467)
     /// 3. 如果找不到 Geometry，直接从 Header 位置解析
     /// 4. 按 TableDescriptor 定位各表，解析 partition/extent/group
     pub fn parse(data: &[u8]) -> Result<Self, String> {
@@ -281,11 +283,21 @@ impl SuperMetadata {
             let magic = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
             if magic == GEOMETRY_MAGIC {
                 debug!("找到 LP_METADATA_GEOMETRY_MAGIC at offset 0x{:04X}", offset);
-                let logical_block_size = if offset + 52 <= data.len() {
+                // AOSP 固定扇区大小为 512（LP_SECTOR_SIZE）；部分厂商在 geometry 的
+                // offset 48 处存放 logical_block_size（4096 常见）。该偏移在 AOSP 规范里
+                // 实为 first_logical_sector(uint64) 低位，直接当 block_size 读可能得到
+                // 垃圾值。仅信任合法的 2 的幂，否则回落 512，避免动态分区大小被算错。
+                let raw = if offset + 52 <= data.len() {
                     u32::from_le_bytes(data[offset + 48..offset + 52].try_into().unwrap())
                 } else {
-                    512
+                    0
                 };
+                let logical_block_size =
+                    if raw.is_power_of_two() && (512..=65536).contains(&raw) {
+                        raw
+                    } else {
+                        512
+                    };
                 return Some(LpMetadataGeometry { logical_block_size });
             }
         }
