@@ -27,6 +27,33 @@ impl Drop for UsbReadQuietGuard {
     }
 }
 
+/// 串口读超时 RAII guard。
+///
+/// 串口 crate 的 `read_exact` 语义是"单次 `read` 在超时内填满整个 buffer"，
+/// 而本工具串口默认超时仅 `SERIAL_OPEN_TIMEOUT_MS`(1s)。readflash 读取 GPT/分区
+/// 是持续数秒的流式传输，数据流中途任何超过 1s 的包间隔（设备处理/ACK 等待）
+/// 都会让 `read_exact` 报 `Operation timed out` —— 典型表现即
+/// "readflash final status header: serial read_exact: Operation timed out"。
+/// 故在 readflash 数据阶段用较长读超时覆盖整包最大间隔。USB 路径的 read_exact
+/// 为自建循环，长超时同样安全。
+///
+/// （实现见下方 `with_read_timeout`：RAII 风格包裹整个读取逻辑，自动恢复原超时。）
+const READFLASH_READ_TIMEOUT_MS: u64 = 10_000;
+
+/// 临时设置较长读超时执行回调，完成后恢复原超时（RAII，覆盖所有提前 return）。
+/// 用于 readflash 数据读取阶段：串口默认超时仅 1s，流式读取持续数秒会超时失败。
+fn with_read_timeout<T>(
+    da: &mut DAXFlash,
+    ms: u64,
+    f: impl FnOnce(&mut DAXFlash) -> Result<T, String>,
+) -> Result<T, String> {
+    let orig = da.preloader.device.get_timeout();
+    da.preloader.device.set_timeout(Duration::from_millis(ms));
+    let result = f(da);
+    da.preloader.device.set_timeout(orig);
+    result
+}
+
 fn quiet_usb_reads_temporarily() -> UsbReadQuietGuard {
     UsbReadQuietGuard(QUIET_USB_READ.swap(true, Ordering::Relaxed))
 }
@@ -311,6 +338,9 @@ impl<'a> DAXFlash<'a> {
         );
         let _quiet_guard = quiet_usb_reads_temporarily();
 
+        // 串口默认超时仅 1s，readflash 流式读取持续数秒，中途包间隔超 1s 即超时失败。
+        // 用较长读超时包裹整个读取逻辑（RAII，覆盖所有提前 return），结束后自动恢复。
+        with_read_timeout(self, READFLASH_READ_TIMEOUT_MS, |da| {
         const PROGRESS_INTERVAL: u64 = 4 * 1024 * 1024; // 4MB 进度更新（平衡精度和开销）
         const MAX_PACKET_SIZE: usize = 0x1000000; // 16MB 预分配 buffer
 
@@ -328,7 +358,7 @@ impl<'a> DAXFlash<'a> {
             // 续传 ACK 增加重试：设备可能刚恢复，第一次 ACK 可能超时
             let mut ack_ok = false;
             for attempt in 0..3 {
-                match self.ack_silent() {
+                match da.ack_silent() {
                     Ok(()) => {
                         ack_ok = true;
                         break;
@@ -351,7 +381,7 @@ impl<'a> DAXFlash<'a> {
         } else {
             // 对齐 Python readflash：在 cmd_read_data 之前先查询 get_packet_length
             // send_devctrl 内部已包含完整的 xread + status 握手
-            match self.send_devctrl(GET_PKT_LEN, None) {
+            match da.send_devctrl(GET_PKT_LEN, None) {
                 Ok(data) => {
                     packet_len = parse_packet_length(&data);
                     if let Some(packet_len) = packet_len {
@@ -371,7 +401,7 @@ impl<'a> DAXFlash<'a> {
             // 关键修复：非活跃续传分支(start_offset>0 但 resume 不匹配)下，文件以
             // append 模式打开（spawn_dump_writer），必须从 addr+start_offset 续读，
             // 否则会读取分区开头段并追加到已有前缀后，生成内容错乱的损坏镜像。
-            self.send_read_data_cmd(addr + start_offset, target_remaining, parttype)?;
+            da.send_read_data_cmd(addr + start_offset, target_remaining, parttype)?;
             write_resume_file(
                 output_file,
                 addr,
@@ -394,7 +424,7 @@ impl<'a> DAXFlash<'a> {
         while bytes_received < target_remaining {
             let mut hdr = [0u8; 12];
             match read_header_with_optional_queue(
-                self.preloader.device.as_mut(),
+                da.preloader.device.as_mut(),
                 &mut hdr,
                 &mut queued_header,
             ) {
@@ -436,7 +466,7 @@ impl<'a> DAXFlash<'a> {
                 // 先以栈缓冲判定心跳：心跳包(全零)直接跳过，不占用/泄漏 recycle 缓冲池，
                 // 否则长读取过程中反复心跳会耗尽回收池、退化为逐包新分配。
                 let mut tiny = [0u8; 4];
-                self.preloader
+                da.preloader
                     .device
                     .read_exact(&mut tiny)
                     .map_err(|e| format!("read data: {}", e))?;
@@ -454,14 +484,14 @@ impl<'a> DAXFlash<'a> {
                 continue;
             } else if (slength as usize) <= MAX_PACKET_SIZE {
                 let slen = slength as usize;
-                let data = if self.da_x_speed >= 3 {
-                    self.preloader
+                let data = if da.da_x_speed >= 3 {
+                    da.preloader
                         .device
                         .read_exact_vec(slen)
                         .map_err(|e| format!("read data fast: {}", e))?
                 } else {
                     let mut data = acquire_dump_buffer(&recycle_rx, slen);
-                    self.preloader
+                    da.preloader
                         .device
                         .read_exact(&mut data)
                         .map_err(|e| format!("read data: {}", e))?;
@@ -474,7 +504,7 @@ impl<'a> DAXFlash<'a> {
                 total_read += slen as u64;
             } else {
                 let mut data = vec![0u8; slength as usize];
-                self.preloader
+                da.preloader
                     .device
                     .read_exact(&mut data)
                     .map_err(|e| format!("read data (large): {}", e))?;
@@ -494,7 +524,7 @@ impl<'a> DAXFlash<'a> {
             }
 
             if crate::cancel::force_requested() {
-                self.preloader.device.cancel_pending_transfers();
+                da.preloader.device.cancel_pending_transfers();
                 let written = finish_dump_writer(writer_tx, writer_handle)?;
                 return Err(format!(
                     "读取已强制停止，已保存 {} 字节；如设备仍在线可续传，否则重新进 BROM 后普通续传",
@@ -512,8 +542,8 @@ impl<'a> DAXFlash<'a> {
 
             // 优化：先 ACK 再预提交 header
             // ACK (OUT) → 设备收到后开始准备下一包 → 预提交 header (IN) 顺势捕获
-            if let Err(e) = self.ack_silent() {
-                self.preloader.device.cancel_pending_transfers();
+            if let Err(e) = da.ack_silent() {
+                da.preloader.device.cancel_pending_transfers();
                 write_resume_file(
                     output_file,
                     addr,
@@ -531,20 +561,21 @@ impl<'a> DAXFlash<'a> {
             }
 
             // ACK 后预提交下一包 header：设备已收到 ACK，正在准备下一包数据
-            queued_header = self
+            queued_header = da
                 .preloader
                 .device
                 .submit_read_request(12)
                 .unwrap_or(false);
         }
 
-        self.readflash_final_status()?;
+        da.readflash_final_status()?;
         let written = finish_dump_writer(writer_tx, writer_handle)?;
         remove_resume_file(output_file);
         on_packet(written);
 
         trace!("[readflash] total read {} bytes", written);
         Ok(written)
+        })
     }
 
     /// 读取 flash 数据（全量到内存），用于小分区或需要内存操作的场景
@@ -580,12 +611,14 @@ impl<'a> DAXFlash<'a> {
         self.send_read_data_cmd(addr, size, parttype)?;
 
         // 3. 数据读取循环（全量到内存）
+        // 用较长读超时包裹整个读取逻辑（串口默认仅 1s，流式读取会超时失败）。
+        with_read_timeout(self, READFLASH_READ_TIMEOUT_MS, |da| {
         let mut buffer = Vec::with_capacity(size as usize);
         let mut remaining = size as usize;
 
         while remaining > 0 {
             let mut hdr = [0u8; 12];
-            match self.preloader.device.read_exact(&mut hdr) {
+            match da.preloader.device.read_exact(&mut hdr) {
                 Ok(0) => {
                     trace!("[readflash_data] ZLP on header read, ending loop");
                     break;
@@ -612,7 +645,7 @@ impl<'a> DAXFlash<'a> {
             if slength == 4 {
                 // 4 字节小包/心跳：栈上临时缓冲，避免逐包堆分配；全零心跳直接跳过不计入 buffer
                 let mut tiny = [0u8; 4];
-                if let Err(e) = self.preloader.device.read_exact(&mut tiny) {
+                if let Err(e) = da.preloader.device.read_exact(&mut tiny) {
                     trace!("[readflash_data] read data(small) error: {}", e);
                     break;
                 }
@@ -628,7 +661,7 @@ impl<'a> DAXFlash<'a> {
                 let old_len = buffer.len();
                 buffer.resize(old_len + slen, 0);
                 if slen > 0
-                    && let Err(e) = self.preloader.device.read_exact(&mut buffer[old_len..])
+                    && let Err(e) = da.preloader.device.read_exact(&mut buffer[old_len..])
                 {
                     trace!("[readflash_data] read data error: {}", e);
                     buffer.truncate(old_len);
@@ -637,7 +670,7 @@ impl<'a> DAXFlash<'a> {
                 remaining = remaining.saturating_sub(slen);
             }
 
-            if let Err(e) = self.ack_silent() {
+            if let Err(e) = da.ack_silent() {
                 trace!("[readflash_data] send_ack failed: {}", e);
                 break;
             }
@@ -659,30 +692,36 @@ impl<'a> DAXFlash<'a> {
             ));
         }
 
-        self.readflash_final_status()?;
+        da.readflash_final_status()?;
         trace!("[readflash_data] total read {} bytes", buffer.len());
         Ok(buffer)
+        })
     }
 
     fn readflash_final_status(&mut self) -> Result<(), String> {
-        let mut hdr = [0u8; 12];
-        self.preloader
-            .device
-            .read_exact(&mut hdr)
-            .map_err(|e| format!("readflash final status header: {}", e))?;
-        let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
-        let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
-        if magic != CMD_MAGIC {
-            return Err(format!("readflash final status bad magic: 0x{:08X}", magic));
-        }
-        let mut payload = vec![0u8; slength as usize];
-        if slength > 0 {
-            self.preloader
+        // 串口默认超时仅 1s，final status header 读取可能因设备收尾延迟超时而失败
+        // （典型报错 "readflash final status header: serial read_exact: Operation timed out"）。
+        // 用较长读超时包裹本次读取，结束后自动恢复原超时。
+        with_read_timeout(self, READFLASH_READ_TIMEOUT_MS, |da| {
+            let mut hdr = [0u8; 12];
+            da.preloader
                 .device
-                .read_exact(&mut payload)
-                .map_err(|e| format!("readflash final status payload: {}", e))?;
-        }
-        final_read_status_from_payload(&payload)
+                .read_exact(&mut hdr)
+                .map_err(|e| format!("readflash final status header: {}", e))?;
+            let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+            let slength = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
+            if magic != CMD_MAGIC {
+                return Err(format!("readflash final status bad magic: 0x{:08X}", magic));
+            }
+            let mut payload = vec![0u8; slength as usize];
+            if slength > 0 {
+                da.preloader
+                    .device
+                    .read_exact(&mut payload)
+                    .map_err(|e| format!("readflash final status payload: {}", e))?;
+            }
+            final_read_status_from_payload(&payload)
+        })
     }
 
     /// 静默 ACK（仅发不读），用于 readflash_data 循环中不偷吃下一个包
