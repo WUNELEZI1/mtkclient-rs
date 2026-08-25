@@ -15,10 +15,6 @@ use crate::da::xflash::protocol::{
     CMD_SYNC_SIGNAL, pack3,
 };
 
-fn boot_to_should_clear_halt_before_write() -> bool {
-    false
-}
-
 impl<'a> DAXFlash<'a> {
     /// 带重试的 USB 写入：第2次起先等待再纯重试。
     ///
@@ -30,9 +26,8 @@ impl<'a> DAXFlash<'a> {
     pub(crate) fn write_with_retry(&mut self, data: &[u8], label: &str) -> Result<(), String> {
         const MAX_RETRY: u32 = 5;
         const RETRY_DELAY_MS: u64 = 100;
-        let mut last_err = String::new();
+        let mut last_err;
         for attempt in 1..=MAX_RETRY {
-            let _ = &last_err; // 仅用于最终错误信息
             if crate::cancel::force_requested() || crate::cancel::requested() {
                 self.preloader.device.cancel_pending_transfers();
                 return Err(format!("{} write 已取消", label));
@@ -143,10 +138,8 @@ impl<'a> DAXFlash<'a> {
 
         // 1. xsend(INIT_EXT_RAM)
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
-        self.preloader.device.write(&pkt)?;
-        self.preloader
-            .device
-            .write(&CMD_INIT_EXT_RAM.to_le_bytes())?;
+        self.write_with_retry(&pkt, "send_emi xsend INIT_EXT_RAM")?;
+        self.write_with_retry(&CMD_INIT_EXT_RAM.to_le_bytes(), "send_emi CMD_INIT_EXT_RAM")?;
 
         // 2. status() - Python reads immediately, no sleep
         let st = self.status()?;
@@ -160,14 +153,12 @@ impl<'a> DAXFlash<'a> {
 
         // 4. xsend(len(emi)) - Python sends header + length value
         let pkt2 = pack3(CMD_MAGIC, 0x01, 4);
-        self.preloader.device.write(&pkt2)?;
-        self.preloader
-            .device
-            .write(&(emi.len() as u32).to_le_bytes())?;
+        self.write_with_retry(&pkt2, "send_emi xsend len")?;
+        self.write_with_retry(&(emi.len() as u32).to_le_bytes(), "send_emi emi len")?;
 
         // 5. send_param([emi]) - Python sends param header + data in 512-byte chunks
         let param_pkt = pack3(CMD_MAGIC, 0x01, emi.len() as u32);
-        self.preloader.device.write(&param_pkt)?;
+        self.write_with_retry(&param_pkt, "send_emi param header")?;
 
         // Python send_param splits data into 0x200 (512) byte chunks
         let chunk_size = 0x200;
@@ -175,7 +166,7 @@ impl<'a> DAXFlash<'a> {
         let mut remaining = emi.len();
         while remaining > 0 {
             let dsize = std::cmp::min(remaining, chunk_size);
-            self.preloader.device.write(&emi[pos..pos + dsize])?;
+            self.write_with_retry(&emi[pos..pos + dsize], "send_emi param data")?;
             pos += dsize;
             remaining -= dsize;
         }
@@ -208,13 +199,6 @@ impl<'a> DAXFlash<'a> {
     ) -> Result<bool, String> {
         if display {
             trace!("Boot 到地址: 0x{:08X}, 大小: {} 字节", addr, da.len());
-        }
-
-        // WinUSB/nusb 下不要在正常 boot_to 前 clear_halt。
-        // clear_halt 会发 CLEAR_FEATURE control transfer，Python 成功路径没有这一步。
-        if boot_to_should_clear_halt_before_write() && self.preloader.device.is_libusb() {
-            let _ = self.preloader.device.clear_halt_in();
-            let _ = self.preloader.device.clear_halt_out();
         }
 
         // 设置足够的写入超时
@@ -250,7 +234,7 @@ impl<'a> DAXFlash<'a> {
         let pkt2 = pack3(CMD_MAGIC, 0x01, da.len() as u32);
         self.write_with_retry(&pkt2, "boot_to data header")?;
 
-        const BULK_CHUNK: usize = 0x10000; // 64KB — USB bulk 最佳性能分块
+        const BULK_CHUNK: usize = 0x200000; // 2MB — 对齐刷机匣实测块大小，大幅减少系统调用与往返
         let mut remaining = da.len();
         let mut pos = 0;
 
@@ -258,7 +242,7 @@ impl<'a> DAXFlash<'a> {
             let chunk_size = std::cmp::min(remaining, BULK_CHUNK);
             let chunk = &da[pos..pos + chunk_size];
 
-            match self.preloader.device.write(chunk) {
+            match self.write_with_retry(chunk, "boot_to Stage2 chunk") {
                 Ok(_) => {
                     pos += chunk_size;
                     remaining -= chunk_size;
@@ -311,15 +295,5 @@ impl<'a> DAXFlash<'a> {
                 Ok(true)
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn boot_to_does_not_clear_halt_before_normal_write_flow() {
-        assert!(!boot_to_should_clear_halt_before_write());
     }
 }

@@ -7,19 +7,15 @@
 
 #[path = "cow.rs"]
 pub(crate) mod cow;
-#[path = "explorer.rs"]
 pub mod explorer;
 #[path = "ext4.rs"]
 pub(crate) mod ext4;
 #[path = "gpt.rs"]
 pub mod gpt;
-#[path = "io.rs"]
 pub mod io;
-#[path = "super.rs"]
 pub mod lp;
 #[path = "partition_table.rs"]
 pub mod partition_table;
-#[path = "write.rs"]
 pub(crate) mod write;
 
 pub use gpt::GptInfo;

@@ -15,9 +15,7 @@ mod da_load;
 mod diag;
 #[path = "emi.rs"]
 mod emi;
-#[path = "io.rs"]
 mod io;
-#[path = "protocol.rs"]
 pub mod protocol;
 
 pub use protocol::*;
@@ -41,8 +39,6 @@ pub struct EmmcInfo {
     /// CID 寄存器内容（16 字节）
     pub cid: Vec<u8>,
 }
-
-impl EmmcInfo {}
 
 /// DAXFlash 结构体，处理 XFlash 协议
 pub struct DAXFlash<'a> {

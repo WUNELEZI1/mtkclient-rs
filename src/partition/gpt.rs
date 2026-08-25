@@ -41,7 +41,7 @@ impl GptCrcReport {
     }
 }
 
-fn crc32_ieee(data: &[u8]) -> u32 {
+pub(crate) fn crc32_ieee(data: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for &byte in data {
         crc ^= byte as u32;

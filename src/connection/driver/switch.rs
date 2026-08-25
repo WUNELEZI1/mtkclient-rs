@@ -21,10 +21,20 @@ use super::setupapi::{
 
 const MTKCLIENT_TEMP_DIR: &str = "mtkclient_winusb";
 const POLL_INTERVAL_MS: u64 = 500;
-const RETRY_COUNT: u32 = 3;
-const RETRY_DELAY_MS: u64 = 500;
-const STABILIZE_DELAY_MS: u64 = 200;
-const POLL_TIMEOUT_SEC: u32 = 10;
+/// 首次安装时设备（关掉 COM 口后）重枚举较慢，多给几次查找机会
+const RETRY_COUNT: u32 = 5;
+const RETRY_DELAY_MS: u64 = 700;
+/// 首次安装前等待设备稳定的时间（关掉 COM 口后设备可能正在重枚举，
+/// 太短会导致 create_list 找不到设备而误判失败）
+const STABILIZE_DELAY_MS: u64 = 700;
+/// 验证轮询时长：首次安装 WinUSB 目录签名 + 驱动绑定可能较慢
+const POLL_TIMEOUT_SEC: u32 = 15;
+/// 整段安装流程重试次数（prepare → 强制安装 → 重枚举 → 验证）
+const INSTALL_RETRY_COUNT: u32 = 4;
+/// 指数退避基数：800ms → 1600ms → 3200ms → 6400ms
+const INSTALL_BACKOFF_BASE_MS: u64 = 800;
+/// 主动重枚举后等待设备重新出现的时长（首次安装驱动绑定较慢，给足时间）
+const REENUM_WAIT_MS: u64 = 2500;
 
 /// 切换 BROM 设备到 WinUSB 驱动（Zadig 风格）
 pub fn switch_to_winusb() -> Result<(), String> {
@@ -43,46 +53,110 @@ pub fn switch_to_winusb() -> Result<(), String> {
         return Ok(());
     }
 
-    // 步骤 2：wdi-rs create_list 找设备
-    let device = find_brom_device()?;
+    let mut last_err = String::new();
+    for attempt in 1..=INSTALL_RETRY_COUNT {
+        info!(
+            "[DRIVER] WinUSB 安装尝试 {}/{}",
+            attempt, INSTALL_RETRY_COUNT
+        );
 
-    // 步骤 3：wdi-rs prepare_driver 生成 WinUSB INF
-    let inf_dir = get_inf_dir();
-    std::fs::create_dir_all(&inf_dir).map_err(|e| format!("创建 INF 目录失败: {}", e))?;
+        // 步骤 2：wdi-rs create_list 找设备
+        let device = match find_brom_device() {
+            Ok(d) => d,
+            Err(e) => {
+                last_err = e;
+                warn!("[DRIVER] 第 {} 次未找到设备: {}", attempt, last_err);
+                if attempt < INSTALL_RETRY_COUNT {
+                    let delay = INSTALL_BACKOFF_BASE_MS * (1u64 << (attempt - 1));
+                    std::thread::sleep(Duration::from_millis(delay));
+                }
+                continue;
+            }
+        };
 
-    info!(
-        "[DRIVER] wdi-rs prepare_driver - 生成/签名 WinUSB INF: {}\\{}",
-        inf_dir.display(),
-        INF_NAME
-    );
+        // 步骤 3：wdi-rs prepare_driver 生成 WinUSB INF
+        let inf_dir = get_inf_dir();
+        std::fs::create_dir_all(&inf_dir).map_err(|e| format!("创建 INF 目录失败: {}", e))?;
 
-    let options = PrepareDriverOptions {
-        driver_type: wdi_rs::DriverType::WinUsb,
-        vendor_name: Some("MediaTek".to_string()),
-        device_guid: None,
-        disable_cat: false,
-        disable_signing: false,
-        cert_subject: None,
-        external_inf: false,
-        use_wcid_driver: false,
-    };
+        info!(
+            "[DRIVER] wdi-rs prepare_driver - 生成/签名 WinUSB INF: {}\\{}",
+            inf_dir.display(),
+            INF_NAME
+        );
 
-    let inf_dir_str = inf_dir.to_str().ok_or("INF 目录路径包含非 UTF-8 字符")?;
-    prepare_driver(&device, inf_dir_str, INF_NAME, &options)
-        .map_err(|e| format!("wdi-rs prepare_driver 失败: {}", e))?;
-    info!("[DRIVER] WinUSB INF 已生成、签名、并注册到驱动商店");
+        let options = PrepareDriverOptions {
+            driver_type: wdi_rs::DriverType::WinUsb,
+            vendor_name: Some("MediaTek".to_string()),
+            device_guid: None,
+            disable_cat: false,
+            disable_signing: false,
+            cert_subject: None,
+            external_inf: false,
+            use_wcid_driver: false,
+        };
 
-    // 步骤 4：调用 Windows API 强制安装
-    info!("[DRIVER] 调用 UpdateDriverForPlugAndPlayDevicesW (INSTALLFLAG_FORCE)...");
-    force_install_via_api(&device, &inf_dir)?;
+        let inf_dir_str = inf_dir.to_str().ok_or("INF 目录路径包含非 UTF-8 字符")?;
+        if let Err(e) = prepare_driver(&device, inf_dir_str, INF_NAME, &options) {
+            last_err = format!("wdi-rs prepare_driver 失败: {}", e);
+            warn!("[DRIVER] 第 {} 次 prepare_driver 失败: {}", attempt, last_err);
+            if attempt < INSTALL_RETRY_COUNT {
+                let delay = INSTALL_BACKOFF_BASE_MS * (1u64 << (attempt - 1));
+                std::thread::sleep(Duration::from_millis(delay));
+            }
+            continue;
+        }
+        info!("[DRIVER] WinUSB INF 已生成、签名、并注册到驱动商店");
 
-    // 步骤 5：libusb 验证
-    if poll_libusb_ready(POLL_TIMEOUT_SEC) {
-        info!("[DRIVER] 设备已切换到 WinUSB（验证通过）");
-        return Ok(());
+        // 步骤 4：调用 Windows API 强制安装
+        info!("[DRIVER] 调用 UpdateDriverForPlugAndPlayDevicesW (INSTALLFLAG_FORCE)...");
+        if let Err(e) = force_install_via_api(&device, &inf_dir) {
+            last_err = format!("强制安装失败: {}", e);
+            warn!("[DRIVER] 第 {} 次强制安装失败: {}", attempt, last_err);
+            if attempt < INSTALL_RETRY_COUNT {
+                let delay = INSTALL_BACKOFF_BASE_MS * (1u64 << (attempt - 1));
+                std::thread::sleep(Duration::from_millis(delay));
+            }
+            continue;
+        }
+
+        // 步骤 5：主动重枚举设备，使新驱动立即生效（免去手动重新插拔）。
+        // 部分机器首次安装后设备仍绑定旧驱动，必须触发一次重枚举才能稳定切换到 WinUSB。
+        match unsafe { super::setupapi::find_and_restart_brom_device() } {
+            Ok(()) => {
+                info!("[DRIVER] 已触发设备重枚举，等待 WinUSB 驱动生效...");
+                std::thread::sleep(Duration::from_millis(REENUM_WAIT_MS));
+            }
+            Err(e) => warn!("[DRIVER] 主动重枚举失败（依赖轮询兜底）: {}", e),
+        }
+
+        // 步骤 6：SetupAPI 验证（设备重枚举后驱动变为 WinUSB）
+        if poll_libusb_ready(POLL_TIMEOUT_SEC) {
+            info!("[DRIVER] 设备已切换到 WinUSB（验证通过）");
+            return Ok(());
+        }
+        last_err = "WinUSB 强制安装后设备驱动未变为 WinUSB（轮询超时）".to_string();
+        warn!("[DRIVER] 第 {} 次验证失败: {}", attempt, last_err);
+        // 轮询超时但设备可能仍在线、只是卡在旧驱动上：再触发一次重枚举尝试推它一把，
+        // 避免直接进入下一轮完整 prepare（节省时间、提高首次安装成功率）。
+        if attempt < INSTALL_RETRY_COUNT {
+            if unsafe { super::setupapi::find_and_restart_brom_device() }.is_ok() {
+                std::thread::sleep(Duration::from_millis(REENUM_WAIT_MS));
+            }
+            let delay = INSTALL_BACKOFF_BASE_MS * (1u64 << (attempt - 1));
+            std::thread::sleep(Duration::from_millis(delay));
+        }
     }
 
-    Err("WinUSB 强制安装后 libusb1-sys 仍找不到设备（10秒超时）".to_string())
+    Err(format!(
+        "WinUSB 驱动安装失败（已重试 {} 次）: {}\n\
+         手动解决：以管理员身份打开设备管理器 → 找到 \"MTK USB Port\" / \"BROM\" 设备 → \
+         右键“更新驱动程序” → “浏览我的计算机以查找驱动” → 指向目录 '{}' → \
+         选择 {} 强制安装。",
+        INSTALL_RETRY_COUNT,
+        last_err,
+        get_inf_dir().display(),
+        INF_NAME
+    ))
 }
 
 /// 用 wdi-rs create_list 找到 BROM 设备（带重试，等设备稳定）

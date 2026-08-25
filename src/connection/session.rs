@@ -176,6 +176,7 @@ impl SessionState {
     }
 
     /// 检查设备是否在线（VID/PID 匹配）
+    #[allow(dead_code)]
     pub fn device_online(&self, vid: u16, pid: u16) -> bool {
         self.usb_vid == vid && self.usb_pid == pid
     }
@@ -226,6 +227,7 @@ where
 /// 如果 .state 存在且 da_loaded=true 且设备仍在线，跳过 BROM→DA 流程。
 /// 不使用时间超时判断——只要设备保持连接，DA 会话就有效。
 /// 真正的 DA 模式验证由后续的 check_da_session / reinit 完成（心跳检测）。
+#[allow(dead_code)]
 pub fn try_reuse_da_session(vid: u16, pid: u16) -> bool {
     if let Some(state) = SessionState::load() {
         if state.da_loaded && state.device_online(vid, pid) {

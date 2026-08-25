@@ -411,83 +411,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let work_mode = app_config.work_mode;
     debug!("[MAIN] 工作模式: {:?}", work_mode);
 
-    // === DA 会话复用检查 ===
-    // 如果 .state 存在且设备已经处于 DA 模式（PID=0x2000），
-    // 可以跳过 BROM→DA 流程，直接连接 DA 模式设备。
-    // 流程：
-    //   1. libusb 枚举当前 USB 设备，找到第一个 MediaTek 设备
-    //   2. 读 .state 文件，检查 da_loaded 标志和 VID/PID 匹配
-    //   3. 如果复用条件满足 → connect_to_da_mode（直接连接 PID=0x2000）
-    //   4. 否则 → 走正常的 smart_init 流程
-    let mut da_session_reused =
-        if let Some((current_vid, current_pid, _dev_type)) = usb::get_first_mtk_vid_pid() {
-            if crate::connection::try_reuse_da_session(current_vid, current_pid) {
-                info!(
-                    "{}",
-                    "[DA_SESSION] 检测到现有 DA 会话，尝试复用..."
-                        .green()
-                        .bold()
-                );
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        };
+    // === DA 会话复用已全面禁用 ===
+    // MTK 设备的 DA 会话不跨进程存活：无论 BROM(PID=0x0003) 还是 Preloader(PID=0x2000)，
+    // 进程退出都会触发设备复位、DA 死掉；但 PID 仍保持原值（BROM 始终 0x0003、Preloader 始终
+    // 0x2000）。旧逻辑据此用 .state(da_loaded) + device_online() 仅凭 PID 字符串比较判定复用，
+    // 必然误命中一个已死的 DA 会话，导致下一条命令发往无 DA 的设备 -> 失败/卡死。
+    // 故所有模式统一走 smart_init 重新握手 + 重载 DA；.state 仅保留作缓存元数据
+    // (gpt_cache / optional_query_failures / preloader_path)，不再做 DA 会话连接复用。
+    // 详见 reconnect.rs smart_init_preloader 注释与 session.rs device_online 实现。
+    // DA 会话复用已全面禁用（见上文注释），统一走 smart_init 重新握手 + 重载 DA。
+    let (mut preloader, _mode) = conn_mgr.smart_init(&usb_context, work_mode)?;
 
-    let (mut preloader, _mode) = if da_session_reused {
-        match conn_mgr.connect_to_da_mode(&usb_context) {
-            Ok(pair) => pair,
-            Err(e) => {
-                warn!("[DA_SESSION] DA 会话复用失败: {}，回退到正常流程", e);
-                crate::connection::reset_session();
-                let pair = conn_mgr.smart_init(&usb_context, work_mode)?;
-                da_session_reused = conn_mgr.da_session_reused_in_init;
-                pair
+    // 从 .state 恢复 preloader 路径缓存（与 DA 会话复用无关，仅作用户未指定时的默认数据源）。
+    let restored_preloader_path = match crate::connection::SessionState::load() {
+        Some(state) => match state.preloader_path {
+            Some(ref path) if std::path::Path::new(path).exists() => {
+                debug!("[MAIN] 从 .state 恢复 preloader 路径: {}", path);
+                Some(path.clone())
             }
-        }
-    } else {
-        let pair = conn_mgr.smart_init(&usb_context, work_mode)?;
-        if conn_mgr.da_session_reused_in_init {
-            da_session_reused = true;
-        }
-        pair
-    };
-
-    // 从 .state 恢复 preloader 路径（如果存在且用户未指定）
-    let restored_preloader_path = if da_session_reused {
-        if let Some(state) = crate::connection::SessionState::load() {
-            if let Some(ref path) = state.preloader_path {
-                if std::path::Path::new(path).exists() {
-                    debug!("[DA_SESSION] 从 .state 恢复 preloader 路径: {}", path);
-                    Some(path.clone())
-                } else {
-                    warn!("[DA_SESSION] .state 中的 preloader 路径不存在: {}", path);
-                    None
-                }
-            } else {
+            Some(ref path) => {
+                warn!("[MAIN] .state 中的 preloader 路径不存在: {}", path);
                 None
             }
-        } else {
-            None
-        }
-    } else {
-        None
+            None => None,
+        },
+        None => None,
     };
 
-    if da_session_reused {
-        // 实际复用既有 DA 会话（设备停留在 DA 模式），与命令行 --mode 未必一致，
-        // 如实显示，避免"--mode preloader 却打印 BROM 模式"的误导。
-        info!("{}", "连接成功 (复用既有 DA 会话)".green().bold());
-    } else {
-        match work_mode {
-            crate::system::config::WorkMode::Preloader => {
-                info!("{}", "连接成功 (Preloader 模式)".green().bold());
-            }
-            _ => {
-                info!("{}", "连接成功 (BROM 模式)".green().bold());
-            }
+    match work_mode {
+        crate::system::config::WorkMode::Preloader => {
+            info!("{}", "连接成功 (Preloader 模式)".green().bold());
+        }
+        _ => {
+            info!("{}", "连接成功 (BROM 模式)".green().bold());
         }
     }
 
@@ -514,29 +470,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     da.patch_da = cli.patch_da;
     da.da_x_speed = app_config.da_x_speed;
 
-    // 复用 DA 会话时：循环排空 IN 残留（不 clear_halt），直接标记 daext
-    // 不做心跳验证、不发 xflash_sync、不 reconnect：
-    //   刷机匣日志证实"重新初始化DA模式"只做 drain + devctrl 查询后直接操作，
-    //   DA 在 DRAM 中持续运行，USB 重新打开后状态机保持完整。
-    //   心跳验证用的 send_devctrl(0x010106) 在 USB 刚重开后可能超时（设备还在
-    //   处理 USB 枚举），导致误判 DA 失效 → reconnect → xflash_sync → 状态破坏 →
-    //   fallback BROM 加载 → 设备实际还在 DA 模式 → send_da 超时。
-    //   drain_pipes 循环排空 IN 残留，但不 clear_halt（会重置 data toggle
-    //   导致后续读取错位，如 0xEF400400 错误）。
-    if da_session_reused {
-        da.preloader.device.drain_pipes();
-        da.daext = true;
-        let init_mode = crate::connection::SessionState::load().map(|s| s.init_mode);
-        info!(
-            "[DA_SESSION] DA 会话复用 (init_mode={:?})，跳过验证直接使用",
-            init_mode
-        );
-    }
-
-    if !da_session_reused {
-        // 如果复用验证失败，回退到正常加载流程
-        // handle_command 中检测到 daext=false 会自动 upload_da
-    }
+    // DA 会话复用已禁用（见上文注释）：统一由 handle_command 内部 upload_da 走新鲜 DA 链路。
 
     // preloader 路径优先级：用户指定 > .state 恢复 > 从设备 dump
     let effective_preloader_path = if !final_preloader_path.is_empty() {

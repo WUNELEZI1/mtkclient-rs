@@ -56,6 +56,18 @@ fn scatter_block(e: &ScatterEntry) -> String {
     )
 }
 
+/// 根据分区名推断 SP Flash Tool 的 `type` 字段
+///
+/// 文件系统分区标注为 EXT4，SPFT 据此执行格式化；其余（boot/recovery/preloader 等）
+/// 标注为 NORMAL_ROM。对齐刷机匣 scatter：仅文件系统分区允许 SPFT 格式化写入。
+fn fs_type_for(name: &str) -> &'static str {
+    match name.to_ascii_lowercase().as_str() {
+        "system" | "system_ext" | "system_other" | "vendor" | "product" | "odm"
+        | "userdata" | "cache" | "metadata" | "persist" | "cust" | "version" => "EXT4",
+        _ => "NORMAL_ROM",
+    }
+}
+
 /// Scatter header 统一生成（PRELOADER）
 pub fn generate_scatter_header() -> String {
     scatter_block(&ScatterEntry {
@@ -69,6 +81,22 @@ pub fn generate_scatter_header() -> String {
         is_upgradable: true,
         is_reserved: false,
     })
+}
+
+/// 将芯片的 hw_code 映射为 SP Flash Tool scatter 的 `platform:` 字符串。
+///
+/// 同时匹配 `ChipConfig.hw_code` 与 `ChipConfig.da_code` 两种形式
+/// （如 MT6768 的 hw_code=0x0707、da_code=0x6768，两者都应得到 "MT6768"），
+/// 确保无论调用方传入哪种芯片代码都能正确解析。未知芯片回退为
+/// `MTxxxx` 形式，避免 SPFT 因 platform 字段缺失/非法而拒绝加载。
+fn hw_code_to_platform(hw_code: u32) -> String {
+    match hw_code {
+        // MT6768 / MT6769（Helio P65/G85）
+        0x6768 | 0x0707 => "MT6768".to_string(),
+        // MT6771 / MT8385 / MT8183 / MT8666（Helio P60/P70/G80）
+        0x6771 | 0x0788 => "MT6771".to_string(),
+        other => format!("MT{:04X}", other),
+    }
 }
 
 /// 从 GPT 数据生成 SP Flash Tool 格式的 scatter 文件（YAML 格式）
@@ -90,7 +118,14 @@ pub fn generate_scatter_from_gpt(
     lines.push("- general: MTK_PLATFORM_CFG".to_string());
     lines.push("  info:".to_string());
     lines.push("  - config_version: V1.1.2".to_string());
-    lines.push("    platform: MT6768".to_string());
+    // platform 必须匹配真实芯片，否则 SPFT 在非 MT6768 设备上拒绝加载。
+    // 从 DA 会话状态读取设备上报的 hw_code（device chip），再查表得到平台名。
+    let platform = hw_code_to_platform(
+        crate::connection::session::SessionState::load()
+            .map(|s| s.hw_code as u32)
+            .unwrap_or(0),
+    );
+    lines.push(format!("    platform: {}", platform));
     lines.push("    project: mtkclient-rs".to_string());
     lines.push("    storage: EMMC".to_string());
     lines.push("    boot_channel: MSDC_0".to_string());
@@ -139,7 +174,7 @@ pub fn generate_scatter_from_gpt(
             size: entry.size,
             region: "EMMC_USER",
             operation_type: op_type,
-            blk_type: "NORMAL_ROM",
+            blk_type: fs_type_for(&entry.name),
             is_upgradable: upgradable,
             is_reserved,
         }));
