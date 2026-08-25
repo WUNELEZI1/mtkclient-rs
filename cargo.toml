@@ -11,8 +11,8 @@ non_snake_case = "allow"
 [dependencies]
 # 日志（log 仅作 Log trait 来源；格式器与按模块过滤均为自研；std 特性提供 set_boxed_logger）
 log = { version = "0.4", features = ["std"] }
-# 命令行参数解析
-clap = { version = "4", features = ["derive"] }
+# 命令行参数解析（裁剪默认特性：仅保留 std + derive + help，去除 color/suggestions/error-context/unicode/env/wrap_help 以减体积）
+clap = { version = "4", default-features = false, features = ["std", "derive", "help"] }
 # 串口通信
 serialport = "4.7"
 # 加密算法（sha256 已自研，见 src/sha.rs）
