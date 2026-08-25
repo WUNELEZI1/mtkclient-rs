@@ -44,9 +44,11 @@ codegen-units = 16
 lto = "thin"
 
 [profile.release]
-# 发布模式：最小二进制体积优先（牺牲少量 CPU 密集路径速度；
-# 刷机瓶颈在 USB/设备 I/O，实测影响有限；配合 lto=fat+codegen-units=1 进一步减体积）
-opt-level = "z"
+# 发布模式：运行时性能最强优先，编译速度不计；无调试符号
+# opt-level=3 最高速度优化；lto=fat 全程序内联；codegen-units=1 最大跨单元优化；
+# debug=false+strip=symbols 去除调试信息与符号表；panic=abort 去掉 unwind 表；
+# overflow-checks=false 关闭溢出检查；incremental=false 不缓存增量（配合 fat lto 已无意义）
+opt-level = 3
 lto = "fat"
 codegen-units = 1
 debug = false
