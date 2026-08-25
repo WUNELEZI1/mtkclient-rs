@@ -55,8 +55,14 @@ pub const DA_EXT_BOOT_ADDR: u32 = 0x4FFF0000;
 // 超时常量 (ms)
 // =============================================================================
 
-/// xread 临时超时 (ms)
-const XREAD_TIMEOUT_MS: u64 = 1000;
+/// DA 控制读（status / xread / xread_data）等待首字节的最长超时 (ms)。
+/// 串口默认读超时仅 `SERIAL_OPEN_TIMEOUT_MS`(1s)，而慢速 Preloader 串口 DA
+/// 在收到重命令（GET_PKT_LEN、setup_hw、send_devctrl、write status 等）后回包
+/// 可能超 1s，导致 status 读取 `Operation timed out` 而命令失败。故 DA 控制读统一
+/// 用较长超时等待首字节。USB 路径读为自建循环，长超时同样安全。
+/// 注意：与 `with_short_timeout` 的快速失败协同——若调用方已显式设更短的超时
+///（如可选查询 200ms/50ms），以 `max(当前, 本值)` 取较大者，避免覆盖快速失败语义。
+const DA_CTRL_TIMEOUT_MS: u64 = 5000;
 /// 可选查询短超时 (ms)
 const SHORT_QUERY_TIMEOUT_MS: u64 = 200;
 /// SLA 查询超时 (ms)
@@ -196,11 +202,12 @@ impl<'a> DAXFlash<'a> {
     /// 流程：读取 12 字节头（magic + type + length）→ 验证 magic → 读取数据
     /// 返回：读取到的数据长度（如果是 4 字节则返回 u32 值）
     pub(crate) fn xread(&mut self) -> Result<u32, String> {
-        // 设备处理 setup_hw_init 后可能需要数百毫秒才返回响应
+        // 设备处理 setup_hw_init 后可能需要数百毫秒才返回响应。
+        // 用 max(当前超时, DA_CTRL_TIMEOUT_MS) 等待首字节，避免慢速串口 status 超时；
+        // 若调用方已设更短超时（with_short_timeout 快速失败），保留之。
         let orig_timeout = self.preloader.device.get_timeout();
-        self.preloader
-            .device
-            .set_timeout(Duration::from_millis(XREAD_TIMEOUT_MS));
+        let eff = orig_timeout.max(Duration::from_millis(DA_CTRL_TIMEOUT_MS));
+        self.preloader.device.set_timeout(eff);
 
         let result = self.xread_inner();
         self.preloader.device.set_timeout(orig_timeout);
@@ -241,66 +248,87 @@ impl<'a> DAXFlash<'a> {
 
     /// 读取 status (4 字节小端)
     pub(crate) fn status(&mut self) -> Result<u32, String> {
-        let mut hdr = [0u8; 12];
-        self.preloader.device.read_exact(&mut hdr)?;
-        let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
-        let _data_type = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
-        let length = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
-        if magic != CMD_MAGIC {
-            trace!("[status] bad magic: 0x{:08X}", magic);
-            return Err(format!("status magic error: 0x{:08X}", magic));
-        }
-        if length > 0 {
-            let mut tmp = vec![0u8; length as usize];
-            self.preloader.device.read_exact(&mut tmp)?;
-            if length == 4 {
-                let val = u32::from_le_bytes(tmp[..4].try_into().unwrap());
-                // Python 特殊情况：如果 status == 0xFEEEEEEF，返回 0
-                if val == 0xFEEEEEEF {
-                    trace!("[status] 0xFEEEEEEF → 0");
-                    return Ok(0);
+        // DA 控制读：慢速串口下 DA 回 status 可能超默认 1s，用 max(当前, DA_CTRL_TIMEOUT_MS)
+        // 等待首字节，避免 status 读取 Operation timed out。调用方已设更短超时时保留之。
+        let orig_timeout = self.preloader.device.get_timeout();
+        let eff = orig_timeout.max(Duration::from_millis(DA_CTRL_TIMEOUT_MS));
+        self.preloader.device.set_timeout(eff);
+
+        let result = (|| {
+            let mut hdr = [0u8; 12];
+            self.preloader.device.read_exact(&mut hdr)?;
+            let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+            let _data_type = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
+            let length = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
+            if magic != CMD_MAGIC {
+                trace!("[status] bad magic: 0x{:08X}", magic);
+                return Err(format!("status magic error: 0x{:08X}", magic));
+            }
+            if length > 0 {
+                let mut tmp = vec![0u8; length as usize];
+                self.preloader.device.read_exact(&mut tmp)?;
+                if length == 4 {
+                    let val = u32::from_le_bytes(tmp[..4].try_into().unwrap());
+                    // Python 特殊情况：如果 status == 0xFEEEEEEF，返回 0
+                    if val == 0xFEEEEEEF {
+                        trace!("[status] 0xFEEEEEEF → 0");
+                        return Ok(0);
+                    }
+                    trace!(
+                        "[status] dt={:08X} len={} val=0x{:08X}",
+                        _data_type, length, val
+                    );
+                    return Ok(val);
+                } else if length == 2 {
+                    let val = u16::from_le_bytes(tmp[..2].try_into().unwrap()) as u32;
+                    trace!(
+                        "[status] dt={:08X} len={} val=0x{:04X}",
+                        _data_type, length, val
+                    );
+                    return Ok(val);
                 }
                 trace!(
-                    "[status] dt={:08X} len={} val=0x{:08X}",
-                    _data_type, length, val
+                    "[status] dt={:08X} len={} (non-u32/u16)",
+                    _data_type, length
                 );
-                return Ok(val);
-            } else if length == 2 {
-                let val = u16::from_le_bytes(tmp[..2].try_into().unwrap()) as u32;
-                trace!(
-                    "[status] dt={:08X} len={} val=0x{:04X}",
-                    _data_type, length, val
-                );
-                return Ok(val);
             }
-            trace!(
-                "[status] dt={:08X} len={} (non-u32/u16)",
-                _data_type, length
-            );
-        }
-        trace!("[status] dt={:08X} len={} (no payload)", _data_type, length);
-        Ok(0)
+            trace!("[status] dt={:08X} len={} (no payload)", _data_type, length);
+            Ok(0)
+        })();
+
+        self.preloader.device.set_timeout(orig_timeout);
+        result
     }
 
     /// 读取 XFlash 数据并返回 Vec
     pub(crate) fn xread_data(&mut self) -> Result<Vec<u8>, String> {
-        let mut hdr = [0u8; 12];
-        self.preloader.device.read_exact(&mut hdr)?;
-        let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
-        let _data_type = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
-        let length = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
-        if magic != CMD_MAGIC {
-            trace!("[xread_data] bad magic: 0x{:08X}", magic);
-            return Err(format!("xread magic error: 0x{:08X}", magic));
-        }
-        trace!("[xread_data] dt={:08X} len={}", _data_type, length);
-        if length > 0 {
-            let mut data = vec![0u8; length as usize];
-            self.preloader.device.read_exact(&mut data)?;
-            Ok(data)
-        } else {
-            Ok(vec![])
-        }
+        // DA 控制读：同 status()，用 max(当前, DA_CTRL_TIMEOUT_MS) 避免慢速串口超时
+        let orig_timeout = self.preloader.device.get_timeout();
+        let eff = orig_timeout.max(Duration::from_millis(DA_CTRL_TIMEOUT_MS));
+        self.preloader.device.set_timeout(eff);
+
+        let result = (|| {
+            let mut hdr = [0u8; 12];
+            self.preloader.device.read_exact(&mut hdr)?;
+            let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+            let _data_type = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
+            let length = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
+            if magic != CMD_MAGIC {
+                trace!("[xread_data] bad magic: 0x{:08X}", magic);
+                return Err(format!("xread magic error: 0x{:08X}", magic));
+            }
+            trace!("[xread_data] dt={:08X} len={}", _data_type, length);
+            if length > 0 {
+                let mut data = vec![0u8; length as usize];
+                self.preloader.device.read_exact(&mut data)?;
+                Ok(data)
+            } else {
+                Ok(vec![])
+            }
+        })();
+
+        self.preloader.device.set_timeout(orig_timeout);
+        result
     }
 }
 

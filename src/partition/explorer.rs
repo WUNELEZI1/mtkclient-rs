@@ -53,18 +53,18 @@ impl LpTranslator {
     }
 
     /// 简单翻译，不跨 extent，用于 superblock/BGD/inode 等小块
-    fn logical_to_abs(&self, logical_offset: u64) -> u64 {
+    fn logical_to_abs(&self, logical_offset: u64) -> Result<u64, String> {
         let mut acc = 0u64;
         for ext in &self.extents {
             if logical_offset < acc + ext.size {
-                return ext.phys_offset + (logical_offset - acc);
+                return Ok(ext.phys_offset + (logical_offset - acc));
             }
             acc += ext.size;
         }
-        panic!(
+        Err(format!(
             "offset 0x{:X} 超出 LP 范围 (total 0x{:X})",
             logical_offset, self.total_size
-        );
+        ))
     }
 
     /// 翻译一段连续的分区逻辑偏移（可能跨 LP extent 边界）
@@ -246,7 +246,7 @@ fn read_ext4_superblock<F>(read_fn: &mut F, lp: &LpTranslator) -> Result<Ext4Sup
 where
     F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
 {
-    let abs_off = lp.logical_to_abs(1024);
+    let abs_off = lp.logical_to_abs(1024)?;
     let data = read_fn(abs_off, 1024)?;
     if data.len() < 1024 {
         return Err("superblock 数据不足 1024 字节".into());
@@ -295,7 +295,7 @@ where
         2048
     };
     let bgd_entry_offset = bgd_base + (group as u64) * sb.bgd_entry_size as u64;
-    let bgd_abs = lp.logical_to_abs(bgd_entry_offset);
+    let bgd_abs = lp.logical_to_abs(bgd_entry_offset)?;
     let bgd_data = read_fn(bgd_abs, sb.bgd_entry_size as u64)?;
     let inode_table_block = u32::from_le_bytes(bgd_data[8..12].try_into().unwrap());
 
@@ -304,7 +304,7 @@ where
         + (inode_num - 1) as u64 * sb.inode_size as u64;
 
     // 通过 LP 翻译
-    let abs_offset = lp.logical_to_abs(inode_logical_offset);
+    let abs_offset = lp.logical_to_abs(inode_logical_offset)?;
     let inode_data = read_fn(abs_offset, sb.inode_size as u64)?;
     Ok(inode_data)
 }
