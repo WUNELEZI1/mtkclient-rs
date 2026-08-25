@@ -22,8 +22,9 @@ impl<'a> DAXFlash<'a> {
     /// 重新初始化（DA 复用路径：只做心跳，不做任何可能改变 DA 状态的操作）
     ///
     /// DA 复用时设备已经处于完全初始化状态，reinit 的唯一目的是确认 DA 还活着。
-    /// 发送 GET_CHIP_ID 作为心跳，不发送 GET_EMMC_INFO 或其他可能改变状态的命令。
-    /// USB 高速重连已完全移除（只在 upload_da2 初始化时执行一次）。
+    /// 发送 GET_DA_VER_CMD 作为心跳，不发送 GET_EMMC_INFO 或其他可能改变状态的命令。
+    /// 注意：USB 高速重连（`try_usb_high_speed_reconnect`，两段式 HS→FS 降级）是独立的可选
+    /// 优化，由调用方在 DA 加载后显式触发，不在此处执行。
     pub(crate) fn reinit(&mut self) -> Result<(), String> {
         // 心跳：GET_CHIP_ID（确认 DA 存活）
         match self.send_devctrl(GET_DA_VER_CMD, None) {
