@@ -2,10 +2,10 @@
 
 use log::{debug, trace, warn};
 
+use super::LpMetadataGroup;
 use super::types::{
     LpMetadataExtent, LpMetadataGeometry, LpMetadataHeader, LpMetadataPartition, TableDescriptor,
 };
-use super::LpMetadataGroup;
 use super::{GEOMETRY_MAGIC, HEADER_MAGIC};
 
 /// 解析后的 Super 分区元数据
@@ -161,12 +161,11 @@ impl SuperMetadata {
                 } else {
                     0
                 };
-                let logical_block_size =
-                    if raw.is_power_of_two() && (512..=65536).contains(&raw) {
-                        raw
-                    } else {
-                        512
-                    };
+                let logical_block_size = if raw.is_power_of_two() && (512..=65536).contains(&raw) {
+                    raw
+                } else {
+                    512
+                };
                 return Some(LpMetadataGeometry { logical_block_size });
             }
         }

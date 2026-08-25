@@ -1,6 +1,6 @@
 use crate::color::Colorize;
-use log::{info, warn};
 use crate::da::DAXFlash;
+use log::{info, warn};
 
 /// A/B 槽位管理
 /// slot show — 显示当前槽位
@@ -17,7 +17,9 @@ pub fn cmd_slot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
         "a" => set_slot(da, 'a')?,
         "b" => set_slot(da, 'b')?,
         _ => {
-            return Err(format!("用法: mtkclient slot show|a|b（未知槽位操作: {}）", action).into());
+            return Err(
+                format!("用法: mtkclient slot show|a|b（未知槽位操作: {}）", action).into(),
+            );
         }
     }
 

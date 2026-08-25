@@ -1,10 +1,10 @@
 //! 分区写入 / 擦除 / Bootloader 锁
 
-use log::info;
-use std::io::Read;
 use crate::da::xflash::{CMD_FORMAT, CMD_MAGIC, DAXFlash, pack3};
 use crate::partition::GptInfo;
 use crate::partition::write::{check_write_resume, remove_write_resume_file};
+use log::info;
+use std::io::Read;
 
 /// 在文件末尾填充零字节的 Reader 包装器，用于 512 字节对齐。
 struct PaddedReader<R: Read> {
@@ -52,7 +52,9 @@ impl<'a> DAXFlash<'a> {
     /// 分块流式校验：避免大分区全量读入内存导致 OOM。
     /// 支持断点续传：续传时只校验本次写入的部分。
     pub fn write_partition_with_verify(
-        &mut self, part_name: &str, in_file: &str
+        &mut self,
+        part_name: &str,
+        in_file: &str,
     ) -> Result<(), String> {
         // 先写入（写入分区内部处理断点续传）
         self.write_partition(part_name, in_file)?;
@@ -168,7 +170,10 @@ impl<'a> DAXFlash<'a> {
         if file_size == part_size {
             info!("  文件大小与分区容量完全匹配");
         } else {
-            info!("  文件大小: {} 字节, 分区容量: {} 字节", file_size, part_size);
+            info!(
+                "  文件大小: {} 字节, 分区容量: {} 字节",
+                file_size, part_size
+            );
         }
 
         // 使用 PaddedReader 自动处理 512 字节对齐填充
@@ -313,7 +318,10 @@ impl<'a> DAXFlash<'a> {
         // 不用 recover_usb_pipes：clear_halt 会重置 data toggle 导致后续读取错位
         self.preloader.device.drain_pipes();
 
-        info!("  擦除完成: 分区 {} (0x{:X} @ 0x{:X})", part_name, size, addr);
+        info!(
+            "  擦除完成: 分区 {} (0x{:X} @ 0x{:X})",
+            part_name, size, addr
+        );
         Ok(())
     }
 

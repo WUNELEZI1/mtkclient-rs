@@ -8,8 +8,8 @@
 //! - `flush_input` / `rword` / `rdword` / `rbyte` 基础读工具
 
 use super::core::Preloader;
-use crate::system::config::{CHIP_CONFIGS, TargetConfig};
 use crate::color::Colorize;
+use crate::system::config::{CHIP_CONFIGS, TargetConfig};
 use log::trace;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

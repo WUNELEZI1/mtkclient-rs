@@ -1,9 +1,9 @@
 use super::Explorer;
-use super::lp::LpTranslator;
 use super::ext4::{
-    DirEntry, Ext4Superblock, read_ext4_superblock, read_inode, read_inode_data, get_inode_mode,
-    parse_dir, resolve_path, ROOT_INODE,
+    DirEntry, Ext4Superblock, ROOT_INODE, get_inode_mode, parse_dir, read_ext4_superblock,
+    read_inode, read_inode_data, resolve_path,
 };
+use super::lp::LpTranslator;
 use super::{LP_ATTR_READONLY, LP_ATTR_SLOT_SUFFIXED, fmt_size, is_dir_mode};
 
 impl Explorer {

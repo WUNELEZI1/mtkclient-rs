@@ -13,8 +13,8 @@
 
 use crate::da::xflash::protocol::CMD_WRITE_DATA;
 
-pub(crate) mod stream;
 pub(crate) mod cmd;
+pub(crate) mod stream;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 写入断点续传辅助函数

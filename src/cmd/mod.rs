@@ -113,7 +113,9 @@ pub fn print_help() {
     println!("  reboot fastboot --via preloader 通过 Preloader Pattern 协议重启到 Bootloader");
     println!();
     println!("{}", "其他:".bold());
-    println!("  dumppreloader                 从 RAM 提取 Preloader（DA 模式直接读出 / BROM Exploit 回退）");
+    println!(
+        "  dumppreloader                 从 RAM 提取 Preloader（DA 模式直接读出 / BROM Exploit 回退）"
+    );
     println!("  adb                           在 DA 模式下开启 ADB 并重启");
     println!("  peek <addr> [size]            读取设备内存（默认 4 字节），输出 hex dump");
     println!("  poke <addr> <hex_data>        写入数据到设备内存（hex 格式）");
@@ -252,9 +254,11 @@ fn validate_command(cmd: &str, args: &[String]) -> Result<(), Box<dyn std::error
             match args[0].as_str() {
                 "show" | "a" | "b" => {}
                 other => {
-                    return Err(
-                        format!("用法: mtkclient slot show|a|b（未知槽位操作: {}）", other).into(),
-                    );
+                    return Err(format!(
+                        "用法: mtkclient slot show|a|b（未知槽位操作: {}）",
+                        other
+                    )
+                    .into());
                 }
             }
         }

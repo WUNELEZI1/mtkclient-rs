@@ -62,8 +62,10 @@ pub fn handle_command(
         }
     }
 
-    let has_active_read_resume = cmd == "r" && super::active_read_resume_exists(&app_config.cmd_args);
-    let has_active_write_resume = cmd == "w" && super::active_write_resume_exists(&app_config.cmd_args);
+    let has_active_read_resume =
+        cmd == "r" && super::active_read_resume_exists(&app_config.cmd_args);
+    let has_active_write_resume =
+        cmd == "w" && super::active_write_resume_exists(&app_config.cmd_args);
 
     // 写入续传：DA 仍在 DRAM 中运行，但 USB 状态可能不一致（上次取消导致 endpoint 残留）
     // 保持 DA 会话复用（不重置），但在后续 handle_command 中通过 drain + xflash_sync 重新同步

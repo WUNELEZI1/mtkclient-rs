@@ -84,7 +84,10 @@ pub fn enable_virtual_terminal() {
         ] {
             let mut mode = 0u32;
             if GetConsoleMode(h as *mut std::ffi::c_void, &mut mode) != 0 {
-                let _ = SetConsoleMode(h as *mut std::ffi::c_void, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+                let _ = SetConsoleMode(
+                    h as *mut std::ffi::c_void,
+                    mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+                );
             }
         }
     }

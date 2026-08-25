@@ -7,14 +7,7 @@ use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
 use super::control_index_for_recipient;
 
 impl UsbDevice {
-    pub fn ctrl_in(
-        &mut self,
-        rt: u8,
-        r: u8,
-        v: u16,
-        i: u16,
-        len: u16,
-    ) -> Result<Vec<u8>, String> {
+    pub fn ctrl_in(&mut self, rt: u8, r: u8, v: u16, i: u16, len: u16) -> Result<Vec<u8>, String> {
         trace!(
             "[CTRL] IN rt=0x{:02X} r=0x{:02X} v=0x{:04X} i=0x{:04X} len={}",
             rt, r, v, i, len

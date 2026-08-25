@@ -1,9 +1,9 @@
 //! GPT 读取、缓存与分区地址解析
 
-use log::{debug, info, trace};
 use crate::da::xflash::DAXFlash;
 use crate::partition::GptInfo;
 use crate::partition::io::log_gpt_crc_report;
+use log::{debug, info, trace};
 
 /// 获取 GPT 缓存文件路径（位于 tmp/ 目录）
 fn gpt_cache_file() -> std::path::PathBuf {

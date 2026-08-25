@@ -35,10 +35,7 @@ pub fn cmd_dumppreloader(
     if da.daext {
         match read_preloader_via_da(da) {
             Ok((data, filename)) => return save_preloader(data, filename),
-            Err(e) => warn!(
-                "DA 模式读取 Preloader 失败 ({}), 回退 BROM exploit 路径",
-                e
-            ),
+            Err(e) => warn!("DA 模式读取 Preloader 失败 ({}), 回退 BROM exploit 路径", e),
         }
     }
 
@@ -57,7 +54,11 @@ pub fn cmd_dumppreloader(
 
 /// DA 模式：用 XFlash read_data 从设备内存直接读出 preloader
 fn read_preloader_via_da(da: &mut DAXFlash) -> Result<(Vec<u8>, String), String> {
-    let data = da.readflash_data_ex(PRELOADER_DUMP_ADDR, PRELOADER_DUMP_SIZE, PRELOADER_DUMP_PARTTYPE)?;
+    let data = da.readflash_data_ex(
+        PRELOADER_DUMP_ADDR,
+        PRELOADER_DUMP_SIZE,
+        PRELOADER_DUMP_PARTTYPE,
+    )?;
     if data.len() < PRELOADER_MAGIC.len() || &data[0..PRELOADER_MAGIC.len()] != PRELOADER_MAGIC {
         return Err("读出数据缺少 EMMC_BOOT 头，可能非 Preloader".to_string());
     }

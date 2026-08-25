@@ -1,7 +1,7 @@
 //! GPT CRC 校验报告日志
 
-use log::{debug, warn};
 use crate::partition::GptInfo;
+use log::{debug, warn};
 
 pub(crate) fn log_gpt_crc_report(gpt_info: &GptInfo<'_>) {
     match gpt_info.crc_report() {

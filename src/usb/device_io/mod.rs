@@ -3,9 +3,9 @@
 //! 使用 nusb Interface 的 control_transfer_in/out 和 bulk transfer_blocking。
 //! 后续阶段 2 会将 bulk 读取改为异步流水线（submit/complete）。
 
+pub(crate) mod control;
 pub(crate) mod read;
 pub(crate) mod write;
-pub(crate) mod control;
 
 use crate::usb::device::UsbDevice;
 use nusb::transfer::Recipient;

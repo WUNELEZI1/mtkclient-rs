@@ -27,6 +27,6 @@ pub mod log;
 pub use context::{UsbContext, UsbStage, get_first_mtk_vid_pid};
 pub use device::UsbDevice;
 #[allow(unused_imports)]
-pub use log::{usb_trace, set_usb_log_switch, set_usb_read_quiet};
+pub use log::{set_usb_log_switch, set_usb_read_quiet, usb_trace};
 // 注意：usb_trace_tx! / usb_trace_rx! 由 #[macro_export] 在 crate 根导出，
 // 调用方应使用 crate::usb_trace_tx! / crate::usb_trace_rx!

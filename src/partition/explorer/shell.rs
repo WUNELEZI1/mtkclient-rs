@@ -1,13 +1,13 @@
-use crate::color::Colorize;
-use super::lp::{LpExtent, LpPartition, LpTranslator};
 use super::ext4::{
-    DirEntry, read_ext4_superblock, read_inode, get_inode_size, get_inode_mode, get_inode_flags,
-    read_inode_data, parse_dir, resolve_path, ROOT_INODE, EXT4_INODE_FLAG_EXTENTS,
+    DirEntry, EXT4_INODE_FLAG_EXTENTS, ROOT_INODE, get_inode_flags, get_inode_mode, get_inode_size,
+    parse_dir, read_ext4_superblock, read_inode, read_inode_data, resolve_path,
 };
+use super::lp::{LpExtent, LpPartition, LpTranslator};
 use super::{
-    LP_ATTR_READONLY, LP_ATTR_SLOT_SUFFIXED, fmt_size, fmt_inode_size, file_type_str,
-    is_file_mode, is_dir_mode,
+    LP_ATTR_READONLY, LP_ATTR_SLOT_SUFFIXED, file_type_str, fmt_inode_size, fmt_size, is_dir_mode,
+    is_file_mode,
 };
+use crate::color::Colorize;
 
 pub struct Explorer {
     pub(crate) partitions: Vec<LpPartition>,

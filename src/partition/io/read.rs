@@ -1,10 +1,10 @@
 //! 分区读取（单分区 / 动态分区）
 
-use log::{debug, info};
-use std::sync::atomic::Ordering;
 use crate::da::xflash::DAXFlash;
 use crate::partition::io::compute_read_resume_offset;
 use crate::usb::log::QUIET_USB_READ;
+use log::{debug, info};
+use std::sync::atomic::Ordering;
 
 impl<'a> DAXFlash<'a> {
     /// 读取分区数据到文件
@@ -43,7 +43,11 @@ impl<'a> DAXFlash<'a> {
             || out_file.ends_with('\\')
             || (!out_path.exists() && out_path.extension().is_none())
         {
-            format!("{}/{}.img", out_file.trim_end_matches(['/', '\\']), part_name)
+            format!(
+                "{}/{}.img",
+                out_file.trim_end_matches(['/', '\\']),
+                part_name
+            )
         } else {
             out_file.to_string()
         };
@@ -106,48 +110,47 @@ impl<'a> DAXFlash<'a> {
         // READ_DATA，故此处必须传“分区基址”(addr) 而非已偏移地址，否则会出现双重偏移、
         // 读到分区之外的错误区域（数据损坏）。活跃续传分支只发 ACK，不使用 addr。
         let part_name_clone = part_name.to_string();
-        let total =
-            self.readflash_to_file(addr, size, parttype, out_file, start_offset, {
-                let bar = bar.clone();
-                let speed_window = speed_window.clone();
-                let last_speed_sample = last_speed_sample.clone();
-                move |bytes_read| {
-                    bar.set_position(bytes_read);
+        let total = self.readflash_to_file(addr, size, parttype, out_file, start_offset, {
+            let bar = bar.clone();
+            let speed_window = speed_window.clone();
+            let last_speed_sample = last_speed_sample.clone();
+            move |bytes_read| {
+                bar.set_position(bytes_read);
 
-                    // 滑动窗口速度计算
-                    let now = std::time::Instant::now();
-                    let prev = *last_speed_sample.lock().unwrap();
-                    let delta = bytes_read.saturating_sub(prev);
-                    if delta >= speed_sample_interval || bytes_read == size {
-                        {
-                            let mut window = speed_window.lock().unwrap();
-                            window.push_back((now, bytes_read));
-                            *last_speed_sample.lock().unwrap() = bytes_read;
+                // 滑动窗口速度计算
+                let now = std::time::Instant::now();
+                let prev = *last_speed_sample.lock().unwrap();
+                let delta = bytes_read.saturating_sub(prev);
+                if delta >= speed_sample_interval || bytes_read == size {
+                    {
+                        let mut window = speed_window.lock().unwrap();
+                        window.push_back((now, bytes_read));
+                        *last_speed_sample.lock().unwrap() = bytes_read;
 
-                            // 移除过期的采样点（VecDeque::pop_front 为 O(1)）
-                            let deadline = now - std::time::Duration::from_secs(speed_window_size);
-                            while window.len() > 2 && window.front().unwrap().0 < deadline {
-                                window.pop_front();
-                            }
+                        // 移除过期的采样点（VecDeque::pop_front 为 O(1)）
+                        let deadline = now - std::time::Duration::from_secs(speed_window_size);
+                        while window.len() > 2 && window.front().unwrap().0 < deadline {
+                            window.pop_front();
+                        }
 
-                            // 计算窗口平均速度
-                            if window.len() >= 2 {
-                                let first = window.front().unwrap();
-                                let last = window.back().unwrap();
-                                let time_diff = last.0.duration_since(first.0).as_secs_f64();
-                                if time_diff > 0.01 {
-                                    let byte_diff = last.1.saturating_sub(first.1);
-                                    let speed_mib = (byte_diff as f64 / 1024.0 / 1024.0) / time_diff;
-                                    bar.set_message(format!(
-                                        "读取: {} {:.2} MB/s",
-                                        part_name_clone, speed_mib
-                                    ));
-                                }
+                        // 计算窗口平均速度
+                        if window.len() >= 2 {
+                            let first = window.front().unwrap();
+                            let last = window.back().unwrap();
+                            let time_diff = last.0.duration_since(first.0).as_secs_f64();
+                            if time_diff > 0.01 {
+                                let byte_diff = last.1.saturating_sub(first.1);
+                                let speed_mib = (byte_diff as f64 / 1024.0 / 1024.0) / time_diff;
+                                bar.set_message(format!(
+                                    "读取: {} {:.2} MB/s",
+                                    part_name_clone, speed_mib
+                                ));
                             }
                         }
                     }
                 }
-            })?;
+            }
+        })?;
 
         bar.finish_with_message(format!("{} 读取完成 ({} 字节)", part_name, total));
         info!("  已保存到: {}", out_file);
@@ -159,7 +162,9 @@ impl<'a> DAXFlash<'a> {
     /// 用法: 读取动态分区 "system" 到 "system.img"
     /// 内部通过 super 元数据解析逻辑分区的物理偏移。
     pub fn read_dynamic_partition(
-        &mut self, logical_part_name: &str, out_file: &str
+        &mut self,
+        logical_part_name: &str,
+        out_file: &str,
     ) -> Result<(), String> {
         // 1. 找到 super 物理分区地址
         let (super_addr, _super_size) = self.find_partition_addr("super")?;

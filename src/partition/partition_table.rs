@@ -62,8 +62,8 @@ fn scatter_block(e: &ScatterEntry) -> String {
 /// 标注为 NORMAL_ROM。对齐刷机匣 scatter：仅文件系统分区允许 SPFT 格式化写入。
 fn fs_type_for(name: &str) -> &'static str {
     match name.to_ascii_lowercase().as_str() {
-        "system" | "system_ext" | "system_other" | "vendor" | "product" | "odm"
-        | "userdata" | "cache" | "metadata" | "persist" | "cust" | "version" => "EXT4",
+        "system" | "system_ext" | "system_other" | "vendor" | "product" | "odm" | "userdata"
+        | "cache" | "metadata" | "persist" | "cust" | "version" => "EXT4",
         _ => "NORMAL_ROM",
     }
 }

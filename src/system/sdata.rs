@@ -91,8 +91,7 @@ pub fn resolve_chip_payload(hw_code: u32, fallback_loader: &str) -> std::path::P
 pub fn resolve_named_payload(sdata_key: &str, fallback_filename: &str) -> std::path::PathBuf {
     if let Some(sd) = sdata() {
         if let Some(rel) = sd.payloads.get(sdata_key) {
-            let data_path =
-                get_exe_relative_path(&format!("data/{}", normalize_sep(rel)));
+            let data_path = get_exe_relative_path(&format!("data/{}", normalize_sep(rel)));
             if data_path.exists() {
                 return data_path;
             }

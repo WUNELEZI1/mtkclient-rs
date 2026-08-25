@@ -11,11 +11,11 @@
 //! STEP 2: WinUSB 直连（降级路径，跳过握手）
 //! ```
 
+use crate::color::Colorize;
 use crate::connection::driver::{UsbBusDetectionResult, detect_brom_driver_from_usb_bus};
 use crate::preloader::{Preloader, SerialPortTransport};
 use crate::system::config::WorkMode;
 use crate::usb::{UsbContext, UsbStage};
-use crate::color::Colorize;
 use log::{error, info, trace, warn};
 use std::time::Duration;
 

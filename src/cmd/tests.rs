@@ -49,8 +49,7 @@ fn transport_error_detection() {
 
 #[test]
 fn active_read_resume_detects_sidecar_file() {
-    let output =
-        std::env::temp_dir().join(format!("cmd_active_resume_{}.img", std::process::id()));
+    let output = std::env::temp_dir().join(format!("cmd_active_resume_{}.img", std::process::id()));
     let output = output.to_string_lossy().to_string();
 
     // written=4096, file=4096 → 精确匹配，应该检测到
@@ -148,10 +147,7 @@ fn is_transport_error_precise_by_variant() {
     assert!(is_transport_error(&AppError::Protocol(
         "DA 端点错误 timeout".into()
     )));
-    let io_err = AppError::Io(io::Error::new(
-        io::ErrorKind::NotFound,
-        "device not found",
-    ));
+    let io_err = AppError::Io(io::Error::new(io::ErrorKind::NotFound, "device not found"));
     assert!(is_transport_error(&io_err));
 
     // 4) 普通 Protocol 业务错误（无传输关键词）→ 不重置

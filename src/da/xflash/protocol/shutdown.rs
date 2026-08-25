@@ -1,7 +1,7 @@
 //! 协议原语 — 块 4: SHUTDOWN / XML DA 命令 (Layer 2 + Layer 3)
 
 use super::xml::{xml_reboot, xml_set_boot_mode};
-use super::{hex_str, CMD_MAGIC, CMD_SHUTDOWN, pack3, ShutdownBootMode, XmlBootMode};
+use super::{CMD_MAGIC, CMD_SHUTDOWN, ShutdownBootMode, XmlBootMode, hex_str, pack3};
 use log::{info, trace};
 
 use crate::da::xflash::DAXFlash;

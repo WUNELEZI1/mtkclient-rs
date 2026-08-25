@@ -75,14 +75,19 @@ impl LpTranslator {
 }
 
 /// 解析 LP 元数据，只读两块 4KB: geometry @ 0x1000, header @ 0x3000
-pub(crate) fn read_lp_metadata<F>(read_fn: &mut F) -> Result<(Vec<LpPartition>, Vec<LpExtent>), String>
+pub(crate) fn read_lp_metadata<F>(
+    read_fn: &mut F,
+) -> Result<(Vec<LpPartition>, Vec<LpExtent>), String>
 where
     F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
 {
     // 1. 读取 geometry @ 0x1000
     let geo_data = read_fn(0x1000, 4096)?;
     if geo_data.len() < 52 {
-        return Err(format!("短读：期望 52 字节（LP geometry），实际 {}", geo_data.len()));
+        return Err(format!(
+            "短读：期望 52 字节（LP geometry），实际 {}",
+            geo_data.len()
+        ));
     }
     let geo_magic = u32::from_le_bytes(geo_data[0..4].try_into().unwrap());
     if geo_magic != LP_GEOMETRY_MAGIC && geo_magic != LP_GEOMETRY_MAGIC_ALT {
@@ -96,7 +101,10 @@ where
     // 2. 读取 header @ 0x3000
     let hdr_data = read_fn(0x3000, 4096)?;
     if hdr_data.len() < 4 {
-        return Err(format!("短读：期望 4 字节（LP header magic），实际 {}", hdr_data.len()));
+        return Err(format!(
+            "短读：期望 4 字节（LP header magic），实际 {}",
+            hdr_data.len()
+        ));
     }
     let hdr_magic = u32::from_le_bytes(hdr_data[0..4].try_into().unwrap());
     if hdr_magic != LP_HEADER_MAGIC {
@@ -130,7 +138,10 @@ where
     F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
 {
     if hdr_data.len() < 104 {
-        return Err(format!("短读：期望 104 字节（LP header），实际 {}", hdr_data.len()));
+        return Err(format!(
+            "短读：期望 104 字节（LP header），实际 {}",
+            hdr_data.len()
+        ));
     }
     let header_size = u32::from_le_bytes(hdr_data[8..12].try_into().unwrap());
     let tables_base = 0x3000 + header_size as u64;

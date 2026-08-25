@@ -27,8 +27,8 @@
 #![allow(clippy::unnecessary_unwrap)]
 #![allow(clippy::unnecessary_find_map)]
 
-use clap::Parser;
 use crate::color::Colorize;
+use clap::Parser;
 use log::{debug, error, info, warn};
 use std::io::Write;
 use std::sync::Mutex;
@@ -124,7 +124,13 @@ impl log::Log for TerminalLogger {
             log::Level::Trace => "TRACE",
         };
         let timestamp = get_local_timestamp();
-        let _ = writeln!(std::io::stderr(), "[{}] [{}] {}", timestamp, level, record.args());
+        let _ = writeln!(
+            std::io::stderr(),
+            "[{}] [{}] {}",
+            timestamp,
+            level,
+            record.args()
+        );
     }
 
     fn flush(&self) {
@@ -171,6 +177,7 @@ impl log::Log for TeeLogger {
 mod cancel;
 #[path = "cmd/mod.rs"]
 mod cmd;
+mod color;
 #[path = "connection/mod.rs"]
 mod connection;
 #[path = "da/mod.rs"]
@@ -182,16 +189,15 @@ mod exploit;
 mod partition;
 #[path = "preloader/mod.rs"]
 mod preloader;
+mod progress;
 mod resume;
 #[path = "security/mod.rs"]
 mod security;
+mod sha;
 mod system;
 #[path = "usb/mod.rs"]
 mod usb;
 mod util;
-mod color;
-mod progress;
-mod sha;
 
 use connection::ConnectionManager;
 use usb::UsbContext;

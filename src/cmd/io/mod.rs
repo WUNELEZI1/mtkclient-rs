@@ -8,15 +8,15 @@
 //! - `cmd_peek`     — 读取设备内存（hex dump 输出）
 //! - `cmd_poke`     — 写入设备内存（hex 数据输入）
 
-pub(crate) mod read;
-pub(crate) mod write;
-pub(crate) mod erase;
-pub(crate) mod reboot;
 pub(crate) mod boot_mode;
+pub(crate) mod erase;
+pub(crate) mod read;
+pub(crate) mod reboot;
 pub(crate) mod slot;
+pub(crate) mod write;
 
-pub use read::{cmd_read, cmd_peek, cmd_poke, parse_addr, parse_size};
-pub use write::cmd_write;
 pub use erase::{cmd_erase, cmd_erase_data};
+pub use read::{cmd_peek, cmd_poke, cmd_read, parse_addr, parse_size};
 pub use reboot::cmd_reboot;
 pub use slot::cmd_slot;
+pub use write::cmd_write;
