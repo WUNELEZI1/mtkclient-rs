@@ -26,7 +26,7 @@ use log::{debug, error, info, warn};
 
 use crate::da::DAXFlash;
 use crate::system::config::AppConfig;
-use crate::usb::USB上下文;
+use crate::usb::UsbContext;
 
 pub fn print_help() {
     use crate::color::Colorize;
@@ -353,7 +353,7 @@ pub fn handle_command(
     log_level: u8,
     _quiet_dump: bool,
     preloader_file: &str,
-    _context: &USB上下文,
+    _context: &UsbContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let is_brom = !da.preloader.is_preloader_mode;
     let mut auto_dumped_file: Option<String> = None;
@@ -529,11 +529,11 @@ pub fn handle_command(
 
     if log_level >= 2 {
         if let Some(data) = da.get_emi_data() {
-            let _ = std::fs::write(crate::system::paths::获取tmp路径("emi_debug.bin"), data);
+            let _ = std::fs::write(crate::system::paths::get_tmp_path("emi_debug.bin"), data);
         }
         if let Some(data) = da.get_extensions_data() {
             let _ = std::fs::write(
-                crate::system::paths::获取tmp路径("extensions_debug.bin"),
+                crate::system::paths::get_tmp_path("extensions_debug.bin"),
                 &data,
             );
         }

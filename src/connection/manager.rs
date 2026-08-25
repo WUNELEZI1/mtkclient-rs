@@ -13,8 +13,8 @@
 
 use crate::connection::driver::{UsbBusDetectionResult, detect_brom_driver_from_usb_bus};
 use crate::preloader::{Preloader, SerialPortTransport};
-use crate::system::config::工作模式;
-use crate::usb::{USB上下文, USB阶段};
+use crate::system::config::WorkMode;
+use crate::usb::{UsbContext, UsbStage};
 use crate::color::Colorize;
 use log::{error, info, trace, warn};
 use std::time::Duration;
@@ -55,7 +55,7 @@ pub enum DeviceMode {
 /// 统一连接管理器
 pub struct ConnectionManager {
     pub(crate) mode: DeviceMode,
-    pub(crate) stage: USB阶段,
+    pub(crate) stage: UsbStage,
     pub(crate) port_name: Option<String>,
     /// smart_init 过程中是否成功复用了 DA 会话
     pub(crate) da_session_reused_in_init: bool,
@@ -65,7 +65,7 @@ impl ConnectionManager {
     pub fn new() -> Self {
         ConnectionManager {
             mode: DeviceMode::Preloader,
-            stage: USB阶段::未知,
+            stage: UsbStage::Unknown,
             port_name: None,
             da_session_reused_in_init: false,
         }
@@ -74,17 +74,17 @@ impl ConnectionManager {
     /// 统一设备初始化入口
     pub fn smart_init(
         &mut self,
-        context: &USB上下文,
-        工作模式: 工作模式,
+        context: &UsbContext,
+        work_mode: WorkMode,
     ) -> Result<(Preloader, DeviceMode), String> {
-        if 工作模式 == 工作模式::Preloader {
+        if work_mode == WorkMode::Preloader {
             // --mode preloader：优先 Preloader 串口握手；若长时间失败且 .state 标记
             // da_loaded（上一次是 DA 操作、设备仍停在 DA 模式），则 fallback 到 WinUSB
             // 复用活 DA 会话，而非死等 Preloader 握手。
             return self.smart_init_preloader(context, false, true);
         }
 
-        if 工作模式 == 工作模式::Auto {
+        if work_mode == WorkMode::Auto {
             info!("[AUTO] 自动检测模式：等待 BROM 或 Preloader 设备出现...");
             // auto 模式检测顺序：BROM(PID=0x0003) 优先，Preloader(PID=0x2000) 兜底。
             // 设备若处于 BROM 下载态应直接用 BROM，避免被 Preloader 分支抢先/忽略。
@@ -107,7 +107,7 @@ impl ConnectionManager {
                                 Ok(preloader) => {
                                     info!("{}", "[AUTO] BROM 串口握手成功".green().bold());
                                     self.mode = DeviceMode::Brom;
-                                    self.stage = USB阶段::Brom;
+                                    self.stage = UsbStage::Brom;
                                     self.port_name = Some(port_name.clone());
                                     return Ok((preloader, DeviceMode::Brom));
                                 }
@@ -159,7 +159,7 @@ impl ConnectionManager {
                             match self.preloader_serial_handshake(&p.port_name) {
                                 Ok(preloader) => {
                                     self.mode = DeviceMode::Preloader;
-                                    self.stage = USB阶段::Preloader;
+                                    self.stage = UsbStage::Preloader;
                                     self.port_name = Some(p.port_name.clone());
                                     return Ok((preloader, DeviceMode::Preloader));
                                 }
@@ -233,7 +233,7 @@ impl ConnectionManager {
                                             .bold()
                                     );
                                     self.mode = DeviceMode::Brom;
-                                    self.stage = USB阶段::Brom;
+                                    self.stage = UsbStage::Brom;
                                     self.port_name = Some(port.clone());
                                     return Ok((preloader, DeviceMode::Brom));
                                 }
@@ -263,7 +263,7 @@ impl ConnectionManager {
                             Ok(preloader) => {
                                 info!("{}", "COM 口前置握手成功，已切换到 WinUSB".green().bold());
                                 self.mode = DeviceMode::Brom;
-                                self.stage = USB阶段::Brom;
+                                self.stage = UsbStage::Brom;
                                 self.port_name = Some(port_name);
                                 return Ok((preloader, DeviceMode::Brom));
                             }
@@ -330,7 +330,7 @@ impl ConnectionManager {
                                             .bold()
                                     );
                                     self.mode = DeviceMode::Brom;
-                                    self.stage = USB阶段::Brom;
+                                    self.stage = UsbStage::Brom;
                                     self.port_name = Some(port.clone());
                                     return Ok((preloader, DeviceMode::Brom));
                                 }
@@ -352,16 +352,16 @@ impl ConnectionManager {
     /// WinUSB 直连（降级路径：设备已装 WinUSB 驱动 / COM 口扫描失败）
     fn fallback_to_winusb(
         &mut self,
-        context: &USB上下文,
+        context: &UsbContext,
     ) -> Result<(Preloader, DeviceMode), String> {
         info!("[USB] 尝试 WinUSB 直连...");
         info!("[USB] 等待 BROM 设备出现 (PID=0x0003, 无限等待)...");
 
-        let usb_device = self.reconnect_loop(context, USB阶段::Brom)?;
+        let usb_device = self.reconnect_loop(context, UsbStage::Brom)?;
 
         info!(
             "[USB] WinUSB 设备已打开: VID={:04x}, PID={:04x}, stage={:?}",
-            usb_device.vid, usb_device.pid, usb_device.阶段
+            usb_device.vid, usb_device.pid, usb_device.stage
         );
 
         // 构造 Preloader 并执行完整 BROM 握手
@@ -380,7 +380,7 @@ impl ConnectionManager {
         );
 
         self.mode = DeviceMode::Brom;
-        self.stage = USB阶段::Brom;
+        self.stage = UsbStage::Brom;
         Ok((preloader, DeviceMode::Brom))
     }
 
@@ -388,7 +388,7 @@ impl ConnectionManager {
     /// 如果累计握手失败次数达到上限，删除 .state 并退出程序
     fn fallback_to_winusb_with_retry(
         &mut self,
-        context: &USB上下文,
+        context: &UsbContext,
         consecutive_failures: u32,
     ) -> Result<(Preloader, DeviceMode), String> {
         match self.fallback_to_winusb(context) {
@@ -413,7 +413,7 @@ impl ConnectionManager {
     fn serial_handshake_and_switch(
         &self,
         port_name: &str,
-        context: &USB上下文,
+        context: &UsbContext,
     ) -> Result<Preloader, String> {
         // 1. 打开串口
         let transport = SerialPortTransport::new(port_name, 115200)?;
@@ -442,7 +442,7 @@ impl ConnectionManager {
         std::thread::sleep(Duration::from_secs(USB_REENUM_DELAY_SECS));
 
         // 6. libusb1-sys 打开设备（轮询 10 秒）
-        let usb_device = self.reconnect_loop(context, USB阶段::Brom)?;
+        let usb_device = self.reconnect_loop(context, UsbStage::Brom)?;
         info!(
             "WinUSB 打开成功: VID={:04X} PID={:04X}",
             usb_device.vid, usb_device.pid

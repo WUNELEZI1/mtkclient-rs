@@ -194,7 +194,7 @@ mod progress;
 mod sha;
 
 use connection::ConnectionManager;
-use usb::USB上下文;
+use usb::UsbContext;
 
 /// 检查 Windows 版本，要求 Windows 10 或更高
 #[cfg(target_os = "windows")]
@@ -350,11 +350,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_config = system::config::AppConfig::from_cli(&cli);
 
-    usb::设置USB日志开关(cli.usb_log);
+    usb::set_usb_log_switch(cli.usb_log);
 
     // --quiet-dump: 抑制 USB 读取日志和进度条
     if cli.quiet_dump {
-        usb::设置USB读取静默(true);
+        usb::set_usb_read_quiet(true);
     }
 
     let log_level = if cli.quiet {
@@ -367,7 +367,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if cli.usb_log {
         // TeeLogger：终端 + tmp/usb_debug.log（覆盖模式）
-        let usb_log_path = crate::system::paths::获取tmp路径("usb_debug.log");
+        let usb_log_path = crate::system::paths::get_tmp_path("usb_debug.log");
         let file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -400,7 +400,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return cmd::detect::cmd_detect().map_err(|e| e.to_string().into());
     }
 
-    let usb_context = USB上下文::新建().inspect_err(|e| {
+    let usb_context = UsbContext::new().inspect_err(|e| {
         error!("{}", e);
     })?;
 
@@ -408,8 +408,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut conn_mgr = ConnectionManager::new();
 
     // 工作模式：brom / preloader / auto
-    let 工作模式 = app_config.工作模式;
-    debug!("[MAIN] 工作模式: {:?}", 工作模式);
+    let work_mode = app_config.work_mode;
+    debug!("[MAIN] 工作模式: {:?}", work_mode);
 
     // === DA 会话复用检查 ===
     // 如果 .state 存在且设备已经处于 DA 模式（PID=0x2000），
@@ -420,7 +420,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   3. 如果复用条件满足 → connect_to_da_mode（直接连接 PID=0x2000）
     //   4. 否则 → 走正常的 smart_init 流程
     let mut da_session_reused =
-        if let Some((current_vid, current_pid, _dev_type)) = usb::获取第一个联发科VIDPID() {
+        if let Some((current_vid, current_pid, _dev_type)) = usb::get_first_mtk_vid_pid() {
             if crate::connection::try_reuse_da_session(current_vid, current_pid) {
                 info!(
                     "{}",
@@ -442,13 +442,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 warn!("[DA_SESSION] DA 会话复用失败: {}，回退到正常流程", e);
                 crate::connection::reset_session();
-                let pair = conn_mgr.smart_init(&usb_context, 工作模式)?;
+                let pair = conn_mgr.smart_init(&usb_context, work_mode)?;
                 da_session_reused = conn_mgr.da_session_reused_in_init;
                 pair
             }
         }
     } else {
-        let pair = conn_mgr.smart_init(&usb_context, 工作模式)?;
+        let pair = conn_mgr.smart_init(&usb_context, work_mode)?;
         if conn_mgr.da_session_reused_in_init {
             da_session_reused = true;
         }
@@ -481,8 +481,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 如实显示，避免"--mode preloader 却打印 BROM 模式"的误导。
         info!("{}", "连接成功 (复用既有 DA 会话)".green().bold());
     } else {
-        match 工作模式 {
-            crate::system::config::工作模式::Preloader => {
+        match work_mode {
+            crate::system::config::WorkMode::Preloader => {
                 info!("{}", "连接成功 (Preloader 模式)".green().bold());
             }
             _ => {

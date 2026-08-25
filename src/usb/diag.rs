@@ -4,7 +4,7 @@
 
 /// 检测 nusb 错误类型并给出诊断信息
 #[allow(dead_code)]
-pub fn 分类libusb错误(err: &str) -> &'static str {
+pub fn classify_libusb_error(err: &str) -> &'static str {
     if err.contains("Timeout") || err.contains("timeout") {
         "超时 (设备未响应)"
     } else if err.contains("Pipe") || err.contains("pipe") {

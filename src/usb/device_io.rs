@@ -3,7 +3,7 @@
 //! 使用 nusb Interface 的 control_transfer_in/out 和 bulk transfer_blocking。
 //! 后续阶段 2 会将 bulk 读取改为异步流水线（submit/complete）。
 
-use super::device::USB设备;
+use super::device::UsbDevice;
 use super::log::{QUIET_USB_READ, usb_trace};
 use log::trace;
 use std::sync::atomic::Ordering;
@@ -12,8 +12,8 @@ use std::time::Duration;
 use nusb::MaybeFuture;
 use nusb::transfer::{Bulk, ControlIn, ControlOut, ControlType, In, Recipient};
 
-const 取消传输排空超时: Duration = Duration::from_millis(20);
-const 取消传输最大排空次数: usize = 8;
+const CANCEL_TRANSFER_DRAIN_TIMEOUT: Duration = Duration::from_millis(20);
+const CANCEL_TRANSFER_MAX_DRAINS: usize = 8;
 
 pub(crate) fn bulk_in_submit_len(requested_len: usize, max_packet_size: u16) -> usize {
     let packet_size = usize::from(max_packet_size).max(1);
@@ -29,7 +29,7 @@ pub(crate) fn control_index_for_recipient(
     requested_index: u16,
     interface_number: u8,
 ) -> u16 {
-    match USB设备::转换接收者(bm_request_type) {
+    match UsbDevice::convert_receiver(bm_request_type) {
         Recipient::Interface => u16::from(interface_number),
         _ => requested_index,
     }
@@ -56,32 +56,32 @@ pub(crate) fn drain_pending_into(pending: &mut Vec<u8>, out: &mut [u8]) -> usize
 
 fn cancel_and_drain_in_endpoint(ep_in: &mut nusb::Endpoint<Bulk, In>) {
     ep_in.cancel_all();
-    for _ in 0..取消传输最大排空次数 {
+    for _ in 0..CANCEL_TRANSFER_MAX_DRAINS {
         if ep_in.pending() == 0 {
             break;
         }
-        let _ = ep_in.wait_next_complete(取消传输排空超时);
+        let _ = ep_in.wait_next_complete(CANCEL_TRANSFER_DRAIN_TIMEOUT);
     }
 }
 
 /// 获取 IN 端点地址（解决借用检查问题）
-fn 输入端点地址(设备: &USB设备) -> u8 {
-    设备.输入端点
+fn in_ep_addr(device: &UsbDevice) -> u8 {
+    device.in_ep
 }
 
 /// 获取 OUT 端点地址
-fn 输出端点地址(设备: &USB设备) -> u8 {
-    设备.输出端点
+fn out_ep_addr(device: &UsbDevice) -> u8 {
+    device.out_ep
 }
 
-impl USB设备 {
-    pub fn 预提交读取(&mut self, len: usize) -> Result<bool, String> {
-        if len == 0 || !self.输入暂存.is_empty() {
+impl UsbDevice {
+    pub fn submit_read(&mut self, len: usize) -> Result<bool, String> {
+        if len == 0 || !self.in_buf.is_empty() {
             return Ok(false);
         }
 
-        let max_packet_size = self.输入端点最大包大小;
-        let ep_in = self.获取输入端点_mut().ok_or("输入端点未初始化")?;
+        let max_packet_size = self.in_ep_max_packet_size;
+        let ep_in = self.in_endpoint_mut().ok_or("输入端点未初始化")?;
         if ep_in.pending() != 0 {
             return Ok(false);
         }
@@ -92,13 +92,13 @@ impl USB设备 {
         Ok(true)
     }
 
-    pub fn 完成预提交读取(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+    pub fn complete_read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
         if buf.is_empty() {
             return Ok(0);
         }
 
-        let timeout = self.超时;
-        let ep_in = self.获取输入端点_mut().ok_or("输入端点未初始化")?;
+        let timeout = self.timeout;
+        let ep_in = self.in_endpoint_mut().ok_or("输入端点未初始化")?;
         if ep_in.pending() == 0 {
             return Err("没有待完成的预提交读取".to_string());
         }
@@ -114,17 +114,17 @@ impl USB设备 {
         result
             .status
             .map_err(|e| format!("queued read err: {:?}", e))?;
-        let 实际长度 = result.actual_len;
+        let actual_len = result.actual_len;
         Ok(copy_from_bulk_packet(
-            &result.buffer[..实际长度],
+            &result.buffer[..actual_len],
             buf,
-            &mut self.输入暂存,
+            &mut self.in_buf,
         ))
     }
 
-    pub fn 写入(&mut self, data: &[u8]) -> Result<usize, String> {
-        let timeout = self.超时;
-        let ep_out = self.获取输出端点_mut().ok_or("输出端点未初始化")?;
+    pub fn write(&mut self, data: &[u8]) -> Result<usize, String> {
+        let timeout = self.timeout;
+        let ep_out = self.out_endpoint_mut().ok_or("输出端点未初始化")?;
 
         if data.is_empty() {
             // ZLP (Zero Length Packet)
@@ -175,29 +175,29 @@ impl USB设备 {
         }
     }
 
-    pub fn 读取(&mut self, buf: &mut [u8]) -> Result<usize, String> {
-        let 静默 = QUIET_USB_READ.load(Ordering::Relaxed);
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+        let quiet = QUIET_USB_READ.load(Ordering::Relaxed);
 
-        if !静默 {
+        if !quiet {
             trace!(
                 "[USB READ] starting, buf_len={}, timeout={:?}ms",
                 buf.len(),
-                self.超时.as_millis()
+                self.timeout.as_millis()
             );
         }
 
-        let pending_copied = drain_pending_into(&mut self.输入暂存, buf);
+        let pending_copied = drain_pending_into(&mut self.in_buf, buf);
         if pending_copied > 0 {
-            if !静默 {
+            if !quiet {
                 trace!("[USB READ] got {} bytes from pending", pending_copied);
             }
             return Ok(pending_copied);
         }
 
-        let submit_len = bulk_in_submit_len(buf.len(), self.输入端点最大包大小);
+        let submit_len = bulk_in_submit_len(buf.len(), self.in_ep_max_packet_size);
 
-        let timeout = self.超时;
-        let ep_in = self.获取输入端点_mut().ok_or("输入端点未初始化")?;
+        let timeout = self.timeout;
+        let ep_in = self.in_endpoint_mut().ok_or("输入端点未初始化")?;
 
         let buffer = nusb::transfer::Buffer::new(submit_len);
         ep_in.submit(buffer);
@@ -205,7 +205,7 @@ impl USB设备 {
         let result = match ep_in.wait_next_complete(timeout) {
             Some(r) => r,
             None => {
-                if !静默 {
+                if !quiet {
                     trace!("[USB READ] timeout");
                 }
                 cancel_and_drain_in_endpoint(ep_in);
@@ -215,12 +215,12 @@ impl USB设备 {
 
         match result.status {
             Ok(()) => {
-                let 实际长度 = result.actual_len;
-                if !静默 {
-                    trace!("[USB READ] got {} bytes", 实际长度);
+                let actual_len = result.actual_len;
+                if !quiet {
+                    trace!("[USB READ] got {} bytes", actual_len);
                 }
                 let copy_len =
-                    copy_from_bulk_packet(&result.buffer[..实际长度], buf, &mut self.输入暂存);
+                    copy_from_bulk_packet(&result.buffer[..actual_len], buf, &mut self.in_buf);
                 if copy_len > 0 {
                     usb_trace("RX", "USB设备::读取", &buf[..copy_len]);
                 }
@@ -229,10 +229,10 @@ impl USB设备 {
             Err(e) => {
                 let err_str = format!("{:?}", e);
                 if err_str.contains("timeout") || err_str.contains("Timeout") {
-                    if self.超时.as_millis() < 50 {
+                    if self.timeout.as_millis() < 50 {
                         return Ok(0);
                     }
-                    if !静默 {
+                    if !quiet {
                         trace!("[USB READ] timeout error");
                     }
                     Ok(0)
@@ -246,23 +246,23 @@ impl USB设备 {
     /// 精确读取：循环 bulk transfer 直到读满 buf.len()
     /// 使用双缓冲流水线：在等待当前 transfer 时提前提交下一个，
     /// 消除 USB 总线在两次 submit 之间的空闲间隙。
-    pub fn 精确读取(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+    pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<usize, String> {
         if buf.is_empty() {
             return Ok(0);
         }
-        let 静默 = QUIET_USB_READ.load(Ordering::Relaxed);
-        if !静默 {
+        let quiet = QUIET_USB_READ.load(Ordering::Relaxed);
+        if !quiet {
             trace!(
                 "[USB READ EXACT] starting, buf_len={}, timeout={:?}ms",
                 buf.len(),
-                self.超时.as_millis()
+                self.timeout.as_millis()
             );
         }
 
-        let max_packet_size = self.输入端点最大包大小;
-        let pending_copied = drain_pending_into(&mut self.输入暂存, buf);
+        let max_packet_size = self.in_ep_max_packet_size;
+        let pending_copied = drain_pending_into(&mut self.in_buf, buf);
         if pending_copied > 0 {
-            if !静默 {
+            if !quiet {
                 trace!(
                     "[USB READ EXACT] got {} bytes from pending (total: {}/{})",
                     pending_copied,
@@ -271,29 +271,29 @@ impl USB设备 {
                 );
             }
         }
-        let mut 总计 = pending_copied;
+        let mut total = pending_copied;
         let mut overread = Vec::new();
         {
-            let timeout = self.超时;
-            let ep_in = self.获取输入端点_mut().ok_or("输入端点未初始化")?;
+            let timeout = self.timeout;
+            let ep_in = self.in_endpoint_mut().ok_or("输入端点未初始化")?;
 
             // 双缓冲流水线：提前提交第一个 transfer
-            if 总计 < buf.len() {
-                let 剩余 = buf.len() - 总计;
-                let submit_len = bulk_in_submit_len(剩余, max_packet_size);
+            if total < buf.len() {
+                let remaining = buf.len() - total;
+                let submit_len = bulk_in_submit_len(remaining, max_packet_size);
                 ep_in.submit(nusb::transfer::Buffer::new(submit_len));
             }
 
-            while 总计 < buf.len() {
+            while total < buf.len() {
                 let result = match ep_in.wait_next_complete(timeout) {
                     Some(r) => r,
                     None => {
                         cancel_and_drain_in_endpoint(ep_in);
-                        if 总计 > 0 {
-                            if !静默 {
+                        if total > 0 {
+                            if !quiet {
                                 trace!(
                                     "[USB READ EXACT] partial read: {}/{} bytes before timeout",
-                                    总计,
+                                    total,
                                     buf.len()
                                 );
                             }
@@ -304,30 +304,30 @@ impl USB设备 {
                 };
 
                 // 立即提交下一个 transfer（流水线关键：不等数据处理完就提交）
-                if 总计 + result.actual_len < buf.len() {
-                    let 剩余 = buf.len() - (总计 + result.actual_len);
-                    let submit_len = bulk_in_submit_len(剩余, max_packet_size);
+                if total + result.actual_len < buf.len() {
+                    let remaining = buf.len() - (total + result.actual_len);
+                    let submit_len = bulk_in_submit_len(remaining, max_packet_size);
                     ep_in.submit(nusb::transfer::Buffer::new(submit_len));
                 }
 
                 match result.status {
                     Ok(()) => {
-                        let 实际长度 = result.actual_len;
-                        if 实际长度 == 0 {
+                        let actual_len = result.actual_len;
+                        if actual_len == 0 {
                             std::hint::spin_loop();
                             continue;
                         }
-                        let copy_len = 实际长度.min(buf.len() - 总计);
-                        buf[总计..总计 + copy_len].copy_from_slice(&result.buffer[..copy_len]);
-                        if 实际长度 > copy_len {
-                            overread.extend_from_slice(&result.buffer[copy_len..实际长度]);
+                        let copy_len = actual_len.min(buf.len() - total);
+                        buf[total..total + copy_len].copy_from_slice(&result.buffer[..copy_len]);
+                        if actual_len > copy_len {
+                            overread.extend_from_slice(&result.buffer[copy_len..actual_len]);
                         }
-                        总计 += copy_len;
+                        total += copy_len;
                     }
                     Err(e) => {
                         let err_str = format!("{:?}", e);
                         if err_str.contains("timeout") || err_str.contains("Timeout") {
-                            if 总计 > 0 {
+                            if total > 0 {
                                 break;
                             }
                             return Err("read_exact timeout".into());
@@ -337,33 +337,33 @@ impl USB设备 {
                 }
             }
         }
-        self.输入暂存.extend(overread);
+        self.in_buf.extend(overread);
 
-        if !静默 {
-            trace!("[USB READ EXACT] total read: {}/{} bytes", 总计, buf.len());
+        if !quiet {
+            trace!("[USB READ EXACT] total read: {}/{} bytes", total, buf.len());
         }
-        if 总计 > 0 {
-            usb_trace("RX", "USB设备::精确读取", &buf[..总计]);
+        if total > 0 {
+            usb_trace("RX", "USB设备::精确读取", &buf[..total]);
         }
-        Ok(总计)
+        Ok(total)
     }
 
-    pub fn 精确读取到Vec(&mut self, len: usize) -> Result<Vec<u8>, String> {
+    pub fn read_exact_vec(&mut self, len: usize) -> Result<Vec<u8>, String> {
         if len == 0 {
             return Ok(Vec::new());
         }
 
-        let max_packet_size = self.输入端点最大包大小;
+        let max_packet_size = self.in_ep_max_packet_size;
         let mut out = Vec::with_capacity(len);
-        if !self.输入暂存.is_empty() {
-            let take = self.输入暂存.len().min(len);
-            out.extend_from_slice(&self.输入暂存[..take]);
-            self.输入暂存.drain(..take);
+        if !self.in_buf.is_empty() {
+            let take = self.in_buf.len().min(len);
+            out.extend_from_slice(&self.in_buf[..take]);
+            self.in_buf.drain(..take);
         }
 
         // 双缓冲流水线：提前提交第一个 transfer
         {
-            let ep_in = self.获取输入端点_mut().ok_or("输入端点未初始化")?;
+            let ep_in = self.in_endpoint_mut().ok_or("输入端点未初始化")?;
             if out.len() < len {
                 let remaining = len - out.len();
                 let submit_len = bulk_in_submit_len(remaining, max_packet_size);
@@ -373,9 +373,9 @@ impl USB设备 {
 
         while out.len() < len {
             let remaining = len - out.len();
-            let timeout = self.超时;
+            let timeout = self.timeout;
             let (result, actual_len) = {
-                let ep_in = self.获取输入端点_mut().ok_or("输入端点未初始化")?;
+                let ep_in = self.in_endpoint_mut().ok_or("输入端点未初始化")?;
                 let result = match ep_in.wait_next_complete(timeout) {
                     Some(r) => r,
                     None => {
@@ -411,14 +411,14 @@ impl USB设备 {
             }
             out.extend_from_slice(&chunk[..copy_len]);
             if chunk.len() > copy_len {
-                self.输入暂存.extend_from_slice(&chunk[copy_len..]);
+                self.in_buf.extend_from_slice(&chunk[copy_len..]);
             }
         }
 
         Ok(out)
     }
 
-    pub fn 控制传输输入(
+    pub fn ctrl_in(
         &mut self,
         rt: u8,
         r: u8,
@@ -431,13 +431,13 @@ impl USB设备 {
             rt, r, v, i, len
         );
 
-        let 超时 = self.超时;
-        let index = control_index_for_recipient(rt, i, self.控制接口编号);
-        let interface = self.获取控制interface().ok_or("控制接口未初始化")?;
+        let timeout = self.timeout;
+        let index = control_index_for_recipient(rt, i, self.control_iface_num);
+        let interface = self.control_iface().ok_or("控制接口未初始化")?;
 
         let control = ControlIn {
-            control_type: Self::转换控制类型(rt),
-            recipient: Self::转换接收者(rt),
+            control_type: Self::convert_ctrl_type(rt),
+            recipient: Self::convert_receiver(rt),
             request: r,
             value: v,
             index,
@@ -445,7 +445,7 @@ impl USB设备 {
         };
 
         let result = interface
-            .control_in(control, 超时)
+            .control_in(control, timeout)
             .wait()
             .map_err(|e| format!("ctrl_transfer_in err: {:?}", e))?;
 
@@ -453,7 +453,7 @@ impl USB设备 {
         Ok(result)
     }
 
-    pub fn 控制传输输出(
+    pub fn ctrl_out(
         &mut self,
         rt: u8,
         r: u8,
@@ -471,13 +471,13 @@ impl USB设备 {
         );
         usb_trace("TX", "USB设备::控制传输输出", data);
 
-        let 超时 = self.超时;
-        let index = control_index_for_recipient(rt, i, self.控制接口编号);
-        let interface = self.获取控制interface().ok_or("控制接口未初始化")?;
+        let timeout = self.timeout;
+        let index = control_index_for_recipient(rt, i, self.control_iface_num);
+        let interface = self.control_iface().ok_or("控制接口未初始化")?;
 
         let control = ControlOut {
-            control_type: Self::转换控制类型(rt),
-            recipient: Self::转换接收者(rt),
+            control_type: Self::convert_ctrl_type(rt),
+            recipient: Self::convert_receiver(rt),
             request: r,
             value: v,
             index,
@@ -485,18 +485,18 @@ impl USB设备 {
         };
 
         interface
-            .control_out(control, 超时)
+            .control_out(control, timeout)
             .wait()
             .map_err(|e| format!("ctrl_transfer_out err: {:?}", e))?;
 
         Ok(data.len())
     }
 
-    pub fn 清除输入端点停顿(&mut self) -> Result<(), String> {
+    pub fn clear_halt_in(&mut self) -> Result<(), String> {
         // nusb: 通过 control transfer 实现 clear_halt
         // SET_FEATURE ENDPOINT_HALT (0x00) 清除 halt
-        let ep_addr = 输入端点地址(self);
-        let interface = self.获取interface_mut().ok_or("设备未初始化")?;
+        let ep_addr = in_ep_addr(self);
+        let interface = self.interface_mut().ok_or("设备未初始化")?;
         let control = nusb::transfer::ControlOut {
             control_type: ControlType::Standard,
             recipient: Recipient::Endpoint,
@@ -512,10 +512,10 @@ impl USB设备 {
         Ok(())
     }
 
-    pub fn 清除输出端点停顿(&mut self) -> Result<(), String> {
-        let ep_addr = 输出端点地址(self);
+    pub fn clear_halt_out(&mut self) -> Result<(), String> {
+        let ep_addr = out_ep_addr(self);
         trace!("[USB] clear_halt_out ep=0x{:02X}", ep_addr);
-        let interface = self.获取interface_mut().ok_or("设备未初始化")?;
+        let interface = self.interface_mut().ok_or("设备未初始化")?;
         let control = nusb::transfer::ControlOut {
             control_type: ControlType::Standard,
             recipient: Recipient::Endpoint,
@@ -536,7 +536,7 @@ impl USB设备 {
     }
 
     /// 将 libusb 的 bmRequestType 转换为 nusb ControlType
-    fn 转换控制类型(bm_request_type: u8) -> ControlType {
+    fn convert_ctrl_type(bm_request_type: u8) -> ControlType {
         let typ = (bm_request_type >> 5) & 0x03;
         match typ {
             0 => ControlType::Standard,
@@ -547,7 +547,7 @@ impl USB设备 {
     }
 
     /// 将 libusb 的 bmRequestType 转换为 nusb Recipient
-    fn 转换接收者(bm_request_type: u8) -> Recipient {
+    fn convert_receiver(bm_request_type: u8) -> Recipient {
         let rec = bm_request_type & 0x1F;
         match rec {
             0 => Recipient::Device,

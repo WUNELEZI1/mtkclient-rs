@@ -9,7 +9,7 @@
 //!    避免在串口实现中重复冗余代码。
 //! 2. 串口实现负责扫描可用 COM 口并区分 WinUSB / 串口驱动的 BROM 设备。
 
-use crate::usb::USB设备;
+use crate::usb::UsbDevice;
 use log::trace;
 use std::fs::OpenOptions;
 use std::time::Duration;
@@ -67,7 +67,7 @@ pub trait BromTransport {
     }
 
     /// 获取 EP_OUT 最大包大小（对齐 Python usblib.write 的 pktsize）
-    fn 获取输出端点最大包大小(&self) -> u16 {
+    fn out_ep_max_packet_size(&self) -> u16 {
         512 // 默认回退值，USB 实现会覆盖为真实值
     }
 
@@ -110,7 +110,7 @@ pub trait BromTransport {
     }
 
     /// 重新打开 USB 设备（默认不支持，仅 UsbDevice 实现）
-    fn reopen_device(&mut self, _context: &crate::usb::USB上下文) -> Result<(), String> {
+    fn reopen_device(&mut self, _context: &crate::usb::UsbContext) -> Result<(), String> {
         Err("reopen_device not supported on this transport".to_string())
     }
 }
@@ -511,53 +511,53 @@ impl BromTransport for SerialPortTransport {
 }
 
 /// UsbDevice 实现 BROM 传输
-impl BromTransport for USB设备 {
+impl BromTransport for UsbDevice {
     fn write(&mut self, data: &[u8]) -> Result<usize, String> {
-        USB设备::写入(self, data)
+        UsbDevice::write(self, data)
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<usize, String> {
-        USB设备::精确读取(self, buf)
+        UsbDevice::read_exact(self, buf)
     }
 
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
-        USB设备::读取(self, buf)
+        UsbDevice::read(self, buf)
     }
 
     fn submit_read_request(&mut self, len: usize) -> Result<bool, String> {
-        USB设备::预提交读取(self, len)
+        UsbDevice::submit_read(self, len)
     }
 
     fn complete_read_request(&mut self, buf: &mut [u8]) -> Result<usize, String> {
-        USB设备::完成预提交读取(self, buf)
+        UsbDevice::complete_read(self, buf)
     }
 
     fn read_exact_vec(&mut self, len: usize) -> Result<Vec<u8>, String> {
-        USB设备::精确读取到Vec(self, len)
+        UsbDevice::read_exact_vec(self, len)
     }
 
     fn cancel_pending_transfers(&mut self) {
-        USB设备::取消挂起传输(self)
+        UsbDevice::cancel_pending_transfers(self)
     }
 
     fn drain_pending(&mut self) {
-        USB设备::drain_pending(self)
+        UsbDevice::drain_pending(self)
     }
 
     fn drain_pipes(&mut self) {
-        USB设备::drain_pipes(self)
+        UsbDevice::drain_pipes(self)
     }
 
     fn set_timeout(&mut self, duration: Duration) {
-        USB设备::设置超时(self, duration);
+        UsbDevice::set_timeout(self, duration);
     }
 
     fn get_timeout(&self) -> Duration {
-        USB设备::获取超时(self)
+        UsbDevice::get_timeout(self)
     }
 
     fn do_handshake(&mut self) -> Result<bool, String> {
-        USB设备::执行握手(self)
+        UsbDevice::do_handshake(self)
     }
 
     fn is_libusb(&self) -> bool {
@@ -572,8 +572,8 @@ impl BromTransport for USB设备 {
         Some(self.pid)
     }
 
-    fn 获取输出端点最大包大小(&self) -> u16 {
-        USB设备::获取输出端点最大包大小(self)
+    fn out_ep_max_packet_size(&self) -> u16 {
+        UsbDevice::out_ep_max_packet_size(self)
     }
 
     fn ctrl_transfer_out(
@@ -584,7 +584,7 @@ impl BromTransport for USB设备 {
         index: u16,
         data: &[u8],
     ) -> Result<usize, String> {
-        USB设备::控制传输输出(self, req_type, req, value, index, data)?;
+        UsbDevice::ctrl_out(self, req_type, req, value, index, data)?;
         Ok(data.len())
     }
 
@@ -596,27 +596,27 @@ impl BromTransport for USB设备 {
         index: u16,
         length: u16,
     ) -> Result<Vec<u8>, String> {
-        USB设备::控制传输输入(self, req_type, req, value, index, length)
+        UsbDevice::ctrl_in(self, req_type, req, value, index, length)
     }
 
     fn clear_halt_in(&mut self) -> Result<(), String> {
-        USB设备::清除输入端点停顿(self)
+        UsbDevice::clear_halt_in(self)
     }
 
     fn clear_halt_out(&mut self) -> Result<(), String> {
-        USB设备::清除输出端点停顿(self)
+        UsbDevice::clear_halt_out(self)
     }
 
     fn reset_device(&mut self) -> Result<(), String> {
-        USB设备::reset_device(self)
+        UsbDevice::reset_device(self)
     }
 
     fn close_device(&mut self) -> Result<(), String> {
-        USB设备::关闭(self);
+        UsbDevice::close(self);
         Ok(())
     }
 
-    fn reopen_device(&mut self, context: &crate::usb::USB上下文) -> Result<(), String> {
-        USB设备::重新打开(self, context)
+    fn reopen_device(&mut self, context: &crate::usb::UsbContext) -> Result<(), String> {
+        UsbDevice::reopen(self, context)
     }
 }

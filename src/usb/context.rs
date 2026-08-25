@@ -11,62 +11,62 @@ use nusb::MaybeFuture;
 
 /// USB 设备阶段
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum USB阶段 {
+pub enum UsbStage {
     Brom,
     Preloader,
     Da,
-    未知,
+    Unknown,
 }
 
-impl USB阶段 {
-    pub fn 从PID生成(pid: u16) -> Self {
+impl UsbStage {
+    pub fn from_pid(pid: u16) -> Self {
         match pid {
-            0x0003 => USB阶段::Brom,
-            0x2000 => USB阶段::Preloader,
-            0x2001 => USB阶段::Da,
-            _ => USB阶段::未知,
+            0x0003 => UsbStage::Brom,
+            0x2000 => UsbStage::Preloader,
+            0x2001 => UsbStage::Da,
+            _ => UsbStage::Unknown,
         }
     }
 }
 
 /// USB 上下文（nusb 不需要显式 context，保留结构体以兼容现有 API）
-pub struct USB上下文 {
+pub struct UsbContext {
     /// nusb 不使用全局 context，此字段仅做标记
     _valid: bool,
 }
 
-impl USB上下文 {
-    pub fn 新建() -> Result<Self, String> {
+impl UsbContext {
+    pub fn new() -> Result<Self, String> {
         // nusb 不需要显式初始化，直接返回
-        Ok(USB上下文 { _valid: true })
+        Ok(UsbContext { _valid: true })
     }
 }
 
 /// 枚举 nusb 设备列表，查找 MediaTek BROM 设备
-fn 扫描nusb设备() -> Vec<(u16, u16)> {
-    let mut 结果 = Vec::new();
+fn scan_nusb_devices() -> Vec<(u16, u16)> {
+    let mut result = Vec::new();
     let devices = match nusb::list_devices().wait() {
         Ok(d) => d,
-        Err(_) => return 结果,
+        Err(_) => return result,
     };
     for dev in devices {
         if dev.vendor_id() == 0x0E8D && dev.product_id() == 0x0003 {
-            结果.push((dev.vendor_id(), dev.product_id()));
+            result.push((dev.vendor_id(), dev.product_id()));
         }
     }
-    结果
+    result
 }
 
 /// 枚举 USB 设备列表,返回第一个 MediaTek 设备的 (VID, PID, DeviceType)
-pub fn 获取第一个联发科VIDPID() -> Option<(u16, u16, DeviceType)> {
-    扫描nusb设备().into_iter().find_map(|(vid, pid)| {
-        let 设备类型 = DeviceType::from_vid_pid(vid, pid);
+pub fn get_first_mtk_vid_pid() -> Option<(u16, u16, DeviceType)> {
+    scan_nusb_devices().into_iter().find_map(|(vid, pid)| {
+        let device_type = DeviceType::from_vid_pid(vid, pid);
         log::trace!(
             "[USB] 获取第一个联发科VIDPID: 找到 BROM 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
             vid,
             pid,
-            设备类型
+            device_type
         );
-        Some((vid, pid, 设备类型))
+        Some((vid, pid, device_type))
     })
 }

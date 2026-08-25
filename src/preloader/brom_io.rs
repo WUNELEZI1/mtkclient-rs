@@ -62,7 +62,7 @@ impl Preloader {
         let upload_start = Instant::now();
         // mtkclient 2.1.4.1 优化：动态使用 EP_OUT.wMaxPacketSize 替代固定 64B
         // 保留最小值 64，防止端点报告异常值时出问题
-        let chunk_size = (self.device.获取输出端点最大包大小() as usize).max(64);
+        let chunk_size = (self.device.out_ep_max_packet_size() as usize).max(64);
         trace!(
             "[UPLOAD] sending {} bytes, chunk={}",
             dadata.len(),

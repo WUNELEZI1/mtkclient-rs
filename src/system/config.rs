@@ -73,7 +73,7 @@ pub const SUPPORTED_DEVICES: &[DeviceConfig] = &[
 
 /// 用户指定的工作模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum 工作模式 {
+pub enum WorkMode {
     /// BROM 模式：完整流程（握手 → 关看门狗 → bypass → send_da）
     Brom,
     /// Preloader 模式：跳过 bypass，直接 send_da
@@ -82,12 +82,12 @@ pub enum 工作模式 {
     Auto,
 }
 
-impl 工作模式 {
+impl WorkMode {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "brom" => Some(工作模式::Brom),
-            "preloader" => Some(工作模式::Preloader),
-            "auto" => Some(工作模式::Auto),
+            "brom" => Some(WorkMode::Brom),
+            "preloader" => Some(WorkMode::Preloader),
+            "auto" => Some(WorkMode::Auto),
             _ => None,
         }
     }
@@ -101,7 +101,7 @@ pub struct AppConfig {
     pub da2_path: Option<String>,
     pub preloader_path: Option<String>,
     pub loader_path: Option<String>,
-    pub 工作模式: 工作模式,
+    pub work_mode: WorkMode,
     pub da_x_speed: u8,
     pub skip_partitions: Option<String>,
     pub parttype: Option<String>,
@@ -122,7 +122,7 @@ impl AppConfig {
             _ => log::LevelFilter::Info,
         };
 
-        let 工作模式 = 工作模式::from_str(&cli.mode).unwrap_or(工作模式::Brom);
+        let work_mode = WorkMode::from_str(&cli.mode).unwrap_or(WorkMode::Brom);
 
         AppConfig {
             log_level,
@@ -130,7 +130,7 @@ impl AppConfig {
             da2_path: cli.da2_path.clone(),
             preloader_path: cli.preloader_path.clone(),
             loader_path: cli.loader_path.clone(),
-            工作模式,
+            work_mode,
             da_x_speed: cli.da_x_speed,
             skip_partitions: cli.skip_partitions.clone(),
             parttype: cli.parttype.clone(),
