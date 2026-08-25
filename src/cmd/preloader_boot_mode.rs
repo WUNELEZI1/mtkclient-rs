@@ -205,10 +205,7 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
             .any(|id| acc.windows(id.len()).any(|w| w == *id));
 
         if matched {
-            info!(
-                "[BootAs] 收到回传确认: {} ✓",
-                String::from_utf8_lossy(&acc)
-            );
+            info!("[BootAs] 收到回传确认: {} ✓", String::from_utf8_lossy(&acc));
 
             // ATEMATEM 流程处理（在累积缓冲上做子串匹配，避免拆片漏判）
             if acc.windows(8).any(|w| w == b"ATEM0001") {

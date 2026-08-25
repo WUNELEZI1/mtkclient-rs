@@ -1,6 +1,6 @@
 use crate::color::Colorize;
-use log::{info, warn};
 use crate::da::DAXFlash;
+use log::{info, warn};
 
 /// 擦除分区
 pub fn cmd_erase(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {

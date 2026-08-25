@@ -205,12 +205,16 @@ pub(crate) unsafe fn find_and_restart_brom_device() -> Result<(), String> {
     }
 
     if !found {
-        unsafe { SetupDiDestroyDeviceInfoList(h); }
+        unsafe {
+            SetupDiDestroyDeviceInfoList(h);
+        }
         return Err("未找到 BROM 设备节点 (VID_0E8D&PID_0003)".to_string());
     }
 
     let ret = unsafe { SetupDiRestartDevices(h, &dev_data) };
-    unsafe { SetupDiDestroyDeviceInfoList(h); }
+    unsafe {
+        SetupDiDestroyDeviceInfoList(h);
+    }
     if ret == 0 {
         Err(format!(
             "SetupDiRestartDevices 失败: {}",

@@ -7,14 +7,14 @@
 //! - `erase_partition` — 擦除分区
 //! - `write_flash_data` / `cmd_write_data` / `get_packet_length` — 底层写入原语
 
-pub(crate) mod resume;
 pub(crate) mod crc;
 pub(crate) mod gpt;
 pub(crate) mod read;
+pub(crate) mod resume;
 pub(crate) mod write;
 
-pub(crate) use resume::compute_read_resume_offset;
 pub(crate) use crc::log_gpt_crc_report;
+pub(crate) use resume::compute_read_resume_offset;
 
 #[cfg(test)]
 mod tests {

@@ -1,8 +1,8 @@
+use super::boot_mode::{set_boot_mode_via_para, set_bootloader_message};
 use crate::color::Colorize;
+use crate::da::DAXFlash;
 use log::{info, warn};
 use std::time::Duration;
-use crate::da::DAXFlash;
-use super::boot_mode::{set_bootloader_message, set_boot_mode_via_para};
 
 /// 重启设备
 ///
@@ -387,7 +387,10 @@ fn watchdog_reboot(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error>> 
         if let Err(e) = da.preloader.get_hw_code() {
             warn!("获取芯片信息失败（{}），无法触发看门狗", e);
             crate::connection::reset_session();
-            info!("{}", "请手动重启设备（断开 USB 重新连接或按电源键）".yellow());
+            info!(
+                "{}",
+                "请手动重启设备（断开 USB 重新连接或按电源键）".yellow()
+            );
             return Ok(());
         }
     }
@@ -397,14 +400,16 @@ fn watchdog_reboot(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error>> 
             crate::connection::reset_session();
             info!(
                 "{}",
-                "若设备仍停在下载模式（VCOM/Preloader），请手动重启或断开 USB 后重连"
-                    .cyan()
+                "若设备仍停在下载模式（VCOM/Preloader），请手动重启或断开 USB 后重连".cyan()
             );
         }
         Err(e) => {
             warn!("看门狗触发失败: {}", e);
             crate::connection::reset_session();
-            info!("{}", "请手动重启设备（断开 USB 重新连接或按电源键）".yellow());
+            info!(
+                "{}",
+                "请手动重启设备（断开 USB 重新连接或按电源键）".yellow()
+            );
         }
     }
     Ok(())

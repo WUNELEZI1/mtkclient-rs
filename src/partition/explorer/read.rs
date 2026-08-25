@@ -1,10 +1,9 @@
 use super::Explorer;
-use super::lp::{LpTranslator, read_lp_metadata};
 use super::ext4::{
-    read_ext4_superblock, resolve_path, read_inode, read_inode_data, get_inode_mode,
-    get_inode_size,
+    get_inode_mode, get_inode_size, read_ext4_superblock, read_inode, read_inode_data, resolve_path,
 };
 use super::is_dir_mode;
+use super::lp::{LpTranslator, read_lp_metadata};
 
 /// fs_shell 入口函数
 pub fn run_explorer<F>(read_fn: &mut F) -> Result<(), String>
@@ -154,7 +153,13 @@ where
     );
 
     // Step 5: 解析路径并读取文件
-    let inode_num = resolve_path(super_read_fn, &lp_translator, &sb, super::ext4::ROOT_INODE, file_path)?;
+    let inode_num = resolve_path(
+        super_read_fn,
+        &lp_translator,
+        &sb,
+        super::ext4::ROOT_INODE,
+        file_path,
+    )?;
 
     let inode_data = read_inode(super_read_fn, &lp_translator, &sb, inode_num)?;
     let mode = get_inode_mode(&inode_data);

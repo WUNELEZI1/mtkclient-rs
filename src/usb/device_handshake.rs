@@ -81,7 +81,11 @@ impl UsbDevice {
                     break;
                 }
                 // echo write trace
-                usb_trace("TX", "USB设备::执行握手 echo_write", &[HANDSHAKE_BYTE_SEQ[i]]);
+                usb_trace(
+                    "TX",
+                    "USB设备::执行握手 echo_write",
+                    &[HANDSHAKE_BYTE_SEQ[i]],
+                );
                 let mut r = [0u8; 1]; // 握手 echo 每次只读 1 字节
                 match self.read(&mut r) {
                     Ok(n) if n > 0 => {
@@ -90,7 +94,8 @@ impl UsbDevice {
                         let last_byte = r[n - 1];
                         // 兼容取反（!发送字节，如 A0→5F）与回显（发送字节原样，如 A0→A0）两种
                         // MTK 响应模式：不同传输介质/设备存在差异，任一命中即推进。
-                        if last_byte == !HANDSHAKE_BYTE_SEQ[i] || last_byte == HANDSHAKE_BYTE_SEQ[i] {
+                        if last_byte == !HANDSHAKE_BYTE_SEQ[i] || last_byte == HANDSHAKE_BYTE_SEQ[i]
+                        {
                             mismatch_count = 0;
                             i += 1;
                         } else {
@@ -99,7 +104,8 @@ impl UsbDevice {
                             if last_mismatch_byte.len() > RESIDUAL_DA_WINDOW {
                                 last_mismatch_byte.remove(0);
                             }
-                            if mismatch_count <= 3 || handshake_should_restart_after_mismatch(mismatch_count)
+                            if mismatch_count <= 3
+                                || handshake_should_restart_after_mismatch(mismatch_count)
                             {
                                 info!(
                                     "[USB] handshake mismatch at byte {}: got 0x{:02X}, expected 0x{:02X}",

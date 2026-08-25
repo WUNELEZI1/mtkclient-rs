@@ -9,15 +9,15 @@
 //!            → LpTranslator (逻辑偏移 → super.img 物理偏移)
 //!            → FnMut(u64,u64) 回调读取
 
-pub(crate) mod lp;
 pub(crate) mod ext4;
+pub(crate) mod lp;
+pub(crate) mod read;
 pub(crate) mod shell;
 pub(crate) mod shell2;
 pub(crate) mod shell3;
-pub(crate) mod read;
 
-pub use shell::Explorer;
 pub use read::{read_file_by_path, read_file_via_lp, run_explorer};
+pub use shell::Explorer;
 
 // ============================================================================
 // 共享 LP 常量

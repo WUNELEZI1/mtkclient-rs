@@ -2,8 +2,8 @@
 
 use log::{trace, warn};
 
-use crate::da::xflash::{CMD_MAGIC, CMD_WRITE_DATA, DAXFlash, pack3};
 use crate::da::xflash::protocol::{GET_PKT_LEN, SET_PKT_LEN};
+use crate::da::xflash::{CMD_MAGIC, CMD_WRITE_DATA, DAXFlash, pack3};
 
 impl<'a> DAXFlash<'a> {
     /// 获取写包长度（对齐 Python get_packet_length），并主动抬升工作传输单元。
@@ -26,18 +26,10 @@ impl<'a> DAXFlash<'a> {
                 read_plen,
                 read_plen as f64 / 1024.0 / 1024.0
             );
-            if plen > 0 {
-                Some(plen as usize)
-            } else {
-                None
-            }
+            if plen > 0 { Some(plen as usize) } else { None }
         } else if data.len() >= 4 {
             let plen = u32::from_le_bytes(data[..4].try_into().unwrap());
-            if plen > 0 {
-                Some(plen as usize)
-            } else {
-                None
-            }
+            if plen > 0 { Some(plen as usize) } else { None }
         } else {
             None
         };
@@ -50,7 +42,10 @@ impl<'a> DAXFlash<'a> {
         // 主动 SET_PKT_LEN 抬升。SET 成功后重新 GET 确认 DA 实际接受的包长度，
         // 防 DA 端溢出：部分 DA 只接受更小的值，盲目按请求值传输会触发溢出/截断。
         // 仅当 DA 明确回报更小正数时才回退，GET 失败/返回 0 沿用请求值。
-        if self.send_devctrl(SET_PKT_LEN, Some(&(target as u32).to_le_bytes())).is_ok() {
+        if self
+            .send_devctrl(SET_PKT_LEN, Some(&(target as u32).to_le_bytes()))
+            .is_ok()
+        {
             trace!(
                 "DA 写包长度已提升至 {} 字节 ({:.2} MiB)",
                 target,

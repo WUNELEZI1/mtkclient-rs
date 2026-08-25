@@ -147,14 +147,11 @@ pub fn cmd_read_gpt(
 /// 写回前重算分区项 CRC32 与头部 CRC32，保证写回的 GPT 合法（SPFT 可直接读取）。
 /// 写回范围为镜像实际长度（覆盖 LBA0 + 主 GPT 头 + 分区项表），备份 GPT 因镜像不含
 /// 盘尾区域暂不写回；主 GPT 是 Bootloader 启动时读取的首要根据，满足修改/恢复 GPT 需求。
-pub fn cmd_write_gpt(
-    da: &mut DAXFlash,
-    file: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_write_gpt(da: &mut DAXFlash, file: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut data =
         std::fs::read(file).map_err(|e| format!("读取 GPT 文件失败 '{}': {}", file, e))?;
-    let gpt_info = crate::partition::GptInfo::parse(&data)
-        .map_err(|e| format!("GPT 文件无效: {}", e))?;
+    let gpt_info =
+        crate::partition::GptInfo::parse(&data).map_err(|e| format!("GPT 文件无效: {}", e))?;
     // 提取 Copy 字段后释放对 data 的不可变借用，避免与下方 &mut data 冲突（E0502）
     let base_offset = gpt_info.base_offset;
     let part_entry_start_lba = gpt_info.part_entry_start_lba;
@@ -340,19 +337,12 @@ pub fn cmd_read_all(
         // 续传时从 start_offset 处继续读取。
         // 注意：readflash_to_file 内部会在非活跃续传分支按 (addr + start_offset) 重新下发
         // READ_DATA，故此处传“分区基址”entry.start_addr（而非已偏移地址），避免双重偏移。
-        da.readflash_to_file(
-            entry.start_addr,
-            entry.size,
-            8,
-            &output,
-            start_offset,
-            {
-                let bar = bar.clone();
-                move |bytes_read| {
-                    bar.set_position(bytes_read);
-                }
-            },
-        )
+        da.readflash_to_file(entry.start_addr, entry.size, 8, &output, start_offset, {
+            let bar = bar.clone();
+            move |bytes_read| {
+                bar.set_position(bytes_read);
+            }
+        })
         .map_err(|e| format!("读取 {} 失败: {}", entry.name, e))?;
         bar.finish_and_clear();
         info!("{}", format!("  {} -> {}", entry.name, output).green());

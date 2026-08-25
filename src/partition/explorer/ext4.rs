@@ -20,7 +20,10 @@ pub(crate) struct DirEntry {
     pub(crate) name: String,
 }
 
-pub(crate) fn read_ext4_superblock<F>(read_fn: &mut F, lp: &LpTranslator) -> Result<Ext4Superblock, String>
+pub(crate) fn read_ext4_superblock<F>(
+    read_fn: &mut F,
+    lp: &LpTranslator,
+) -> Result<Ext4Superblock, String>
 where
     F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
 {
@@ -76,7 +79,10 @@ where
     let bgd_abs = lp.logical_to_abs(bgd_entry_offset)?;
     let bgd_data = read_fn(bgd_abs, sb.bgd_entry_size as u64)?;
     if bgd_data.len() < 12 {
-        return Err(format!("短读：期望 12 字节（BGD），实际 {}", bgd_data.len()));
+        return Err(format!(
+            "短读：期望 12 字节（BGD），实际 {}",
+            bgd_data.len()
+        ));
     }
     let inode_table_block = u32::from_le_bytes(bgd_data[8..12].try_into().unwrap());
 
@@ -208,7 +214,10 @@ where
 
     // i_block 区域至少需要 2 字节以读取 extent header magic（offset 40..42）
     if inode_data.len() < 42 {
-        return Err(format!("短读：inode 数据不足 42 字节，实际 {}", inode_data.len()));
+        return Err(format!(
+            "短读：inode 数据不足 42 字节，实际 {}",
+            inode_data.len()
+        ));
     }
 
     // symlink 内联数据：目标路径直接存储在 i_block 区域（最大 60 字节）

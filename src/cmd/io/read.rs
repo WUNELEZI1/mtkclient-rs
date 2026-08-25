@@ -1,6 +1,6 @@
 use crate::color::Colorize;
-use log::info;
 use crate::da::DAXFlash;
+use log::info;
 
 /// 读取分区数据到文件
 ///

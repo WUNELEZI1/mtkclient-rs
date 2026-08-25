@@ -1,6 +1,6 @@
 use crate::color::Colorize;
-use log::info;
 use crate::da::DAXFlash;
+use log::info;
 
 /// 写入文件到分区
 pub fn cmd_write(

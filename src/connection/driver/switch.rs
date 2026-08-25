@@ -98,7 +98,10 @@ pub fn switch_to_winusb() -> Result<(), String> {
         let inf_dir_str = inf_dir.to_str().ok_or("INF 目录路径包含非 UTF-8 字符")?;
         if let Err(e) = prepare_driver(&device, inf_dir_str, INF_NAME, &options) {
             last_err = format!("wdi-rs prepare_driver 失败: {}", e);
-            warn!("[DRIVER] 第 {} 次 prepare_driver 失败: {}", attempt, last_err);
+            warn!(
+                "[DRIVER] 第 {} 次 prepare_driver 失败: {}",
+                attempt, last_err
+            );
             if attempt < INSTALL_RETRY_COUNT {
                 let delay = INSTALL_BACKOFF_BASE_MS * (1u64 << (attempt - 1));
                 std::thread::sleep(Duration::from_millis(delay));

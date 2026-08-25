@@ -242,8 +242,7 @@ fn serial_do_handshake(
                         if matches!(b, b'R' | b'E' | b'A' | b'D' | b'Y') {
                             trace!(
                                 "[SERIAL] 读到 READY 同步文本字节 0x{:02X}('{}')，忽略",
-                                b,
-                                b as char
+                                b, b as char
                             );
                             continue;
                         }
@@ -261,10 +260,7 @@ fn serial_do_handshake(
                             );
                         }
                         if mismatch >= max_mismatch {
-                            trace!(
-                                "[SERIAL] handshake 连续 {} 次错位，重新开始本轮",
-                                mismatch
-                            );
+                            trace!("[SERIAL] handshake 连续 {} 次错位，重新开始本轮", mismatch);
                             ok = false;
                             break;
                         }
@@ -278,10 +274,7 @@ fn serial_do_handshake(
                     if i == 0 {
                         sync_probe += 1;
                         if sync_probe >= SYNC_PROBE_LIMIT {
-                            trace!(
-                                "[SERIAL] 同步试探 {} 次无响应，放弃本轮",
-                                sync_probe
-                            );
+                            trace!("[SERIAL] 同步试探 {} 次无响应，放弃本轮", sync_probe);
                             ok = false;
                             break;
                         }
@@ -305,7 +298,10 @@ fn serial_do_handshake(
     }
 
     // 最终失败：回显最近收到的原始字节，便于定位（如 0x52='R' 表示设备未进入握手态）
-    let hex: Vec<String> = last_received.iter().map(|b| format!("0x{:02X}", b)).collect();
+    let hex: Vec<String> = last_received
+        .iter()
+        .map(|b| format!("0x{:02X}", b))
+        .collect();
     let diagnostic = if hex.is_empty() {
         "（未收到任何握手响应字节，可能是波特率不匹配或端口未就绪）".to_string()
     } else {
@@ -366,7 +362,13 @@ impl BromTransport for SerialPortTransport {
         // 缩短每字节响应超时，避免弱连接下 10 次重试累积成几十秒空等
         let orig_timeout = self.get_timeout();
         self.set_timeout(Duration::from_millis(HANDSHAKE_TIMEOUT_MS));
-        let result = serial_do_handshake(self, MAX_ATTEMPTS, RETRY_DELAY_MS, MAX_MISMATCH, RESIDUAL_WINDOW);
+        let result = serial_do_handshake(
+            self,
+            MAX_ATTEMPTS,
+            RETRY_DELAY_MS,
+            MAX_MISMATCH,
+            RESIDUAL_WINDOW,
+        );
         self.set_timeout(orig_timeout);
         result
     }

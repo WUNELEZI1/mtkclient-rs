@@ -1,6 +1,6 @@
-use log::{info, warn};
-use crate::da::DAXFlash;
 use super::slot::write_partition_from_memory;
+use crate::da::DAXFlash;
+use log::{info, warn};
 
 /// 设置 misc 分区的 bootloader_message 以重启到指定模式
 pub(crate) fn set_bootloader_message(da: &mut DAXFlash, mode: &str) -> Result<(), String> {

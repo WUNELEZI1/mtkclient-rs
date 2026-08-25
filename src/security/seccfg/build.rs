@@ -5,8 +5,8 @@
 //!   对齐 Python SecCfgV4.create()：SW→sej_sec_cfg_sw, V2→sej_sec_cfg_hw,
 //!   V3→sej_sec_cfg_hw_V3(legacy=False), V4→sej_sec_cfg_hw_V3(legacy=True)
 
-use log::info;
 use crate::sha::Sha256;
+use log::info;
 
 use crate::da::DAXFlash;
 use crate::security::sej::{

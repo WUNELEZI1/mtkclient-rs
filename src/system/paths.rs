@@ -76,14 +76,20 @@ fn search_in_base_dir(base_dir: &Path, rel_path: &str) -> Option<PathBuf> {
 
     // 3. data/{chip_name}/ 芯片专属子目录
     if let Some(chip_name) = extract_chip_name(&file_name) {
-        let chip_path = base_dir.join("data").join(chip_name).join(file_name.as_ref());
+        let chip_path = base_dir
+            .join("data")
+            .join(chip_name)
+            .join(file_name.as_ref());
         if chip_path.exists() {
             return Some(chip_path);
         }
     }
 
     // 4. data/generic/ 通用 payload 子目录
-    let generic_path = base_dir.join("data").join("generic").join(file_name.as_ref());
+    let generic_path = base_dir
+        .join("data")
+        .join("generic")
+        .join(file_name.as_ref());
     if generic_path.exists() {
         return Some(generic_path);
     }
@@ -127,8 +133,7 @@ pub fn get_exe_relative_path(rel_path: &str) -> PathBuf {
         }
 
         // 4. 开发模式：上翻 2 级到项目根目录
-        if let Some(project_root) = exe_dir.parent().and_then(|parent_dir| parent_dir.parent())
-        {
+        if let Some(project_root) = exe_dir.parent().and_then(|parent_dir| parent_dir.parent()) {
             let dev_path = project_root.join(rel_path);
             if dev_path.exists() {
                 return dev_path;

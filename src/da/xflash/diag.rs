@@ -55,7 +55,7 @@ impl<'a> DAXFlash<'a> {
             0x676 | // MT6765/MT6762 (Helio A25/P22, 2018)
             0x762 | // MT6763 (Helio P23, 2017)
             0x0699 // MT6799 等更早平台
-                  // 注：MT6768/0x707 (2019) 不在此列，已实测可正常高速重连
+                   // 注：MT6768/0x707 (2019) 不在此列，已实测可正常高速重连
         )
     }
 
@@ -142,7 +142,10 @@ impl<'a> DAXFlash<'a> {
                     break;
                 }
                 Err(e) => {
-                    trace!("[RECONNECT] 高速重连第 {}/{} 次失败: {}", attempt, HS_RETRIES, e);
+                    trace!(
+                        "[RECONNECT] 高速重连第 {}/{} 次失败: {}",
+                        attempt, HS_RETRIES, e
+                    );
                     if attempt < HS_RETRIES {
                         std::thread::sleep(Duration::from_millis(500));
                     }
@@ -183,7 +186,9 @@ impl<'a> DAXFlash<'a> {
         } else if connected_speed == Some("full-speed") {
             warn!("[RECONNECT] 最终以 full-speed 工作（高速重连未成功，DA 成果已保留）");
         } else {
-            warn!("[RECONNECT] 高速与 full-speed 重连均失败，设备可能已物理断开（DA 成果无法保留）");
+            warn!(
+                "[RECONNECT] 高速与 full-speed 重连均失败，设备可能已物理断开（DA 成果无法保留）"
+            );
         }
     }
 

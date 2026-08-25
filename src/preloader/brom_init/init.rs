@@ -5,18 +5,13 @@
 //! - `flush_input` / `flush_input_quick` / `flush_input_poll` 输入缓冲清理
 //! - `rword` 读 16 位字基础工具
 
+use super::{
+    FLUSH_INPUT_CHUNK, FLUSH_INPUT_MAX_ITER, FLUSH_INPUT_QUICK_CHUNK, FLUSH_INPUT_QUICK_MAX_ITER,
+    FLUSH_INPUT_QUICK_TIMEOUT_MS, FLUSH_INPUT_TIMEOUT_MS, POST_FLUSH_TIMEOUT_MS,
+};
+use crate::preloader::core::Preloader;
 use log::trace;
 use std::time::Duration;
-use crate::preloader::core::Preloader;
-use super::{
-    FLUSH_INPUT_TIMEOUT_MS,
-    FLUSH_INPUT_CHUNK,
-    FLUSH_INPUT_MAX_ITER,
-    POST_FLUSH_TIMEOUT_MS,
-    FLUSH_INPUT_QUICK_TIMEOUT_MS,
-    FLUSH_INPUT_QUICK_CHUNK,
-    FLUSH_INPUT_QUICK_MAX_ITER,
-};
 
 impl Preloader {
     /// 读取 HW Subcode

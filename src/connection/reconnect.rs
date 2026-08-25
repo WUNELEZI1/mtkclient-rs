@@ -1,7 +1,7 @@
+use crate::color::Colorize;
 use crate::preloader::Preloader;
 use crate::usb;
 use crate::usb::{UsbContext, UsbStage};
-use crate::color::Colorize;
 use log::{debug, info, trace, warn};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -76,8 +76,7 @@ impl ConnectionManager {
                 trace!("[RECONNECT] 尝试刷新 libusb context...");
                 if let Ok(new_ctx) = UsbContext::new() {
                     for &pid in &pids {
-                        if let Ok(device) = usb::UsbDevice::open_by_vid_pid(&new_ctx, 0x0E8D, pid)
-                        {
+                        if let Ok(device) = usb::UsbDevice::open_by_vid_pid(&new_ctx, 0x0E8D, pid) {
                             info!("[RECONNECT] 使用新 context 成功连接 (attempt {})", retry);
                             return Ok(device);
                         }
@@ -118,9 +117,7 @@ impl ConnectionManager {
 
     /// Kamakiri exploit 后重连
     #[allow(dead_code)] // 预留：Kamakiri2 exploit 后设备重枚举流程
-    pub fn reconnect_after_kamakiri(
-        &self, context: &UsbContext
-    ) -> Result<usb::UsbDevice, String> {
+    pub fn reconnect_after_kamakiri(&self, context: &UsbContext) -> Result<usb::UsbDevice, String> {
         info!("[KAMAKIRI] payload 已发送，等待设备重枚举...");
         std::thread::sleep(Duration::from_millis(super::manager::USB_REENUM_DELAY_MS));
         self.reconnect_loop(context, UsbStage::Brom)
@@ -129,7 +126,8 @@ impl ConnectionManager {
     /// USB reset 后重连
     #[allow(dead_code)] // 预留：USB reset 后设备重枚举流程
     pub fn reconnect_after_usb_reset(
-        &self, context: &UsbContext
+        &self,
+        context: &UsbContext,
     ) -> Result<usb::UsbDevice, String> {
         info!("[USB] USB reset detected, waiting for re-enumeration...");
         std::thread::sleep(Duration::from_millis(super::manager::USB_REENUM_DELAY_MS));
