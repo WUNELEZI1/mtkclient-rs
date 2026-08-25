@@ -45,7 +45,7 @@ pub fn cmd_read(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
             "读取 super 内的动态分区: {} → {}",
             logical_name, output_file
         );
-        da.读取动态分区(logical_name, output_file)
+        da.read_dynamic_partition(logical_name, output_file)
             .map_err(|e| format!("读取动态分区失败: {}", e))?;
         info!(
             "{}",
@@ -55,7 +55,7 @@ pub fn cmd_read(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
     }
 
     // 普通分区读取
-    da.读取分区(&args[0], &args[1])
+    da.read_partition(&args[0], &args[1])
         .map_err(|e| format!("读取失败: {}", e))?;
     info!("{}", format!("{} -> {}", args[0], args[1]).green());
     Ok(())
@@ -71,9 +71,9 @@ pub fn cmd_write(
         return Err("用法: mtkclient w <part> <file>".into());
     }
     let result = if verify {
-        da.写入分区带校验(&args[0], &args[1])
+        da.write_partition_with_verify(&args[0], &args[1])
     } else {
-        da.写入分区(&args[0], &args[1])
+        da.write_partition(&args[0], &args[1])
     };
     result.map_err(|e| format!("写入失败: {}", e))?;
     info!("{}", format!("{} <- {}", args[0], args[1]).green());
@@ -85,7 +85,7 @@ pub fn cmd_erase(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::
     if args.is_empty() {
         return Err("用法: mtkclient e <part>".into());
     }
-    da.擦除分区(&args[0])
+    da.erase_partition(&args[0])
         .map_err(|e| format!("擦除失败: {}", e))?;
     info!("{}", format!("{} 已擦除", args[0]).green());
     Ok(())
@@ -133,7 +133,7 @@ pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error
 
     for &part in &partitions {
         info!("正在擦除 {}...", part);
-        da.擦除分区(part)
+        da.erase_partition(part)
             .map_err(|e| format!("擦除 {} 失败: {}", part, e))?;
         info!("{}", format!("{} 已擦除", part).green());
     }

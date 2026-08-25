@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crate::da::loader::header::DaRegion;
 use crate::da::xflash::DAXFlash;
-use crate::system::paths::获取可执行文件相对路径;
+use crate::system::paths::get_exe_relative_path;
 
 use super::header::parse_da_header;
 
@@ -22,7 +22,7 @@ impl<'a> DAXFlash<'a> {
         let path = if !self.preloader.da_path.is_empty() {
             std::path::PathBuf::from(&self.preloader.da_path)
         } else {
-            获取可执行文件相对路径(DEFAULT_DA_FILE)
+            get_exe_relative_path(DEFAULT_DA_FILE)
         };
         let path_str = path.to_string_lossy().to_string();
         (path, path_str)

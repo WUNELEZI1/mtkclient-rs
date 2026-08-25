@@ -290,8 +290,8 @@ pub fn cmd_write_all(
     let gpt_data = da.get_last_gpt_data()?.clone();
     let gpt_info = crate::partition::GptInfo::parse(&gpt_data)?;
 
-    let mut 写入计数 = 0usize;
-    let mut 跳过计数 = 0usize;
+    let mut write_count = 0usize;
+    let mut skip_count = 0usize;
 
     for entry in gpt_info.iter_partitions() {
         // 优先找 .img，其次找 .bin
@@ -303,40 +303,40 @@ pub fn cmd_write_all(
             bin_path
         } else {
             trace!("  跳过 {} (文件不存在)", entry.name);
-            跳过计数 += 1;
+            skip_count += 1;
             continue;
         };
 
         info!(
             "  [{}/{}] 写入 {} <- {} (0x{:X} 字节)",
-            写入计数 + 1,
+            write_count + 1,
             gpt_info.partitions().len(),
             entry.name,
             input,
             entry.size
         );
-        if let Err(e) = da.写入分区(&entry.name, &input) {
+        if let Err(e) = da.write_partition(&entry.name, &input) {
             warn!("  写入 {} 失败: {}", entry.name, e);
             continue;
         }
 
         if verify {
-            let 原始 = std::fs::read(&input).map_err(|e| format!("读取 {} 失败: {}", input, e))?;
-            let 验证 = da.readflash_data(entry.start_addr, 原始.len() as u64)?;
-            if 原始 != 验证 {
+            let orig = std::fs::read(&input).map_err(|e| format!("读取 {} 失败: {}", input, e))?;
+            let verify = da.readflash_data(entry.start_addr, orig.len() as u64)?;
+            if orig != verify {
                 warn!("  {} 校验失败", entry.name);
             } else {
                 info!("  {} 校验通过 ✓", entry.name);
             }
         }
-        写入计数 += 1;
+        write_count += 1;
     }
 
     info!(
         "{}",
         format!(
             "分区写入完成: {} 成功, {} 跳过, 目录={}",
-            写入计数, 跳过计数, dir
+            write_count, skip_count, dir
         )
         .green()
     );

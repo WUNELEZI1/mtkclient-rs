@@ -7,7 +7,7 @@
 use log::debug;
 use std::path::Path;
 
-use crate::system::paths::获取可执行文件相对路径;
+use crate::system::paths::get_exe_relative_path;
 
 /// 读取资源文件（payload / DA / preloader dump 等）。
 ///
@@ -22,7 +22,7 @@ pub fn read_file_auto_decompress(path: &Path) -> Result<Vec<u8>, String> {
     }
 
     // 2. 兼容传入裸文件名：按 data/ 目录规则解析
-    let resolved = 获取可执行文件相对路径(&path.to_string_lossy());
+    let resolved = get_exe_relative_path(&path.to_string_lossy());
     if resolved.exists() {
         debug!("从 data 目录读取资源文件: {}", resolved.display());
         return std::fs::read(&resolved)

@@ -1,7 +1,7 @@
 use log::info;
 
 use crate::da::DAXFlash;
-use crate::system::paths::获取tmp路径;
+use crate::system::paths::get_tmp_path;
 
 /// FRP OEM 解锁：修改 frp 分区中 persistent 数据块的 OEM unlock 标志位
 /// OEM unlock 标志位于 frp 分区的最后一个字节：0=锁定(出厂默认), 1=解锁
@@ -9,11 +9,11 @@ use crate::system::paths::获取tmp路径;
 pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
     info!("FRP OEM 解锁（修改标志位方式）...");
 
-    let backup_path = 获取tmp路径("frp_backup.bin");
-    let unlocked_path = 获取tmp路径("frp_unlocked.bin");
+    let backup_path = get_tmp_path("frp_backup.bin");
+    let unlocked_path = get_tmp_path("frp_unlocked.bin");
 
     // 1. 读取 frp 分区
-    da.读取分区("frp", &backup_path.to_string_lossy())?;
+    da.read_partition("frp", &backup_path.to_string_lossy())?;
     let mut frp_data = std::fs::read(&backup_path).map_err(|e| format!("读取备份失败: {}", e))?;
     info!("frp 分区: {} 字节", frp_data.len());
 
@@ -37,7 +37,7 @@ pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
 
     // 4. 写回
     std::fs::write(&unlocked_path, &frp_data).map_err(|e| format!("写入临时文件失败: {}", e))?;
-    da.写入分区("frp", &unlocked_path.to_string_lossy())?;
+    da.write_partition("frp", &unlocked_path.to_string_lossy())?;
 
     info!("FRP OEM 解锁完成");
     Ok(())
@@ -47,11 +47,11 @@ pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
 pub fn frp_lock(da: &mut DAXFlash) -> Result<(), String> {
     info!("FRP OEM 锁定（修改标志位方式）...");
 
-    let backup_path = 获取tmp路径("frp_backup.bin");
-    let locked_path = 获取tmp路径("frp_locked.bin");
+    let backup_path = get_tmp_path("frp_backup.bin");
+    let locked_path = get_tmp_path("frp_locked.bin");
 
     // 1. 读取 frp 分区
-    da.读取分区("frp", &backup_path.to_string_lossy())?;
+    da.read_partition("frp", &backup_path.to_string_lossy())?;
     let mut frp_data = std::fs::read(&backup_path).map_err(|e| format!("读取备份失败: {}", e))?;
     info!("frp 分区: {} 字节", frp_data.len());
 
@@ -72,7 +72,7 @@ pub fn frp_lock(da: &mut DAXFlash) -> Result<(), String> {
 
     // 3. 写回
     std::fs::write(&locked_path, &frp_data).map_err(|e| format!("写入临时文件失败: {}", e))?;
-    da.写入分区("frp", &locked_path.to_string_lossy())?;
+    da.write_partition("frp", &locked_path.to_string_lossy())?;
 
     info!("FRP OEM 锁定完成");
     Ok(())

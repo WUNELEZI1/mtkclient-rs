@@ -114,7 +114,7 @@ impl<'a> DAXFlash<'a> {
         // 5. 重新打开 USB 设备。高速重连是「尽力而为的可选优化」，**绝不可让已加载的
         //    DA 成果报废**：先尽力高速重连；若失败，降级回 full-speed 重连——DA 仍驻留
         //    设备内存，设备若已回退 full-speed 重枚举即可复用，从而保留成果继续工作。
-        let usb_context = match crate::usb::USB上下文::新建() {
+        let usb_context = match crate::usb::UsbContext::new() {
             Ok(ctx) => ctx,
             Err(e) => {
                 warn!(

@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 
-use crate::system::paths::获取tmp路径;
+use crate::system::paths::get_tmp_path;
 
 /// 获取 DA 会话状态文件路径（位于 tmp/ 目录）
 fn state_file_path() -> std::path::PathBuf {
-    获取tmp路径(".state")
+    get_tmp_path(".state")
 }
 
 /// DA 初始化模式：记录 DA 是通过哪种路径加载的，

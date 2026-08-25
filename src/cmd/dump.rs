@@ -6,7 +6,7 @@ use crate::color::Colorize;
 use log::{info, warn};
 
 use crate::da::DAXFlash;
-use crate::usb::USB上下文;
+use crate::usb::UsbContext;
 
 /// 提取 Preloader（mtkclient 风格）
 /// 流程：
@@ -16,7 +16,7 @@ use crate::usb::USB上下文;
 /// 4. 搜索 MTK_BLOADER_INFO 提取文件名（偏移 0x1B，长度 0x30）
 pub fn cmd_dumppreloader(
     da: &mut DAXFlash,
-    context: &USB上下文,
+    context: &UsbContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 直接调用 dump_preloader_payload，不先 bypass_security
     // 因为 dump_preloader_payload 内部会注入 payload，bypass 会改变 BROM 状态

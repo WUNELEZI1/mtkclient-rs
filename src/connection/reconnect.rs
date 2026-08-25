@@ -1,6 +1,6 @@
 use crate::preloader::Preloader;
 use crate::usb;
-use crate::usb::{USB上下文, USB阶段};
+use crate::usb::{UsbContext, UsbStage};
 use crate::color::Colorize;
 use log::{debug, info, trace, warn};
 use std::collections::HashSet;
@@ -15,9 +15,9 @@ impl ConnectionManager {
     /// 无限等待直到设备出现（用户手动按组合键进入 BROM 模式可能需要几十秒到几分钟）
     pub fn reconnect_loop(
         &self,
-        context: &USB上下文,
-        target_stage: USB阶段,
-    ) -> Result<usb::USB设备, String> {
+        context: &UsbContext,
+        target_stage: UsbStage,
+    ) -> Result<usb::UsbDevice, String> {
         let mut retry = 0;
         let mut context_refreshed = false;
 
@@ -27,10 +27,10 @@ impl ConnectionManager {
         );
 
         let pids = match target_stage {
-            USB阶段::Brom => vec![0x0003u16],
-            USB阶段::Preloader => vec![0x2000u16],
-            USB阶段::Da => vec![0x2001u16],
-            USB阶段::未知 => vec![0x0003u16, 0x2000u16, 0x2001u16],
+            UsbStage::Brom => vec![0x0003u16],
+            UsbStage::Preloader => vec![0x2000u16],
+            UsbStage::Da => vec![0x2001u16],
+            UsbStage::Unknown => vec![0x0003u16, 0x2000u16, 0x2001u16],
         };
 
         loop {
@@ -42,11 +42,11 @@ impl ConnectionManager {
             }
 
             for &pid in &pids {
-                match usb::USB设备::按VID_PID打开(context, 0x0E8D, pid) {
+                match usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, pid) {
                     Ok(device) => {
                         info!(
                             "[RECONNECT] success on attempt {} (stage={:?}, PID=0x{:04X})",
-                            retry, device.阶段, device.pid
+                            retry, device.stage, device.pid
                         );
                         return Ok(device);
                     }
@@ -63,9 +63,9 @@ impl ConnectionManager {
             // 每 50 次重试（约 10 秒）尝试用新 context 打开
             if retry % 50 == 0 && !context_refreshed {
                 trace!("[RECONNECT] 尝试刷新 libusb context...");
-                if let Ok(new_ctx) = USB上下文::新建() {
+                if let Ok(new_ctx) = UsbContext::new() {
                     for &pid in &pids {
-                        if let Ok(device) = usb::USB设备::按VID_PID打开(&new_ctx, 0x0E8D, pid)
+                        if let Ok(device) = usb::UsbDevice::open_by_vid_pid(&new_ctx, 0x0E8D, pid)
                         {
                             info!("[RECONNECT] 使用新 context 成功连接 (attempt {})", retry);
                             return Ok(device);
@@ -88,7 +88,7 @@ impl ConnectionManager {
 
     /// DA 加载后重连
     #[allow(dead_code)] // 预留：DA 加载后设备重枚举流程
-    pub fn reconnect_after_da(&self, context: &USB上下文) -> Result<usb::USB设备, String> {
+    pub fn reconnect_after_da(&self, context: &UsbContext) -> Result<usb::UsbDevice, String> {
         debug!("[DA] DA 加载完成，等待设备重枚举...");
         std::thread::sleep(Duration::from_millis(super::manager::USB_REENUM_DELAY_MS));
 
@@ -102,40 +102,40 @@ impl ConnectionManager {
         }
 
         debug!("[DA] BROM PID 失败，扫描所有已知 PID...");
-        self.reconnect_loop(context, USB阶段::未知)
+        self.reconnect_loop(context, UsbStage::Unknown)
     }
 
     /// Kamakiri exploit 后重连
     #[allow(dead_code)] // 预留：Kamakiri2 exploit 后设备重枚举流程
     pub fn reconnect_after_kamakiri(
-        &self, context: &USB上下文
-    ) -> Result<usb::USB设备, String> {
+        &self, context: &UsbContext
+    ) -> Result<usb::UsbDevice, String> {
         info!("[KAMAKIRI] payload 已发送，等待设备重枚举...");
         std::thread::sleep(Duration::from_millis(super::manager::USB_REENUM_DELAY_MS));
-        self.reconnect_loop(context, USB阶段::Brom)
+        self.reconnect_loop(context, UsbStage::Brom)
     }
 
     /// USB reset 后重连
     #[allow(dead_code)] // 预留：USB reset 后设备重枚举流程
     pub fn reconnect_after_usb_reset(
-        &self, context: &USB上下文
-    ) -> Result<usb::USB设备, String> {
+        &self, context: &UsbContext
+    ) -> Result<usb::UsbDevice, String> {
         info!("[USB] USB reset detected, waiting for re-enumeration...");
         std::thread::sleep(Duration::from_millis(super::manager::USB_REENUM_DELAY_MS));
-        self.reconnect_loop(context, USB阶段::Brom)
+        self.reconnect_loop(context, UsbStage::Brom)
     }
 
     /// 快速连接尝试
     #[allow(dead_code)] // 预留：DA 后快速重连场景（被 reconnect_after_da 内部调用）
     fn try_quick_connect(
         &self,
-        context: &USB上下文,
+        context: &UsbContext,
         vid: u16,
         pid: u16,
         retries: usize,
-    ) -> Result<usb::USB设备, String> {
+    ) -> Result<usb::UsbDevice, String> {
         for _ in 1..=retries {
-            match usb::USB设备::按VID_PID打开(context, vid, pid) {
+            match usb::UsbDevice::open_by_vid_pid(context, vid, pid) {
                 Ok(device) => return Ok(device),
                 Err(_) => std::thread::sleep(Duration::from_millis(
                     super::manager::QUICK_CONNECT_INTERVAL_MS,
@@ -150,7 +150,7 @@ impl ConnectionManager {
     /// 所以不能只等待 PID=0x2000，应该直接打开当前已枚举的设备
     pub fn connect_to_da_mode(
         &mut self,
-        context: &USB上下文,
+        context: &UsbContext,
     ) -> Result<(Preloader, DeviceMode), String> {
         // 从 .state 获取上次使用的 VID/PID
         let state = match crate::connection::SessionState::load() {
@@ -165,7 +165,7 @@ impl ConnectionManager {
 
         // 直接用 .state 中的 VID/PID 打开设备（不等待特定 PID）
         let usb_device =
-            match usb::USB设备::按VID_PID打开(context, state.usb_vid, state.usb_pid) {
+            match usb::UsbDevice::open_by_vid_pid(context, state.usb_vid, state.usb_pid) {
                 Ok(dev) => dev,
                 Err(e) => {
                     // 如果指定 PID 打开失败，尝试扫描所有已知 MTK PID
@@ -173,7 +173,7 @@ impl ConnectionManager {
                         "[DA_SESSION] PID={:04X} 打开失败 ({})，扫描所有 MTK PID...",
                         state.usb_pid, e
                     );
-                    let usb_device = self.reconnect_loop(context, USB阶段::未知)?;
+                    let usb_device = self.reconnect_loop(context, UsbStage::Unknown)?;
                     info!(
                         "[DA_SESSION] 扫描连接成功: VID={:04X}, PID={:04X}",
                         usb_device.vid, usb_device.pid
@@ -184,7 +184,7 @@ impl ConnectionManager {
 
         info!(
             "[DA_SESSION] DA 设备已连接: VID={:04X}, PID={:04X}, stage={:?}",
-            usb_device.vid, usb_device.pid, usb_device.阶段
+            usb_device.vid, usb_device.pid, usb_device.stage
         );
 
         let mut preloader = Preloader::new(Box::new(usb_device));
@@ -205,7 +205,7 @@ impl ConnectionManager {
         }
 
         self.mode = DeviceMode::Brom;
-        self.stage = USB阶段::Preloader;
+        self.stage = UsbStage::Preloader;
 
         info!("{}", "[DA_SESSION] DA 会话复用成功".green().bold());
         Ok((preloader, DeviceMode::Brom))
@@ -219,7 +219,7 @@ impl ConnectionManager {
 
     /// 获取当前 USB 阶段
     #[allow(dead_code)] // 预留：查询设备当前所处阶段（BROM/Preloader）
-    pub fn stage(&self) -> &USB阶段 {
+    pub fn stage(&self) -> &UsbStage {
         &self.stage
     }
 
@@ -237,7 +237,7 @@ impl ConnectionManager {
     ///                     此时串口 Preloader 握手必然失败，应降级复用 DA 而非死等 Preloader。
     pub(crate) fn smart_init_preloader(
         &mut self,
-        context: &USB上下文,
+        context: &UsbContext,
         allow_brom_fallback: bool,
         allow_da_fallback: bool,
     ) -> Result<(Preloader, DeviceMode), String> {
@@ -291,7 +291,7 @@ impl ConnectionManager {
                         match self.preloader_serial_handshake(&p.port_name) {
                             Ok(preloader) => {
                                 self.mode = DeviceMode::Preloader;
-                                self.stage = USB阶段::Preloader;
+                                self.stage = UsbStage::Preloader;
                                 self.port_name = Some(p.port_name.clone());
                                 return Ok((preloader, DeviceMode::Preloader));
                             }
@@ -304,7 +304,7 @@ impl ConnectionManager {
             }
 
             // 2. 串口没找到，尝试 WinUSB（PID=0x2000）
-            if let Ok(usb_device) = usb::USB设备::按VID_PID打开(context, 0x0E8D, 0x2000) {
+            if let Ok(usb_device) = usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x2000) {
                 info!(
                     "[PRELOADER] WinUSB 设备已连接: VID={:04X} PID={:04X}",
                     usb_device.vid, usb_device.pid
@@ -313,7 +313,7 @@ impl ConnectionManager {
                 match preloader.init_preloader() {
                     Ok(true) => {
                         self.mode = DeviceMode::Preloader;
-                        self.stage = USB阶段::Preloader;
+                        self.stage = UsbStage::Preloader;
                         return Ok((preloader, DeviceMode::Preloader));
                     }
                     Ok(false) => {
@@ -346,19 +346,19 @@ impl ConnectionManager {
                                     p.port_name
                                 );
                                 return self
-                                    .smart_init(context, crate::system::config::工作模式::Brom);
+                                    .smart_init(context, crate::system::config::WorkMode::Brom);
                             }
                         }
                     }
 
                     // 检测 BROM WinUSB 设备
                     if let Ok(_usb_device) =
-                        usb::USB设备::按VID_PID打开(context, 0x0E8D, 0x0003)
+                        usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003)
                     {
                         warn!(
                             "[PRELOADER] 检测到 BROM WinUSB 设备 (PID=0x0003)，自动切换到 BROM 模式"
                         );
-                        return self.smart_init(context, crate::system::config::工作模式::Brom);
+                        return self.smart_init(context, crate::system::config::WorkMode::Brom);
                     }
 
                     trace!("[PRELOADER] 未检测到 BROM 设备，继续等待 Preloader 设备...");
@@ -373,11 +373,11 @@ impl ConnectionManager {
                     // 即视为可复用；全部失败则继续等待 Preloader 设备（不破坏"等待接入"UX）。
                     if let Some(state) = crate::connection::SessionState::load() {
                         if state.da_loaded {
-                            let candidate = usb::USB设备::按VID_PID打开(
+                            let candidate = usb::UsbDevice::open_by_vid_pid(
                                 context, state.usb_vid, state.usb_pid,
                             )
-                            .or_else(|_| usb::USB设备::按VID_PID打开(context, 0x0E8D, 0x0003))
-                            .or_else(|_| usb::USB设备::按VID_PID打开(context, 0x0E8D, 0x2001));
+                            .or_else(|_| usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003))
+                            .or_else(|_| usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x2001));
                             if let Ok(usb_device) = candidate {
                                 info!(
                                     "[PRELOADER] 串口 Preloader 握手超时，改复用 DA 会话 (VID={:04X} PID={:04X})",
@@ -393,7 +393,7 @@ impl ConnectionManager {
                                     preloader.chip = Some(*chip);
                                 }
                                 self.mode = DeviceMode::Brom;
-                                self.stage = USB阶段::Preloader;
+                                self.stage = UsbStage::Preloader;
                                 self.da_session_reused_in_init = true;
                                 info!(
                                     "{}",

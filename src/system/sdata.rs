@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::system::config::CHIP_CONFIGS;
-use crate::system::paths::获取可执行文件相对路径;
+use crate::system::paths::get_exe_relative_path;
 
 /// 解析后的 sdata
 pub struct SData {
@@ -73,7 +73,7 @@ pub fn resolve_chip_payload(hw_code: u32, fallback_loader: &str) -> std::path::P
     if let Some(sd) = sdata() {
         for key in &keys {
             if let Some(rel) = sd.payloads.get(key) {
-                let p = 获取可执行文件相对路径(&format!("data/{}", normalize_sep(rel)));
+                let p = get_exe_relative_path(&format!("data/{}", normalize_sep(rel)));
                 if p.exists() {
                     return p;
                 }
@@ -82,7 +82,7 @@ pub fn resolve_chip_payload(hw_code: u32, fallback_loader: &str) -> std::path::P
     }
 
     // 4. 回退：旧式 payload/ 目录
-    获取可执行文件相对路径(&format!("payload/{}", fallback_loader))
+    get_exe_relative_path(&format!("payload/{}", fallback_loader))
 }
 
 /// 解析 sdata.json 中具名 payload（如 `generic_preloader_dump` / `generic_patcher`）的路径。
@@ -92,13 +92,13 @@ pub fn resolve_named_payload(sdata_key: &str, fallback_filename: &str) -> std::p
     if let Some(sd) = sdata() {
         if let Some(rel) = sd.payloads.get(sdata_key) {
             let data_path =
-                获取可执行文件相对路径(&format!("data/{}", normalize_sep(rel)));
+                get_exe_relative_path(&format!("data/{}", normalize_sep(rel)));
             if data_path.exists() {
                 return data_path;
             }
         }
     }
-    获取可执行文件相对路径(&format!("payload/{}", fallback_filename))
+    get_exe_relative_path(&format!("payload/{}", fallback_filename))
 }
 
 /// 解析 hwcode 字符串（支持 `0x788` / `0X707` / 十进制 `788`）
@@ -113,7 +113,7 @@ fn normalize_sep(p: &str) -> String {
 }
 
 fn load_sdata() -> Option<SData> {
-    let path = 获取可执行文件相对路径("data/sdata.json");
+    let path = get_exe_relative_path("data/sdata.json");
     let raw = std::fs::read_to_string(&path).ok()?;
     let text = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
     let val = parse_json(text)?;

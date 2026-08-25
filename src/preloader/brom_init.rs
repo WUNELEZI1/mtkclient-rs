@@ -97,14 +97,14 @@ impl Preloader {
         };
         std::thread::spawn(move || {
             use crate::da::loader::header::parse_da_header;
-            use crate::system::paths::获取可执行文件相对路径;
+            use crate::system::paths::get_exe_relative_path;
             use std::fs::File;
             use std::io::Read;
 
             let da_path = if !da_path_for_thread.is_empty() {
                 std::path::PathBuf::from(&da_path_for_thread)
             } else {
-                获取可执行文件相对路径("MTK_DA_V5.bin")
+                get_exe_relative_path("MTK_DA_V5.bin")
             };
             let mut file = match File::open(&da_path) {
                 Ok(f) => f,

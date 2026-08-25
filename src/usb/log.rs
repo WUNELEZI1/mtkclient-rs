@@ -14,12 +14,12 @@ pub(crate) static QUIET_USB_READ: AtomicBool = AtomicBool::new(false);
 pub(crate) static USB_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// 设置 USB 读取静默模式
-pub fn 设置USB读取静默(quiet: bool) {
+pub fn set_usb_read_quiet(quiet: bool) {
     QUIET_USB_READ.store(quiet, Ordering::Relaxed);
 }
 
 /// 设置 USB trace 开关
-pub fn 设置USB日志开关(enabled: bool) {
+pub fn set_usb_log_switch(enabled: bool) {
     USB_LOG_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
