@@ -111,42 +111,79 @@ impl<'a> DAXFlash<'a> {
         // 4. 等待设备重新枚举（2 秒，对齐 Python time.sleep(2)）
         std::thread::sleep(Duration::from_secs(2));
 
-        // 5. 重新打开 USB 设备
+        // 5. 重新打开 USB 设备。高速重连是「尽力而为的可选优化」，**绝不可让已加载的
+        //    DA 成果报废**：先尽力高速重连；若失败，降级回 full-speed 重连——DA 仍驻留
+        //    设备内存，设备若已回退 full-speed 重枚举即可复用，从而保留成果继续工作。
         let usb_context = match crate::usb::USB上下文::新建() {
             Ok(ctx) => ctx,
             Err(e) => {
-                warn!("[RECONNECT] 创建 USB 上下文失败: {}，重连终止", e);
+                warn!(
+                    "[RECONNECT] 创建 USB 上下文失败: {}，放弃高速重连（保留 DA 会话）",
+                    e
+                );
                 return;
             }
         };
 
-        // 循环尝试打开设备（对齐 Python while not connect()）
-        let max_retries = 5;
-        for attempt in 1..=max_retries {
+        const HS_RETRIES: usize = 5;
+        const FS_RETRIES: usize = 5;
+        let mut connected_speed: Option<&str> = None;
+
+        // 5a. 高速重连尝试
+        for attempt in 1..=HS_RETRIES {
             match self.preloader.device.reopen_device(&usb_context) {
                 Ok(_) => {
+                    connected_speed = Some("high-speed");
                     info!(
-                        "[RECONNECT] USB 高速重连成功 (第 {} 次尝试)，读取速度将显著提升",
+                        "[RECONNECT] USB 高速重连成功 (第 {} 次)，读取速度将显著提升",
                         attempt
                     );
-                    return;
+                    break;
                 }
                 Err(e) => {
-                    trace!(
-                        "[RECONNECT] 第 {}/{} 次尝试失败: {}",
-                        attempt, max_retries, e
-                    );
-                    if attempt < max_retries {
+                    trace!("[RECONNECT] 高速重连第 {}/{} 次失败: {}", attempt, HS_RETRIES, e);
+                    if attempt < HS_RETRIES {
                         std::thread::sleep(Duration::from_millis(500));
                     }
                 }
             }
         }
 
-        warn!(
-            "[RECONNECT] USB 重连失败（{} 次尝试），保持当前连接",
-            max_retries
-        );
+        // 5b. 降级 full-speed 重连：DA 仍驻留，设备可能已回退 full-speed 重枚举
+        if connected_speed.is_none() {
+            warn!(
+                "[RECONNECT] 高速重连失败，降级尝试 full-speed 重连（保留 DA 成果，放弃高速提速）"
+            );
+            for attempt in 1..=FS_RETRIES {
+                match self.preloader.device.reopen_device(&usb_context) {
+                    Ok(_) => {
+                        connected_speed = Some("full-speed");
+                        info!(
+                            "[RECONNECT] 已降级 full-speed 重连成功 (第 {} 次)，继续以 full-speed 工作",
+                            attempt
+                        );
+                        break;
+                    }
+                    Err(e) => {
+                        trace!(
+                            "[RECONNECT] full-speed 重连第 {}/{} 次失败: {}",
+                            attempt, FS_RETRIES, e
+                        );
+                        if attempt < FS_RETRIES {
+                            std::thread::sleep(Duration::from_millis(1000));
+                        }
+                    }
+                }
+            }
+        }
+
+        if connected_speed == Some("high-speed") {
+            // 高速重连成功，无需额外提示
+        } else if connected_speed == Some("full-speed") {
+            warn!("[RECONNECT] 最终以 full-speed 工作（高速重连未成功，DA 成果已保留）");
+        } else {
+            warn!("[RECONNECT] 高速与 full-speed 重连均失败，设备可能已物理断开（DA 成果无法保留）");
+        }
     }
 
     /// 获取 EMMC 完整信息（Boot1/Boot2/RPMB/User Size/Block Size/CID）
