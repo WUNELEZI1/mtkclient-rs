@@ -41,11 +41,19 @@ impl<'a> DAXFlash<'a> {
                         label, attempt, MAX_RETRY, last_err
                     );
                     if attempt < MAX_RETRY {
-                        // 先等待，让 DA 流控自行恢复端点，再纯重试（不主动 clear_halt）
+                        // 先等待，让 DA 流控自行恢复端点
                         sleep(Duration::from_millis(RETRY_DELAY_MS));
-                        if attempt == MAX_RETRY - 1 && self.preloader.device.is_libusb() {
-                            // 最后手段：仅 libusb 后端尝试 clear_halt，错误吞掉不传播
+                        // 恢复（对齐刷机匣 unstick 流程）：先排空 IN 管道残留。
+                        // 若 DA 因上一条命令的响应未被主机读走而流控反压、阻塞了对新 OUT
+                        // 的 ACK，排空 IN 后即可恢复（IN 为空时 drain 无害）。
+                        // 此情形在 brom/WinUSB 后端 DA 加载后偶发，串口后端无此概念。
+                        self.preloader.device.drain_pending();
+                        if attempt == MAX_RETRY - 1 {
+                            // 最后手段：清 OUT/IN halt（仅最后一步，错误吞掉不传播）。
+                            // 旧 DA(如 MT6771) 在 setup_env 阶段 WinUSB 上 clear_halt 偶发
+                            // error 31，故仅作末步兜底，不提前触发以免恶化。
                             let _ = self.preloader.device.clear_halt_out();
+                            let _ = self.preloader.device.clear_halt_in();
                         }
                     } else {
                         return Err(format!(
