@@ -44,8 +44,9 @@ codegen-units = 16
 lto = "thin"
 
 [profile.release]
-# 发布模式：最佳性能、稳定性与反逆向工程保护
-opt-level = 3
+# 发布模式：最小二进制体积优先（牺牲少量 CPU 密集路径速度；
+# 刷机瓶颈在 USB/设备 I/O，实测影响有限；配合 lto=fat+codegen-units=1 进一步减体积）
+opt-level = "z"
 lto = "fat"
 codegen-units = 1
 debug = false
