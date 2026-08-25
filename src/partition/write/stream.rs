@@ -1,95 +1,11 @@
-//! DAXFlash 底层写入原语
-//!
-//! - `write_flash_data` — 按原始地址写入数据（带进度条显示）
-//! - `get_packet_length` — 获取写包长度
-//! - `cmd_write_data`   — 发送写命令
-//!
-//! 写入断点续传辅助函数：
-//! - `write_resume_path_for`       — 生成 `.wresume` 文件路径
-//! - `write_write_resume_file`     — 写入续传状态文件
-//! - `remove_write_resume_file`    — 删除续传状态文件
-//! - `check_write_resume`          — 检查续传状态是否匹配
+//! 按原始地址流式写入数据（带进度条/续传）
 
 use crate::progress::{ProgressBar, ProgressStyle};
 use log::{info, trace, warn};
 
-use crate::da::xflash::{CMD_MAGIC, CMD_WRITE_DATA, DAXFlash, pack3};
+use crate::da::xflash::{CMD_MAGIC, DAXFlash, pack3};
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// 写入断点续传辅助函数
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// 生成写入续传状态文件路径
-pub(crate) fn write_resume_path_for(input_file: &str) -> String {
-    format!("{}.wresume", input_file)
-}
-
-/// 写入续传状态文件
-pub(crate) fn write_write_resume_file(
-    input_file: &str,
-    addr: u64,
-    total: u64,
-    written: u64,
-    packet_len: Option<usize>,
-) -> Result<(), String> {
-    let packet = packet_len.unwrap_or(0);
-    let content = format!(
-        "input={}\naddr=0x{:X}\ntotal={}\nwritten={}\npacket_len={}\n",
-        input_file, addr, total, written, packet
-    );
-    std::fs::write(write_resume_path_for(input_file), content)
-        .map_err(|e| format!("写入续传状态失败: {}", e))
-}
-
-/// 删除写入续传状态文件
-pub(crate) fn remove_write_resume_file(input_file: &str) {
-    let _ = std::fs::remove_file(write_resume_path_for(input_file));
-}
-
-/// 检查写入续传状态是否匹配
-/// 返回已写入字节数（若匹配且有效），否则 None
-pub(crate) fn check_write_resume(input_file: &str, addr: u64, total: u64) -> Option<u64> {
-    let content = match std::fs::read_to_string(write_resume_path_for(input_file)) {
-        Ok(c) => c,
-        Err(_) => return None,
-    };
-
-    let resume_addr = content
-        .lines()
-        .find_map(|line| line.strip_prefix("addr=0x"))
-        .and_then(|v| u64::from_str_radix(v, 16).ok());
-    let resume_total = content
-        .lines()
-        .find_map(|line| line.strip_prefix("total="))
-        .and_then(|v| v.parse::<u64>().ok());
-    let written = content
-        .lines()
-        .find_map(|line| line.strip_prefix("written="))
-        .and_then(|v| v.parse::<u64>().ok());
-
-    match (resume_addr, resume_total, written) {
-        (Some(ra), Some(rt), Some(w)) if ra == addr && rt == total && w > 0 && w < total => Some(w),
-        _ => None,
-    }
-}
-
-fn explain_write_status(status: u32) -> &'static str {
-    match status {
-        CMD_WRITE_DATA => {
-            "读到了 WRITE_DATA 命令 echo，说明 XFlash 状态流错位；请先重试一次，若仍失败请重新进 BROM"
-        }
-        _ => "DA 返回非零状态",
-    }
-}
-
-fn format_write_status_error(stage: &str, status: u32) -> String {
-    format!(
-        "{} status error: 0x{:08X} ({})",
-        stage,
-        status,
-        explain_write_status(status)
-    )
-}
+use super::{format_write_status_error, write_write_resume_file};
 
 /// 参数分块大小：对齐 Python mtkclient，所有 payload 按 0x200 分块发送。
 /// DA 协议要求严格按此分块，整包发送会导致 device-side 死锁。
@@ -99,7 +15,11 @@ impl<'a> DAXFlash<'a> {
     /// 发送参数列表，对齐 Python send_param：
     /// 每个参数都有独立的 12B header，payload 按 0x200 分块发送，
     /// 整个列表发送完成后读一次 status。
-    fn send_param_list_chunked(&mut self, params: &[&[u8]], label: &str) -> Result<(), String> {
+    pub(crate) fn send_param_list_chunked(
+        &mut self,
+        params: &[&[u8]],
+        label: &str,
+    ) -> Result<(), String> {
         trace!("[send_param_list] label={} params={}", label, params.len());
         for (param_idx, payload) in params.iter().enumerate() {
             if crate::cancel::force_requested() || crate::cancel::requested() {
@@ -370,134 +290,5 @@ impl<'a> DAXFlash<'a> {
         } else {
             Err("写入已取消".to_string())
         }
-    }
-
-    /// 获取写包长度（对齐 Python get_packet_length）
-    fn get_packet_length(&mut self) -> Result<usize, String> {
-        // 发送 GET_PACKET_LENGTH (0x040007) 通过 devctrl
-        // send_devctrl 内部已包含完整的 xread + status 握手
-        let data = self.send_devctrl(0x040007, None)?;
-        if data.is_empty() {
-            return Ok(0x40000); // 默认值
-        }
-        if data.len() >= 8 {
-            let plen = u32::from_le_bytes(data[..4].try_into().unwrap());
-            let read_plen = u32::from_le_bytes(data[4..8].try_into().unwrap());
-            trace!(
-                "DA 写包长度: {} 字节 ({:.2} MiB), 读包长度: {} 字节 ({:.2} MiB)",
-                plen,
-                plen as f64 / 1024.0 / 1024.0,
-                read_plen,
-                read_plen as f64 / 1024.0 / 1024.0
-            );
-            if plen > 0 {
-                return Ok(plen as usize);
-            }
-        } else if data.len() >= 4 {
-            let plen = u32::from_le_bytes(data[..4].try_into().unwrap());
-            if plen > 0 {
-                return Ok(plen as usize);
-            }
-        }
-        // 默认值（对齐 Python 默认行为）
-        Ok(0x40000)
-    }
-
-    /// 发送写命令（对齐 Python cmd_write_data）
-    fn cmd_write_data(
-        &mut self,
-        addr: u64,
-        size: u64,
-        storage: u32,
-        parttype: u32,
-    ) -> Result<bool, String> {
-        trace!(
-            "[cmd_write_data] addr=0x{:08X} size={} storage={} parttype={}",
-            addr, size, storage, parttype
-        );
-
-        // 对齐 Python：发送 WRITE_DATA，失败时仅 drain + 重试（不发 xflash_sync）
-        for attempt in 0..3 {
-            if attempt > 0 {
-                warn!(
-                    "[cmd_write_data] 第 {} 次尝试失败，执行 drain + 重试...",
-                    attempt
-                );
-                self.preloader.device.drain_pending();
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-
-            // xsend(WRITE_DATA)
-            let pkt = pack3(CMD_MAGIC, 0x01, 4);
-            if let Err(e) = self.write_with_retry(&pkt, "cmd_write_data xsend") {
-                trace!("[cmd_write_data] write header 失败: {}", e);
-                continue;
-            }
-            if let Err(e) =
-                self.write_with_retry(&CMD_WRITE_DATA.to_le_bytes(), "cmd_write_data CMD")
-            {
-                trace!("[cmd_write_data] write CMD 失败: {}", e);
-                continue;
-            }
-
-            let mut st = match self.status() {
-                Ok(s) => s,
-                Err(e) => {
-                    trace!("[cmd_write_data] status 读取失败: {}", e);
-                    continue;
-                }
-            };
-            if st == CMD_WRITE_DATA {
-                warn!("cmd_write_data 读到 WRITE_DATA echo，尝试再读一次 status 进行重同步");
-                st = match self.status() {
-                    Ok(s) => s,
-                    Err(e) => {
-                        trace!("[cmd_write_data] 二次 status 读取失败: {}", e);
-                        continue;
-                    }
-                };
-            }
-            if st == 0 {
-                trace!("[cmd_write_data] status ok, 发送 56B 参数");
-                let mut param = Vec::with_capacity(56);
-                param.extend_from_slice(&storage.to_le_bytes());
-                param.extend_from_slice(&parttype.to_le_bytes());
-                param.extend_from_slice(&addr.to_le_bytes());
-                param.extend_from_slice(&size.to_le_bytes());
-                param.extend_from_slice(&[0u8; 32]); // NandExtension 全零
-                self.send_param_list_chunked(&[&param], "cmd_write_data param")?;
-                return Ok(true);
-            }
-            warn!(
-                "[cmd_write_data] 尝试 {}/2 失败: status=0x{:08X}",
-                attempt + 1,
-                st
-            );
-        }
-
-        Err(format!(
-            "cmd_write_data 多次尝试后仍然失败。可能原因：DA 状态机未同步，或设备端写入超时。\
-             建议：1) 让设备重新进入 BROM 模式后重试；2) 检查 USB 连接稳定性。"
-        ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn write_status_explains_command_echo_desync() {
-        assert!(explain_write_status(CMD_WRITE_DATA).contains("WRITE_DATA 命令 echo"));
-        assert_eq!(explain_write_status(0xDEAD), "DA 返回非零状态");
-    }
-
-    #[test]
-    fn write_status_error_includes_stage_code_and_explanation() {
-        let message = format_write_status_error("cmd_write_data", CMD_WRITE_DATA);
-
-        assert!(message.contains("cmd_write_data status error"));
-        assert!(message.contains("0x00010004"));
-        assert!(message.contains("状态流错位"));
     }
 }

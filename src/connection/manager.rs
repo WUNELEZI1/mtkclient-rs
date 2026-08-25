@@ -57,8 +57,6 @@ pub struct ConnectionManager {
     pub(crate) mode: DeviceMode,
     pub(crate) stage: UsbStage,
     pub(crate) port_name: Option<String>,
-    /// smart_init 过程中是否成功复用了 DA 会话
-    pub(crate) da_session_reused_in_init: bool,
 }
 
 impl ConnectionManager {
@@ -67,7 +65,6 @@ impl ConnectionManager {
             mode: DeviceMode::Preloader,
             stage: UsbStage::Unknown,
             port_name: None,
-            da_session_reused_in_init: false,
         }
     }
 
@@ -78,10 +75,11 @@ impl ConnectionManager {
         work_mode: WorkMode,
     ) -> Result<(Preloader, DeviceMode), String> {
         if work_mode == WorkMode::Preloader {
-            // --mode preloader：优先 Preloader 串口握手；若长时间失败且 .state 标记
-            // da_loaded（上一次是 DA 操作、设备仍停在 DA 模式），则 fallback 到 WinUSB
-            // 复用活 DA 会话，而非死等 Preloader 握手。
-            return self.smart_init_preloader(context, false, true);
+            // --mode preloader：始终走 Preloader 串口握手 + 重载 DA。
+            // Preloader 串口的 DA 不跨进程存活，进程退出即复位、
+            // DA 已死，且 PID 恒为 0x2000，旧 fallback 仅凭 .state(da_loaded) 打开 0x2000 构造
+            // 假 DA 会话 -> 误复用 -> 后续命令失败/卡死。故不再走任何 DA 会话复用。
+            return self.smart_init_preloader(context, false);
         }
 
         if work_mode == WorkMode::Auto {
@@ -146,12 +144,11 @@ impl ConnectionManager {
                             // 命令状态: 0x40040005”后 watchdog 兜底也失效）。
                             //
                             // 修正：统一改为每次重新 Preloader 握手 + 重载 DA（与
-                            // --mode preloader 同一条已被验证可用的新鲜路径）。仅当设备以
-                            // WinUSB(PID=0x0003) 呈现且 .state 匹配时，才由 main.rs 的
-                            // connect_to_da_mode 走 WinUSB DA 复用（那条路径 DA 稳定存活）。
+                            // --mode preloader 同一条已被验证可用的新鲜路径），不再有任何
+                            // .state DA 会话复用（DA 不跨进程存活，PID 恒定导致误命中）。
                             //
-                            // 若 .state 标记 da_loaded，说明上一次是 DA 会话，但 PID=0x2000
-                            // 表明设备已回到 Preloader 握手态 → 直接重握手即可，无需复用。
+                            // 所有模式均统一重新握手 + 重载 DA，不再走 .state DA 会话复用
+                            // （DA 不跨进程存活，PID 恒定导致 device_online 误命中）。
                             info!(
                                 "[AUTO] 检测到 Preloader 设备: {} (PID={:04X})",
                                 p.port_name, info.pid

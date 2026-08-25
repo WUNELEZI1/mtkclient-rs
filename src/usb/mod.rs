@@ -16,7 +16,6 @@ pub mod context;
 pub mod device;
 #[path = "device_handshake.rs"]
 pub mod device_handshake;
-#[path = "device_io.rs"]
 pub mod device_io;
 #[path = "diag.rs"]
 pub mod diag;

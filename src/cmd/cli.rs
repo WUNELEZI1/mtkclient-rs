@@ -105,7 +105,8 @@ pub struct Cli {
       r boot1 boot1.bin         读取 eMMC boot1（特殊分区）\n\
       r system system.img       自动从 super 读取动态分区\n\
       r super --dp system_b system_b.img  读取 super 内指定动态分区\n\
-      r gpt <dir>               读取 GPT 原始数据到目录\n\
+      r gpt <dir>               读取 GPT 原始数据到目录
+      w gpt <file>              写回 GPT 原始数据（r gpt 的逆操作，eMMC）\n\
     rl <dir> [--skip <...>]     读取全部分区到目录（逗号分隔跳过列表）\n\
     w <part> <file>             写入文件到分区（自动识别动态分区）\n\
     wl <dir>                    从目录恢复全部分区（匹配 .bin/.img）\n\

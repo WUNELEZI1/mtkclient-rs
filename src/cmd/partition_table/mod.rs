@@ -141,6 +141,78 @@ pub fn cmd_read_gpt(
     Ok(())
 }
 
+/// 将 GPT 镜像写回设备（eMMC，仅主 GPT 区域：LBA0 保护 MBR + LBA1 头 + 分区项）
+///
+/// 与 `cmd_read_gpt` 对应：`r gpt <dir>` 产出 `<dir>/gpt.bin`，本命令把该文件写回。
+/// 写回前重算分区项 CRC32 与头部 CRC32，保证写回的 GPT 合法（SPFT 可直接读取）。
+/// 写回范围为镜像实际长度（覆盖 LBA0 + 主 GPT 头 + 分区项表），备份 GPT 因镜像不含
+/// 盘尾区域暂不写回；主 GPT 是 Bootloader 启动时读取的首要根据，满足修改/恢复 GPT 需求。
+pub fn cmd_write_gpt(
+    da: &mut DAXFlash,
+    file: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut data =
+        std::fs::read(file).map_err(|e| format!("读取 GPT 文件失败 '{}': {}", file, e))?;
+    let gpt_info = crate::partition::GptInfo::parse(&data)
+        .map_err(|e| format!("GPT 文件无效: {}", e))?;
+    // 提取 Copy 字段后释放对 data 的不可变借用，避免与下方 &mut data 冲突（E0502）
+    let base_offset = gpt_info.base_offset;
+    let part_entry_start_lba = gpt_info.part_entry_start_lba;
+    let num_part_entries = gpt_info.num_part_entries;
+    let part_entry_size = gpt_info.part_entry_size;
+    let header_size = gpt_info.header_size;
+
+    // 写回前重算 CRC，确保设备/SPFT 读到合法 GPT
+    // 注：gpt_info 的不可变借用在其字段被复制提取后即结束（NLL），无需显式 drop
+    recompute_gpt_crc(
+        &mut data,
+        base_offset,
+        part_entry_start_lba,
+        num_part_entries,
+        part_entry_size,
+        header_size,
+    );
+
+    info!("写入 GPT 到设备 ({} 字节, 主 GPT 区域)...", data.len());
+    let mut cursor = std::io::Cursor::new(data.clone());
+    da.write_flash_data_stream(0, &mut cursor, data.len() as u64, 1, 8, 0, file)
+        .map_err(|e| format!("写入 GPT 失败: {}", e))?;
+
+    info!("{}", format!("GPT 已写入: {}", file).green());
+    Ok(())
+}
+
+/// 重算 GPT 头部 CRC32 与分区项 CRC32（就地修改 buffer）
+///
+/// - 分区项 CRC：覆盖 `part_entry_start_lba*512 .. + num*entry_size`
+/// - 头部 CRC：先将头部中 CRC 字段(偏移 16..20)清零，再对 `header_size` 字节计算
+fn recompute_gpt_crc(
+    buf: &mut [u8],
+    base_offset: usize,
+    part_entry_start_lba: u64,
+    num_part_entries: u32,
+    part_entry_size: u32,
+    header_size: u32,
+) {
+    let base = base_offset;
+
+    // 分区项 CRC（头部中存储位置 base+88..92）
+    let ent_off = (part_entry_start_lba * 512) as usize;
+    let ent_len = (num_part_entries * part_entry_size) as usize;
+    if ent_off + ent_len <= buf.len() && ent_len > 0 {
+        let crc = crate::partition::gpt::crc32_ieee(&buf[ent_off..ent_off + ent_len]);
+        buf[base + 88..base + 92].copy_from_slice(&crc.to_le_bytes());
+    }
+
+    // 头部 CRC（先清零 CRC 字段再计算）
+    let hdr_len = header_size as usize;
+    if base + hdr_len <= buf.len() && hdr_len >= 20 {
+        buf[base + 16..base + 20].copy_from_slice(&0u32.to_le_bytes());
+        let crc = crate::partition::gpt::crc32_ieee(&buf[base..base + hdr_len]);
+        buf[base + 16..base + 20].copy_from_slice(&crc.to_le_bytes());
+    }
+}
+
 /// 读取全部分区到目录（支持 --skip 跳过指定分区）
 pub fn cmd_read_all(
     da: &mut DAXFlash,
@@ -154,11 +226,34 @@ pub fn cmd_read_all(
     }
 
     // 解析 --skip 分区列表
-    let skip_set: std::collections::HashSet<String> = match &app_config.skip_partitions {
+    // 注意：根级 `--skip` 标志会被 clap 的尾部 args(Vec, allow_hyphen_values=true) 在命令之后
+    // 贪婪吞为命令参数，导致 app_config.skip_partitions 拿不到值。因此除读取根级 flag 外，
+    // 还需从 app_config.cmd_args 中扫描 `--skip <val>` / `--skip=<val>`（与 reboot --via 同理）。
+    let mut skip_raw: Option<String> = app_config.skip_partitions.clone();
+    if skip_raw.is_none() {
+        // `--skip <val>`
+        for w in app_config.cmd_args.windows(2) {
+            if w[0] == "--skip" {
+                skip_raw = Some(w[1].clone());
+                break;
+            }
+        }
+        // `--skip=<val>`
+        if skip_raw.is_none() {
+            for a in &app_config.cmd_args {
+                if let Some(v) = a.strip_prefix("--skip=") {
+                    skip_raw = Some(v.to_string());
+                    break;
+                }
+            }
+        }
+    }
+    let skip_set: std::collections::HashSet<String> = match skip_raw {
         Some(skip_str) => {
             let set: std::collections::HashSet<String> = skip_str
                 .split(',')
                 .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty())
                 .collect();
             if !set.is_empty() {
                 info!("跳过分区: {}", skip_str);

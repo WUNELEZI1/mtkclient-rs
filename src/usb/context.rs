@@ -43,6 +43,7 @@ impl UsbContext {
 }
 
 /// 枚举 nusb 设备列表，查找 MediaTek BROM 设备
+#[allow(dead_code)]
 fn scan_nusb_devices() -> Vec<(u16, u16)> {
     let mut result = Vec::new();
     let devices = match nusb::list_devices().wait() {
@@ -58,6 +59,7 @@ fn scan_nusb_devices() -> Vec<(u16, u16)> {
 }
 
 /// 枚举 USB 设备列表,返回第一个 MediaTek 设备的 (VID, PID, DeviceType)
+#[allow(dead_code)]
 pub fn get_first_mtk_vid_pid() -> Option<(u16, u16, DeviceType)> {
     scan_nusb_devices().into_iter().find_map(|(vid, pid)| {
         let device_type = DeviceType::from_vid_pid(vid, pid);

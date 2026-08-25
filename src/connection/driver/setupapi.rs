@@ -107,6 +107,15 @@ unsafe extern "system" {
 
     /// `SetupDiDestroyDeviceInfoList` - 释放设备信息集
     pub(crate) fn SetupDiDestroyDeviceInfoList(device_info_set: Hdevinfo) -> i32;
+
+    /// `SetupDiRestartDevices` - 重启（重新枚举）设备节点，使新安装的驱动立即生效
+    ///
+    /// 强制安装 WinUSB 后，当前连接的设备实例可能仍绑定旧驱动，直到重新枚举才会生效。
+    /// 调用此 API 可免去用户手动拔插，是 Zadig 风格安装稳定可靠的关键。
+    pub(crate) fn SetupDiRestartDevices(
+        device_info_set: Hdevinfo,
+        device_info_data: *const SpDevinfoData,
+    ) -> i32;
 }
 
 /// 枚举所有当前接入的 USB 设备
@@ -172,5 +181,42 @@ pub(crate) unsafe fn read_reg_wide(
         if s.is_empty() { None } else { Some(s) }
     } else {
         None
+    }
+}
+
+/// 找到 MTK BROM 设备节点（VID_0E8D&PID_0003）并主动触发重枚举
+///
+/// 用于在强制安装 WinUSB 驱动后，让新驱动立即绑定到当前设备（无需手动重新插拔）。
+/// 失败仅返回错误，调用方应降级到轮询兜底，不因此中断安装流程。
+pub(crate) unsafe fn find_and_restart_brom_device() -> Result<(), String> {
+    let h = unsafe { enum_usb_devices()? };
+
+    let mut dev_data = SpDevinfoData::new();
+    let mut idx: u32 = 0;
+    let mut found = false;
+    while unsafe { SetupDiEnumDeviceInfo(h, idx, &mut dev_data) } != 0 {
+        idx += 1;
+        if let Some(hwid) = unsafe { read_reg_wide(h, &dev_data, SPDRP_HARDWAREID) } {
+            if hwid.to_uppercase().contains("VID_0E8D&PID_0003") {
+                found = true;
+                break;
+            }
+        }
+    }
+
+    if !found {
+        unsafe { SetupDiDestroyDeviceInfoList(h); }
+        return Err("未找到 BROM 设备节点 (VID_0E8D&PID_0003)".to_string());
+    }
+
+    let ret = unsafe { SetupDiRestartDevices(h, &dev_data) };
+    unsafe { SetupDiDestroyDeviceInfoList(h); }
+    if ret == 0 {
+        Err(format!(
+            "SetupDiRestartDevices 失败: {}",
+            std::io::Error::last_os_error()
+        ))
+    } else {
+        Ok(())
     }
 }
