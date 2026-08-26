@@ -202,9 +202,13 @@ impl ConnectionManager {
         let mut retry_count = 0u32;
         let mut reported_ports = HashSet::new();
         const PRELOADER_MAX_RETRY: u32 = 50; // 约 10 秒 (50 * 200ms)
-        // 总等待上限：避免设备已切到其他模式（如 reboot 到 fastboot/关机）时无限卡在端口检测
-        const PRELOADER_TOTAL_WAIT_SECS: u64 = 30;
-        let start = Instant::now();
+        // 等待策略（对齐 brom 路径 manager.rs 主循环，仅 Ctrl+C 退出）：
+        // ① 未检测到 Preloader 端口时【无限等待】——用户手动进入 Preloader 握手态可能需要
+        //    若干秒到几分钟，不应有 30s 上限（修复 bug #1：等待应无限）。
+        // ② 端口已出现但握手【持续失败】（设备处于 DA 模式而非 Preloader 握手态）时，无限重试
+        //    无益，超出窗口后给出明确指引（修复 bug #3：避免"发现端口后卡死"）。
+        const PRELOADER_HANDSHAKE_FAIL_WINDOW_SECS: u64 = 25;
+        let mut handshake_fail_start: Option<Instant> = None;
 
         loop {
             retry_count += 1;
@@ -213,15 +217,7 @@ impl ConnectionManager {
             if crate::cancel::requested() {
                 return Err("用户取消等待".to_string());
             }
-
-            // 总等待超时：设备不在 Preloader 模式（如已 reboot 到 fastboot/关机）时，
-            // 不再无限等待 PID=0x2000，给出明确指引而非"一直卡在检测到端口"。
-            if start.elapsed().as_secs() >= PRELOADER_TOTAL_WAIT_SECS {
-                return Err(format!(
-                    "等待 Preloader 设备超时 ({}s)：未检测到 PID=0x2000。设备可能已重启到其他模式（如 fastboot）或已断开。请确认设备处于 Preloader 模式后重试。",
-                    PRELOADER_TOTAL_WAIT_SECS
-                ));
-            }
+            // 注意：Preloader 模式不再设总等待上限（对齐 brom 路径），未检测到端口时无限等待。
 
             // 1. 枚举 COM 口，找 PID=0x2000 的 Preloader VCOM
             if let Ok(ports) = serialport::available_ports() {
@@ -250,6 +246,22 @@ impl ConnectionManager {
                             }
                             Err(e) => {
                                 warn!("[PRELOADER] {} 握手失败: {}", p.port_name, e);
+                                // 端口已出现但握手反复失败：设备很可能处于 DA 模式（非 Preloader
+                                // 握手态），继续无限重试不会自动恢复，超出窗口后给出明确指引
+                                //（修复 bug #3：避免"发现端口后卡死"）。
+                                match handshake_fail_start {
+                                    None => handshake_fail_start = Some(Instant::now()),
+                                    Some(t)
+                                        if t.elapsed().as_secs()
+                                            >= PRELOADER_HANDSHAKE_FAIL_WINDOW_SECS =>
+                                    {
+                                        return Err(format!(
+                                            "已检测到 Preloader 端口 {} 但握手持续失败 ({}s)：设备可能处于 DA 模式而非 Preloader 握手态，或串口被其他程序占用。请断开重连设备（使其回到 Preloader 握手态），或改用 --mode brom。",
+                                            p.port_name, PRELOADER_HANDSHAKE_FAIL_WINDOW_SECS
+                                        ));
+                                    }
+                                    Some(_) => {}
+                                }
                             }
                         }
                     }
@@ -274,6 +286,20 @@ impl ConnectionManager {
                     }
                     Err(e) => {
                         warn!("[PRELOADER] init 失败: {}，继续等待...", e);
+                        // 端口已出现但 init 反复失败：同串口握手失败，超出窗口后给出明确指引。
+                        match handshake_fail_start {
+                            None => handshake_fail_start = Some(Instant::now()),
+                            Some(t)
+                                if t.elapsed().as_secs()
+                                    >= PRELOADER_HANDSHAKE_FAIL_WINDOW_SECS =>
+                            {
+                                return Err(format!(
+                                    "已检测到 Preloader WinUSB 设备 (PID=0x2000) 但 init 持续失败 ({}s)：设备可能处于 DA 模式而非 Preloader 握手态。请断开重连设备，或改用 --mode brom。",
+                                    PRELOADER_HANDSHAKE_FAIL_WINDOW_SECS
+                                ));
+                            }
+                            Some(_) => {}
+                        }
                     }
                 }
             }

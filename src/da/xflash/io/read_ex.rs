@@ -7,7 +7,9 @@ use log::{trace, warn};
 use crate::da::xflash::DAXFlash;
 use crate::da::xflash::protocol::{CMD_MAGIC, GET_PKT_LEN, SET_PKT_LEN};
 
-use super::{READFLASH_READ_TIMEOUT_MS, parse_packet_length, with_read_timeout};
+use super::{
+    DA_READ_PER_CHUNK_TRAILER, READFLASH_READ_TIMEOUT_MS, parse_packet_length, with_read_timeout,
+};
 
 impl<'a> DAXFlash<'a> {
     /// 读取 flash 数据（全量到内存），用于小分区或需要内存操作的场景
@@ -115,14 +117,21 @@ impl<'a> DAXFlash<'a> {
                     }
                     buffer.extend_from_slice(&tiny);
                     remaining = remaining.saturating_sub(4);
+                } else if slength == 0 {
+                    // 零长数据/终止包：mtkclient 在 length==0 时即结束读取，这里同样终止，
+                    // 避免 remaining 不推进导致死循环。
+                    trace!("[readflash_data] 零长数据包，结束读取");
+                    break;
                 } else {
                     // 正常数据：直接读入 buffer 尾部增长区，消除逐包 vec! 堆分配
                     let slen = slength as usize;
-                    // DA 可能在数据块末尾附带尾帧（实测 MT6768 DA 在 chunk 长度里多报若干字节，
-                    // 如 8 字节状态/校验）。只保留请求所需字节(remaining)，多余的尾帧读完丢弃，
-                    // 保持流对齐以便后续读取独立末态包。mtkclient 不校验 buffer 大小故可容忍，
-                    // 这里精确截取，避免把尾帧混入返回数据影响上层 GPT/分区解析。
-                    let take = slen.min(remaining);
+                    // DA 对每个数据块末尾附加固定长度尾帧（DA_READ_PER_CHUNK_TRAILER 字节状态/校验）。
+                    // ★ 必须按"真实数据长度 = slen - 尾帧"截取并丢弃尾帧，且对【每一块】
+                    // （不论是否最后一块）都如此处理：中间块的尾帧若被当数据写入，整段数据会按
+                    // 8 字节/块错位，导致 GPT 分区条目 CRC 失败、printgpt 读空。
+                    // commit 03071dd 仅修正了"slen > remaining"的最后一块，多块传输仍错位，本次补全。
+                    let data_len = slen.saturating_sub(DA_READ_PER_CHUNK_TRAILER);
+                    let take = data_len.min(remaining);
                     let discard = slen - take;
                     let old_len = buffer.len();
                     buffer.resize(old_len + take, 0);

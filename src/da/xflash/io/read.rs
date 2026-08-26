@@ -9,10 +9,11 @@ use crate::da::xflash::DAXFlash;
 use crate::da::xflash::protocol::{CMD_MAGIC, CMD_READ_DATA, GET_PKT_LEN, SET_PKT_LEN, pack3};
 
 use super::{
-    READFLASH_READ_TIMEOUT_MS, acquire_dump_buffer, active_resume_matches, ensure_output_file_path,
-    final_read_status_from_payload, finish_dump_writer, parse_packet_length,
-    quiet_usb_reads_temporarily, read_header_with_optional_queue, remove_resume_file,
-    spawn_dump_writer, with_read_timeout, write_resume_file,
+    DA_READ_PER_CHUNK_TRAILER, READFLASH_READ_TIMEOUT_MS, acquire_dump_buffer,
+    active_resume_matches, ensure_output_file_path, final_read_status_from_payload,
+    finish_dump_writer, parse_packet_length, quiet_usb_reads_temporarily,
+    read_header_with_optional_queue, remove_resume_file, spawn_dump_writer, with_read_timeout,
+    write_resume_file,
 };
 
 impl<'a> DAXFlash<'a> {
@@ -271,9 +272,12 @@ impl<'a> DAXFlash<'a> {
                             .map_err(|e| format!("read data: {}", e))?;
                         data
                     };
-                    // DA 可能在数据块末尾附带尾帧（实测 MT6768 DA 在 chunk 长度里多报若干字节）。
-                    // 精确截取请求剩余字节，丢弃尾帧，保证落盘文件恰为分区大小、流对齐末态包。
-                    let take = slen.min((target_remaining - bytes_received) as usize);
+                    // DA 可能在数据块末尾附加固定长度尾帧（DA_READ_PER_CHUNK_TRAILER 字节）。
+                    // ★ 对【每一块】都按"真实数据 = slen - 尾帧"截取并 truncate 丢弃尾帧，
+                    // 保证落盘文件恰为分区大小、流对齐末态包。中间块的尾帧若未剥离会使整段
+                    // 数据按 8 字节/块错位（与 read_ex.rs 同源 bug）。
+                    let take = (slen.saturating_sub(DA_READ_PER_CHUNK_TRAILER))
+                        .min((target_remaining - bytes_received) as usize);
                     data.truncate(take);
                     writer_tx
                         .send(Some(data))
@@ -287,8 +291,9 @@ impl<'a> DAXFlash<'a> {
                         .device
                         .read_exact(&mut data)
                         .map_err(|e| format!("read data (large): {}", e))?;
-                    // 精确截取请求剩余字节，丢弃 DA 可能附加的尾帧
-                    let take = slen.min((target_remaining - bytes_received) as usize);
+                    // 精确截取请求剩余字节，丢弃 DA 可能附加的尾帧（每块都剥离）
+                    let take = (slen.saturating_sub(DA_READ_PER_CHUNK_TRAILER))
+                        .min((target_remaining - bytes_received) as usize);
                     data.truncate(take);
                     writer_tx
                         .send(Some(data))
