@@ -12,6 +12,7 @@
 use log::{info, trace, warn};
 use std::thread::sleep;
 use std::time::Duration;
+use std::time::Instant;
 
 use crate::connection::session::{
     mark_optional_query_failed as save_optional_query_failure, optional_query_failed,
@@ -126,10 +127,10 @@ impl<'a> DAXFlash<'a> {
             return Err("Stage2 上传失败".to_string());
         }
 
-        // DA2 启动后会发送 SYNC 信号（约 0.5-1s 后到达），
-        // 提前等待并清除，避免后续 reinit / get_usb_speed 的 send_devctrl 读到 SYNC 而失败。
-        sleep(Duration::from_millis(800));
-        self.drain_usb_input();
+        // DA2 启动后会发送 SYNC 信号（约 0.5-1s 后到达），需消费掉以免污染后续命令。
+        // 事件驱动排空（替代盲等 sleep(800)）：短超时轮询读取并消费 SYNC，
+        // 管道连续静默即停止——SYNC 早到省时、晚到也不会提前退出丢包。
+        self.drain_until_quiet(1500);
 
         if self.da_x_speed == 1 {
             if self.optional_query_should_skip(QUERY_SLA_STATUS) {
@@ -291,5 +292,40 @@ impl<'a> DAXFlash<'a> {
             }
         }
         self.preloader.device.set_timeout(orig_timeout);
+    }
+
+    /// 事件驱动清空 IN 管道：50ms 短超时轮询读取并消费所有数据，
+    /// 直到管道连续静默（`QUIET_TICKS` 次读超时）或到达 `max_wait_ms` 上限。
+    ///
+    /// 替代 DA2 启动后的盲等 `sleep(800)`：DA2 在 ~0.5-1s 后发 SYNC 包，
+    /// 盲等要么浪费时间（SYNC 早到），要么提前退出丢包（SYNC 晚到，污染后续命令）。
+    /// 轮询消费 SYNC 后再保持短静默即停止，既省时又正确。
+    fn drain_until_quiet(&mut self, max_wait_ms: u64) {
+        const TICK_MS: u64 = 50;
+        const QUIET_TICKS: u32 = 3; // 连续 ~150ms 无数据即判定静默
+        let start = Instant::now();
+        let mut quiet = 0u32;
+        let mut buf = [0u8; 512];
+        let orig = self.preloader.device.get_timeout();
+        loop {
+            self.preloader
+                .device
+                .set_timeout(Duration::from_millis(TICK_MS));
+            match self.preloader.device.read(&mut buf) {
+                Ok(0) | Err(_) => {
+                    quiet += 1;
+                    if quiet >= QUIET_TICKS {
+                        break;
+                    }
+                }
+                Ok(_) => {
+                    quiet = 0;
+                }
+            }
+            if start.elapsed().as_millis() as u64 >= max_wait_ms {
+                break;
+            }
+        }
+        self.preloader.device.set_timeout(orig);
     }
 }

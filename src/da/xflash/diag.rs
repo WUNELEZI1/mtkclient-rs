@@ -109,8 +109,10 @@ impl<'a> DAXFlash<'a> {
         }
         info!("[RECONNECT] 已关闭旧 USB 句柄，等待设备重新枚举...");
 
-        // 4. 等待设备重新枚举（2 秒，对齐 Python time.sleep(2)）
-        std::thread::sleep(Duration::from_secs(2));
+        // 4. 等待设备重新枚举：短停靠让总线稳定即可，真正的重枚举由下方 reopen
+        //    重试循环（HS 5×500ms / FS 5×1000ms）事件驱动捕获，无需盲等固定 2 秒
+        //    （对齐 Python time.sleep(2) 的意图，但更省时，省约 1.5s）。
+        std::thread::sleep(Duration::from_millis(500));
 
         // 5. 重新打开 USB 设备。高速重连是「尽力而为的可选优化」，**绝不可让已加载的
         //    DA 成果报废**：先尽力高速重连；若失败，降级回 full-speed 重连——DA 仍驻留
