@@ -42,6 +42,16 @@ impl Drop for UsbReadQuietGuard {
 /// （实现见下方 `with_read_timeout`：RAII 风格包裹整个读取逻辑，自动恢复原超时。）
 const READFLASH_READ_TIMEOUT_MS: u64 = 10_000;
 
+/// DA 对每个读数据块在末尾附加的尾帧长度（字节）。
+///
+/// 实测 MT6768 / MT6771 的 DA（含 Preloader 与 BROM 模式）在 XFlash 读响应中，
+/// 每个数据块 = `12 字节头(magic/type/len)` + `slen` 字节，其中 `slen = 真实数据 + 尾帧`。
+/// 尾帧为 8 字节状态/校验。**无论该块是否为最后一块，尾帧都必须剥离**——否则中间块的
+/// 尾帧会被当作数据写入 buffer，导致整段数据按 8 字节/块错位，表现为 GPT 分区条目 CRC
+/// 失败、printgpt 读空（commit 03071dd 仅修正了最后一块，多块传输仍错位）。
+/// 见 `read_ex.rs` / `read.rs` 数据循环。
+pub(crate) const DA_READ_PER_CHUNK_TRAILER: usize = 8;
+
 /// 临时设置较长读超时执行回调，完成后恢复原超时（RAII，覆盖所有提前 return）。
 /// 用于 readflash 数据读取阶段：串口默认超时仅 1s，流式读取持续数秒会超时失败。
 fn with_read_timeout<T>(
