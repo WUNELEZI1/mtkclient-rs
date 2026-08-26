@@ -19,7 +19,11 @@ use std::time::Duration;
 const DEFAULT_OUT_EP: u8 = 0x01;
 const DEFAULT_IN_EP: u8 = 0x81;
 const DEFAULT_MAX_PACKET_SIZE: u16 = 512;
-const DEFAULT_TIMEOUT_MS: u64 = 5000;
+// 默认 bulk 读/写超时：从 5000ms 收紧到 1500ms。
+// DA/BROM 的 status 与数据响应通常在毫秒级到达；此超时仅作"单笔传输未达首字节"的上限。
+// 收紧后可把"缓冲区污染导致读 miss"的空等代价从 5s 降到 1.5s（写超时已由 drain_pending 修复，
+// miss 本应趋零，此处为兜底保险）。EMI/BOOT_TO 等确需长耗时的步骤会在调用处显式 set_timeout(5000)。
+const DEFAULT_TIMEOUT_MS: u64 = 1500;
 const REOPEN_DELAY_MS: u64 = 200;
 
 pub struct UsbDevice {
