@@ -1,28 +1,27 @@
-//! USB 设备构造与生命周期（open / close / reopen）
+//! USB 设备构造与生命周期（Android 分支）
 //!
-//! - `USB设备::新建`        — 按 SUPPORTED_DEVICES 顺序查找第一个可用设备
-//! - `USB设备::按VID_PID打开` — 按指定 VID/PID 打开
-//! - `USB设备::关闭`      — 释放接口 + 关闭句柄
-//! - `USB设备::重新打开`     — 重新打开设备（用于 BROM↔DA 切换后恢复）
+//! Android 不允许普通 App 枚举 USB 设备，所有设备打开都通过 Kotlin 传入的 fd。
+//! 底层使用 nusb 纯 Rust USB 库，通过 `Device::from_fd` 打开已授权设备。
 //!
-//! 底层使用 nusb 纯 Rust USB 库，Windows 上通过 WinUSB 后端通信。
+//! - `UsbDevice::from_android_fd` — 从 Kotlin 传入的 fd 打开设备
+//! - `UsbDevice::close`           — 释放接口 + 关闭句柄
+//! - `UsbDevice::reopen`          — 重新打开设备（用于 BROM↔DA 切换后恢复）
 
 use super::context::UsbContext;
 use super::context::UsbStage;
-use crate::system::config::{DeviceType, SUPPORTED_DEVICES};
+use crate::system::config::DeviceType;
 use log::{debug, info, trace, warn};
 use nusb::MaybeFuture;
 use nusb::descriptors::TransferType;
+use std::os::fd::OwnedFd;
+use std::os::unix::io::FromRawFd;
 use std::time::Duration;
 
 /// USB bulk 端点默认值（找不到时回退）
 const DEFAULT_OUT_EP: u8 = 0x01;
 const DEFAULT_IN_EP: u8 = 0x81;
 const DEFAULT_MAX_PACKET_SIZE: u16 = 512;
-// 默认 bulk 读/写超时：从 5000ms 收紧到 1500ms。
-// DA/BROM 的 status 与数据响应通常在毫秒级到达；此超时仅作"单笔传输未达首字节"的上限。
-// 收紧后可把"缓冲区污染导致读 miss"的空等代价从 5s 降到 1.5s（写超时已由 drain_pending 修复，
-// miss 本应趋零，此处为兜底保险）。EMI/BOOT_TO 等确需长耗时的步骤会在调用处显式 set_timeout(5000)。
+// 默认 bulk 读/写超时：1500ms（与 Windows 分支一致）
 const DEFAULT_TIMEOUT_MS: u64 = 1500;
 const REOPEN_DELAY_MS: u64 = 200;
 
@@ -55,43 +54,23 @@ pub struct UsbDevice {
 }
 
 impl UsbDevice {
-    /// 查找并打开第一个支持的设备
-    pub fn new(_context: &UsbContext) -> Result<Self, String> {
-        let devices = nusb::list_devices()
+    /// 从 Kotlin 传入的 fd 打开设备（Android 唯一入口）
+    ///
+    /// `fd` 来自 Kotlin 侧 `UsbDeviceConnection.getFileDescriptor()`。
+    /// 注意：Kotlin 侧 **不要** 调用 `claimInterface()`，让 nusb 来 claim，
+    /// 否则会报 "interface is busy"。
+    pub fn from_android_fd(
+        _context: &UsbContext,
+        fd: i32,
+        vid: u16,
+        pid: u16,
+    ) -> Result<Self, String> {
+        // 把原始 fd 包装成 OwnedFd。nusb 内部会 dup 一份，原 fd 由 Kotlin 侧负责关闭。
+        let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
+
+        let device = nusb::Device::from_fd(owned_fd)
             .wait()
-            .map_err(|e| format!("枚举 USB 设备失败: {}", e))?;
-
-        let mut found_dev_type = DeviceType::Unknown;
-        let mut target_dev_info: Option<nusb::DeviceInfo> = None;
-
-        for dev in devices {
-            for dev_config in SUPPORTED_DEVICES {
-                if dev.vendor_id() == dev_config.vid && dev.product_id() == dev_config.pid {
-                    info!(
-                        "[USB] 已连接:{} - {} (VID:0x{:04X} PID:0x{:04X})",
-                        dev_config.name, dev_config.description, dev_config.vid, dev_config.pid
-                    );
-                    found_dev_type = dev_config.device_type;
-                    target_dev_info = Some(dev);
-                    break;
-                }
-            }
-            if target_dev_info.is_some() {
-                break;
-            }
-        }
-
-        let dev_info = target_dev_info.ok_or("未找到支持的设备")?;
-
-        // 从 DeviceInfo 获取 vid/pid（nusb::Device 上没有这些方法）
-        let vid = dev_info.vendor_id();
-        let pid = dev_info.product_id();
-
-        // 打开设备并 claim interface
-        let device = dev_info
-            .open()
-            .wait()
-            .map_err(|e| format!("打开设备失败: {}", e))?;
+            .map_err(|e| format!("从 fd 打开设备失败: {:?}", e))?;
 
         // 扫描端点（从 active_configuration 获取）
         let (out_ep_addr, in_ep_addr, out_ep_max_packet, in_ep_max_packet, bulk_iface_num) =
@@ -103,11 +82,12 @@ impl UsbDevice {
             Self::open_bulk_endpoints(&interface, in_ep_addr, out_ep_addr)?;
 
         info!(
-            "[USB] EP_OUT=0x{:02X} wMaxPacketSize={} EP_IN=0x{:02X}",
-            out_ep_addr, out_ep_max_packet, in_ep_addr
+            "[USB] fd 打开成功: VID={:04X} PID={:04X} EP_OUT=0x{:02X} EP_IN=0x{:02X}",
+            vid, pid, out_ep_addr, in_ep_addr
         );
 
         let stage = UsbStage::from_pid(pid);
+        let device_type = DeviceType::from_vid_pid(vid, pid);
 
         Ok(UsbDevice {
             interface: Some(interface),
@@ -118,60 +98,7 @@ impl UsbDevice {
             vid,
             pid,
             stage,
-            device_type: found_dev_type,
-            out_ep: out_ep_addr,
-            in_ep: in_ep_addr,
-            iface_num,
-            control_iface_num,
-            out_ep_max_packet,
-            in_ep_max_packet_size: in_ep_max_packet,
-            in_buf: Vec::new(),
-            timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
-            closed: false,
-        })
-    }
-
-    /// 按指定 VID/PID 打开设备
-    pub fn open_by_vid_pid(_context: &UsbContext, vid: u16, pid: u16) -> Result<Self, String> {
-        let devices = nusb::list_devices()
-            .wait()
-            .map_err(|e| format!("枚举 USB 设备失败: {}", e))?;
-
-        let dev_info = devices
-            .into_iter()
-            .find(|d| d.vendor_id() == vid && d.product_id() == pid)
-            .ok_or_else(|| format!("未找到设备 VID={:04X} PID={:04X}", vid, pid))?;
-
-        let device = dev_info
-            .open()
-            .wait()
-            .map_err(|e| format!("打开设备失败: {}", e))?;
-
-        // 扫描端点
-        let (out_ep_addr, in_ep_addr, out_ep_max_packet, in_ep_max_packet, bulk_iface_num) =
-            Self::scan_endpoints_from_device(&device);
-
-        let (interface, iface_num, control_interface, control_iface_num) =
-            Self::claim_bulk_and_control_interfaces(&device, bulk_iface_num)?;
-        let (in_ep_handle, out_ep_handle) =
-            Self::open_bulk_endpoints(&interface, in_ep_addr, out_ep_addr)?;
-
-        let stage = UsbStage::from_pid(pid);
-        trace!(
-            "[USB] 按VID_PID打开 OK: VID={:04X} PID={:04X} stage={:?}",
-            vid, pid, stage
-        );
-
-        Ok(UsbDevice {
-            interface: Some(interface),
-            control_interface: Some(control_interface),
-            in_ep_handle: Some(in_ep_handle),
-            out_ep_handle: Some(out_ep_handle),
-            device: Some(device),
-            vid,
-            pid,
-            stage,
-            device_type: DeviceType::from_vid_pid(vid, pid),
+            device_type,
             out_ep: out_ep_addr,
             in_ep: in_ep_addr,
             iface_num,
@@ -310,7 +237,6 @@ impl UsbDevice {
             return;
         }
         self.cancel_pending_transfers();
-        // nusb: drop interface 会自动 release，drop device 会自动 close
         self.in_ep_handle = None;
         self.out_ep_handle = None;
         self.interface = None;
@@ -356,7 +282,6 @@ impl UsbDevice {
                 }
             }
         }
-        // 用短超时读取一次，清除可能的残留 IN 数据
         let orig_timeout = self.timeout;
         self.timeout = Duration::from_millis(50);
         let mut tmp = [0u8; 512];
@@ -365,12 +290,9 @@ impl UsbDevice {
     }
 
     /// 循环排空 IN 管道残留数据（不 reset HALT，不破坏 USB data toggle 序列）
-    /// 用于 DA 会话复用时：新进程打开 USB 后需要排空上一个进程留下的残留数据，
-    /// 但不能 clear_halt（会重置 data toggle 导致后续读取错位）。
     pub fn drain_pipes(&mut self) {
         self.in_buf.clear();
 
-        // 先取消挂起的 IN transfer
         if let Some(ep_in) = self.in_ep_handle.as_mut() {
             if ep_in.pending() > 0 {
                 trace!("[USB] drain_pipes: 取消 {} 个挂起 IN 传输", ep_in.pending());
@@ -381,16 +303,13 @@ impl UsbDevice {
             }
         }
 
-        // 循环排空 IN 管道残留数据（500ms 超时，循环直到无数据）
         let orig_timeout = self.timeout;
         self.timeout = Duration::from_millis(500);
         let mut drain_count = 0;
         loop {
             let mut tmp = [0u8; 512];
             match self.read(&mut tmp) {
-                Ok(0) => {
-                    break; // 超时无数据，排空完毕
-                }
+                Ok(0) => break,
                 Ok(n) => {
                     drain_count += 1;
                     trace!(
@@ -411,44 +330,21 @@ impl UsbDevice {
         }
     }
 
-    /// USB 总线复位（对齐 Python device.reset()）
-    /// 注意：nusb 目前没有直接的 reset_device API，
-    /// 这里通过关闭并重新打开来模拟
+    /// USB 总线复位（nusb 不提供，由 reopen 兜底）
     pub fn reset_device(&mut self) -> Result<(), String> {
-        // nusb 不提供 libusb_reset_device 等价操作
-        // USB 复位通常由 DA reinit 中的 set_usb_speed + close + reopen 处理
         warn!("[USB] nusb 不支持 USB 总线复位，跳过（由 reinit 流程处理）");
         Ok(())
     }
 
-    /// 重新打开 USB 设备：关闭旧句柄，等待设备稳定，重新打开并 claim interface
-    pub fn reopen(&mut self, context: &UsbContext) -> Result<(), String> {
+    /// 重新打开 USB 设备
+    ///
+    /// Android 上设备重枚举后 Kotlin 会重新走 UsbManager 授权流程，
+    /// 这里只关闭旧句柄，等待 Kotlin 重新注册 fd。
+    pub fn reopen(&mut self, _context: &UsbContext) -> Result<(), String> {
         self.close();
-        // 等待设备稳定
         std::thread::sleep(Duration::from_millis(REOPEN_DELAY_MS));
-
-        let mut new_device = UsbDevice::new(context)?;
-
-        // 交换字段
-        self.in_ep_handle = new_device.in_ep_handle.take();
-        self.out_ep_handle = new_device.out_ep_handle.take();
-        self.interface = new_device.interface.take();
-        self.control_interface = new_device.control_interface.take();
-        self.device = new_device.device.take();
-        self.in_ep = new_device.in_ep;
-        self.out_ep = new_device.out_ep;
-        self.in_ep_max_packet_size = new_device.in_ep_max_packet_size;
-        self.iface_num = new_device.iface_num;
-        self.control_iface_num = new_device.control_iface_num;
-        self.in_buf.clear();
-        self.vid = new_device.vid;
-        self.pid = new_device.pid;
-        self.stage = new_device.stage;
-        self.timeout = new_device.timeout;
-        self.device_type = new_device.device_type;
-        self.closed = false;
-        info!("USB 重连成功");
-        Ok(())
+        // Android 上无法主动重新打开，必须等 Kotlin 重新传入 fd
+        Err("Android 上 reopen 需要 Kotlin 重新授权并传入新 fd".to_string())
     }
 
     /// 获取 nusb Interface 可变引用

@@ -8,13 +8,13 @@
 //! - `vbmeta` - vbmeta 禁用与修补
 //! - `frp` - FRP (Factory Reset Protection) 解锁
 
-#[path = "FRP.rs"]
+#[path = "frp.rs"]
 pub mod frp;
 #[path = "seccfg/mod.rs"]
 pub mod seccfg;
-#[path = "SEJ.rs"]
+#[path = "sej.rs"]
 pub mod sej;
-#[path = "VBMETA.rs"]
+#[path = "vbmeta.rs"]
 pub mod vbmeta;
 
 // 公共 API re-export

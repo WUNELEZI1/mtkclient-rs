@@ -1,13 +1,10 @@
-//! USB 上下文 + 设备检测
+//! USB 上下文 + 设备检测（Android 分支）
 //!
-//! - `USB上下文` — nusb 上下文封装（nusb 无需显式 context，这里保留兼容接口）
-//! - `USB阶段`   — 设备阶段枚举（BROM / Preloader / DA / 未知）
-//! - `通过libusb检测联发科设备` — 前置检测 BROM 设备
-//! - `获取第一个联发科VID_PID` — DA 会话复用检查
-//! - `是否有联发科设备` — 判断是否跳过串口扫描
+//! Android 不允许普通 App 枚举 USB 设备，必须由 Kotlin 侧用 UsbManager
+//! 申请权限后，把 UsbDeviceConnection 的 fd 传给 Rust。
+//! 因此这里不做主动枚举，改为接收 Kotlin 注册的设备信息。
 
 use crate::system::config::DeviceType;
-use nusb::MaybeFuture;
 
 /// USB 设备阶段
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -29,36 +26,56 @@ impl UsbStage {
     }
 }
 
-/// USB 上下文（nusb 不需要显式 context，保留结构体以兼容现有 API）
+/// USB 上下文（Android 上仅做占位，设备信息由 Kotlin 传入）
 pub struct UsbContext {
-    /// nusb 不使用全局 context，此字段仅做标记
     _valid: bool,
 }
 
 impl UsbContext {
     pub fn new() -> Result<Self, String> {
-        // nusb 不需要显式初始化，直接返回
         Ok(UsbContext { _valid: true })
     }
 }
 
-/// 枚举 nusb 设备列表，查找 MediaTek BROM 设备
-#[allow(dead_code)]
-fn scan_nusb_devices() -> Vec<(u16, u16)> {
-    let mut result = Vec::new();
-    let devices = match nusb::list_devices().wait() {
-        Ok(d) => d,
-        Err(_) => return result,
-    };
-    for dev in devices {
-        if dev.vendor_id() == 0x0E8D && dev.product_id() == 0x0003 {
-            result.push((dev.vendor_id(), dev.product_id()));
-        }
-    }
-    result
+// ============================================================================
+// Android 专属：从 Kotlin 传入的 fd 打开设备
+// ============================================================================
+
+/// Android 上由 Kotlin 通过 JNI 传入的设备信息
+#[derive(Debug, Clone, Copy)]
+pub struct AndroidUsbDevice {
+    /// UsbDeviceConnection 的文件描述符
+    pub fd: i32,
+    pub vid: u16,
+    pub pid: u16,
 }
 
-/// 枚举 USB 设备列表,返回第一个 MediaTek 设备的 (VID, PID, DeviceType)
+static ANDROID_USB_DEVICE: std::sync::OnceLock<AndroidUsbDevice> = std::sync::OnceLock::new();
+
+/// 由 JNI 层调用，把 Kotlin 拿到的 fd 注册进来
+pub fn set_android_usb_device(fd: i32, vid: u16, pid: u16) {
+    let _ = ANDROID_USB_DEVICE.set(AndroidUsbDevice { fd, vid, pid });
+}
+
+/// 取当前已注册的 Android USB 设备（供 device.rs 打开时使用）
+pub fn get_android_usb_device() -> Option<AndroidUsbDevice> {
+    ANDROID_USB_DEVICE.get().copied()
+}
+
+// ============================================================================
+// 设备枚举：Android 上不主动枚举，直接返回 Kotlin 注册的设备
+// ============================================================================
+
+/// Android 不支持主动枚举，返回 Kotlin 已注册的设备
+#[allow(dead_code)]
+fn scan_nusb_devices() -> Vec<(u16, u16)> {
+    match get_android_usb_device() {
+        Some(d) => vec![(d.vid, d.pid)],
+        None => Vec::new(),
+    }
+}
+
+/// 返回第一个 MediaTek 设备的 (VID, PID, DeviceType)
 #[allow(dead_code)]
 pub fn get_first_mtk_vid_pid() -> Option<(u16, u16, DeviceType)> {
     scan_nusb_devices().into_iter().find_map(|(vid, pid)| {
