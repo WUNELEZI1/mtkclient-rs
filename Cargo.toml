@@ -23,9 +23,9 @@ cbc = "0.2"
 # USB 通信（nusb: 纯 Rust USB 库，Windows WinUSB 后端；仅用同步 I/O，
 # 显式关闭默认特性以锁定不启用 smol/tokio 异步运行时，保持纯同步、最小体积）
 nusb = { version = "0.2.5", default-features = false }
-# Windows 驱动自动安装（WinUSB）
-wdi-rs = "0.1.1"
 # 进度条显示（自研，见 src/progress.rs）
+#从 Android fd 用 nusb 打开设备
+android-usb-serial = "0.1"
 
 [profile.dev]
 # 开发模式：编译最快，不优化，保留完整调试信息

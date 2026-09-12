@@ -3,12 +3,9 @@
 //! 负责设备连接、驱动安装、会话管理
 //!
 //! # 系统架构
-//! - `driver` - Windows WinUSB 驱动安装/切换
 //! - `manager` - 设备连接管理器（串口握手/WinUSB直连/自动降级）
 //! - `session` - DA 会话状态管理
 
-#[path = "driver/mod.rs"]
-pub mod driver;
 #[path = "manager.rs"]
 pub mod manager;
 pub mod reconnect;
