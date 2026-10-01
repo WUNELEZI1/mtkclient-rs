@@ -141,10 +141,7 @@ impl UsbDevice {
                 return Ok(true);
             }
         }
-        Err(format!(
-            "Handshake failed after {} attempts",
-            HANDSHAKE_MAX_ATTEMPTS
-        ))
+        Err(crate::error::ProtocolError::HandshakeFailed(HANDSHAKE_MAX_ATTEMPTS).to_string())
     }
 }
 

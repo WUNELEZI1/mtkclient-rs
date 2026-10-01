@@ -140,8 +140,10 @@ impl<'a> GptInfo<'a> {
         let mut name_bytes = [0u8; 72];
         name_bytes.copy_from_slice(&entry[name_offset..name_offset + name_len]);
         let name_u16: Vec<u16> = name_bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .take_while(|&c| c != 0)
             .collect();
         let name = String::from_utf16_lossy(&name_u16);

@@ -88,6 +88,9 @@ pub fn handle_command(
         let has_security = match da.preloader.get_target_config() {
             Ok(cfg) => {
                 info!("{}", cfg.format_info());
+                if cfg.requires_auth() {
+                    info!("设备启用了 SLA/DAA 认证");
+                }
                 cfg.needs_bypass()
             }
             Err(e) => {

@@ -23,6 +23,16 @@ pub(crate) mod xml;
 
 /// 所有 XFlash 包头的 magic 标识
 pub const CMD_MAGIC: u32 = 0xFEEEEEEF;
+/// XFlash 包头 `data_type`：正常流程包（命令响应 / 数据）。
+/// 参考 penumbra `DataType::Flow`。
+/// 注：生产代码仅按 `DATA_TYPE_MESSAGE` 做分支（其余值一律视作 Flow），
+/// 该常量用于对称表达与单测断言，故显式允许未使用。
+#[allow(dead_code)]
+pub const DATA_TYPE_FLOW: u32 = 0x1;
+/// XFlash 包头 `data_type`：设备异步消息包（DA 日志 / 状态通告）。
+/// 参考 penumbra `DataType::Message`。DA 可在任意时刻插入此类包，
+/// 若不消费其负载会导致后续包头错位（协议失步）。
+pub const DATA_TYPE_MESSAGE: u32 = 0x2;
 pub const CMD_SYNC_SIGNAL: u32 = 0x434E5953;
 pub const CMD_SETUP_ENVIRONMENT: u32 = 0x010100;
 pub const CMD_SETUP_HW_INIT_PARAMS: u32 = 0x010101;
@@ -124,6 +134,33 @@ pub fn pack3(magic: u32, data_type: u32, length: u32) -> [u8; 12] {
     buf
 }
 
+/// 写入分块的 16-bit additive checksum（对齐 penumbra `download_data`）。
+///
+/// DA 在每块数据前期望一个 16 位累加和：分块所有字节按 u32 累加后取低 16 位。
+/// `& 0xFFFF` 是关键——旧实现用未截断的 32 位 wrapping sum，DA 端只比对低 16 位，
+/// 当累加和高位非零时会被判定为校验失败。按 8 字节批量累加以减少循环次数。
+pub fn chunk_checksum(data: &[u8]) -> u32 {
+    let mut sum: u32 = 0;
+    let mut i = 0;
+    while i + 8 <= data.len() {
+        sum = sum
+            .wrapping_add(data[i] as u32)
+            .wrapping_add(data[i + 1] as u32)
+            .wrapping_add(data[i + 2] as u32)
+            .wrapping_add(data[i + 3] as u32)
+            .wrapping_add(data[i + 4] as u32)
+            .wrapping_add(data[i + 5] as u32)
+            .wrapping_add(data[i + 6] as u32)
+            .wrapping_add(data[i + 7] as u32);
+        i += 8;
+    }
+    while i < data.len() {
+        sum = sum.wrapping_add(data[i] as u32);
+        i += 1;
+    }
+    sum & 0xFFFF
+}
+
 // =============================================================================
 // 私有工具
 // =============================================================================
@@ -158,5 +195,27 @@ mod tests {
     fn ack_result_equality() {
         assert_eq!(AckResult::Continue, AckResult::Continue);
         assert_ne!(AckResult::Continue, AckResult::Terminated(1));
+    }
+
+    #[test]
+    fn chunk_checksum_is_additive_16bit() {
+        assert_eq!(chunk_checksum(&[]), 0);
+        assert_eq!(chunk_checksum(&[0x01]), 0x01);
+        assert_eq!(chunk_checksum(&[0xFF, 0x01]), 0x100);
+        // 与朴素实现一致（含跨越 8 字节批量边界的样本）
+        let naive = |d: &[u8]| d.iter().map(|&b| b as u32).sum::<u32>() & 0xFFFF;
+        let sample: Vec<u8> = (0..=255u8).cycle().take(1000).collect();
+        assert_eq!(chunk_checksum(&sample), naive(&sample));
+        // 长度不是 8 的整数倍时尾部也要计入
+        assert_eq!(chunk_checksum(&[0u8; 17]), 0);
+        assert_eq!(chunk_checksum(&[0u8; 16]), 0);
+    }
+
+    #[test]
+    fn chunk_checksum_truncates_to_16_bits() {
+        // 255 * 300 = 76500 = 0x12AD4 → 低 16 位 0x2AD4（旧实现会返回 0x12AD4）
+        let data = vec![0xFFu8; 300];
+        assert_eq!(chunk_checksum(&data), 0x2AD4);
+        assert!(chunk_checksum(&data) <= 0xFFFF);
     }
 }

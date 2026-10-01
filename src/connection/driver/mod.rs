@@ -22,7 +22,14 @@ pub(crate) mod admin;
 pub(crate) mod detect;
 #[path = "setupapi.rs"]
 pub(crate) mod setupapi;
+// WinUSB 切换依赖 wdi-rs（仅 Windows 且需 libwdi 原生库）：
+// - Windows + `winusb-driver` 特性（默认开启）→ 真实实现
+// - 其他情况 → 占位实现，保证 crate 可在非 Windows / 无 libwdi 工具链时编译与跑测试
+#[cfg(all(target_os = "windows", feature = "winusb-driver"))]
 #[path = "switch.rs"]
+pub(crate) mod switch;
+#[cfg(not(all(target_os = "windows", feature = "winusb-driver")))]
+#[path = "switch_stub.rs"]
 pub(crate) mod switch;
 #[path = "verify.rs"]
 pub(crate) mod verify;

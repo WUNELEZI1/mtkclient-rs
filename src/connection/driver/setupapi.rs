@@ -4,6 +4,9 @@
 //! 由 detect/switch 等子模块按需使用，避免在多个文件里重复 unsafe extern 块。
 
 #![cfg(target_os = "windows")]
+// 关闭 `winusb-driver` 特性时，仅驱动安装（switch.rs）使用的 FFI 可能未被引用，
+// 此时放宽 dead_code 检查，保持构建无告警。
+#![cfg_attr(not(feature = "winusb-driver"), allow(dead_code))]
 
 // =============================================================================
 // SetupAPI 句柄与结构体

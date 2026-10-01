@@ -137,25 +137,8 @@ impl<'a> DAXFlash<'a> {
             }
             let chunk = &chunk_buf[..n];
 
-            // 优化 checksum：按 8 字节批量处理减少循环次数
-            let mut checksum: u32 = 0;
-            let mut i = 0;
-            while i + 8 <= n {
-                checksum = checksum
-                    .wrapping_add(chunk[i] as u32)
-                    .wrapping_add(chunk[i + 1] as u32)
-                    .wrapping_add(chunk[i + 2] as u32)
-                    .wrapping_add(chunk[i + 3] as u32)
-                    .wrapping_add(chunk[i + 4] as u32)
-                    .wrapping_add(chunk[i + 5] as u32)
-                    .wrapping_add(chunk[i + 6] as u32)
-                    .wrapping_add(chunk[i + 7] as u32);
-                i += 8;
-            }
-            while i < n {
-                checksum = checksum.wrapping_add(chunk[i] as u32);
-                i += 1;
-            }
+            // 16-bit additive checksum（对齐 penumbra download_data，见 chunk_checksum）
+            let checksum = crate::da::xflash::chunk_checksum(chunk);
 
             trace!(
                 "[writeflash] chunk offset={} size={} checksum=0x{:08X}",

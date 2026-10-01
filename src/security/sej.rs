@@ -238,8 +238,10 @@ fn sej_v3_init(
 fn sej_run(ctx: &HaccBackendVtable, data: &[u8]) -> Result<Vec<u8>, String> {
     let mut result = Vec::with_capacity(data.len());
     let dwords: Vec<u32> = data
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
         .collect();
 
     for chunk in dwords.chunks(4) {

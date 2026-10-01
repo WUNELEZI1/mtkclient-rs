@@ -4,6 +4,7 @@
 //! - `restart_as_admin()` — 通过 PowerShell Start-Process -Verb RunAs 触发 UAC 提权，
 //!   并设置 `MTKCLIENT_ELEVATED=1` 环境变量避免子进程再次提权造成死循环
 
+#[cfg(target_os = "windows")]
 use log::info;
 
 /// 检查当前进程是否以管理员身份运行
@@ -12,7 +13,7 @@ use log::info;
 /// 查询当前进程令牌的提升状态，替代第三方 `is_elevated` crate（纯 FFI，无额外依赖）。
 #[cfg(target_os = "windows")]
 pub fn is_admin() -> bool {
-    #[link(name = "Advapi32")]
+    #[link(name = "advapi32")]
     unsafe extern "system" {
         fn OpenProcessToken(
             hprocess: *mut std::ffi::c_void,
@@ -27,7 +28,7 @@ pub fn is_admin() -> bool {
             returnsize: *mut u32,
         ) -> i32;
     }
-    #[link(name = "Kernel32")]
+    #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetCurrentProcess() -> *mut std::ffi::c_void;
         fn CloseHandle(hobject: *mut std::ffi::c_void) -> i32;
@@ -54,6 +55,7 @@ pub fn is_admin() -> bool {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 pub fn is_admin() -> bool {
     true
 }
@@ -90,6 +92,7 @@ pub fn restart_as_admin() -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 pub fn restart_as_admin() -> Result<(), String> {
     Ok(())
 }

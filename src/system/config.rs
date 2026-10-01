@@ -191,59 +191,184 @@ pub struct ChipConfig {
 /// 从 mtkclient brom_config.py 自动提取，包含 67 种芯片配置
 pub use crate::system::chips_generated::CHIP_CONFIGS;
 
-/// 设备安全配置（对齐 Python get_target_config）
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)] // 预留：安全标志位扩展，部分位当前仅用于显示/后续功能
+/// 设备安全配置（对齐 penumbra `Preloader::get_target_config` 位域文档）
+///
+/// 位定义（`target_config` 低 9 位，逐位独立）：
+/// - `0x001` SBC          — Secure Boot Control
+/// - `0x002` SLA          — Serial Link Authentication
+/// - `0x004` DAA          — Download Agent Authentication
+/// - `0x008` EppParam     — EPP 参数
+/// - `0x010` RootCert     — 需要根证书
+/// - `0x020` MemReadAuth  — 内存读取鉴权
+/// - `0x040` MemWriteAuth — 内存写入鉴权
+/// - `0x080` CacheOpAuth  — Cache 操作鉴权
+/// - `0x100` SctrlCert    — Sctrl 证书
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetConfig {
+    /// 原始 32 位配置值
     pub raw: u32,
-    pub sbc: bool,      // Bit 0x01 - Secure Boot Control
-    pub sla: bool,      // Bit 0x02 - Serial Link Authentication
-    pub daa: bool,      // Bit 0x04 - Download Agent Authentication
-    pub swjtag: bool,   // Bit 0x06 - Software JTAG
-    pub epp: bool,      // Bit 0x08 - EPP Parameter
-    pub cert: bool,     // Bit 0x10 - Root Certificate Required
-    pub memread: bool,  // Bit 0x20 - Memory Read Authentication
-    pub memwrite: bool, // Bit 0x40 - Memory Write Authentication
-    pub cmd_c8: bool,   // Bit 0x80 - Command 0xC8 Blocked
+    /// Secure Boot Control
+    pub sbc: bool,
+    /// Serial Link Authentication
+    pub sla: bool,
+    /// Download Agent Authentication
+    pub daa: bool,
+    /// EPP 参数
+    pub epp_param: bool,
+    /// 需要根证书
+    pub root_cert: bool,
+    /// 内存读取鉴权
+    pub mem_read_auth: bool,
+    /// 内存写入鉴权
+    pub mem_write_auth: bool,
+    /// Cache 操作鉴权
+    pub cache_op_auth: bool,
+    /// Sctrl 证书
+    pub sctrl_cert: bool,
 }
 
 impl TargetConfig {
-    pub fn from_raw(raw: u32) -> Self {
-        TargetConfig::from_raw_u64(raw as u64)
-    }
+    pub const BIT_SBC: u32 = 0x001;
+    pub const BIT_SLA: u32 = 0x002;
+    pub const BIT_DAA: u32 = 0x004;
+    pub const BIT_EPP_PARAM: u32 = 0x008;
+    pub const BIT_ROOT_CERT: u32 = 0x010;
+    pub const BIT_MEM_READ_AUTH: u32 = 0x020;
+    pub const BIT_MEM_WRITE_AUTH: u32 = 0x040;
+    pub const BIT_CACHE_OP_AUTH: u32 = 0x080;
+    pub const BIT_SCTRL_CERT: u32 = 0x100;
 
-    pub fn from_raw_u64(raw: u64) -> Self {
-        let raw32 = (raw & 0xFFFFFFFF) as u32;
+    /// 由原始 32 位配置解析各安全标志位
+    pub fn from_raw(raw: u32) -> Self {
         TargetConfig {
-            raw: raw32,
-            sbc: (raw32 & 0x01) != 0,
-            sla: (raw32 & 0x02) != 0,
-            daa: (raw32 & 0x04) != 0,
-            swjtag: (raw32 & 0x06) != 0,
-            epp: (raw32 & 0x08) != 0,
-            cert: (raw32 & 0x10) != 0,
-            memread: (raw32 & 0x20) != 0,
-            memwrite: (raw32 & 0x40) != 0,
-            cmd_c8: (raw32 & 0x80) != 0,
+            raw,
+            sbc: raw & Self::BIT_SBC != 0,
+            sla: raw & Self::BIT_SLA != 0,
+            daa: raw & Self::BIT_DAA != 0,
+            epp_param: raw & Self::BIT_EPP_PARAM != 0,
+            root_cert: raw & Self::BIT_ROOT_CERT != 0,
+            mem_read_auth: raw & Self::BIT_MEM_READ_AUTH != 0,
+            mem_write_auth: raw & Self::BIT_MEM_WRITE_AUTH != 0,
+            cache_op_auth: raw & Self::BIT_CACHE_OP_AUTH != 0,
+            sctrl_cert: raw & Self::BIT_SCTRL_CERT != 0,
         }
     }
 
-    /// 判断是否需要执行 Kamakiri2 bypass
-    /// 除了 SBC/SLA/DAA 外，Mem Read Auth 也会阻止 BROM 0xD1 读命令
+    /// 是否需要执行 Kamakiri2 bypass
+    /// 除了 SBC/SLA/DAA 外，Mem Read/Write Auth 也会阻止 BROM 的内存读写命令
     pub fn needs_bypass(&self) -> bool {
-        self.sbc || self.sla || self.daa || self.memread || self.memwrite
+        self.sbc || self.sla || self.daa || self.mem_read_auth || self.mem_write_auth
+    }
+
+    /// 是否需要 SLA 认证（SLA 或 DAA 任一置位）
+    pub fn requires_auth(&self) -> bool {
+        self.sla || self.daa
     }
 
     pub fn format_info(&self) -> String {
+        let t = |b: bool| if b { "True" } else { "False" };
         format!(
-            "设备信息: 0x{:02X}\n  SBC: {} / SLA: {} / DAA: {}\n  Mem Read Auth: {} / Mem Write Auth: {}\n  Cmd 0xC8 blocked: {}",
+            "设备信息: 0x{:03X}\n  SBC: {} / SLA: {} / DAA: {}\n  \
+             EppParam: {} / RootCert: {} / SctrlCert: {}\n  \
+             Mem Read Auth: {} / Mem Write Auth: {} / Cache Op Auth: {}",
             self.raw,
-            if self.sbc { "True" } else { "False" },
-            if self.sla { "True" } else { "False" },
-            if self.daa { "True" } else { "False" },
-            if self.memread { "True" } else { "False" },
-            if self.memwrite { "True" } else { "False" },
-            if self.cmd_c8 { "True" } else { "False" },
+            t(self.sbc),
+            t(self.sla),
+            t(self.daa),
+            t(self.epp_param),
+            t(self.root_cert),
+            t(self.sctrl_cert),
+            t(self.mem_read_auth),
+            t(self.mem_write_auth),
+            t(self.cache_op_auth),
         )
+    }
+}
+
+// =============================================================================
+// 单元测试 — target_config 位域解析（P1-2）
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_config_zero_has_no_flags() {
+        let cfg = TargetConfig::from_raw(0);
+        assert!(!cfg.needs_bypass());
+        assert!(!cfg.requires_auth());
+        assert_eq!(cfg.raw, 0);
+    }
+
+    #[test]
+    fn target_config_each_bit_is_independent() {
+        // 逐位独立：每个掩码只置位自身对应的字段
+        let sbc = TargetConfig::from_raw(TargetConfig::BIT_SBC);
+        assert!(sbc.sbc && !sbc.sla && !sbc.daa && !sbc.mem_read_auth);
+
+        let sla = TargetConfig::from_raw(TargetConfig::BIT_SLA);
+        assert!(sla.sla && !sla.sbc && !sla.daa);
+
+        let daa = TargetConfig::from_raw(TargetConfig::BIT_DAA);
+        assert!(daa.daa && !daa.sbc && !daa.sla);
+
+        let epp = TargetConfig::from_raw(TargetConfig::BIT_EPP_PARAM);
+        assert!(epp.epp_param && !epp.root_cert);
+
+        let cert = TargetConfig::from_raw(TargetConfig::BIT_ROOT_CERT);
+        assert!(cert.root_cert && !cert.epp_param);
+
+        let mra = TargetConfig::from_raw(TargetConfig::BIT_MEM_READ_AUTH);
+        assert!(mra.mem_read_auth && !mra.mem_write_auth);
+
+        let mwa = TargetConfig::from_raw(TargetConfig::BIT_MEM_WRITE_AUTH);
+        assert!(mwa.mem_write_auth && !mwa.mem_read_auth);
+
+        let coa = TargetConfig::from_raw(TargetConfig::BIT_CACHE_OP_AUTH);
+        assert!(coa.cache_op_auth && !coa.sctrl_cert);
+
+        let scc = TargetConfig::from_raw(TargetConfig::BIT_SCTRL_CERT);
+        assert!(scc.sctrl_cert && !scc.cache_op_auth);
+    }
+
+    #[test]
+    fn target_config_bit_masks_match_penumbra() {
+        // 对齐 penumbra 文档：SBC..SctrlCert 共 9 位
+        assert_eq!(TargetConfig::BIT_SBC, 0x001);
+        assert_eq!(TargetConfig::BIT_SLA, 0x002);
+        assert_eq!(TargetConfig::BIT_DAA, 0x004);
+        assert_eq!(TargetConfig::BIT_EPP_PARAM, 0x008);
+        assert_eq!(TargetConfig::BIT_ROOT_CERT, 0x010);
+        assert_eq!(TargetConfig::BIT_MEM_READ_AUTH, 0x020);
+        assert_eq!(TargetConfig::BIT_MEM_WRITE_AUTH, 0x040);
+        assert_eq!(TargetConfig::BIT_CACHE_OP_AUTH, 0x080);
+        assert_eq!(TargetConfig::BIT_SCTRL_CERT, 0x100);
+    }
+
+    #[test]
+    fn target_config_needs_bypass_follows_security_bits() {
+        assert!(TargetConfig::from_raw(TargetConfig::BIT_SBC).needs_bypass());
+        assert!(TargetConfig::from_raw(TargetConfig::BIT_MEM_READ_AUTH).needs_bypass());
+        assert!(TargetConfig::from_raw(TargetConfig::BIT_MEM_WRITE_AUTH).needs_bypass());
+        // 仅高位（CacheOpAuth/SctrlCert/RootCert/EppParam）不触发 bypass
+        assert!(!TargetConfig::from_raw(TargetConfig::BIT_CACHE_OP_AUTH).needs_bypass());
+        assert!(!TargetConfig::from_raw(TargetConfig::BIT_SCTRL_CERT).needs_bypass());
+    }
+
+    #[test]
+    fn target_config_requires_auth_on_sla_or_daa() {
+        assert!(TargetConfig::from_raw(TargetConfig::BIT_SLA).requires_auth());
+        assert!(TargetConfig::from_raw(TargetConfig::BIT_DAA).requires_auth());
+        assert!(!TargetConfig::from_raw(TargetConfig::BIT_MEM_READ_AUTH).requires_auth());
+    }
+
+    #[test]
+    fn target_config_format_info_reports_flags() {
+        let cfg = TargetConfig::from_raw(TargetConfig::BIT_SBC | TargetConfig::BIT_MEM_READ_AUTH);
+        let s = cfg.format_info();
+        assert!(s.contains("SBC: True"), "{}", s);
+        assert!(s.contains("Mem Read Auth: True"), "{}", s);
+        assert!(s.contains("Mem Write Auth: False"), "{}", s);
     }
 }

@@ -24,7 +24,20 @@ const DEFAULT_MAX_PACKET_SIZE: u16 = 512;
 // 收紧后可把"缓冲区污染导致读 miss"的空等代价从 5s 降到 1.5s（写超时已由 drain_pending 修复，
 // miss 本应趋零，此处为兜底保险）。EMI/BOOT_TO 等确需长耗时的步骤会在调用处显式 set_timeout(5000)。
 const DEFAULT_TIMEOUT_MS: u64 = 1500;
-const REOPEN_DELAY_MS: u64 = 200;
+/// 重连轮询间隔 (ms)：设备 DA 重启后 USB 重新枚举通常需要 1~3s，
+/// 固定单次等待容易在设备尚未就绪时失败。改为按此间隔轮询重试。
+/// 参考 penumbra `reenumerate`（200ms 间隔 / 10s 总超时）。
+const REOPEN_POLL_INTERVAL_MS: u64 = 200;
+/// 重连总超时 (ms)：超过此时长仍未枚举到设备即判定失败。
+const REOPEN_TIMEOUT_MS: u64 = 10_000;
+
+/// 重连轮询是否应继续：累计耗时未达总超时则继续重试。
+///
+/// 抽成纯函数便于单测（I/O 无关）。对齐 penumbra `reenumerate` 的
+/// "200ms 间隔 + 10s 总超时" 语义。
+pub(crate) fn reopen_should_retry(elapsed_ms: u64) -> bool {
+    elapsed_ms < REOPEN_TIMEOUT_MS
+}
 
 pub struct UsbDevice {
     /// nusb 设备接口（持有 claim 的 interface）
@@ -421,34 +434,65 @@ impl UsbDevice {
         Ok(())
     }
 
-    /// 重新打开 USB 设备：关闭旧句柄，等待设备稳定，重新打开并 claim interface
+    /// 重新打开 USB 设备：关闭旧句柄，按 200ms 间隔轮询重枚举设备（总超时 10s），
+    /// 重新打开并 claim interface。
+    ///
+    /// DA 重启后 USB 总线重新枚举通常需要 1~3s，旧实现只等一次 200ms 便直接
+    /// `new()`，设备尚未就绪时必然失败。改为轮询：每 `REOPEN_POLL_INTERVAL_MS`
+    /// 尝试一次，直到成功或累计耗时超过 `REOPEN_TIMEOUT_MS`。
+    /// 参考 penumbra `reenumerate()`。
     pub fn reopen(&mut self, context: &UsbContext) -> Result<(), String> {
         self.close();
-        // 等待设备稳定
-        std::thread::sleep(Duration::from_millis(REOPEN_DELAY_MS));
 
-        let mut new_device = UsbDevice::new(context)?;
+        let start = std::time::Instant::now();
+        // 由循环内唯一 break 分支赋值，故无需初始化（避免 unused_assignments）
+        let last_err: String;
 
-        // 交换字段
-        self.in_ep_handle = new_device.in_ep_handle.take();
-        self.out_ep_handle = new_device.out_ep_handle.take();
-        self.interface = new_device.interface.take();
-        self.control_interface = new_device.control_interface.take();
-        self.device = new_device.device.take();
-        self.in_ep = new_device.in_ep;
-        self.out_ep = new_device.out_ep;
-        self.in_ep_max_packet_size = new_device.in_ep_max_packet_size;
-        self.iface_num = new_device.iface_num;
-        self.control_iface_num = new_device.control_iface_num;
-        self.in_buf.clear();
-        self.vid = new_device.vid;
-        self.pid = new_device.pid;
-        self.stage = new_device.stage;
-        self.timeout = new_device.timeout;
-        self.device_type = new_device.device_type;
-        self.closed = false;
-        info!("USB 重连成功");
-        Ok(())
+        loop {
+            // 等待设备稳定 / 重新枚举
+            std::thread::sleep(Duration::from_millis(REOPEN_POLL_INTERVAL_MS));
+
+            match UsbDevice::new(context) {
+                Ok(mut new_device) => {
+                    // 交换字段
+                    self.in_ep_handle = new_device.in_ep_handle.take();
+                    self.out_ep_handle = new_device.out_ep_handle.take();
+                    self.interface = new_device.interface.take();
+                    self.control_interface = new_device.control_interface.take();
+                    self.device = new_device.device.take();
+                    self.in_ep = new_device.in_ep;
+                    self.out_ep = new_device.out_ep;
+                    self.in_ep_max_packet_size = new_device.in_ep_max_packet_size;
+                    self.iface_num = new_device.iface_num;
+                    self.control_iface_num = new_device.control_iface_num;
+                    self.in_buf.clear();
+                    self.vid = new_device.vid;
+                    self.pid = new_device.pid;
+                    self.stage = new_device.stage;
+                    self.timeout = new_device.timeout;
+                    self.device_type = new_device.device_type;
+                    self.closed = false;
+                    info!("USB 重连成功（耗时 {}ms）", start.elapsed().as_millis());
+                    return Ok(());
+                }
+                Err(e) => {
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+                    if !reopen_should_retry(elapsed_ms) {
+                        last_err = e;
+                        break;
+                    }
+                    debug!(
+                        "[USB] 设备尚未重新枚举（已等待 {}ms），继续轮询: {}",
+                        elapsed_ms, e
+                    );
+                }
+            }
+        }
+
+        Err(format!(
+            "USB 重连失败（{}ms 内未重新枚举到设备）: {}",
+            REOPEN_TIMEOUT_MS, last_err
+        ))
     }
 
     /// 获取 nusb Interface 可变引用
@@ -480,4 +524,36 @@ impl Drop for UsbDevice {
     fn drop(&mut self) {
         self.close();
     }
+}
+
+// =============================================================================
+// 单元测试 — reopen 轮询策略（P1-1）
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reopen_retries_before_total_timeout() {
+        assert!(reopen_should_retry(0));
+        assert!(reopen_should_retry(REOPEN_POLL_INTERVAL_MS));
+        assert!(reopen_should_retry(REOPEN_TIMEOUT_MS - 1));
+    }
+
+    #[test]
+    fn reopen_stops_at_total_timeout() {
+        assert!(!reopen_should_retry(REOPEN_TIMEOUT_MS));
+        assert!(!reopen_should_retry(REOPEN_TIMEOUT_MS + 1));
+    }
+
+    #[test]
+    fn reopen_constants_match_penumbra_policy() {
+        // 200ms 轮询、10s 总超时（对齐 penumbra reenumerate）
+        assert_eq!(REOPEN_POLL_INTERVAL_MS, 200);
+        assert_eq!(REOPEN_TIMEOUT_MS, 10_000);
+    }
+
+    // 编译期校验：总超时至少允许 10 次轮询，否则轮询退化回"只等一次"
+    const _: () = assert!(REOPEN_TIMEOUT_MS / REOPEN_POLL_INTERVAL_MS >= 10);
 }

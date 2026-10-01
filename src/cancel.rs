@@ -4,6 +4,7 @@
 // - 第一次：设置 `CANCEL_REQUESTED`，代码应在合适时机检查并优雅退出
 // - 第二次：设置 `FORCE_REQUESTED`，代码应立即中断并退出
 
+#[cfg(target_os = "windows")]
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -12,7 +13,7 @@ static FORCE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 // Ctrl+C 处理器的 Windows FFI 声明（替代 ctrlc crate：纯 FFI，无额外依赖）
 #[cfg(target_os = "windows")]
-#[link(name = "Kernel32")]
+#[link(name = "kernel32")]
 unsafe extern "system" {
     fn SetConsoleCtrlHandler(handler: extern "system" fn(u32) -> i32, add: i32) -> i32;
 }
