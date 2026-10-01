@@ -8,6 +8,14 @@ edition = "2024"
 [lints.rust]
 non_snake_case = "allow"
 
+[features]
+# 默认启用 Windows 驱动自动安装（WinUSB / libwdi），保持与以往一致的完整功能。
+default = ["winusb-driver"]
+# WinUSB 驱动自动安装。关闭后仍可构建 Windows 目标，但 `switch_to_winusb` 退化为
+# 占位实现——适用于没有 libwdi 原生工具链的交叉编译/CI 环境（wdi-rs 的 build.rs
+# 仅在 Windows 主机上才会输出 libwdi 链接路径，且 libwdi 为 MSVC 静态库）。
+winusb-driver = ["dep:wdi-rs"]
+
 [dependencies]
 # 日志（log 仅作 Log trait 来源；格式器与按模块过滤均为自研；std 特性提供 set_boxed_logger）
 log = { version = "0.4", features = ["std"] }
@@ -23,9 +31,14 @@ cbc = "0.2"
 # USB 通信（nusb: 纯 Rust USB 库，Windows WinUSB 后端；仅用同步 I/O，
 # 显式关闭默认特性以锁定不启用 smol/tokio 异步运行时，保持纯同步、最小体积）
 nusb = { version = "0.2.5", default-features = false }
-# Windows 驱动自动安装（WinUSB）
-wdi-rs = "0.1.1"
 # 进度条显示（自研，见 src/progress.rs）
+
+# Windows 专属依赖：仅当 target 为 windows 时编译。
+# wdi-rs 内部 `compile_error!("This crate only supports Windows")`，
+# 若作为无条件依赖会导致 Linux/macOS 上无法编译（进而无法跑 `cargo test`）。
+[target.'cfg(windows)'.dependencies]
+# Windows 驱动自动安装（WinUSB）；由 `winusb-driver` 特性启用（默认开启）
+wdi-rs = { version = "0.1.1", optional = true }
 
 [profile.dev]
 # 开发模式：编译最快，不优化，保留完整调试信息

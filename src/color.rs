@@ -101,4 +101,5 @@ unsafe extern "system" {
 
 /// 非 Windows 平台无需任何处理（终端原生支持 ANSI）。
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub fn enable_virtual_terminal() {}

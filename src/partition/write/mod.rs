@@ -84,12 +84,23 @@ pub(crate) fn explain_write_status(status: u32) -> &'static str {
 }
 
 pub(crate) fn format_write_status_error(stage: &str, status: u32) -> String {
-    format!(
-        "{} status error: 0x{:08X} ({})",
-        stage,
-        status,
-        explain_write_status(status)
-    )
+    // 用结构化状态码分类给出更明确的错误域（安全域/设备域/协议…），
+    // 便于用户判断是命令不被支持还是设备侧拒绝。
+    match crate::error::XFlashError::from_status(status) {
+        Some(err) => format!(
+            "{} status error: 0x{:08X} [{}] ({})",
+            stage,
+            err.code,
+            err.kind,
+            explain_write_status(status)
+        ),
+        None => format!(
+            "{} status error: 0x{:08X} ({})",
+            stage,
+            status,
+            explain_write_status(status)
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -110,5 +121,13 @@ mod tests {
         assert!(message.contains("cmd_write_data status error"));
         assert!(message.contains("0x00010004"));
         assert!(message.contains("状态流错位"));
+    }
+
+    #[test]
+    fn write_status_error_classifies_device_domain() {
+        // 0xC004____ → 设备域错误，消息应带分类标注
+        let message = format_write_status_error("writeflash final", 0xC004_0040);
+        assert!(message.contains("0xC0040040"), "{}", message);
+        assert!(message.contains("设备域错误"), "{}", message);
     }
 }

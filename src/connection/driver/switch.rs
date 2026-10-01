@@ -7,13 +7,19 @@
 //! 4. UpdateDriverForPlugAndPlayDevicesW(INSTALLFLAG_FORCE)
 //!    → 强制覆盖 wdm_usb
 //! 5. 轮询 libusb 验证        → 最多 N 秒
+//!
+//! 本文件仅在 Windows 且启用 `winusb-driver` 特性时编译：依赖 wdi-rs（仅支持
+//! Windows，且需 libwdi 原生库）。其他情况由 `switch_stub.rs` 提供同签名占位实现，
+//! 保证 crate 可在非 Windows / 无 libwdi 工具链时编译与跑测试。
+
+#![cfg(all(target_os = "windows", feature = "winusb-driver"))]
 
 use log::{info, warn};
 use std::path::PathBuf;
 use std::time::Duration;
 use wdi_rs::{CreateListOptions, PrepareDriverOptions, create_list, prepare_driver};
 
-use super::detect::{BromDriverType, check_brom_driver_type};
+use super::detect::{check_brom_driver_type, should_skip_switch_for_driver};
 use super::setupapi::{
     INF_NAME, INSTALLFLAG_FORCE, INSTALLFLAG_NONINTERACTIVE, MTK_BROM_PID, MTK_VID,
     UpdateDriverForPlugAndPlayDevicesW,
@@ -212,10 +218,6 @@ fn find_brom_device() -> Result<wdi_rs::Device, String> {
     Err(last_err)
 }
 
-fn should_skip_switch_for_driver(driver_type: &BromDriverType) -> bool {
-    matches!(driver_type, BromDriverType::WinUsb)
-}
-
 fn current_driver_is_winusb() -> bool {
     check_brom_driver_type()
         .map(|driver_type| should_skip_switch_for_driver(&driver_type))
@@ -231,7 +233,6 @@ fn get_inf_dir() -> PathBuf {
 ///
 /// 关键：HardwareId 参数**不能为 NULL**，否则会返回 ERROR_INVALID_PARAMETER (87)。
 /// libwdi 内部就是把 `device.hardware_id`（如 `USB\VID_0E8D&PID_0003`）传过去。
-#[cfg(target_os = "windows")]
 fn force_install_via_api(device: &wdi_rs::Device, inf_dir: &std::path::Path) -> Result<(), String> {
     let inf_path = inf_dir.join(INF_NAME);
     if !inf_path.exists() {
@@ -291,14 +292,6 @@ fn force_install_via_api(device: &wdi_rs::Device, inf_dir: &std::path::Path) -> 
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn force_install_via_api(
-    _device: &wdi_rs::Device,
-    _inf_dir: &std::path::Path,
-) -> Result<(), String> {
-    Err("仅 Windows 支持".to_string())
-}
-
 /// 轮询 libusb 设备是否就绪
 fn poll_libusb_ready(max_seconds: u32) -> bool {
     for i in 1..=(max_seconds * 2) {
@@ -312,27 +305,4 @@ fn poll_libusb_ready(max_seconds: u32) -> bool {
         }
     }
     false
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::connection::driver::detect::BromDriverType;
-
-    #[test]
-    fn switch_is_skipped_only_for_confirmed_winusb_driver() {
-        assert!(should_skip_switch_for_driver(&BromDriverType::WinUsb));
-    }
-
-    #[test]
-    fn serial_driver_must_not_skip_switch_even_if_usb_can_be_enumerated() {
-        assert!(!should_skip_switch_for_driver(&BromDriverType::Serial));
-    }
-
-    #[test]
-    fn unknown_driver_must_not_skip_switch() {
-        assert!(!should_skip_switch_for_driver(&BromDriverType::Unknown(
-            "未知驱动".to_string()
-        )));
-    }
 }

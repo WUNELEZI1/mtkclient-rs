@@ -7,8 +7,10 @@
 //!
 //! 优势：只读注册表，不实际打开设备，避免 COM 口占用问题。
 
+#[cfg(target_os = "windows")]
 use log::trace;
 
+#[cfg(target_os = "windows")]
 use super::setupapi::{
     self, MTK_BROM_PID, MTK_VID, SPDRP_COMPATIBLEIDS, SPDRP_DEVICEDESC, SPDRP_HARDWAREID,
     SPDRP_MFG, SPDRP_PORTNAME, SPDRP_SERVICE, SpDevinfoData, enum_ports_devices, enum_usb_devices,
@@ -16,6 +18,9 @@ use super::setupapi::{
 };
 
 /// BROM 设备驱动类型
+///
+/// 非 Windows 编译时仅由测试与占位实现引用，故显式允许 dead_code。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum BromDriverType {
     /// WinUSB 驱动（libwdi 安装）
@@ -27,6 +32,9 @@ pub enum BromDriverType {
 }
 
 /// USB 总线检测结果
+///
+/// 非 Windows 编译时只需 `NotFound`，其余变体仅在 Windows 枚举路径构造。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub enum UsbBusDetectionResult {
     /// 未找到设备
@@ -39,6 +47,7 @@ pub enum UsbBusDetectionResult {
     Unknown(String), // 驱动制造商
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn classify_brom_driver_from_fields(
     service: &str,
     mfg: &str,
@@ -79,9 +88,20 @@ pub struct ComPortUsbInfo {
     pub driver_mfg: String,
 }
 
-#[cfg(not(target_os = "windows"))]
-fn find_com_port_by_hardware_id() -> Option<String> {
-    None
+/// 是否应跳过 WinUSB 驱动切换：仅当已确认绑定 WinUSB 时才跳过。
+///
+/// 纯分类逻辑，放此处以便在所有平台单测（不依赖 Windows SetupAPI）。
+/// - WinUsb → 跳过（已是目标驱动）
+/// - Serial → 不跳过（仍需切换，即使 USB 总线可枚举）
+/// - Unknown → 不跳过（驱动未安装/未知，仍需安装）
+///
+/// 仅在 Windows + `winusb-driver` 的生产路径（switch.rs）使用，其余情况由测试引用。
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "winusb-driver")),
+    allow(dead_code)
+)]
+pub fn should_skip_switch_for_driver(driver_type: &BromDriverType) -> bool {
+    matches!(driver_type, BromDriverType::WinUsb)
 }
 
 /// 枚举系统所有可用 COM 口名称
@@ -98,6 +118,7 @@ pub fn enumerate_all_com_ports() -> Vec<String> {
 }
 
 #[cfg(target_os = "windows")]
+#[cfg_attr(not(feature = "winusb-driver"), allow(dead_code))]
 pub fn check_brom_driver_type() -> Result<BromDriverType, String> {
     unsafe {
         let device_info_set = enum_usb_devices()?;
@@ -139,6 +160,10 @@ pub fn check_brom_driver_type() -> Result<BromDriverType, String> {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "winusb-driver")),
+    allow(dead_code)
+)]
 pub fn check_brom_driver_type() -> Result<BromDriverType, String> {
     Err("仅 Windows 支持".to_string())
 }
@@ -203,11 +228,6 @@ pub fn detect_brom_driver_from_usb_bus() -> UsbBusDetectionResult {
 #[cfg(not(target_os = "windows"))]
 pub fn detect_brom_driver_from_usb_bus() -> UsbBusDetectionResult {
     UsbBusDetectionResult::NotFound
-}
-
-#[cfg(not(target_os = "windows"))]
-fn find_com_port_for_brom_device() -> Option<String> {
-    None
 }
 
 #[cfg(target_os = "windows")]
@@ -281,5 +301,22 @@ mod tests {
             classify_brom_driver_from_fields("usbser", "", "MediaTek USB Port", ""),
             BromDriverType::Serial
         );
+    }
+
+    #[test]
+    fn switch_is_skipped_only_for_confirmed_winusb_driver() {
+        assert!(should_skip_switch_for_driver(&BromDriverType::WinUsb));
+    }
+
+    #[test]
+    fn serial_driver_must_not_skip_switch_even_if_usb_can_be_enumerated() {
+        assert!(!should_skip_switch_for_driver(&BromDriverType::Serial));
+    }
+
+    #[test]
+    fn unknown_driver_must_not_skip_switch() {
+        assert!(!should_skip_switch_for_driver(&BromDriverType::Unknown(
+            "未知驱动".to_string()
+        )));
     }
 }

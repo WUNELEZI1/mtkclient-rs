@@ -232,7 +232,7 @@ impl UsbDevice {
                                 buf.len()
                             ));
                         }
-                        return Err("read_exact timeout".into());
+                        return Err(crate::error::UsbError::Timeout.to_string());
                     }
                 };
 
@@ -267,7 +267,7 @@ impl UsbDevice {
                                     buf.len()
                                 ));
                             }
-                            return Err("read_exact timeout".into());
+                            return Err(crate::error::UsbError::Timeout.to_string());
                         }
                         return Err(format!("read_exact err: {}", err_str));
                     }
@@ -317,7 +317,7 @@ impl UsbDevice {
                     Some(r) => r,
                     None => {
                         cancel_and_drain_in_endpoint(ep_in);
-                        return Err("read_exact_vec timeout".to_string());
+                        return Err(crate::error::UsbError::Timeout.to_string());
                     }
                 };
 

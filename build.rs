@@ -31,8 +31,15 @@ fn main() {
     // 抑制 wdi-rs (libwdi) 的 linker 警告
     // LNK4098: LIBCMT 与其他库冲突（libwdi 静态库用 /MT 编译）
     // LNK4099: 静态库未附带 PDB 调试符号文件
-    println!("cargo:rustc-link-arg=/NODEFAULTLIB:LIBCMT");
-    println!("cargo:rustc-link-arg=/IGNORE:4099");
+    //
+    // `/NODEFAULTLIB` 与 `/IGNORE` 是 MSVC link.exe 专属语法；若在非 MSVC 目标
+    // （GNU/Linux/macOS）上传递，会被当作输入文件报错 "cannot open /NODEFAULTLIB:LIBCMT"。
+    // libwdi 仅在 MSVC 目标下链接，故只在 target_env == "msvc" 时追加这两个参数。
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if target_env == "msvc" {
+        println!("cargo:rustc-link-arg=/NODEFAULTLIB:LIBCMT");
+        println!("cargo:rustc-link-arg=/IGNORE:4099");
+    }
 }
 
 /// 递归拷贝目录（含子目录），已存在的文件直接覆盖。失败静默跳过单文件。
