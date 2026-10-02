@@ -2,6 +2,7 @@
 //!
 //! 对齐 Python mtkclient Library/DA/ 目录结构：
 //! - `xflash` — XFlash 协议原语、DA 结构体（DAXFlash）、EMI 提取、诊断、IO
+//! - `xml`    — XML (V6) DA 协议（MT6789+ 新平台）：命令构造 + 会话 + 闪存操作
 //! - `loader` — DA 两阶段上传（header 解析 + env 初始化 + upload）
 //! - `ext`    — DA Extension 命令（patch + generate + meta/adb 控制）
 //!
@@ -10,6 +11,7 @@
 pub mod ext;
 pub mod loader;
 pub mod xflash;
+pub mod xml;
 
 // 核心 re-export：让外部模块通过 crate::da::DAXFlash 使用
 pub use xflash::DAXFlash;

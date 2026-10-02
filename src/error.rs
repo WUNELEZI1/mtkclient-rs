@@ -224,6 +224,147 @@ impl fmt::Display for SessionError {
 impl std::error::Error for SessionError {}
 
 // =============================================================================
+// XML (V6) DA 协议错误
+// =============================================================================
+
+/// XML/V6 DA 协议返回的错误分类（对齐 penumbra `XmlErrorKind`）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum XmlErrorKind {
+    /// 未知/未分类
+    Unknown,
+    /// 设备不支持该命令（`ERR!UNSUPPORTED`）
+    UnsupportedCmd,
+    /// 命令被取消（`ERR!CANCEL`）
+    Cancel,
+    /// DA 反回滚校验失败
+    AntiRollbackViolation,
+    /// 期望收到 `CMD:DOWNLOAD-FILE` 却收到其他命令
+    ExpectedCmdDownloadFile,
+    /// 期望收到 `CMD:UPLOAD-FILE` 却收到其他命令
+    ExpectedCmdUploadFile,
+    /// 期望收到 `CMD:PROGRESS-REPORT` 却收到其他命令
+    ExpectedCmdProgressReport,
+    /// 期望收到 `CMD:FILE-SYS-OPERATION` 却收到其他命令
+    ExpectedFileSysOp,
+    /// DA SLA 签名被拒绝
+    SlaSignatureRejected,
+    /// 未知路径分隔符
+    UnknownPathSep,
+    /// 其他携带原始文本的错误
+    Other(String),
+    /// KDF 输出的密钥长度非法（Extensions）
+    InvalidKeyDeriveLength,
+    /// KDF 的 label/salt 长度非法（Extensions）
+    InvalidLabelOrSaltLength,
+    /// SEJ AES 数据长度超限（Extensions）
+    SejAesLengthExceeded,
+    /// 存储类型未知，无法执行 RPMB 操作
+    StorageUnknown,
+    /// RPMB key 格式非法
+    InvalidRpmbKey,
+    /// RPMB 分区未初始化
+    RpmbNotInitialized,
+    /// RPMB 初始化失败
+    RpmbInitFailed,
+    /// RPMB 读取失败
+    RpmbReadFailed,
+    /// RPMB 写入失败
+    RpmbWriteFailed,
+}
+
+impl fmt::Display for XmlErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            XmlErrorKind::Unknown => "未知错误",
+            XmlErrorKind::UnsupportedCmd => "设备不支持该命令",
+            XmlErrorKind::Cancel => "命令被取消",
+            XmlErrorKind::AntiRollbackViolation => "DA 反回滚校验失败",
+            XmlErrorKind::ExpectedCmdDownloadFile => "期望 CMD:DOWNLOAD-FILE",
+            XmlErrorKind::ExpectedCmdUploadFile => "期望 CMD:UPLOAD-FILE",
+            XmlErrorKind::ExpectedCmdProgressReport => "期望 CMD:PROGRESS-REPORT",
+            XmlErrorKind::ExpectedFileSysOp => "期望 CMD:FILE-SYS-OPERATION",
+            XmlErrorKind::SlaSignatureRejected => "DA SLA 签名被拒绝",
+            XmlErrorKind::UnknownPathSep => "未知路径分隔符",
+            XmlErrorKind::Other(msg) => msg.as_str(),
+            XmlErrorKind::InvalidKeyDeriveLength => "KDF 输出密钥长度非法",
+            XmlErrorKind::InvalidLabelOrSaltLength => "KDF label/salt 长度非法",
+            XmlErrorKind::SejAesLengthExceeded => "SEJ AES 数据长度超限",
+            XmlErrorKind::StorageUnknown => "存储类型未知，无法执行 RPMB 操作",
+            XmlErrorKind::InvalidRpmbKey => "RPMB key 格式/长度非法",
+            XmlErrorKind::RpmbNotInitialized => "RPMB 分区未初始化",
+            XmlErrorKind::RpmbInitFailed => "RPMB 初始化失败",
+            XmlErrorKind::RpmbReadFailed => "RPMB 读取失败",
+            XmlErrorKind::RpmbWriteFailed => "RPMB 写入失败",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+/// XML/V6 DA 协议错误：携带分类与设备原始文本
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XmlError {
+    /// 设备返回的原始错误文本（已去除结尾 `\0`）
+    pub message: String,
+    /// 错误分类
+    pub kind: XmlErrorKind,
+}
+
+impl XmlError {
+    /// 由分类构造（`Other` 会保留其内部文本）
+    pub fn from_kind(kind: XmlErrorKind) -> Self {
+        let message = match &kind {
+            XmlErrorKind::Other(msg) => msg.clone(),
+            other => other.to_string(),
+        };
+        XmlError { message, kind }
+    }
+
+    /// 解析设备返回的错误文本，映射到 [`XmlErrorKind`]
+    ///
+    /// 对齐 penumbra `XmlError::from_message`：先去除结尾 `\0`，再按已知
+    /// 错误文本精确匹配；未命中则归类为 [`XmlErrorKind::Other`]（保留原文），
+    /// 空文本归类为 [`XmlErrorKind::Unknown`]。
+    pub fn from_message(resp: &[u8]) -> Self {
+        let msg = String::from_utf8_lossy(resp);
+        let msg = msg.trim_end_matches('\0');
+        // 空文本（设备未给出原因）归为 Unknown，避免退化成 Other("")
+        if msg.is_empty() {
+            return XmlError::from_kind(XmlErrorKind::Unknown);
+        }
+        let kind = match msg {
+            "ERR!UNSUPPORTED" => XmlErrorKind::UnsupportedCmd,
+            "ERR!CANCEL" => XmlErrorKind::Cancel,
+            "Invalid DA Version" => XmlErrorKind::AntiRollbackViolation,
+            "Server is not authenticated. Locked." => XmlErrorKind::SlaSignatureRejected,
+            "Unknow path separator." => XmlErrorKind::UnknownPathSep,
+            "Invalid key derive output length" => XmlErrorKind::InvalidKeyDeriveLength,
+            "Invalid label or salt length" => XmlErrorKind::InvalidLabelOrSaltLength,
+            "SEJ AES data length exceeds maximum allowed" => XmlErrorKind::SejAesLengthExceeded,
+            "Storage type unknown, cannot initialize RPMB"
+            | "Storage type unknown, cannot read RPMB"
+            | "Storage type unknown, cannot write RPMB" => XmlErrorKind::StorageUnknown,
+            "RPMB key must be 64 hex chars (32 bytes)" | "Invalid RPMB key format" => {
+                XmlErrorKind::InvalidRpmbKey
+            }
+            "RPMB partition not initialized" => XmlErrorKind::RpmbNotInitialized,
+            "RPMB initialization failed" => XmlErrorKind::RpmbInitFailed,
+            "RPMB read failed" => XmlErrorKind::RpmbReadFailed,
+            "RPMB write failed" => XmlErrorKind::RpmbWriteFailed,
+            other => XmlErrorKind::Other(other.to_string()),
+        };
+        XmlError::from_kind(kind)
+    }
+}
+
+impl fmt::Display for XmlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "XML DA 错误: {}", self.message)
+    }
+}
+
+impl std::error::Error for XmlError {}
+
+// =============================================================================
 // 统一应用错误（兼容旧接口）
 // =============================================================================
 
@@ -303,6 +444,12 @@ impl From<XFlashError> for AppError {
 
 impl From<SessionError> for AppError {
     fn from(err: SessionError) -> Self {
+        AppError::Protocol(err.to_string())
+    }
+}
+
+impl From<XmlError> for AppError {
+    fn from(err: XmlError) -> Self {
         AppError::Protocol(err.to_string())
     }
 }
@@ -387,5 +534,42 @@ mod tests {
     #[test]
     fn session_error_display() {
         assert_eq!(SessionError::DaNotLoaded.to_string(), "DA 尚未加载");
+    }
+
+    #[test]
+    fn xml_error_maps_known_messages() {
+        assert_eq!(
+            XmlError::from_message(b"ERR!UNSUPPORTED\0").kind,
+            XmlErrorKind::UnsupportedCmd
+        );
+        assert_eq!(
+            XmlError::from_message(b"Invalid DA Version\0").kind,
+            XmlErrorKind::AntiRollbackViolation
+        );
+        assert_eq!(
+            XmlError::from_message(b"RPMB read failed\0").kind,
+            XmlErrorKind::RpmbReadFailed
+        );
+        // 未命中 → Other(msg)，并保留原始文本
+        let e = XmlError::from_message(b"some vendor text\0");
+        assert_eq!(e.kind, XmlErrorKind::Other("some vendor text".into()));
+        assert_eq!(e.message, "some vendor text");
+        // 空文本 → Unknown
+        assert_eq!(XmlError::from_message(b"\0").kind, XmlErrorKind::Unknown);
+    }
+
+    #[test]
+    fn xml_error_from_kind_other_keeps_message() {
+        let e = XmlError::from_kind(XmlErrorKind::Other("boom".into()));
+        assert_eq!(e.message, "boom");
+        // 非 Other 变体使用分类的可读文本
+        let e2 = XmlError::from_kind(XmlErrorKind::UnsupportedCmd);
+        assert_eq!(e2.message, "设备不支持该命令");
+    }
+
+    #[test]
+    fn xml_error_converts_to_app_error() {
+        let app: AppError = XmlError::from_message(b"ERR!CANCEL").into();
+        assert!(matches!(app, AppError::Protocol(_)));
     }
 }
