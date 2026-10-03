@@ -4,9 +4,10 @@
 //! 由 detect/switch 等子模块按需使用，避免在多个文件里重复 unsafe extern 块。
 
 #![cfg(target_os = "windows")]
-// 关闭 `winusb-driver` 特性时，仅驱动安装（switch.rs）使用的 FFI 可能未被引用，
-// 此时放宽 dead_code 检查，保持构建无告警。
-#![cfg_attr(not(feature = "winusb-driver"), allow(dead_code))]
+// 说明：`INF_NAME` / `INSTALLFLAG_*` / `UpdateDriverForPlugAndPlayDevicesW` /
+// `SetupDiRestartDevices` / `find_and_restart_brom_device` 仅由驱动安装路径
+// （switch.rs，需 `winusb-driver` 特性）使用，故各自以 `#[cfg(feature = "winusb-driver")]`
+// 门控，而非用模块级 `#![allow(dead_code)]` 压制，保证关闭特性时也零 dead_code 告警。
 
 // =============================================================================
 // SetupAPI 句柄与结构体
@@ -47,13 +48,19 @@ impl SpDevinfoData {
 
 pub(crate) const MTK_VID: u16 = 0x0E8D;
 pub(crate) const MTK_BROM_PID: u16 = 0x0003;
+/// 仅驱动安装路径（switch.rs）使用，随 `winusb-driver` 特性门控。
+#[cfg(feature = "winusb-driver")]
 pub(crate) const INF_NAME: &str = "mtk_brom_winusb.inf";
 
 // =============================================================================
 // SetupAPI 常量
 // =============================================================================
 
+/// 仅驱动安装路径（switch.rs）使用，随 `winusb-driver` 特性门控。
+#[cfg(feature = "winusb-driver")]
 pub(crate) const INSTALLFLAG_FORCE: u32 = 0x00000001;
+/// 仅驱动安装路径（switch.rs）使用，随 `winusb-driver` 特性门控。
+#[cfg(feature = "winusb-driver")]
 pub(crate) const INSTALLFLAG_NONINTERACTIVE: u32 = 0x00000004;
 pub(crate) const DIGCF_PRESENT: u32 = 0x00000002;
 pub(crate) const DIGCF_ALLCLASSES: u32 = 0x00000004;
@@ -74,6 +81,8 @@ unsafe extern "system" {
     ///
     /// 当 `InstallFlags` 包含 `INSTALLFLAG_FORCE` 时，会强制覆盖现有驱动。
     /// Zadig 内部用的就是这个 API。
+    /// 仅驱动安装路径（switch.rs）使用，随 `winusb-driver` 特性门控。
+    #[cfg(feature = "winusb-driver")]
     pub(crate) fn UpdateDriverForPlugAndPlayDevicesW(
         hwndParent: Hwnd,
         hardwareId: *const u16,
@@ -115,6 +124,8 @@ unsafe extern "system" {
     ///
     /// 强制安装 WinUSB 后，当前连接的设备实例可能仍绑定旧驱动，直到重新枚举才会生效。
     /// 调用此 API 可免去用户手动拔插，是 Zadig 风格安装稳定可靠的关键。
+    /// 仅驱动安装路径（switch.rs）使用，随 `winusb-driver` 特性门控。
+    #[cfg(feature = "winusb-driver")]
     pub(crate) fn SetupDiRestartDevices(
         device_info_set: Hdevinfo,
         device_info_data: *const SpDevinfoData,
@@ -191,6 +202,8 @@ pub(crate) unsafe fn read_reg_wide(
 ///
 /// 用于在强制安装 WinUSB 驱动后，让新驱动立即绑定到当前设备（无需手动重新插拔）。
 /// 失败仅返回错误，调用方应降级到轮询兜底，不因此中断安装流程。
+/// 仅驱动安装路径（switch.rs）使用，随 `winusb-driver` 特性门控。
+#[cfg(feature = "winusb-driver")]
 pub(crate) unsafe fn find_and_restart_brom_device() -> Result<(), String> {
     let h = unsafe { enum_usb_devices()? };
 

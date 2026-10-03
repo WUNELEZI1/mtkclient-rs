@@ -1,6 +1,7 @@
 //! 协议原语 — 块 2: ACK 读写
 
 use super::{AckResult, CMD_MAGIC, pack3};
+use crate::error::ProtocolError;
 use log::trace;
 
 use crate::da::xflash::DAXFlash;
@@ -16,7 +17,10 @@ impl<'a> DAXFlash<'a> {
         }
         match self.status() {
             Ok(0) => AckResult::Continue,
-            Ok(n) => AckResult::Terminated(n),
+            Ok(n) => {
+                trace!("[ack] {}", ProtocolError::AckRejected(n));
+                AckResult::Terminated(n)
+            }
             Err(_) => AckResult::Terminated(3),
         }
     }

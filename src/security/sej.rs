@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::da::DAXFlash;
 use aes::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit};
 use log::{debug, info, trace};
@@ -277,6 +275,11 @@ fn extract_hacc_output(
     data: &[u8],
     legacy: bool,
 ) -> Result<Vec<u8>, String> {
+    // 使用前确认 HACC 后端就绪（DA Extensions 已启用），否则寄存器访问必然失败
+    if !unsafe { (ctx.is_hacc_ready)(ctx.ptr) } {
+        return Err("HACC backend 未就绪（DA Extensions 未启用）".to_string());
+    }
+
     info!("HACC init");
     let iv: [u32; 4] = G_HACC_CFG_1[0..4].try_into().unwrap();
 
@@ -299,23 +302,10 @@ const SEJ_IV: &[u8; 16] = &[
     0x57, 0x32, 0x5A, 0x5A, 0x12, 0x54, 0x97, 0x66, 0x12, 0x54, 0x97, 0x66, 0x57, 0x32, 0x5A, 0x5A,
 ];
 
-const CUSTOM_SEED_PREFIX: [u8; 4] = [0x00, 0xBE, 0x13, 0xBB];
 const SEJ_HW_KEY: [u8; 16] = [0u8; 16];
 const G_HACC_CFG_1: [u32; 8] = [
     0x9ED40400, 0x00E884A1, 0xE3F083BD, 0x2F4E6D8A, 0xFF838E5C, 0xE940A0E3, 0x8D4DECC6, 0x45FC0989,
 ];
-
-#[allow(dead_code)] // 预留：HACC 签名自定义 seed/IV 生成，用于安全启动绕过
-fn generate_custom_seed_iv() -> [u8; 16] {
-    let seed = u32::from_le_bytes(CUSTOM_SEED_PREFIX);
-    let rot = seed.rotate_left(16);
-    let iv_parts: [u32; 4] = [seed, (!seed).wrapping_add(1), rot, (!rot).wrapping_add(1)];
-    let mut iv = [0u8; 16];
-    for (i, part) in iv_parts.iter().enumerate() {
-        iv[i * 4..(i + 1) * 4].copy_from_slice(&part.to_le_bytes());
-    }
-    iv
-}
 
 fn xor_g_hacc_cfg_1(data: &mut [u8]) {
     for i in 0..data.len().min(16) {
@@ -331,21 +321,6 @@ fn sw_key_default() -> [u8; 32] {
     let mut key = [0u8; 32];
     key.copy_from_slice(SEJ_SW_KEY);
     key
-}
-
-fn extract_sw_key_from_preloader(preloader_data: &[u8]) -> Option<[u8; 32]> {
-    let pattern = [0x4D, 0x4D, 0x4D, 0x01, 0x30];
-    let idx = preloader_data
-        .windows(pattern.len())
-        .position(|w| w == pattern)?;
-    let start = idx + 0x0C;
-    let end = start + 32;
-    if end > preloader_data.len() {
-        return None;
-    }
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&preloader_data[start..end]);
-    Some(key)
 }
 
 fn sej_sec_cfg_sw_encrypt_with_key(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {

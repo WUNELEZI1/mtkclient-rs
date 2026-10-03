@@ -7,17 +7,12 @@
 //! 每个操作都遵循 XML 命令生命周期：`CMD:START` → 命令 → 数据交互 →
 //! `CMD:END`（由 [`XmlProtocol::send_cmd`] 与 `lifetime_ack` 内部处理）。
 
-#![allow(dead_code)] // V6 闪存操作：CLI 目前仅接入 reboot 子集，其余待 v6 设备验证后启用
-
 use std::io::{Read, Write};
 
 use log::{debug, warn};
 
 use crate::da::xml::cmd::{self, FileSystemOp, XmlCmdLifetime};
 use crate::da::xml::protocol::{XmlProtoError, XmlProtocol, get_tag};
-
-/// scatter 流程中记录保护分区信息的特殊文件名
-pub const RECORD_FILE: &str = "record-file";
 
 /// `READ-FLASH`：按地址/长度读取，数据回写到 `writer`
 ///
@@ -167,7 +162,7 @@ where
         let resp = xml.read_data()?;
 
         // 收到 CMD:END：回 ACK 并校验最终结果
-        if contains(&resp, cmd::CMD_END) {
+        if contains(&resp, &cmd::cmd_end()) {
             xml.ack(None)?;
             check_end_result(&resp)?;
             break;
@@ -356,7 +351,7 @@ mod tests {
         let mut port = MockPort::new(scripted);
         let mut xml = XmlProtocol::new(&mut port);
         let resp = xml.read_data().unwrap();
-        assert!(contains(&resp, cmd::CMD_END));
+        assert!(contains(&resp, &cmd::cmd_end()));
         assert_eq!(DATA_TYPE_FLOW, 1);
     }
 

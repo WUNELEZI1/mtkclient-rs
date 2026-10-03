@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::color::Colorize;
 use log::info;
 

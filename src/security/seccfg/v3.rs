@@ -9,7 +9,6 @@ use crate::security::sej::{
     sej_sec_cfg_hw_v3_encrypt, sej_sec_cfg_sw_decrypt, sej_sec_cfg_sw_encrypt,
 };
 
-#[allow(dead_code)] // 预留：V3 版 SecCfg 解析，兼容旧版设备
 pub(crate) struct SecCfgV3 {
     pub(crate) info_header: [u8; 16],
     pub(crate) magic: u32,
@@ -245,8 +244,8 @@ impl SecCfgV3 {
         }
 
         info!(
-            "seccfg V3 修改成功: attr=0x{:08X} -> 0x{:08X}",
-            self.seccfg_attr, new_attr
+            "seccfg V3 修改成功: attr=0x{:08X} -> 0x{:08X}, enc_len=0x{:08X} -> 0x{:08X}",
+            self.seccfg_attr, new_attr, self.seccfg_enc_len, new_enc_len
         );
         Ok(result)
     }

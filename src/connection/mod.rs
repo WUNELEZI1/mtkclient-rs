@@ -18,5 +18,6 @@ pub mod session;
 // 公共 API re-export
 #[allow(unused_imports)]
 pub use manager::{ConnectionManager, DeviceMode};
+// 注：try_reuse_da_session 已随“DA 会话复用全面禁用”一并删除，不再导出。
 #[allow(unused_imports)]
-pub use session::{SessionState, reset_session, save_da_session, try_reuse_da_session};
+pub use session::{SessionState, reset_session, save_da_session};

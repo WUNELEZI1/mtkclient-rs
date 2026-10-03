@@ -63,8 +63,10 @@ impl ConnectionManager {
                     }
                     Err(e) => {
                         trace!(
-                            "[RECONNECT] open_by_vid_pid failed for PID=0x{:04X}: {}",
-                            pid, e
+                            "[RECONNECT] open_by_vid_pid failed for PID=0x{:04X}: {}（诊断: {}）",
+                            pid,
+                            e,
+                            crate::usb::diag::classify_libusb_error(&e)
                         );
                     }
                 }
@@ -96,81 +98,11 @@ impl ConnectionManager {
         }
     }
 
-    /// DA 加载后重连
-    #[allow(dead_code)] // 预留：DA 加载后设备重枚举流程
-    pub fn reconnect_after_da(&self, context: &UsbContext) -> Result<usb::UsbDevice, String> {
-        debug!("[DA] DA 加载完成，等待设备重枚举...");
-        std::thread::sleep(Duration::from_millis(super::manager::USB_REENUM_DELAY_MS));
-
-        debug!("[DA] 尝试 BROM PID (0x0003)...");
-        if let Ok(device) = self.try_quick_connect(context, 0x0E8D, 0x0003, 5) {
-            info!(
-                "[DA] 连接成功: VID=0x{:04X} PID=0x{:04X}",
-                device.vid, device.pid
-            );
-            return Ok(device);
-        }
-
-        debug!("[DA] BROM PID 失败，扫描所有已知 PID...");
-        self.reconnect_loop(context, UsbStage::Unknown)
-    }
-
-    /// Kamakiri exploit 后重连
-    #[allow(dead_code)] // 预留：Kamakiri2 exploit 后设备重枚举流程
-    pub fn reconnect_after_kamakiri(&self, context: &UsbContext) -> Result<usb::UsbDevice, String> {
-        info!("[KAMAKIRI] payload 已发送，等待设备重枚举...");
-        std::thread::sleep(Duration::from_millis(super::manager::USB_REENUM_DELAY_MS));
-        self.reconnect_loop(context, UsbStage::Brom)
-    }
-
-    /// USB reset 后重连
-    #[allow(dead_code)] // 预留：USB reset 后设备重枚举流程
-    pub fn reconnect_after_usb_reset(
-        &self,
-        context: &UsbContext,
-    ) -> Result<usb::UsbDevice, String> {
-        info!("[USB] USB reset detected, waiting for re-enumeration...");
-        std::thread::sleep(Duration::from_millis(super::manager::USB_REENUM_DELAY_MS));
-        self.reconnect_loop(context, UsbStage::Brom)
-    }
-
-    /// 快速连接尝试
-    #[allow(dead_code)] // 预留：DA 后快速重连场景（被 reconnect_after_da 内部调用）
-    fn try_quick_connect(
-        &self,
-        context: &UsbContext,
-        vid: u16,
-        pid: u16,
-        retries: usize,
-    ) -> Result<usb::UsbDevice, String> {
-        for _ in 1..=retries {
-            match usb::UsbDevice::open_by_vid_pid(context, vid, pid) {
-                Ok(device) => return Ok(device),
-                Err(_) => std::thread::sleep(Duration::from_millis(
-                    super::manager::QUICK_CONNECT_INTERVAL_MS,
-                )),
-            }
-        }
-        Err(format!("快速连接失败 ({} 次重试)", retries))
-    }
-
-    /// 获取当前连接模式
-    #[allow(dead_code)] // 预留：查询当前连接状态（串口/USB）
-    pub fn mode(&self) -> &DeviceMode {
-        &self.mode
-    }
-
-    /// 获取当前 USB 阶段
-    #[allow(dead_code)] // 预留：查询设备当前所处阶段（BROM/Preloader）
-    pub fn stage(&self) -> &UsbStage {
-        &self.stage
-    }
-
-    /// 获取串口名称
-    #[allow(dead_code)] // 预留：调试/日志输出当前使用的串口名
-    pub fn port_name(&self) -> Option<&str> {
-        self.port_name.as_deref()
-    }
+    // 说明：原 reconnect_after_da / reconnect_after_kamakiri / reconnect_after_usb_reset /
+    // try_quick_connect / mode / stage / port_name 等接口为历史预留（DA 会话复用已全面
+    // 禁用，见 main.rs / session.rs 注释），全平台无真实调用点，已按“显式废弃的死代码
+    // 直接删除”原则移除；其依赖的 USB_REENUM_DELAY_MS / QUICK_CONNECT_INTERVAL_MS 常量
+    // 亦一并从 manager.rs 清理。
 
     /// Preloader 模式初始化：等待 Preloader VCOM (PID=0x2000)，握手后直接返回
     /// allow_brom_fallback: 当找不到 Preloader 时是否尝试 fallback 到 BROM（--mode auto 用 true，--mode preloader 用 false）

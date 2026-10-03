@@ -16,3 +16,16 @@ rustflags = [
     "--remap-path-prefix=C:\\Users\\wqy=",
     "--remap-path-prefix=D:\\test\\ZybClient=",
 ]
+
+# 同上：GNU 工具链（x86_64-pc-windows-gnu）交叉编译时同样抹除本地构建路径，
+# 避免 panic 位置/调试信息中带出机器目录结构。
+# 末两项用于抹除本机/CI 的 cargo registry 路径（第三方 crate 的 panic 位置会写入
+# `file!()`）；在 Windows 本机构建时不影响任何东西。
+[target.x86_64-pc-windows-gnu]
+rustflags = [
+    "--remap-path-prefix=C:\\Users\\wqy=",
+    "--remap-path-prefix=D:\\test\\ZybClient=",
+    "--remap-path-prefix=/workspace/repo=",
+    "--remap-path-prefix=/usr/local/cargo=",
+    "--remap-path-prefix=/root/.cargo=",
+]

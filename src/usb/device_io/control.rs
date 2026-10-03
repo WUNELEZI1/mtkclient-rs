@@ -1,3 +1,4 @@
+use crate::error::UsbError;
 use crate::usb::device::UsbDevice;
 use crate::usb::log::usb_trace;
 use log::trace;
@@ -29,7 +30,7 @@ impl UsbDevice {
         let result = interface
             .control_in(control, timeout)
             .wait()
-            .map_err(|e| format!("ctrl_transfer_in err: {:?}", e))?;
+            .map_err(|e| format!("{}: {:?}", UsbError::CtrlTransferFailed, e))?;
 
         usb_trace("RX", "USB设备::控制传输输入", &result);
         Ok(result)
@@ -69,7 +70,7 @@ impl UsbDevice {
         interface
             .control_out(control, timeout)
             .wait()
-            .map_err(|e| format!("ctrl_transfer_out err: {:?}", e))?;
+            .map_err(|e| format!("{}: {:?}", UsbError::CtrlTransferFailed, e))?;
 
         Ok(data.len())
     }

@@ -7,9 +7,12 @@
 //! - `seccfg` - 安全配置解析与修改(V3/V4)
 //! - `vbmeta` - vbmeta 禁用与修补
 //! - `frp` - FRP (Factory Reset Protection) 解锁
+//! - `obfuscate` - 反逆向：编译期字符串混淆宏 `obf!` 与反调试探测
 
 #[path = "frp.rs"]
 pub mod frp;
+#[path = "obfuscate.rs"]
+pub mod obfuscate;
 #[path = "seccfg/mod.rs"]
 pub mod seccfg;
 #[path = "sej.rs"]

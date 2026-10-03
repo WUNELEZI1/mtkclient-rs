@@ -143,13 +143,16 @@ fn load_sdata() -> Option<SData> {
 
 // ---------- 最小化 JSON 解析器（无第三方依赖，离线可用） ----------
 
-#[allow(dead_code)] // 解析器构造全部变体，但 sdata.json 只用 Obj/Str/Bool，其余字段未被读取属正常
+/// 最小化 JSON 值类型。
+///
+/// sdata.json 只使用对象/字符串（`Obj`/`Str`）；`Null`/`Bool`/`Num`/`Arr` 仅为让解析器
+/// 能接受并跳过合法但未被消费的 JSON 片段而保留，其内部值无需读取，故不带负载字段。
 enum JVal {
     Null,
-    Bool(bool),
-    Num(f64),
+    Bool,
+    Num,
     Str(String),
-    Arr(Vec<JVal>),
+    Arr,
     Obj(HashMap<String, JVal>),
 }
 
@@ -189,8 +192,8 @@ impl<'a> Parser<'a> {
             b'{' => self.parse_object(),
             b'[' => self.parse_array(),
             b'"' => Some(JVal::Str(self.parse_string()?)),
-            b't' => self.parse_lit("true", JVal::Bool(true)),
-            b'f' => self.parse_lit("false", JVal::Bool(false)),
+            b't' => self.parse_lit("true", JVal::Bool),
+            b'f' => self.parse_lit("false", JVal::Bool),
             b'n' => self.parse_lit("null", JVal::Null),
             b'-' | b'0'..=b'9' => self.parse_number(),
             _ => None,
@@ -216,7 +219,8 @@ impl<'a> Parser<'a> {
             }
         }
         let s = std::str::from_utf8(&self.b[start..self.i]).ok()?;
-        s.parse::<f64>().ok().map(JVal::Num)
+        // 数值本身不被 sdata 使用，仅校验其数值格式合法
+        s.parse::<f64>().ok().map(|_| JVal::Num)
     }
 
     fn parse_string(&mut self) -> Option<String> {
@@ -261,21 +265,20 @@ impl<'a> Parser<'a> {
             return None;
         }
         self.i += 1;
-        let mut arr = Vec::new();
         self.skip_ws();
         if self.peek()? == b']' {
             self.i += 1;
-            return Some(JVal::Arr(arr));
+            return Some(JVal::Arr);
         }
         loop {
-            let v = self.parse_value()?;
-            arr.push(v);
+            // 数组元素值不被 sdata 使用，仅递归解析以校验并跳过该片段
+            self.parse_value()?;
             self.skip_ws();
             match self.peek()? {
                 b',' => self.i += 1,
                 b']' => {
                     self.i += 1;
-                    return Some(JVal::Arr(arr));
+                    return Some(JVal::Arr);
                 }
                 _ => return None,
             }
@@ -338,7 +341,7 @@ mod tests {
                     _ => panic!("a not str"),
                 }
                 match &o["x"] {
-                    JVal::Obj(inner) => assert!(matches!(inner["y"], JVal::Bool(true))),
+                    JVal::Obj(inner) => assert!(matches!(inner["y"], JVal::Bool)),
                     _ => panic!("x not obj"),
                 }
             }

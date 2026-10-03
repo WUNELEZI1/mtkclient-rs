@@ -15,7 +15,6 @@ pub(crate) mod ack;
 pub(crate) mod devctrl;
 pub(crate) mod read;
 pub(crate) mod shutdown;
-pub(crate) mod xml;
 
 // =============================================================================
 // XFlash 命令常量
@@ -25,9 +24,6 @@ pub(crate) mod xml;
 pub const CMD_MAGIC: u32 = 0xFEEEEEEF;
 /// XFlash 包头 `data_type`：正常流程包（命令响应 / 数据）。
 /// 参考 penumbra `DataType::Flow`。
-/// 注：生产代码仅按 `DATA_TYPE_MESSAGE` 做分支（其余值一律视作 Flow），
-/// 该常量用于对称表达与单测断言，故显式允许未使用。
-#[allow(dead_code)]
 pub const DATA_TYPE_FLOW: u32 = 0x1;
 /// XFlash 包头 `data_type`：设备异步消息包（DA 日志 / 状态通告）。
 /// 参考 penumbra `DataType::Message`。DA 可在任意时刻插入此类包，
@@ -81,32 +77,16 @@ const SHORT_QUERY_TIMEOUT_MS: u64 = 200;
 const SLA_QUERY_TIMEOUT_MS: u64 = 50;
 
 // =============================================================================
-// Shutdown bootmode 枚举（对齐 xflash_lib.py ShutDownModes）
+// Shutdown bootmode（对齐 xflash_lib.py ShutDownModes）
 // =============================================================================
 
-/// DA Shutdown 命令的 bootmode 参数（对齐 mtkclient xflash_lib.py ShutDownModes）
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ShutdownBootMode {
-    /// 标准关机/重启（Standard shutdown，对齐 mtkclient NORMAL=0）
-    #[allow(dead_code)] // 协议保留值：供 da_power_off / --via da 等未来路径使用
-    Normal = 0,
-    /// 重启到系统 (HOME_SCREEN / home screen)
-    Reboot = 1,
-    /// ★ 重启到 fastboot
-    #[allow(dead_code)] // 协议保留值：供 --via da fastboot 路径未来使用
-    Fastboot = 2,
-}
-
-// =============================================================================
-// XML DA 命令协议（Layer 3，新平台 MT6789+）
-// =============================================================================
-
-/// XML DA 命令的 BootMode 枚举
-#[derive(Debug, Clone, Copy)]
-pub enum XmlBootMode {
-    Fastboot = 0,
-    Meta = 1,
-}
+/// DA SHUTDOWN 的 bootmode 取值（对齐 mtkclient xflash_lib.py ShutDownModes）。
+///
+/// 本工程经 DA SHUTDOWN 重启时统一使用 HOME_SCREEN（=1，重启到系统）：
+/// fastboot / recovery / fastbootd / meta 等目标由调用方先写 misc/para 或改走
+/// XML SET-BOOT-MODE，再以 HOME_SCREEN 重新拉起系统由 LK 读取启动参数，无需
+/// DA 端的其它 bootmode。
+pub const SHUTDOWN_BOOTMODE_HOME_SCREEN: u32 = 1;
 
 // =============================================================================
 // ACK 响应枚举 — 替代裸 u32 返回值

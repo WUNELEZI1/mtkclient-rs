@@ -3,12 +3,13 @@
 //! - `upload_da1` — Stage1：发送 DA1 + jump_da + 同步握手
 //! - `upload_da2` — Stage2：发送 DA2 + boot_to
 
-use log::{info, trace};
+use log::{info, trace, warn};
 // File/Read 不再需要，DA 文件通过 read_file_auto_decompress 读取
 use std::time::Duration;
 
 use crate::da::loader::header::DaRegion;
 use crate::da::xflash::DAXFlash;
+use crate::exploit::carbonara::Carbonara;
 use crate::system::paths::get_exe_relative_path;
 
 use super::header::parse_da_header;
@@ -203,11 +204,47 @@ impl<'a> DAXFlash<'a> {
         self.da2_data = da2_data.clone();
         self.da2_base_addr = da2_address as u64;
 
-        if !self.boot_to(da2_address, &da2_data, true, 0.5)? {
-            return Err("上传 Stage2 失败".to_string());
+        // 常规路径：boot_to 发送 DA2 并跳转。成功/失败语义与原来保持一致。
+        match self.boot_to(da2_address, &da2_data, true, 0.5) {
+            Ok(true) => {}
+            Ok(false) => return Err("上传 Stage2 失败".to_string()),
+            Err(e) => {
+                // 常规 DA2 上传失败（例如 DA1 的 DA2 hash 校验拒绝未签名/已修改的 DA2）时，
+                // 回退到 Carbonara（DA2 hash 欺骗）漏洞利用路径重试一次。
+                warn!("常规 DA2 上传失败 ({}), 尝试 Carbonara fallback...", e);
+                self.carbonara_upload_da2(&da_data, &regions, &da2_data)
+                    .map_err(|ce| format!("{}; Carbonara fallback 也失败: {}", e, ce))?;
+            }
         }
 
         trace!("Stage2 上传成功");
         Ok(true)
+    }
+
+    /// Carbonara（DA2 hash 欺骗）fallback：常规 `boot_to` 上传 DA2 失败时，
+    /// 通过 DA1 的 `boot_to` 参数覆写其内存中的 DA2 hash 存储位置，
+    /// 从而让 hash 校验通过并加载自定义（已 patch）的 DA2。
+    ///
+    /// `patch_and_upload` 内部会自行检测 DA1 patch 状态与 hash 校验逻辑
+    /// （已打补丁或未检测到 hash 校验时直接返回错误），因此该 fallback 是安全的。
+    fn carbonara_upload_da2(
+        &mut self,
+        da_data: &[u8],
+        regions: &[DaRegion],
+        da2_data: &[u8],
+    ) -> Result<(), String> {
+        let mut carbonara =
+            Carbonara::new(da_data, regions).map_err(|e| format!("Carbonara 初始化失败: {}", e))?;
+        info!(
+            "Carbonara: DA1 @ 0x{:08X} ({} 字节), DA2 @ 0x{:08X} ({} 字节)",
+            carbonara.da1_addr(),
+            carbonara.da1_data().len(),
+            carbonara.da2_addr(),
+            carbonara.da2_data().len()
+        );
+        // 检测 DA1 是否已打补丁 / 是否含 hash 校验逻辑
+        carbonara.check_patched()?;
+        let mut log_sink = std::io::sink();
+        carbonara.patch_and_upload(&mut *self.preloader.device, &mut log_sink, Some(da2_data))
     }
 }

@@ -9,6 +9,7 @@
 
 use super::context::UsbContext;
 use super::context::UsbStage;
+use crate::error::UsbError;
 use crate::system::config::{DeviceType, SUPPORTED_DEVICES};
 use log::{debug, info, trace, warn};
 use nusb::MaybeFuture;
@@ -58,7 +59,6 @@ pub struct UsbDevice {
     pub in_ep: u8,
     pub(crate) iface_num: u8,
     pub(crate) control_iface_num: u8,
-    #[allow(dead_code)]
     out_ep_max_packet: u16,
     pub in_ep_max_packet_size: u16,
     pub(crate) in_buf: Vec<u8>,
@@ -94,7 +94,7 @@ impl UsbDevice {
             }
         }
 
-        let dev_info = target_dev_info.ok_or("未找到支持的设备")?;
+        let dev_info = target_dev_info.ok_or_else(|| UsbError::NotFound.to_string())?;
 
         // 从 DeviceInfo 获取 vid/pid（nusb::Device 上没有这些方法）
         let vid = dev_info.vendor_id();
@@ -104,7 +104,7 @@ impl UsbDevice {
         let device = dev_info
             .open()
             .wait()
-            .map_err(|e| format!("打开设备失败: {}", e))?;
+            .map_err(|e| UsbError::OpenFailed(e.to_string()).to_string())?;
 
         // 扫描端点（从 active_configuration 获取）
         let (out_ep_addr, in_ep_addr, out_ep_max_packet, in_ep_max_packet, bulk_iface_num) =
@@ -153,12 +153,12 @@ impl UsbDevice {
         let dev_info = devices
             .into_iter()
             .find(|d| d.vendor_id() == vid && d.product_id() == pid)
-            .ok_or_else(|| format!("未找到设备 VID={:04X} PID={:04X}", vid, pid))?;
+            .ok_or_else(|| format!("{}（VID={:04X} PID={:04X}）", UsbError::NotFound, vid, pid))?;
 
         let device = dev_info
             .open()
             .wait()
-            .map_err(|e| format!("打开设备失败: {}", e))?;
+            .map_err(|e| UsbError::OpenFailed(e.to_string()).to_string())?;
 
         // 扫描端点
         let (out_ep_addr, in_ep_addr, out_ep_max_packet, in_ep_max_packet, bulk_iface_num) =
@@ -259,10 +259,14 @@ impl UsbDevice {
         device: &nusb::Device,
         bulk_iface_num: u8,
     ) -> Result<(nusb::Interface, u8, nusb::Interface, u8), String> {
-        let interface = device
-            .claim_interface(bulk_iface_num)
-            .wait()
-            .map_err(|e| format!("claim bulk interface {} 失败: {}", bulk_iface_num, e))?;
+        let interface = device.claim_interface(bulk_iface_num).wait().map_err(|e| {
+            format!(
+                "{}（claim bulk interface {}）: {}",
+                UsbError::InterfaceNotFound,
+                bulk_iface_num,
+                e
+            )
+        })?;
         trace!("[USB] claim bulk interface {} 成功", bulk_iface_num);
 
         if bulk_iface_num == 0 {
@@ -297,15 +301,28 @@ impl UsbDevice {
     > {
         let in_ep_handle = interface
             .endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(in_ep_addr)
-            .map_err(|e| format!("打开输入端点失败: {}", e))?;
+            .map_err(|e| {
+                format!(
+                    "{}（IN 端点 0x{:02X}）: {}",
+                    UsbError::InterfaceNotFound,
+                    in_ep_addr,
+                    e
+                )
+            })?;
         let out_ep_handle = interface
             .endpoint::<nusb::transfer::Bulk, nusb::transfer::Out>(out_ep_addr)
-            .map_err(|e| format!("打开输出端点失败: {}", e))?;
+            .map_err(|e| {
+                format!(
+                    "{}（OUT 端点 0x{:02X}）: {}",
+                    UsbError::InterfaceNotFound,
+                    out_ep_addr,
+                    e
+                )
+            })?;
         Ok((in_ep_handle, out_ep_handle))
     }
 
     /// 获取 EP_OUT 的最大包大小
-    #[allow(dead_code)]
     pub fn out_ep_max_packet_size(&self) -> u16 {
         self.out_ep_max_packet
     }

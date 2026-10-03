@@ -1,8 +1,10 @@
 //! 协议原语 — 块 4: SHUTDOWN / XML DA 命令 (Layer 2 + Layer 3)
 
-use super::xml::{xml_reboot, xml_set_boot_mode};
-use super::{CMD_MAGIC, CMD_SHUTDOWN, ShutdownBootMode, XmlBootMode, hex_str, pack3};
+use super::{CMD_MAGIC, CMD_SHUTDOWN, SHUTDOWN_BOOTMODE_HOME_SCREEN, hex_str, pack3};
 use log::{info, trace};
+
+use crate::da::xml::XmlSession;
+use crate::error::ProtocolError;
 
 use crate::da::xflash::DAXFlash;
 
@@ -16,17 +18,11 @@ impl<'a> DAXFlash<'a> {
     ///   参数体: 32 字节（hasflags + enablewdt + async_mode + bootmode + 保留）
     ///   响应: status(4)
     ///
-    /// bootmode 枚举：
-    ///   0 = 关机/重启 (NORMAL) — 配合 enablewdt 触发重启
-    ///   1 = 重启到系统 (REBOOT)
-    ///   2 = ★ 重启到 fastboot (FASTBOOT)
-    pub fn da_shutdown(&mut self, bootmode: ShutdownBootMode) -> Result<(), String> {
-        let mode_name = match bootmode {
-            ShutdownBootMode::Normal => "关机/重启",
-            ShutdownBootMode::Reboot => "重启到系统",
-            ShutdownBootMode::Fastboot => "重启到 fastboot",
-        };
-        info!("[DA SHUTDOWN] bootmode={} ({})", bootmode as u32, mode_name);
+    /// bootmode 说明：
+    ///   1 = HOME_SCREEN（重启到系统）— 本工程统一使用该模式
+    pub fn da_shutdown(&mut self) -> Result<(), String> {
+        let bootmode = SHUTDOWN_BOOTMODE_HOME_SCREEN;
+        info!("[DA SHUTDOWN] bootmode={} (重启到系统)", bootmode);
 
         // 发送命令头: MAGIC + CMD_SHUTDOWN
         let hdr = pack3(CMD_MAGIC, 0x01, 4);
@@ -42,7 +38,10 @@ impl<'a> DAXFlash<'a> {
         // 读取阶段 1 status
         let st = self.status()?;
         if st != 0 {
-            return Err(format!("SHUTDOWN 命令状态: 0x{:08X}", st));
+            return Err(format!(
+                "SHUTDOWN 命令 {}",
+                ProtocolError::StatusNonZero(st)
+            ));
         }
 
         // 构建 32 字节参数体 — 严格对齐 mtkclient xflash_lib.py shutdown：
@@ -66,7 +65,7 @@ impl<'a> DAXFlash<'a> {
         //   0x1C 保留          0
         let async_mode: u32 = 0;
         let dl_bit: u32 = 0;
-        let hasflags: u32 = if (bootmode as u32) != 0 || async_mode != 0 || dl_bit != 0 {
+        let hasflags: u32 = if bootmode != 0 || async_mode != 0 || dl_bit != 0 {
             1
         } else {
             0
@@ -76,7 +75,7 @@ impl<'a> DAXFlash<'a> {
         param[0x00..0x04].copy_from_slice(&hasflags.to_le_bytes());
         param[0x04..0x08].copy_from_slice(&enablewdt.to_le_bytes());
         param[0x08..0x0C].copy_from_slice(&async_mode.to_le_bytes());
-        param[0x0C..0x10].copy_from_slice(&(bootmode as u32).to_le_bytes());
+        param[0x0C..0x10].copy_from_slice(&bootmode.to_le_bytes());
         param[0x10..0x14].copy_from_slice(&dl_bit.to_le_bytes());
         param[0x14..0x18].copy_from_slice(&0u32.to_le_bytes()); // dont_resetrtc
         param[0x18..0x1C].copy_from_slice(&0u32.to_le_bytes()); // leaveusb
@@ -98,70 +97,47 @@ impl<'a> DAXFlash<'a> {
         // 读取阶段 2 status
         let st2 = self.status()?;
         if st2 != 0 {
-            return Err(format!("SHUTDOWN 参数状态: 0x{:08X}", st2));
+            return Err(format!(
+                "SHUTDOWN 参数 {}",
+                ProtocolError::StatusNonZero(st2)
+            ));
         }
 
         info!(
             "[DA SHUTDOWN] 成功 (bootmode={}, enablewdt=0x{:02X})",
-            bootmode as u32, enablewdt
+            bootmode, enablewdt
         );
         Ok(())
     }
 
-    /// Layer 3: 发送 XML DA 命令（新平台 MT6789+）
+    /// Layer 3: 通过 XML DA 协议重启到指定模式（新平台 MT6789+）
     ///
-    /// XML 协议通过 USB Bulk 传输 XML 格式命令包。
-    /// 发送后读取 status 响应。
-    fn send_xml_command(&mut self, xml_data: &[u8]) -> Result<(), String> {
-        trace!("[XML DA] 发送 {} 字节 XML 命令", xml_data.len());
+    /// 流程：先发送 `SET-BOOT-MODE(<mode>)`，再发送 `REBOOT(IMMEDIATE)`。
+    /// 会话原语（CMD:START/END 生命周期、帧编解码、ACK）统一由
+    /// [`crate::da::xml::XmlSession`] 处理，与 `xml` 子命令走同一实现。
+    fn da_xml_reboot_mode(&mut self, mode: &str) -> Result<(), String> {
+        info!("[XML DA] SET-BOOT-MODE: {}", mode);
+        let mut session = XmlSession::new(&mut *self.preloader.device);
+        session
+            .set_boot_mode(mode, "USB", "ON", "ON")
+            .map_err(|e| format!("XML SET-BOOT-MODE 失败: {}", e))?;
 
-        // 发送 XML 数据（按 XFlash 格式打包）
-        let pkt = pack3(CMD_MAGIC, 0x01, xml_data.len() as u32);
-        self.preloader
-            .device
-            .write(&pkt)
-            .map_err(|e| format!("XML cmd write hdr: {}", e))?;
-        self.preloader
-            .device
-            .write(xml_data)
-            .map_err(|e| format!("XML cmd write data: {}", e))?;
+        info!("[XML DA] REBOOT: IMMEDIATE");
+        session
+            .reboot(false)
+            .map_err(|e| format!("XML REBOOT 失败: {}", e))?;
 
-        // 读取 status
-        let st = self.status()?;
-        if st != 0 {
-            return Err(format!("XML 命令状态: 0x{:08X}", st));
-        }
-
+        info!("[XML DA] 设备将重启到 {}", mode);
         Ok(())
     }
 
     /// Layer 3: 通过 XML DA 协议重启到 fastboot（新平台 MT6789+）
-    ///
-    /// 流程：先发送 SET-BOOT-MODE(FASTBOOT)，再发送 REBOOT(IMMEDIATE)
     pub fn da_xml_reboot_fastboot(&mut self) -> Result<(), String> {
-        info!("[XML DA] SET-BOOT-MODE: FASTBOOT");
-        let xml_cmd = xml_set_boot_mode(XmlBootMode::Fastboot);
-        self.send_xml_command(&xml_cmd)?;
-
-        info!("[XML DA] REBOOT: IMMEDIATE");
-        let xml_reboot_cmd = xml_reboot(false);
-        self.send_xml_command(&xml_reboot_cmd)?;
-
-        info!("[XML DA] 设备将重启到 fastboot");
-        Ok(())
+        self.da_xml_reboot_mode("FASTBOOT")
     }
 
     /// Layer 3: 通过 XML DA 协议重启到 meta（新平台）
     pub fn da_xml_reboot_meta(&mut self) -> Result<(), String> {
-        info!("[XML DA] SET-BOOT-MODE: META");
-        let xml_cmd = xml_set_boot_mode(XmlBootMode::Meta);
-        self.send_xml_command(&xml_cmd)?;
-
-        info!("[XML DA] REBOOT: IMMEDIATE");
-        let xml_reboot_cmd = xml_reboot(false);
-        self.send_xml_command(&xml_reboot_cmd)?;
-
-        info!("[XML DA] 设备将重启到 meta");
-        Ok(())
+        self.da_xml_reboot_mode("META")
     }
 }

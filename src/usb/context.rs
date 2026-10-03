@@ -2,9 +2,8 @@
 //!
 //! - `USB上下文` — nusb 上下文封装（nusb 无需显式 context，这里保留兼容接口）
 //! - `USB阶段`   — 设备阶段枚举（BROM / Preloader / DA / 未知）
-//! - `通过libusb检测联发科设备` — 前置检测 BROM 设备
-//! - `获取第一个联发科VID_PID` — DA 会话复用检查
-//! - `是否有联发科设备` — 判断是否跳过串口扫描
+//! - `获取第一个联发科VID_PID` — nusb 枚举首台联发科 BROM 设备（启动诊断 +
+//!   非 Windows 平台的直连探测）
 
 use crate::system::config::DeviceType;
 use nusb::MaybeFuture;
@@ -43,7 +42,6 @@ impl UsbContext {
 }
 
 /// 枚举 nusb 设备列表，查找 MediaTek BROM 设备
-#[allow(dead_code)]
 fn scan_nusb_devices() -> Vec<(u16, u16)> {
     let mut result = Vec::new();
     let devices = match nusb::list_devices().wait() {
@@ -59,7 +57,6 @@ fn scan_nusb_devices() -> Vec<(u16, u16)> {
 }
 
 /// 枚举 USB 设备列表,返回第一个 MediaTek 设备的 (VID, PID, DeviceType)
-#[allow(dead_code)]
 pub fn get_first_mtk_vid_pid() -> Option<(u16, u16, DeviceType)> {
     scan_nusb_devices().into_iter().find_map(|(vid, pid)| {
         let device_type = DeviceType::from_vid_pid(vid, pid);

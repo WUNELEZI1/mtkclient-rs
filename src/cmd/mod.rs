@@ -23,6 +23,7 @@ pub mod multi;
 pub mod partition_table;
 pub mod preloader_boot_mode;
 pub mod script;
+pub mod xml;
 
 // 重型入口函数下放到子模块，保持在 500 行以内
 mod dispatch;
@@ -35,6 +36,7 @@ use log::error;
 // 重新导出从子模块移动过来的 pub 项，保持 `crate::cmd::<name>` 路径不变
 pub use dispatch::{dispatch_cmd, execute_single_command};
 pub use handle::handle_command;
+pub(crate) use xml::handle_xml_command;
 pub(crate) use zyb::handle_zyb_command;
 
 pub fn print_help() {
@@ -122,6 +124,18 @@ pub fn print_help() {
     println!("  fs_shell                      交互式浏览 super 分区文件系统");
     println!("  multi \"<cmd1>;<cmd2>;...\"    一次 DA 会话执行多个命令");
     println!("  run <script.json>             从 JSON 脚本文件批量执行命令");
+    println!();
+    println!("{}", "XML (V6) DA（新平台 MT6789+）:".bold());
+    println!("  xml init [主机标识]           初始化 XML 会话（主机信息 + 运行参数）");
+    println!("  xml hw-info / prop <key>      读取硬件信息 / 系统属性");
+    println!("  xml efuse-read                读取 efuse");
+    println!("  xml efuse-write <hex>         写入 efuse（hex 字节串）");
+    println!("  xml security <dev-fw-info|flash-policy <file>|allinone-sig <file>>");
+    println!("                               读取固件安全信息 / 下发 policy / 签名");
+    println!("  xml r/w/e <part> [file]       XML 协议整分区读 / 写 / 格式化");
+    println!("  xml rb/wb/eb <section> <off> <size> [file]  按地址读写擦");
+    println!("  xml reboot [disconnect] / boot-mode <mode>  重启 / 设置启动模式");
+    println!("  xml flash-update              进入 scatter 刷写流程");
     println!();
     println!("{}", "快速开始示例:".dimmed().bold());
     println!(
@@ -290,6 +304,14 @@ fn validate_command(cmd: &str, args: &[String]) -> Result<(), Box<dyn std::error
                     )
                     .into());
                 }
+            }
+        }
+        "xml" => {
+            if args.is_empty() {
+                return Err(
+                    "用法: mtkclient xml <init|hw-info|prop|efuse-read|efuse-write|boot|flash-update|security|r|w|e|rb|wb|eb|reboot|boot-mode> ..."
+                        .into(),
+                );
             }
         }
         "multi" => {

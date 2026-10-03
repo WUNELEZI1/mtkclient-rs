@@ -31,19 +31,33 @@ pub(crate) mod switch;
 #[cfg(not(all(target_os = "windows", feature = "winusb-driver")))]
 #[path = "switch_stub.rs"]
 pub(crate) mod switch;
+// verify 模块内容（旧 get_device_instance_id 接口）已废弃删除，保留模块仅为文档留痕。
 #[path = "verify.rs"]
 pub(crate) mod verify;
 
 // 公共 API re-export（与原 driver.rs 完全兼容）
-// 保留 re-export 是为了外部模块可以通过 `connection::driver::xxx` 直接调用
-#[allow(unused_imports)]
+// 保留 re-export 是为了外部模块可以通过 `connection::driver::xxx` 直接调用；
+// 各条目按其定义所在的编译条件同步做 cfg 门控，避免非 Windows / 非默认特性下解析失败。
+
+// is_admin / restart_as_admin 仅在 Windows 定义，调用点（main.rs）也在 Windows 分支内。
+#[cfg(target_os = "windows")]
 pub use admin::{is_admin, restart_as_admin};
+
+// ComPortUsbInfo / UsbBusDetectionResult / detect_brom_driver_from_usb_bus /
+// query_com_port_usb_info 在所有平台都存在；其中后三者被外部模块经本 re-export 调用，
+// ComPortUsbInfo 仅作为签名类型被导出，保留兼容导出，故允许未使用导入。
 #[allow(unused_imports)]
 pub use detect::{
-    BromDriverType, ComPortUsbInfo, UsbBusDetectionResult, check_brom_driver_type,
-    detect_brom_driver_from_usb_bus, query_com_port_usb_info,
+    ComPortUsbInfo, UsbBusDetectionResult, detect_brom_driver_from_usb_bus, query_com_port_usb_info,
 };
+// BromDriverType 仅在 Windows 或测试构建中定义，re-export 同步门控。
+#[cfg(any(target_os = "windows", test))]
 #[allow(unused_imports)]
+pub use detect::BromDriverType;
+// check_brom_driver_type 仅在 Windows + `winusb-driver` 下定义（供 switch.rs 使用），
+// 外部无调用点，保留兼容导出故允许未使用导入。
+#[cfg(all(target_os = "windows", feature = "winusb-driver"))]
+#[allow(unused_imports)]
+pub use detect::check_brom_driver_type;
+
 pub use switch::switch_to_winusb;
-#[allow(unused_imports)]
-pub use verify::get_device_instance_id;

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 
+use crate::error::SessionError;
 use crate::system::paths::get_tmp_path;
 
 /// 获取 DA 会话状态文件路径（位于 tmp/ 目录）
@@ -152,7 +153,13 @@ impl SessionState {
         }
         match fs::read_to_string(&state_path) {
             Ok(content) => {
-                let state = Self::from_string(&content)?;
+                let Some(state) = Self::from_string(&content) else {
+                    warn!(
+                        "[session] {}",
+                        SessionError::StateFileCorrupted(".state 内容无法解析".to_string())
+                    );
+                    return None;
+                };
                 trace!(
                     "[session] .state 已加载: hw_code=0x{:04X}, da_loaded={}",
                     state.hw_code, state.da_loaded
@@ -160,7 +167,10 @@ impl SessionState {
                 Some(state)
             }
             Err(e) => {
-                warn!("[session] 读取 .state 失败: {}", e);
+                warn!(
+                    "[session] {}",
+                    SessionError::StateFileCorrupted(e.to_string())
+                );
                 None
             }
         }
@@ -173,12 +183,6 @@ impl SessionState {
             let _ = fs::remove_file(&state_path);
             trace!("[session] .state 已删除");
         }
-    }
-
-    /// 检查设备是否在线（VID/PID 匹配）
-    #[allow(dead_code)]
-    pub fn device_online(&self, vid: u16, pid: u16) -> bool {
-        self.usb_vid == vid && self.usb_pid == pid
     }
 }
 
@@ -223,27 +227,6 @@ where
     }
 }
 
-/// 尝试复用现有 DA 会话
-/// 如果 .state 存在且 da_loaded=true 且设备仍在线，跳过 BROM→DA 流程。
-/// 不使用时间超时判断——只要设备保持连接，DA 会话就有效。
-/// 真正的 DA 模式验证由后续的 check_da_session / reinit 完成（心跳检测）。
-#[allow(dead_code)]
-pub fn try_reuse_da_session(vid: u16, pid: u16) -> bool {
-    if let Some(state) = SessionState::load() {
-        if state.da_loaded && state.device_online(vid, pid) {
-            info!(
-                "[session] 复用 DA 会话（hw_code=0x{:04X}，设备在线）",
-                state.hw_code,
-            );
-            return true;
-        } else {
-            trace!("[session] .state 存在但设备 PID/VID 不匹配或 DA 未加载，重新初始化");
-            SessionState::remove();
-        }
-    }
-    false
-}
-
 /// 保存 DA 会话状态（在 DA 加载成功后调用）
 pub fn save_da_session(
     vid: u16,
@@ -261,6 +244,13 @@ pub fn save_da_session(
         .and_then(|state| state.device_fingerprint.as_ref())
         .map(|fingerprint| fingerprint == &device_fingerprint)
         .unwrap_or(false);
+    // 已有旧会话但指纹变化 → 换了设备，旧缓存（GPT 缓存等）必须丢弃
+    if previous.is_some() && !same_device {
+        warn!(
+            "[session] {}（旧设备缓存将失效）",
+            SessionError::DeviceMismatch(device_fingerprint.clone())
+        );
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

@@ -15,8 +15,6 @@
 //! 3. 设备回 `OK\0`（或 `ERR!...` 文本）；
 //! 4. 需要时主机读 `CMD:END` 并回 `OK\0`。
 
-#![allow(dead_code)] // V6 协议会话：CLI 目前仅接入 reboot 子集，其余待 v6 设备验证后启用
-
 use std::fmt;
 use std::io::{Read, Write};
 use std::time::Duration;
@@ -28,16 +26,12 @@ use crate::da::xml::cmd::{self, FileSystemOp, XmlCmdLifetime};
 use crate::error::{XmlError, XmlErrorKind};
 use crate::preloader::transport::BromTransport;
 
-/// 会话默认/最短超时（与 penumbra `MIN_TIMEOUT` 一致）
-pub const MIN_TIMEOUT: Duration = Duration::from_millis(1000);
 /// 会话操作期间的长超时（与 penumbra `MAX_TIMEOUT` 一致）
 pub const MAX_TIMEOUT: Duration = Duration::from_millis(10000);
 /// 读取 flow 头时最多连续跳过多少个 Message 包（防止 DA 刷屏导致死循环）
 const MAX_MESSAGE_DRAINS: u32 = 64;
 /// 未协商包长前的发送分块上限
 const DEFAULT_WRITE_CHUNK: usize = 0x8000;
-/// 探测 USB 日志通道用的短超时
-const USB_LOG_PROBE_TIMEOUT: Duration = Duration::from_millis(10);
 
 // =============================================================================
 // 错误
@@ -57,15 +51,6 @@ pub enum XmlProtoError {
 impl XmlProtoError {
     pub(crate) fn proto<S: Into<String>>(msg: S) -> Self {
         XmlProtoError::Protocol(msg.into())
-    }
-
-    /// 转为扁平字符串（兼容既有 `Result<_, String>` 调用方）
-    pub fn into_string(self) -> String {
-        match self {
-            XmlProtoError::Transport(m) => format!("USB 传输错误: {}", m),
-            XmlProtoError::Protocol(m) => format!("XML 协议错误: {}", m),
-            XmlProtoError::Xml(e) => e.to_string(),
-        }
     }
 
     /// 是否为"命令不支持"错误
@@ -300,36 +285,6 @@ impl<'a> XmlProtocol<'a> {
         Ok(())
     }
 
-    /// 探测并丢弃 USB 日志通道的残留 Message 包，返回途中遇到的第一个 Flow 包头
-    fn flush_usb_logs(&mut self) -> Result<Option<XmlPacketHeader>, XmlProtoError> {
-        let prev = self.port.get_timeout();
-        self.port.set_timeout(USB_LOG_PROBE_TIMEOUT);
-
-        let mut result = Ok(None);
-        loop {
-            let mut buf = [0u8; XmlPacketHeader::SIZE];
-            if self.port.read_exact(&mut buf).is_err() {
-                break;
-            }
-            match XmlPacketHeader::parse(&buf) {
-                None => break,
-                Some(hdr) if hdr.is_message() => {
-                    if let Err(e) = self.drain_message(hdr.length) {
-                        result = Err(e);
-                        break;
-                    }
-                }
-                Some(hdr) => {
-                    result = Ok(Some(hdr));
-                    break;
-                }
-            }
-        }
-
-        self.port.set_timeout(prev);
-        result
-    }
-
     // --- ACK / 生命周期 ---
 
     /// 发送 ACK：无值发 `OK\0`，有值发 `OK@<v>\0`
@@ -369,7 +324,7 @@ impl<'a> XmlProtocol<'a> {
             let msg = get_tag(&text, "arg/message").unwrap_or_default();
             return Err(XmlError::from_message(msg.as_bytes()).into());
         }
-        if !contains_bytes(&data, lifetime.pattern()) {
+        if !contains_bytes(&data, &lifetime.pattern()) {
             return Err(XmlProtoError::proto("生命周期标记不匹配"));
         }
         Ok(())
@@ -710,7 +665,7 @@ mod tests {
                 read_buf,
                 pos: 0,
                 written: Rc::new(RefCell::new(Vec::new())),
-                timeout: MIN_TIMEOUT,
+                timeout: Duration::from_millis(1000),
             }
         }
 
@@ -871,6 +826,6 @@ mod tests {
         assert!(e.is_unsupported());
         let e2 = XmlProtoError::proto("x");
         assert!(!e2.is_unsupported());
-        assert!(e2.into_string().contains("XML 协议错误"));
+        assert!(e2.to_string().contains("XML 协议错误"));
     }
 }
