@@ -2,7 +2,7 @@
 //!
 //! 仅实现项目实际用到的 13 个 `Colorize` 方法，全部为纯 ANSI 转义码，零外部依赖。
 //! - 非 Windows 平台：终端原生支持 ANSI，直接输出即可。
-//! - Windows 平台：需启用控制台虚拟终端处理（见 [`enable_virtual_terminal`]，
+//! - Windows 平台：需启用控制台虚拟终端处理（见 `enable_virtual_terminal`，
 //!   复刻 `colored::control::set_virtual_terminal` 的行为），否则 CMD/PowerShell
 //!   会把转义序列当作普通字符打印。
 //!
@@ -99,7 +99,6 @@ unsafe extern "system" {
     fn SetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, dwMode: u32) -> i32;
 }
 
-/// 非 Windows 平台无需任何处理（终端原生支持 ANSI）。
-#[cfg(not(windows))]
-#[allow(dead_code)]
-pub fn enable_virtual_terminal() {}
+// 非 Windows 平台终端原生支持 ANSI，无需任何处理；main.rs 仅在
+// `#[cfg(target_os = "windows")]` 分支调用 `enable_virtual_terminal`，
+// 因此这里不再提供非 Windows 版本的空实现（避免成为 dead_code）。

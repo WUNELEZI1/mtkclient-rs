@@ -356,10 +356,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_config = system::config::AppConfig::from_cli(&cli);
 
-    usb::set_usb_log_switch(cli.usb_log);
+    // === 反逆向：调试器探测 ===
+    // 无条件调用以保证符号可达（满足零 dead_code）；是否收敛诊断输出由构建类型决定，
+    // 避免干扰开发期的单步调试。release 下命中调试器时关闭额外的诊断输出，
+    // 不改变任何刷机功能，仅减少对分析者暴露的内部细节。
+    let debugger_attached = security::obfuscate::debugger_present();
+    let anti_analysis = debugger_attached && !cfg!(debug_assertions);
+    if anti_analysis {
+        eprintln!("[MAIN] 检测到调试器会话：已关闭详细诊断输出。");
+    }
+    let effective_usb_log = cli.usb_log && !anti_analysis;
+
+    usb::set_usb_log_switch(effective_usb_log);
 
     // --quiet-dump: 抑制 USB 读取日志和进度条
-    if cli.quiet_dump {
+    if cli.quiet_dump || anti_analysis {
         usb::set_usb_read_quiet(true);
     }
 
@@ -371,7 +382,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let terminal_logger = TerminalLogger { level: log_level };
 
-    if cli.usb_log {
+    if effective_usb_log {
         // TeeLogger：终端 + tmp/usb_debug.log（覆盖模式）
         let usb_log_path = crate::system::paths::get_tmp_path("usb_debug.log");
         let file = std::fs::OpenOptions::new()

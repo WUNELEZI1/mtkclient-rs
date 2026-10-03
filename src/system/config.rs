@@ -28,12 +28,6 @@ impl DeviceType {
     pub fn is_brom(&self) -> bool {
         matches!(self, DeviceType::Brom)
     }
-
-    /// 判断是否为 Preloader 设备
-    #[allow(dead_code)] // 预留：Preloader 模式下区分设备类型
-    pub fn is_preloader(&self) -> bool {
-        matches!(self, DeviceType::Preloader | DeviceType::PreloaderVariant)
-    }
 }
 
 /// USB 设备配置（VID/PID 集中管理）
@@ -94,21 +88,13 @@ impl WorkMode {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // 预留：CLI/设备配置映射字段，部分在当前命令集下不会全部读取
 pub struct AppConfig {
     pub log_level: log::LevelFilter,
     pub da_path: Option<String>,
-    pub da2_path: Option<String>,
     pub preloader_path: Option<String>,
-    pub loader_path: Option<String>,
     pub work_mode: WorkMode,
     pub da_x_speed: u8,
     pub skip_partitions: Option<String>,
-    pub parttype: Option<String>,
-    pub offset: Option<u64>,
-    pub length: Option<u64>,
-    pub sector: Option<u32>,
-    pub sectors: Option<u32>,
     pub verify: bool,
     pub command: Option<String>,
     pub cmd_args: Vec<String>,
@@ -127,17 +113,10 @@ impl AppConfig {
         AppConfig {
             log_level,
             da_path: cli.loader_path.clone(),
-            da2_path: cli.da2_path.clone(),
             preloader_path: cli.preloader_path.clone(),
-            loader_path: cli.loader_path.clone(),
             work_mode,
             da_x_speed: cli.da_x_speed,
             skip_partitions: cli.skip_partitions.clone(),
-            parttype: cli.parttype.clone(),
-            offset: cli.offset,
-            length: cli.length,
-            sector: cli.sector,
-            sectors: cli.sectors,
             verify: cli.verify,
             command: cli.command.clone(),
             cmd_args: cli.args.clone(),
@@ -147,37 +126,18 @@ impl AppConfig {
 
 /// 芯片完整配置（对齐 Python ChipConfig + Mt6768Config）
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)] // 预留：芯片能力表，当前机型只会用到其中一部分字段
 pub struct ChipConfig {
     pub hw_code: u16,
     /// DA 文件内部使用的 hw_code（对齐 Python Chipconfig.dacode）
     /// BROM 返回 0x0707 但 DA 文件内匹配 0x6768，两者不同
     pub da_code: u16,
     pub name: &'static str,
-    pub description: &'static str,
     pub loader: &'static str,
-    pub var1: u8,
     pub watchdog: u32,
-    pub uart: u32,
     pub brom_payload_addr: u32,
-    pub da_payload_addr: u32,
-    pub pl_payload_addr: u32,
-    pub gcpu_base: u32,
     pub sej_base: u32,
-    pub dxcc_base: u32,
-    pub cqdma_base: u32,
-    pub ap_dma_mem: u32,
-    pub send_ptr: (u32, u32), // (地址, 偏移)
-    pub ctrl_buffer: u32,
-    pub cmd_handler: u32,
+    pub send_ptr: (u32, u32),             // (地址, 偏移)
     pub brom_register_access: (u32, u32), // (地址1, 地址2)
-    pub meid_addr: u32,
-    pub socid_addr: u32,
-    pub prov_addr: u32,
-    pub misc_lock: u32,
-    pub efuse_addr: u32,
-    pub blacklist: &'static [(u32, u32)],
-    pub blacklist_count: u32,
     /// Kamakiri2 基准地址（da_read/da_write 内部 kamakiri2 步骤使用）
     /// Python 用 brom_register_access[0][1]，但某些芯片需要特殊值
     /// None 时自动使用 brom_register_access.1

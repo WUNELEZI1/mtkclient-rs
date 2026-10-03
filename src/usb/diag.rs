@@ -3,7 +3,6 @@
 //! 使用 nusb 设备枚举替代 libusb unsafe 代码
 
 /// 检测 nusb 错误类型并给出诊断信息
-#[allow(dead_code)]
 pub fn classify_libusb_error(err: &str) -> &'static str {
     if err.contains("Timeout") || err.contains("timeout") {
         "超时 (设备未响应)"

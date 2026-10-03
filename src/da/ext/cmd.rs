@@ -44,7 +44,10 @@ impl<'a> DAXFlash<'a> {
     /// - `size`: 读取的字节数
     pub fn cmd_peek(&mut self, addr: u64, size: u32) -> Result<Vec<u8>, String> {
         if !self.daext {
-            return Err("DA Extension 未加载，无法执行 peek。请确保 DA 已成功加载。".to_string());
+            return Err(format!(
+                "{}，无法执行 peek。请确保 DA 已成功加载。",
+                crate::error::SessionError::DaNotLoaded
+            ));
         }
 
         info!("peek: 读取地址 0x{:08X}, 大小 {} 字节", addr, size);
@@ -63,7 +66,10 @@ impl<'a> DAXFlash<'a> {
     /// - `data`: 要写入的字节数据
     pub fn cmd_poke(&mut self, addr: u64, data: &[u8]) -> Result<(), String> {
         if !self.daext {
-            return Err("DA Extension 未加载，无法执行 poke。请确保 DA 已成功加载。".to_string());
+            return Err(format!(
+                "{}，无法执行 poke。请确保 DA 已成功加载。",
+                crate::error::SessionError::DaNotLoaded
+            ));
         }
 
         info!("poke: 写入地址 0x{:08X}, 大小 {} 字节", addr, data.len());

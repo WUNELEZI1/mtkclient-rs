@@ -69,6 +69,10 @@ pub fn dispatch_cmd(
             super::handle_zyb_command(da, args)
                 .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
+        "xml" => {
+            super::handle_xml_command(da, args)
+                .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
+        }
         "frp" => {
             crate::security::frp::frp_unlock(da)
                 .map_err(|e| crate::error::AppError::Security(e.to_string()))?;

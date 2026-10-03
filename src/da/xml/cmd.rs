@@ -16,12 +16,19 @@
 //!
 //! 本模块为纯函数（无 I/O），便于单测覆盖。
 
-#![allow(dead_code)] // V6 命令全集：CLI 目前仅接入 reboot 子集，其余待 v6 设备验证后启用
+use crate::obf;
 
-/// 命令生命周期握手的起始标记（设备在每条命令前回发）
-pub const CMD_START: &[u8] = b"<command>CMD:START</command>";
-/// 命令生命周期握手的结束标记（设备在每条命令后回发）
-pub const CMD_END: &[u8] = b"<command>CMD:END</command>";
+/// 命令生命周期握手的起始标记（设备在每条命令前回发）。
+///
+/// 明文经 `obf!` 编译期混淆，避免以明文形式暴露 V6/XML 协议指纹。
+pub fn cmd_start() -> Vec<u8> {
+    obf!("<command>CMD:START</command>").into_bytes()
+}
+
+/// 命令生命周期握手的结束标记（设备在每条命令后回发）。同 [`cmd_start`]。
+pub fn cmd_end() -> Vec<u8> {
+    obf!("<command>CMD:END</command>").into_bytes()
+}
 
 /// 设备 → 主机：下载文件（主机需发送数据给设备）
 pub const CMD_DOWNLOAD_FILE: &str = "CMD:DOWNLOAD-FILE";
@@ -42,11 +49,11 @@ pub enum XmlCmdLifetime {
 }
 
 impl XmlCmdLifetime {
-    /// 对应的标记字节
-    pub fn pattern(self) -> &'static [u8] {
+    /// 对应的标记字节（由 `obf!` 在运行时还原）
+    pub fn pattern(self) -> Vec<u8> {
         match self {
-            XmlCmdLifetime::CmdStart => CMD_START,
-            XmlCmdLifetime::CmdEnd => CMD_END,
+            XmlCmdLifetime::CmdStart => cmd_start(),
+            XmlCmdLifetime::CmdEnd => cmd_end(),
         }
     }
 }
@@ -184,7 +191,7 @@ pub fn create_cmd(name: &str, version: &str, args: &[(Option<&str>, &str, String
 /// 位于独立的 `adv` 段。
 pub fn set_runtime_parameter(log_level: &str, log_channel: &str, system_os: &str) -> String {
     create_cmd(
-        "SET-RUNTIME-PARAMETER",
+        &obf!("SET-RUNTIME-PARAMETER"),
         "1.1",
         &[
             (None, "checksum_level", "NONE".to_string()),
@@ -200,31 +207,36 @@ pub fn set_runtime_parameter(log_level: &str, log_channel: &str, system_os: &str
 /// `HOST-SUPPORTED-COMMANDS`：告知设备主机支持的命令能力集
 pub fn host_supported_commands() -> String {
     create_cmd(
-        "HOST-SUPPORTED-COMMANDS",
+        &obf!("HOST-SUPPORTED-COMMANDS"),
         "1.0",
         &[(
             None,
             "host_capability",
-            "CMD:DOWNLOAD-FILE^1@CMD:FILE-SYS-OPERATION^1@CMD:PROGRESS-REPORT^1@CMD:UPLOAD-FILE^1@"
-                .to_string(),
+            obf!(
+                "CMD:DOWNLOAD-FILE^1@CMD:FILE-SYS-OPERATION^1@CMD:PROGRESS-REPORT^1@CMD:UPLOAD-FILE^1@"
+            ),
         )],
     )
 }
 
 /// `SET-HOST-INFO`：上报主机工具标识
 pub fn set_host_info(info: &str) -> String {
-    create_cmd("SET-HOST-INFO", "1.0", &[(None, "info", info.to_string())])
+    create_cmd(
+        &obf!("SET-HOST-INFO"),
+        "1.0",
+        &[(None, "info", info.to_string())],
+    )
 }
 
 /// `NOTIFY-INIT-HW`：通知设备初始化 DRAM
 pub fn notify_init_hw() -> String {
-    create_cmd("NOTIFY-INIT-HW", "1.0", &[])
+    create_cmd(&obf!("NOTIFY-INIT-HW"), "1.0", &[])
 }
 
 /// `BOOT-TO`：跳转到指定地址执行，数据源为 `MEM://0x0:0x0`
 pub fn boot_to(at_addr: u64, jmp_addr: u64) -> String {
     create_cmd(
-        "BOOT-TO",
+        &obf!("BOOT-TO"),
         "1.0",
         &[
             (None, "at_address", format!("0x{:x}", at_addr)),
@@ -241,7 +253,7 @@ pub fn boot_to(at_addr: u64, jmp_addr: u64) -> String {
 /// `GET-SYS-PROPERTY`：读取设备系统属性
 pub fn get_sys_property(key: &str) -> String {
     create_cmd(
-        "GET-SYS-PROPERTY",
+        &obf!("GET-SYS-PROPERTY"),
         "1.0",
         &[
             (None, "key", key.to_string()),
@@ -253,7 +265,7 @@ pub fn get_sys_property(key: &str) -> String {
 /// `GET-HW-INFO`：读取存储/硬件信息（结果经 UPLOAD-FILE 回传）
 pub fn get_hw_info() -> String {
     create_cmd(
-        "GET-HW-INFO",
+        &obf!("GET-HW-INFO"),
         "1.0",
         &[(None, "target_file", "MEM://0x0:0x200000".to_string())],
     )
@@ -266,7 +278,7 @@ pub fn get_hw_info() -> String {
 /// `READ-PARTITION`：按分区名读取
 pub fn read_partition(partition: &str) -> String {
     create_cmd(
-        "READ-PARTITION",
+        &obf!("READ-PARTITION"),
         "1.0",
         &[
             (None, "partition", partition.to_string()),
@@ -278,7 +290,7 @@ pub fn read_partition(partition: &str) -> String {
 /// `READ-FLASH`：按地址/长度读取
 pub fn read_flash(partition: &str, length: usize, offset: u64) -> String {
     create_cmd(
-        "READ-FLASH",
+        &obf!("READ-FLASH"),
         "1.0",
         &[
             (None, "partition", partition.to_string()),
@@ -292,7 +304,7 @@ pub fn read_flash(partition: &str, length: usize, offset: u64) -> String {
 /// `WRITE-PARTITION`：按分区名写入
 pub fn write_partition(partition: &str) -> String {
     create_cmd(
-        "WRITE-PARTITION",
+        &obf!("WRITE-PARTITION"),
         "1.0",
         &[
             (None, "partition", partition.to_string()),
@@ -304,7 +316,7 @@ pub fn write_partition(partition: &str) -> String {
 /// `WRITE-FLASH`：按地址/长度写入
 pub fn write_flash(partition: &str, length: usize, offset: u64) -> String {
     create_cmd(
-        "WRITE-FLASH",
+        &obf!("WRITE-FLASH"),
         "1.0",
         &[
             (None, "partition", partition.to_string()),
@@ -317,7 +329,7 @@ pub fn write_flash(partition: &str, length: usize, offset: u64) -> String {
 /// `ERASE-PARTITION`：擦除整个分区
 pub fn erase_partition(partition: &str) -> String {
     create_cmd(
-        "ERASE-PARTITION",
+        &obf!("ERASE-PARTITION"),
         "1.0",
         &[(None, "partition", partition.to_string())],
     )
@@ -326,7 +338,7 @@ pub fn erase_partition(partition: &str) -> String {
 /// `ERASE-FLASH`：按地址/长度擦除
 pub fn erase_flash(section: &str, length: usize, offset: u64) -> String {
     create_cmd(
-        "ERASE-FLASH",
+        &obf!("ERASE-FLASH"),
         "1.0",
         &[
             (None, "partition", section.to_string()),
@@ -340,7 +352,7 @@ pub fn erase_flash(section: &str, length: usize, offset: u64) -> String {
 pub fn flash_update() -> String {
     let sep = if cfg!(windows) { "\\" } else { "/" };
     create_cmd(
-        "FLASH-UPDATE",
+        &obf!("FLASH-UPDATE"),
         "1.0",
         &[
             (None, "source_file", "./scatter.xml".to_string()),
@@ -361,13 +373,17 @@ pub fn reboot(disconnect: bool) -> String {
     } else {
         "IMMEDIATE"
     };
-    create_cmd("REBOOT", "1.0", &[(None, "action", action.to_string())])
+    create_cmd(
+        &obf!("REBOOT"),
+        "1.0",
+        &[(None, "action", action.to_string())],
+    )
 }
 
 /// `SET-BOOT-MODE`：设置下次启动模式（FASTBOOT / META 等）
 pub fn set_boot_mode(mode: &str, connect_type: &str, mobile_log: &str, adb: &str) -> String {
     create_cmd(
-        "SET-BOOT-MODE",
+        &obf!("SET-BOOT-MODE"),
         "1.0",
         &[
             (None, "mode", mode.to_string()),
@@ -385,7 +401,7 @@ pub fn set_boot_mode(mode: &str, connect_type: &str, mobile_log: &str, adb: &str
 /// `READ-EFUSE`
 pub fn read_efuse() -> String {
     create_cmd(
-        "READ-EFUSE",
+        &obf!("READ-EFUSE"),
         "1.0",
         &[(None, "target_file", "MEM://0x0:0x200000".to_string())],
     )
@@ -394,7 +410,7 @@ pub fn read_efuse() -> String {
 /// `WRITE-EFUSE`
 pub fn write_efuse() -> String {
     create_cmd(
-        "WRITE-EFUSE",
+        &obf!("WRITE-EFUSE"),
         "1.0",
         &[(None, "source_file", "MEM://0x0:0x200000".to_string())],
     )
@@ -403,7 +419,7 @@ pub fn write_efuse() -> String {
 /// `SECURITY-GET-DEV-FW-INFO`
 pub fn security_get_dev_fw_info() -> String {
     create_cmd(
-        "SECURITY-GET-DEV-FW-INFO",
+        &obf!("SECURITY-GET-DEV-FW-INFO"),
         "1.0",
         &[(None, "target_file", "MEM://0x0:0x200000".to_string())],
     )
@@ -412,7 +428,7 @@ pub fn security_get_dev_fw_info() -> String {
 /// `SECURITY-SET-FLASH-POLICY`
 pub fn security_set_flash_policy(source_file: &str) -> String {
     create_cmd(
-        "SECURITY-SET-FLASH-POLICY",
+        &obf!("SECURITY-SET-FLASH-POLICY"),
         "1.0",
         &[(None, "source_file", source_file.to_string())],
     )
@@ -421,7 +437,7 @@ pub fn security_set_flash_policy(source_file: &str) -> String {
 /// `SECURITY-SET-ALLINONE-SIGNATURE`
 pub fn security_set_allinone_signature(source_file: &str) -> String {
     create_cmd(
-        "SECURITY-SET-ALLINONE-SIGNATURE",
+        &obf!("SECURITY-SET-ALLINONE-SIGNATURE"),
         "1.0",
         &[(None, "source_file", source_file.to_string())],
     )
@@ -513,7 +529,7 @@ mod tests {
 
     #[test]
     fn lifetime_patterns() {
-        assert_eq!(XmlCmdLifetime::CmdStart.pattern(), CMD_START);
-        assert_eq!(XmlCmdLifetime::CmdEnd.pattern(), CMD_END);
+        assert_eq!(XmlCmdLifetime::CmdStart.pattern(), cmd_start());
+        assert_eq!(XmlCmdLifetime::CmdEnd.pattern(), cmd_end());
     }
 }

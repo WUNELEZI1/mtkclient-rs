@@ -50,6 +50,7 @@ pub(crate) fn build_v4_header(
         _ => return Err("无效 lockflag".to_string()),
     };
 
+    let endflag = v4.endflag.to_le_bytes();
     let header: [u8; 28] = [
         v4.magic.to_le_bytes()[0],
         v4.magic.to_le_bytes()[1],
@@ -75,11 +76,11 @@ pub(crate) fn build_v4_header(
         new_sboot.to_le_bytes()[1],
         new_sboot.to_le_bytes()[2],
         new_sboot.to_le_bytes()[3],
-        // 对齐 Python: endflag 固定 0x45454545
-        0x45,
-        0x45,
-        0x45,
-        0x45,
+        // 对齐 Python: endflag 固定 0x45454545（parse 已校验，此处回写解析到的原值）
+        endflag[0],
+        endflag[1],
+        endflag[2],
+        endflag[3],
     ];
 
     Ok((header, new_lock, new_dm_verity, new_sboot))

@@ -21,27 +21,15 @@ use std::time::Duration;
 
 pub(crate) const RECONNECT_INTERVAL_MS: u64 = 200;
 pub(crate) const RECONNECT_LOG_INTERVAL: u32 = 25;
+// 串口握手重试参数仅供 `UsbBusDetectionResult::SerialPort` 分支使用，而该分支
+// 仅 Windows 存在（非 Windows 由 nusb 直连探测，不产生 SerialPort），故同步门控。
+#[cfg(target_os = "windows")]
 const SERIAL_HANDSHAKE_RETRY: u32 = 2; // 从 3 次降至 2 次（串口握手成功率很高）
+#[cfg(target_os = "windows")]
 const SERIAL_HANDSHAKE_RETRY_DELAY_SECS: u64 = 1; // 保持 1s（串口设备需要时间重置）
 const USB_REENUM_DELAY_SECS: u64 = 1; // 从 2s 降至 1s（WinUSB 驱动切换后设备重枚举很快）
-pub(crate) const USB_REENUM_DELAY_MS: u64 = 500;
-pub(crate) const QUICK_CONNECT_INTERVAL_MS: u64 = 200;
 /// 连续握手失败上限：超过此次数后删除 .state 并退出程序
 const MAX_CONSECUTIVE_HANDSHAKE_FAILURES: u32 = 5;
-
-#[derive(Debug, PartialEq, Eq)]
-enum SerialFailureAction {
-    RetrySerial,
-    TryWinUsb,
-}
-
-fn serial_failure_action(confirmed_serial_driver: bool) -> SerialFailureAction {
-    if confirmed_serial_driver {
-        SerialFailureAction::RetrySerial
-    } else {
-        SerialFailureAction::TryWinUsb
-    }
-}
 
 /// 设备模式
 #[derive(Debug, PartialEq, Clone)]
@@ -98,6 +86,9 @@ impl ConnectionManager {
                         info!("{}", "[AUTO] 检测到 BROM WinUSB 设备".green().bold());
                         return self.fallback_to_winusb_with_retry(context, 0);
                     }
+                    // `SerialPort` 变体仅由 Windows SetupAPI 驱动分类产生，
+                    // 非 Windows 下该变体不存在，故同步门控此匹配分支。
+                    #[cfg(target_os = "windows")]
                     UsbBusDetectionResult::SerialPort(ref port_name) => {
                         if !port_name.is_empty() {
                             info!("[AUTO] 检测到 BROM COM 口: {}", port_name);
@@ -115,6 +106,8 @@ impl ConnectionManager {
                             }
                         }
                     }
+                    // `Unknown` 变体同样仅由 Windows SetupAPI 驱动分类产生，同步门控。
+                    #[cfg(target_os = "windows")]
                     UsbBusDetectionResult::Unknown(driver_mfg) => {
                         warn!(
                             "[AUTO] BROM 设备驱动未知: {}，主动安装 WinUSB 驱动...",
@@ -174,8 +167,23 @@ impl ConnectionManager {
 
         info!("等待设备连接 (BROM: Vol+ + Vol- + Power)");
 
-        // 连续握手失败计数器：用于检测 DA 会话失效
+        // 启动诊断（一次性，不改变后续检测/连接流程）：用 nusb 枚举当前是否已有
+        // 联发科 BROM 设备（VID=0x0E8D, PID=0x0003），便于在“设备已插入但驱动/阶段
+        // 未就绪”时快速定位问题；后续循环仍以 detect_brom_driver_from_usb_bus 为准。
+        if let Some((vid, pid, device_type)) = crate::usb::get_first_mtk_vid_pid() {
+            info!(
+                "[USB] 启动诊断：nusb 已枚举到 MTK 设备 VID=0x{:04X} PID=0x{:04X} type={:?}",
+                vid, pid, device_type
+            );
+        }
+
+        // 连续握手失败计数器：用于检测 DA 会话失效。
+        // 累加只发生在 SerialPort 分支（仅 Windows 存在），故按平台区分是否需要 `mut`，
+        // 避免非 Windows 下出现 unused_mut 警告。
+        #[cfg(target_os = "windows")]
         let mut consecutive_handshake_failures: u32 = 0;
+        #[cfg(not(target_os = "windows"))]
+        let consecutive_handshake_failures: u32 = 0;
 
         // 无限等待设备出现
         loop {
@@ -197,6 +205,8 @@ impl ConnectionManager {
                     return self
                         .fallback_to_winusb_with_retry(context, consecutive_handshake_failures);
                 }
+                // `SerialPort` 变体仅由 Windows SetupAPI 产生，非 Windows 下不存在，同步门控。
+                #[cfg(target_os = "windows")]
                 UsbBusDetectionResult::SerialPort(port_name) => {
                     if port_name.is_empty() {
                         // 设备在 USB 总线上且使用串口驱动，但通过注册表匹配不到 COM 口名
@@ -244,7 +254,6 @@ impl ConnectionManager {
                             "[COM] 所有 COM 口均握手失败；当前仍是串口驱动，不进入 WinUSB 直连，继续等待"
                         );
                         consecutive_handshake_failures += all_ports.len() as u32;
-                        let _ = serial_failure_action(true);
                         std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
                         continue;
                     }
@@ -287,10 +296,11 @@ impl ConnectionManager {
                         SERIAL_HANDSHAKE_RETRY
                     );
                     consecutive_handshake_failures += SERIAL_HANDSHAKE_RETRY;
-                    let _ = serial_failure_action(true);
                     std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
                     continue;
                 }
+                // `Unknown` 变体同样仅由 Windows SetupAPI 产生，非 Windows 不存在，同步门控。
+                #[cfg(target_os = "windows")]
                 UsbBusDetectionResult::Unknown(driver_mfg) => {
                     warn!(
                         "[USB] 未知/未安装驱动: {}，主动安装 WinUSB 驱动...",
@@ -451,23 +461,5 @@ impl ConnectionManager {
         preloader.brom_initialized = true;
 
         Ok(preloader)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn confirmed_serial_driver_must_not_fallback_to_winusb_direct() {
-        assert_eq!(
-            serial_failure_action(true),
-            SerialFailureAction::RetrySerial
-        );
-    }
-
-    #[test]
-    fn non_serial_path_may_try_winusb_direct() {
-        assert_eq!(serial_failure_action(false), SerialFailureAction::TryWinUsb);
     }
 }

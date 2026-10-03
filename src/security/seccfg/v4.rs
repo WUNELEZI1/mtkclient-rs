@@ -6,13 +6,9 @@
 use crate::sha::Sha256;
 use log::info;
 
-use crate::security::sej::{
-    sej_sec_cfg_hw_encrypt, sej_sec_cfg_hw_v3_encrypt, sej_sec_cfg_sw_decrypt,
-    sej_sec_cfg_sw_encrypt,
-};
+use crate::security::sej::sej_sec_cfg_sw_decrypt;
 
 /// SecCfg V4 解析和修改
-#[allow(dead_code)] // 预留：unlock/lock 功能使用
 pub(crate) struct SecCfgV4 {
     pub(crate) magic: u32,
     pub(crate) seccfg_ver: u32,
@@ -109,12 +105,7 @@ impl SecCfgV4 {
             "V4".to_string()
         };
 
-        info!(
-            "seccfg V4 解析成功: hwtype={}, lock_state=0x{:08X}",
-            hwtype, lock
-        );
-
-        Ok(SecCfgV4 {
+        let v4 = SecCfgV4 {
             magic,
             seccfg_ver: ver,
             seccfg_size: size,
@@ -123,84 +114,14 @@ impl SecCfgV4 {
             sboot_runtime: sboot,
             endflag,
             hwtype,
-        })
-    }
-
-    /// 修改 seccfg V4（lock/unlock）— 离线模式
-    /// 偏移 0x10 实际是 dm_verity_state（0=正常），不是 critical_lock_state
-    /// lock_state（LKS）：unlock=LKS_UNLOCK(3), lock=LKS_DEFAULT=1
-    #[allow(dead_code)] // 预留：unlock-bootloader / lock-bootloader 命令调用入口
-    pub(crate) fn create(&self, lockflag: &str, partition_size: usize) -> Result<Vec<u8>, String> {
-        let (new_lock, new_dm_verity) = if lockflag == "unlock" {
-            if self.lock_state == 3 {
-                return Err("设备已解锁".to_string());
-            }
-            (3u32, 0u32) // LKS_UNLOCK=3, dm_verity=0
-        } else if lockflag == "lock" {
-            if self.lock_state == 1 {
-                return Err("设备已上锁".to_string());
-            }
-            (1u32, 0u32) // LKS_DEFAULT=1, dm_verity=0
-        } else {
-            return Err("无效 lockflag".to_string());
         };
 
-        let seccfg_header: [u8; 28] = [
-            self.magic.to_le_bytes()[0],
-            self.magic.to_le_bytes()[1],
-            self.magic.to_le_bytes()[2],
-            self.magic.to_le_bytes()[3],
-            self.seccfg_ver.to_le_bytes()[0],
-            self.seccfg_ver.to_le_bytes()[1],
-            self.seccfg_ver.to_le_bytes()[2],
-            self.seccfg_ver.to_le_bytes()[3],
-            self.seccfg_size.to_le_bytes()[0],
-            self.seccfg_size.to_le_bytes()[1],
-            self.seccfg_size.to_le_bytes()[2],
-            self.seccfg_size.to_le_bytes()[3],
-            new_lock.to_le_bytes()[0],
-            new_lock.to_le_bytes()[1],
-            new_lock.to_le_bytes()[2],
-            new_lock.to_le_bytes()[3],
-            new_dm_verity.to_le_bytes()[0],
-            new_dm_verity.to_le_bytes()[1],
-            new_dm_verity.to_le_bytes()[2],
-            new_dm_verity.to_le_bytes()[3],
-            0u8,
-            0u8,
-            0u8,
-            0u8, // sboot_runtime = 0
-            // 对齐 Python: endflag 固定 0x45454545
-            0x45,
-            0x45,
-            0x45,
-            0x45,
-        ];
-
-        let new_hash = Sha256::digest(seccfg_header);
-
-        let enc_hash = match self.hwtype.as_str() {
-            "SW" => sej_sec_cfg_sw_encrypt(&new_hash)?,
-            "V2" => sej_sec_cfg_hw_encrypt(&new_hash)?,
-            "V3" => sej_sec_cfg_hw_v3_encrypt(&new_hash, false)?,
-            "V4" => sej_sec_cfg_hw_v3_encrypt(&new_hash, true)?,
-            _ => return Err(format!("不支持的 hwtype: {}", self.hwtype)),
-        };
-
-        let mut result = seccfg_header.to_vec();
-        result.extend_from_slice(&enc_hash);
-
-        while !result.len().is_multiple_of(0x200) {
-            result.push(0);
-        }
-        while result.len() < partition_size {
-            result.push(0);
-        }
-
+        // 输出解析结果（dm_verity_state/sboot_runtime 供排查 dm-verity 与 sboot 运行态）
         info!(
-            "seccfg V4 修改成功: lock_state=0x{:08X} -> 0x{:08X}",
-            self.lock_state, new_lock
+            "seccfg V4 解析成功: hwtype={}, lock_state=0x{:08X}, dm_verity_state=0x{:08X}, sboot_runtime=0x{:08X}",
+            v4.hwtype, v4.lock_state, v4.dm_verity_state, v4.sboot_runtime
         );
-        Ok(result)
+
+        Ok(v4)
     }
 }

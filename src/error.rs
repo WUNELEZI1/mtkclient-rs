@@ -84,10 +84,8 @@ impl fmt::Display for StatusCode {
 
 /// USB 传输层错误
 ///
-/// 注：部分变体（NotFound / InterfaceNotFound / CtrlTransferFailed）为对齐 penumbra
-/// 的分类预留，当前 USB 路径大多以 `String` 返回，迁移完成后移除 `allow`。
+/// 注：各变体对应 USB 路径真实失败原因（枚举设备/打开/接口/控制传输/超时）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum UsbError {
     /// 未找到匹配设备
     NotFound,
@@ -128,11 +126,9 @@ pub enum ProtocolError {
     BadMagic { got: u32, expected: u32 },
     /// 包长度非法
     InvalidPacketLength(u32),
-    /// 设备状态非 0（预留：供 status 调用方按需构造）
-    #[allow(dead_code)]
+    /// 设备状态非 0
     StatusNonZero(u32),
-    /// ACK 被拒绝（预留：供 ack 路径按需构造）
-    #[allow(dead_code)]
+    /// ACK 被拒绝
     AckRejected(u32),
     /// 连续收到过多设备消息包，疑似协议失步
     MessageFlood { count: u32 },
@@ -198,10 +194,8 @@ impl std::error::Error for XFlashError {}
 
 /// `.state` 会话持久化错误
 ///
-/// 注：当前 `SessionState::load/from_string` 以 `Option` 静默降级，尚未构造这些变体；
-/// 待会话加载路径改为返回 `Result` 后接入，届时移除 `allow`。
+/// 由 `.state` 加载路径构造并上报，用于把"静默降级"变为可诊断的失败原因。
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum SessionError {
     /// 状态文件损坏/无法解析
     StateFileCorrupted(String),

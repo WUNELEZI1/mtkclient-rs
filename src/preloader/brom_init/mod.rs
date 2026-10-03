@@ -85,6 +85,14 @@ impl Preloader {
             .ok_or_else(|| format!("未知芯片: HW code 0x{:04X}", hw))?;
         self.chip = Some(*chip);
 
+        // 2.4 读取 HW Subcode：部分芯片用它与 hw_code 组合区分同族变体。
+        // 失败不阻断初始化（个别老芯片不支持 0xDB），随后清空输入缓冲避免残留干扰后续命令。
+        match self.get_hw_subcode() {
+            Ok(subcode) => trace!("HW subcode: {:04X}", subcode),
+            Err(e) => trace!("HW subcode 读取失败（忽略）: {}", e),
+        }
+        self.flush_input();
+
         // 2.5 启动后台线程预读取并解析 DA 文件：bypass / 发送 DA 期间并行完成，
         // 节省文件 I/O + header 解析的 2~4 秒
         // 注意：使用 chip.da_code（0x6768）而非 hw_code（0x0707）来匹配 DA 文件内条目
@@ -170,22 +178,17 @@ impl Preloader {
         if !self.echo_4byte(wdt_addr)? {
             return Err("关闭看门狗: echo addr 不匹配".into());
         }
-        trace!("[WD] 步骤3: echo_4byte(count=1)");
-        if !self.echo_4byte(1)? {
-            return Err("关闭看门狗: echo count 不匹配".into());
-        }
-        trace!("[WD] 步骤4: rword() 读 status1");
-        let status1 = self.rword()?;
+        trace!("[WD] 步骤3-4: echo_4byte(count=1) 并读取 status1");
+        let status1 = self.echo_4byte_then_status(1)?;
         trace!("[WD] status1: 0x{:04X}", status1);
         if status1 > 0xFF {
             return Err(format!("关闭看门狗失败: status1=0x{:04X}", status1));
         }
-        trace!("[WD] 步骤5: echo_4byte(value=0x{:08X})", wdt_value);
-        if !self.echo_4byte(wdt_value)? {
-            return Err("关闭看门狗: echo value 不匹配".into());
-        }
-        trace!("[WD] 步骤6: rword() 读 status2");
-        let status2 = self.rword()?;
+        trace!(
+            "[WD] 步骤5-6: echo_4byte(value=0x{:08X}) 并读取 status2",
+            wdt_value
+        );
+        let status2 = self.echo_4byte_then_status(wdt_value)?;
         trace!("[WD] status2: 0x{:04X}", status2);
         if status2 > 0xFF {
             return Err(format!("关闭看门狗失败: status2=0x{:04X}", status2));
@@ -225,7 +228,25 @@ impl Preloader {
     /// 直接使用 BROM WRITE32 写看门狗 WDT_RESTART 寄存器触发重启。
     ///
     /// 设备重启后 Preloader 发送 READY 信号，Pattern 协议收到后立即发送 FASTBOOT。
+    ///
+    /// 若看门狗 WRITE32 任一步失败，回退到 `jump_bl`（BROM 0xD6）直接命令 BROM
+    /// 跳转到 Bootloader，达到与看门狗复位等价的“离开 BROM 进入 Preloader”效果。
     pub fn trigger_meta_reboot(&mut self) -> Result<(), String> {
+        match self.reboot_via_watchdog() {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                trace!("[META] 看门狗重启失败: {}，回退到 jump_bl(0xD6)", e);
+                if self.jump_bl()? {
+                    Ok(())
+                } else {
+                    Err("trigger_meta_reboot: 看门狗重启与 jump_bl 均失败".to_string())
+                }
+            }
+        }
+    }
+
+    /// 通过 BROM WRITE32 写看门狗 WDT_RESTART 寄存器触发重启
+    fn reboot_via_watchdog(&mut self) -> Result<(), String> {
         let chip = self
             .chip
             .as_ref()
@@ -421,7 +442,6 @@ impl Preloader {
 
     /// 发送 4 字节大端参数，校验回显后再读取 2 字节 status。
     /// 对齐刷机匣 watchdog 关闭流程：write 4B -> read 4B echo -> read 2B status。
-    #[allow(dead_code)] // 预留：部分 BROM 命令需要 4 字节参数 + 2 字节 status 响应模式
     pub fn echo_4byte_then_status(&mut self, val: u32) -> Result<u16, String> {
         if !self.echo_4byte(val)? {
             return Err(format!("4-byte echo mismatch: 0x{:08X}", val));

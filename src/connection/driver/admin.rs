@@ -54,11 +54,10 @@ pub fn is_admin() -> bool {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-#[allow(dead_code)]
-pub fn is_admin() -> bool {
-    true
-}
+// 非 Windows 平台不存在 `is_admin` / `restart_as_admin`：两者均为 Windows 专属实现
+// （is_admin 走 Win32 令牌查询，restart_as_admin 走 PowerShell UAC 提权），且全平台没有
+// 非 Windows 调用点（main.rs 的调用亦在 `#[cfg(target_os = "windows")]` 分支内），
+// 故按“占位桩无真实调用点即删除”的原则移除，避免 dead_code。
 
 /// 以管理员权限重启当前进程
 ///
@@ -89,10 +88,4 @@ pub fn restart_as_admin() -> Result<(), String> {
     } else {
         Err("管理员重启失败（用户可能取消了 UAC）".to_string())
     }
-}
-
-#[cfg(not(target_os = "windows"))]
-#[allow(dead_code)]
-pub fn restart_as_admin() -> Result<(), String> {
-    Ok(())
 }
