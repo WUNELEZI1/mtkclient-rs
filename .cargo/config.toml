@@ -15,6 +15,9 @@ check-revoke = false
 rustflags = [
     "--remap-path-prefix=C:\\Users\\wqy=",
     "--remap-path-prefix=D:\\test\\ZybClient=",
+    "--remap-path-prefix=/workspace/repo=",
+    "--remap-path-prefix=/usr/local/cargo=",
+    "--remap-path-prefix=/root/.cargo=",
 ]
 
 # 同上：GNU 工具链（x86_64-pc-windows-gnu）交叉编译时同样抹除本地构建路径，
