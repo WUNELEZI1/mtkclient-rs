@@ -1,282 +1,409 @@
-MTKClient-RS
+# MTKClient-RS
 
+> A native Rust toolkit for MediaTek device communication and flashing over BROM / Preloader, featuring DA session reuse, resumable transfers, dynamic chip support, and filesystem access.
 
+[中文文档](README.md)
 
-A native Rust tool for low-level flashing and partition management on MediaTek (MTK) chips.
+---
 
-Pure native build, single executable, zero runtime dependencies.
+## Overview
 
-Sky \& cfk99
+**MTKClient-RS** is a native Rust implementation for low-level communication with MediaTek devices.
 
-Overview
+It is primarily designed for Windows and communicates directly with MediaTek devices through **USB / WinUSB**, supporting BROM, Preloader and DA-based operations.
 
+The project focuses on providing a self-contained native toolchain while keeping device-specific information separate from the core implementation.
 
+The Windows build is designed to run as a standalone executable:
 
-MTKClient-RS is a Rust-based low-level flashing tool for MediaTek chips. It supports reading, writing, and erasing device partitions, Preloader/Bootloader unlocking, dynamic partition browsing, and Preloader extraction.
+* No Python runtime
+* No .NET runtime
+* No Visual C++ runtime
+* No external libusb DLL
+* Native Windows USB communication
+* Automatic WinUSB driver handling
 
+---
 
+## Highlights
 
-The program is compiled natively into a single .exe and runs without Python / .NET / Visual C++ runtime / libusb DLL.
+### Native Rust
 
+The core is implemented in Rust and compiled natively for Windows.
 
+The goal is to provide a lightweight executable that can be distributed without requiring a separate scripting runtime or large dependency stack.
 
-It communicates with the device's BROM or Preloader mode over USB (WinUSB), and supports DA (Download Agent) session reuse and resume-from-breakpoint, significantly reducing the time required for large partition reads and writes.
+### BROM / Preloader Communication
 
-Features
+MTKClient-RS communicates with MediaTek devices through USB / WinUSB.
 
+Supported connection stages include:
 
+```text
+BROM
+Preloader
+DA
+```
 
-&#x20;   Partition read / write / erase: r / w / e for any partition.
+Connection mode can be selected explicitly or detected automatically:
 
+```text
+--mode brom
+--mode preloader
+--mode auto
+```
 
+### DA Session Reuse
 
-&#x20;   GPT management: printgpt prints the full GPT table and generates scatter.txt; r gpt reads raw GPT data.
+A major design feature is **DA session reuse**.
 
+Instead of rebuilding the entire communication session for every operation, multiple commands can share the same DA session:
 
+```text
+USB
+ ↓
+BROM / Preloader
+ ↓
+DA
+ ↓
+Persistent Session
+ ├── GPT
+ ├── Partition I/O
+ ├── Dynamic Partitions
+ ├── Filesystem Access
+ └── Reboot
+```
 
-&#x20;   Bootloader unlock: zyb seccfg unlock/lock unlocks/locks the bootloader via seccfg partition HACC hardware encryption (supports V3/V4); zyb oem unlock/lock, frp for FRP/OEM state.
+This reduces unnecessary initialization and makes multi-step workflows significantly more efficient.
 
+### Resumable Transfers
 
+Large partition transfers can maintain persistent state and resume after interruption.
 
-&#x20;   AVB / vbmeta: zyb vbmeta patches vbmeta to disable/enable AVB verification.
+```text
+large_partition.img
+        ↓
+     transfer
+        ↓
+    interrupted
+        ↓
+      .state
+        ↓
+      resume
+```
 
+This is particularly useful when working with large partitions such as `super` or `userdata`.
 
+### Data-Driven Chip Support
 
-&#x20;   Reboot routing: reboot supports system / fastboot / recovery / fastbootd / meta, with --via (para/misc/da/xml/preloader).
+Chip-specific information is intentionally separated from the core Rust implementation.
 
+Runtime data is described through:
 
+```text
+data/sdata.json
+```
 
-&#x20;   Interactive filesystem: fs\_shell browses the ext4 filesystem inside super directly on the device (ls / cd / cat / cp / tree / info) without pulling images locally first.
+This can contain:
 
+* Supported chip definitions
+* Payload mappings
+* Chip-specific configuration
+* Runtime parameters
 
+The data-driven design makes it possible to extend device support without continuously adding hard-coded branches to the core implementation.
 
-&#x20;   Preloader extraction: dumppreloader sends a payload via BROM Exploit to extract Preloader firmware.
+### Filesystem Shell
 
+`fs_shell` provides interactive access to supported filesystems inside dynamic partitions.
 
+Example:
 
-&#x20;   Memory read/write: peek / poke directly read/write eMMC memory.
+```text
+fs_shell
 
+> ls
+> cd system
+> ls
+> cat build.prop
+> tree
+> info
+```
 
+The goal is to inspect filesystem contents directly instead of requiring the entire partition image to be extracted first.
 
-&#x20;   Session reuse \& resume: DA session is reused across commands (.state); large partition reads/writes interrupted by Ctrl+C can resume from the breakpoint.
+### Partition I/O
 
+Basic partition operations are available through simple commands:
 
+```powershell
+.\mtkclient-rs.exe r boot_a boot_a.img
+.\mtkclient-rs.exe w boot_a boot_a.img
+.\mtkclient-rs.exe e boot_a
+```
 
-&#x20;   Automatic driver installation: On first run, WinUSB driver is generated/signed/installed via wdi-rs, no Zadig required.
+GPT information and dynamic partitions are also supported.
 
+### Reboot and Device State
 
+Common device targets include:
 
-&#x20;   Dynamic chip loading: Chip and payload mapping is resolved at runtime via data/sdata.json, no hardcoded models.
+```text
+system
+fastboot
+recovery
+fastbootd
+meta
+```
 
+Different reboot paths can be selected depending on the device state and communication channel.
 
+### WinUSB Handling
 
-Supported Chips
+The Windows build can handle WinUSB driver installation automatically on first use.
 
-Chip	Platform	Status
+This is intended to reduce the amount of manual USB driver configuration required for end users.
 
-MT6768	Helio G85 / G88	✅ Supported
+---
 
-MT6769	Helio G85 / G88 series	✅ Supported
+## Feature Overview
 
-MT6771	Helio P60 / P70	✅ Supported
+| Feature                   | Status |
+| ------------------------- | :----: |
+| BROM communication        |    ✅   |
+| Preloader communication   |    ✅   |
+| DA communication          |    ✅   |
+| GPT reading               |    ✅   |
+| GPT / Scatter generation  |    ✅   |
+| Partition read            |    ✅   |
+| Partition write           |    ✅   |
+| Partition erase           |    ✅   |
+| Dynamic partition access  |    ✅   |
+| DA session reuse          |    ✅   |
+| Resumable transfers       |    ✅   |
+| `fs_shell`                |    ✅   |
+| ext4 filesystem access    |    ✅   |
+| Preloader extraction      |    ✅   |
+| Memory access             |    ✅   |
+| A/B slot management       |    ✅   |
+| Multi-command DA sessions |    ✅   |
+| WinUSB handling           |    ✅   |
+| Data-driven chip support  |    ✅   |
 
-MT8183 / MT8385 / MT8666	Helio P60/P70/G80 series	✅ Supported
+---
 
+## Supported Platforms
 
+Current project data includes support for multiple MediaTek platforms.
 
-In addition, the dynamic chip table in sdata.json supports 6 MediaTek chips. See the support\_chip field in data/sdata.json for details.
+Examples include:
 
-Download \& Installation
+| SoC    | Platform               | Status |
+| ------ | ---------------------- | :----: |
+| MT6768 | Helio G85 / G88 series |    ✅   |
+| MT6769 | Helio G85 / G88 series |    ✅   |
+| MT6771 | Helio P60 / P70        |    ✅   |
+| MT8183 | MediaTek platform      |    ✅   |
+| MT8385 | MediaTek platform      |    ✅   |
+| MT8666 | MediaTek platform      |    ✅   |
 
+The authoritative support list is maintained in:
 
+```text
+data/sdata.json
+```
 
-&#x20;   Download the latest release archive from Releases and extract it to any directory.
+Check the `support_chip` data for the exact runtime configuration.
 
+---
 
+## Getting Started
 
-&#x20;   Power off the device, hold Volume Up + Volume Down and plug in USB to enter BROM mode (or do nothing to enter Preloader mode).
+### 1. Download
 
+Download the latest release from GitHub:
 
+[GitHub Releases](https://github.com/WUNELEZI1/mtkclient-rs/releases?utm_source=chatgpt.com)
 
-&#x20;   Right-click and open a terminal as Administrator (PowerShell recommended).
+Extract the archive to any directory.
 
+### 2. Connect a Device
 
+Put the MediaTek device into the appropriate BROM or Preloader state and connect it to a Windows PC through USB.
 
-&#x20;   On first run, the WinUSB driver is installed automatically; if that fails, use drivers/installer\_x64.exe to install manually.
+### 3. Inspect GPT
 
+```powershell
+.\mtkclient-rs.exe printgpt
+```
 
+### 4. Read a Partition
 
-Quick Start
+```powershell
+.\mtkclient-rs.exe r boot_a boot_a.img
+```
 
-powershell
+### 5. Write a Partition
 
+```powershell
+.\mtkclient-rs.exe w boot_a boot_a.img
+```
 
+### 6. Erase a Partition
 
-\# Print partition table (also generates scatter.txt)
+```powershell
+.\mtkclient-rs.exe e boot_a
+```
 
-.\\mtkclient-rs.exe printgpt
+### 7. Browse the Filesystem
 
+```powershell
+.\mtkclient-rs.exe fs_shell
+```
 
+---
 
-\# Read boot\_a partition to a local image
+## Command Reference
 
-.\\mtkclient-rs.exe r boot\_a boot\_a.img
+| Command                  | Description                                   |
+| ------------------------ | --------------------------------------------- |
+| `r <partition> [output]` | Read a partition                              |
+| `w <partition> <input>`  | Write a partition                             |
+| `e <partition>`          | Erase a partition                             |
+| `printgpt`               | Display GPT information                       |
+| `r gpt`                  | Read raw GPT data                             |
+| `reboot <mode>`          | Reboot the device                             |
+| `fs_shell`               | Interactive filesystem access                 |
+| `slot show`              | Show the current slot                         |
+| `slot a/b`               | Switch A/B slot                               |
+| `peek` / `poke`          | Memory access                                 |
+| `dumppreloader`          | Extract Preloader                             |
+| `multi`                  | Execute multiple operations in one DA session |
+| `adb`                    | Enable ADB debugging in DA mode               |
 
+Common options:
 
+```text
+--mode brom|preloader|auto
+--da_x_speed <n>
+--data-dir <path>
+```
 
-\# Write boot\_a partition
+---
 
-.\\mtkclient-rs.exe w boot\_a boot\_a.img
+## Runtime Data
 
+Runtime resources are stored under `data/`:
 
-
-\# Erase lk\_b partition
-
-.\\mtkclient-rs.exe e lk\_b
-
-
-
-\# Reboot to fastboot
-
-.\\mtkclient-rs.exe reboot fastboot
-
-
-
-\# Unlock bootloader (seccfg HACC)
-
-.\\mtkclient-rs.exe zyb seccfg unlock
-
-
-
-\# Interactive super filesystem browser
-
-.\\mtkclient-rs.exe fs\_shell
-
-
-
-Command Reference
-
-Command	Description
-
-r <partition> \[output]	Read partition to local image
-
-w <partition> <input>	Write local image to partition
-
-e <partition>	Erase partition
-
-printgpt	Print GPT table, generate scatter.txt
-
-r gpt	Read raw GPT data (MBR + GPT header + entries)
-
-reboot \[mode] --via <method>	Reboot device (system/fastboot/recovery/fastbootd/meta)
-
-zyb seccfg unlock/lock	Unlock/lock bootloader via HACC
-
-zyb oem unlock/lock / frp	FRP/OEM unlock and re-lock
-
-zyb vbmeta	Patch vbmeta to disable/enable AVB
-
-zyb erase\_data / wipe\_data	Erase userdata etc., equivalent to factory reset
-
-zyb get\_build\_prop	Read build.prop directly from device partition
-
-slot show/a/b	Show/switch A/B slot
-
-multi	Execute multiple commands in one DA session
-
-adb	Enable ADB debugging in DA mode
-
-fs\_shell	Interactive ext4 filesystem browser inside super
-
-dumppreloader	Extract Preloader via BROM Exploit
-
-peek / poke	Read/write eMMC memory
-
-r boot1/boot2/rpmb	Read special partitions
-
-r/w system/vendor/product/system\_ext	Read/write dynamic partitions inside super (auto slot matching)
-
-
-
-Common options: --mode brom|preloader|auto to specify connection mode; --da\_x\_speed <n> to set DA speed level; --data-dir <path> to specify data directory.
-
-Data Directory Structure
-
-
-
-The program relies on runtime resources under data/ (payload, DA, chip mapping table), which must be placed alongside the executable:
-
-text
-
-
-
+```text
 mtkclient-rs.exe
-
 data/
-
 ├── generic/
-
-│   └── payload\_xxx.bin        # Generic payload
-
-├── {chip}/                    # Per-chip payload, e.g. mt6768/mt6768\_payload.bin
-
+│   └── payload_xxx.bin
+├── {chip}/
 │   └── mtxxx.bin
+├── MTK_DA_V5.bin
+└── sdata.json
+```
 
-├── MTK\_DA\_V5.bin              # DA download agent (core component, do not delete)
+The directory contains:
 
-└── sdata.json                 # Dynamic chip mapping table (support\_chip / payloads)
+* `generic/` — generic payloads
+* `{chip}/` — chip-specific payloads
+* `MTK_DA_V5.bin` — DA runtime component
+* `sdata.json` — dynamic chip and payload mapping
 
+The runtime data directory is intentionally separated from the Rust source tree.
 
+---
 
-&#x20;   data/ is runtime configuration and is not included in the source repository. Place it manually when deploying or when switching --release builds.
+## Building from Source
 
+Requirements:
 
+* Rust stable
+* Windows x64
 
-Building from Source
-
-bash
-
-
-
-\# Requires Rust toolchain (stable)
-
-git clone https://gitee.com/WUNELEZI1/mtkclient-rs.git
-
+```powershell
+git clone https://github.com/WUNELEZI1/mtkclient-rs.git
 cd mtkclient-rs
 
 cargo build --release
+```
 
+The resulting executable will be located at:
 
+```text
+target/release/mtkclient-rs.exe
+```
 
-\# Output: target/release/mtkclient-rs.exe
+Place the required `data/` directory next to the executable.
 
-\# Place the data/ directory (generic/, per-chip payloads, MTK\_DA\_V5.bin, sdata.json) next to the exe
+---
 
+## Project Structure
 
+```text
+mtkclient-rs/
+├── .github/
+│   └── workflows/
+├── src/
+├── .cargo/
+├── Cargo.toml
+├── Cargo.lock
+├── build.rs
+├── flash_example.json
+├── README.md
+├── README_EN.md
+└── LICENSE
+```
 
-Safety \& Legal Notice
+---
 
+## Design Goals
 
+MTKClient-RS is not intended to be merely a line-by-line rewrite of an existing Python implementation.
 
-&#x20;   This tool is intended only for device owners for learning, research, repair, and backup purposes.
+The project focuses on several engineering goals:
 
+### Native
 
+Minimize runtime dependencies and make the Windows build easy to distribute.
 
-&#x20;   Write, erase, and unlock operations are irreversible. Back up important data before operating and ensure image files are correct.
+### Data-driven
 
+Keep chip definitions and payload information separate from the core implementation.
 
+### Reusable
 
-&#x20;   Do not disconnect USB during operation.
+Reuse DA sessions across multiple operations instead of repeatedly rebuilding the communication stack.
 
+### Resumable
 
+Provide persistent state for large transfers so interrupted operations can be continued.
 
-&#x20;   Comply with the laws and regulations of your country/region. Do not use this tool on any unauthorized device.
+### Extensible
 
+Keep communication, partition handling, filesystem access and device data sufficiently modular for future GUI applications and platform integrations.
 
+---
 
-License
+## Safety and Legal Notice
 
+This project is intended for device owners, developers and authorized repair or research environments.
 
+Before performing destructive operations:
 
-Apache-2.0
+* Back up important data.
+* Verify the target device and image files.
+* Do not disconnect USB during active transfers.
+* Only operate on devices you own or are authorized to service.
+* Follow all applicable laws and regulations.
 
+---
+
+## License
+
+Licensed under the **Apache License 2.0**.
+
+See [`LICENSE`](LICENSE) for details.
