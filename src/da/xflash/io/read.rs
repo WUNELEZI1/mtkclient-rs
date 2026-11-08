@@ -22,6 +22,59 @@ impl<'a> DAXFlash<'a> {
         self.readflash_data_ex(addr, size, 8)
     }
 
+    /// Read-path SET_PKT_LEN handshake.
+    ///
+    /// MT6768/MT6769 DA returns a flow payload after the 4-byte SET_PKT_LEN parameter, then a
+    /// final status. The generic param-mode send_devctrl() treats that payload as a status and
+    /// leaves the final status to be consumed by the following READ_DATA command.
+    pub(crate) fn set_read_packet_length(&mut self, target: usize) -> Result<(), String> {
+        const STATUS_UNSUPPORTED_COMMAND: u32 = 0xC001_0003;
+
+        let value = target as u32;
+        trace!(
+            "[SET_PKT_LEN] request read packet length={} (0x{:08X})",
+            target, value
+        );
+
+        let pkt = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&pkt)?;
+        self.preloader.device.write(&0x010009u32.to_le_bytes())?;
+        let st1 = self.status()?;
+        if st1 != 0 {
+            return Err(format!("SET_PKT_LEN DEVICE_CTRL status=0x{:08X}", st1));
+        }
+
+        let pkt2 = pack3(CMD_MAGIC, 0x01, 4);
+        self.preloader.device.write(&pkt2)?;
+        self.preloader.device.write(&SET_PKT_LEN.to_le_bytes())?;
+        let st2 = self.status()?;
+        if st2 != 0 {
+            return Err(format!("SET_PKT_LEN command status=0x{:08X}", st2));
+        }
+
+        let param = value.to_le_bytes();
+        let pkt3 = pack3(CMD_MAGIC, 0x01, param.len() as u32);
+        self.preloader.device.write(&pkt3)?;
+        self.preloader.device.write(&param)?;
+
+        let response = self.xread_data()?;
+        trace!(
+            "[SET_PKT_LEN] response len={} hex={}",
+            response.len(),
+            crate::util::hex_str(&response)
+        );
+
+        let final_status = self.status()?;
+        trace!("[SET_PKT_LEN] final status=0x{:08X}", final_status);
+        if final_status == 0 {
+            return Ok(());
+        }
+        if final_status == STATUS_UNSUPPORTED_COMMAND {
+            return Err(format!("SET_PKT_LEN unsupported: 0x{:08X}", final_status));
+        }
+        Err(format!("SET_PKT_LEN final status=0x{:08X}", final_status))
+    }
+
     /// 发送 READ_DATA 命令及 56B 参数（提取公共逻辑，消除重复）
     pub(crate) fn send_read_data_cmd(
         &mut self,
@@ -140,35 +193,26 @@ impl<'a> DAXFlash<'a> {
                         None
                     }
                 };
-                let mut target = match reported {
+                let target = match reported {
                     Some(v) if v >= 0x200000 => v.min(0x400000),
                     _ => 0x200000,
                 };
-                // 主动 SET_PKT_LEN 抬升。SET 成功后重新 GET 确认 DA 实际接受的包长度：
-                // 部分 DA 只接受更小的值，盲目按请求值传输会触发 DA 端溢出/截断。
-                // 仅当 DA 明确回报更小正数时才回退，避免把 GET 失败/返回 0 误判为"更小"。
-                if da
-                    .send_devctrl(SET_PKT_LEN, Some(&(target as u32).to_le_bytes()))
-                    .is_ok()
-                {
-                    trace!(
-                        "DA 读包长度已提升至 {} 字节 ({:.2} MiB)",
+                // 主动 SET_PKT_LEN 抬升。MT6768/MT6769 的 DA 在 SET 后再次 GET_PKT_LEN 会返回
+                // 0xC0010003，并污染后续 READ_DATA 的 final status；SET 响应已由 send_devctrl 消费，
+                // 流式读按 DA 实际返回的包头长度接收，不需要再发确认 GET。
+                match da.set_read_packet_length(target) {
+                    Ok(()) => trace!(
+                        "DA 读包长度已确认设置为 {} 字节 ({:.2} MiB)",
                         target,
                         target as f64 / 1024.0 / 1024.0
-                    );
-                    if let Ok(ack) = da.send_devctrl(GET_PKT_LEN, None) {
-                        if let Some(actual) = parse_packet_length(&ack) {
-                            if actual > 0 && actual < target {
-                                warn!(
-                                    "DA 实际接受读包长度 {} < 请求 {}，回退以避免 DA 端溢出",
-                                    actual, target
-                                );
-                                target = actual;
-                            }
-                        }
+                    ),
+                    Err(e) if e.contains("0xC0010003") => {
+                        trace!(
+                            "SET_PKT_LEN 不受支持，回退到 GET_PKT_LEN/DA 默认读包长度继续读取: {}",
+                            e
+                        );
                     }
-                } else {
-                    trace!("SET_PKT_LEN 不受支持（已忽略）");
+                    Err(e) => return Err(e),
                 }
                 packet_len = Some(target);
 

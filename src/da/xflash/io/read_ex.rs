@@ -5,7 +5,7 @@
 use log::{trace, warn};
 
 use crate::da::xflash::DAXFlash;
-use crate::da::xflash::protocol::{CMD_MAGIC, GET_PKT_LEN, SET_PKT_LEN};
+use crate::da::xflash::protocol::{CMD_MAGIC, GET_PKT_LEN};
 
 use super::{
     DA_READ_PER_CHUNK_TRAILER, READFLASH_READ_TIMEOUT_MS, parse_packet_length, with_read_timeout,
@@ -48,25 +48,22 @@ impl<'a> DAXFlash<'a> {
             Some(v) if v >= 0x200000 => v.min(0x400000),
             _ => 0x200000,
         };
-        // 主动 SET_PKT_LEN 抬升。SET 成功后重新 GET 确认 DA 实际接受的包长度，
-        // 防 DA 端溢出：部分 DA 只接受更小的值，盲目按请求值传输会触发溢出/截断。
-        // 仅当 DA 明确回报更小正数时才回退，GET 失败/返回 0 沿用请求值。
-        if self
-            .send_devctrl(SET_PKT_LEN, Some(&(target as u32).to_le_bytes()))
-            .is_ok()
-        {
-            if let Ok(ack) = self.send_devctrl(GET_PKT_LEN, None) {
-                if let Some(actual) = parse_packet_length(&ack) {
-                    if actual > 0 && actual < target {
-                        warn!(
-                            "DA 实际接受读包长度 {} < 请求 {}，回退以避免 DA 端溢出",
-                            actual, target
-                        );
-                    }
-                }
+        // SET_PKT_LEN is an optimization. Some MT6768/MT6769 DA builds reject it with
+        // 0xC0010003 after returning a 16-byte response payload; in that case keep the
+        // original GET_PKT_LEN/default framing and continue READ_DATA.
+        match self.set_read_packet_length(target) {
+            Ok(()) => trace!(
+                "DA 读包长度已确认设置为 {} 字节 ({:.2} MiB)",
+                target,
+                target as f64 / 1024.0 / 1024.0
+            ),
+            Err(e) if e.contains("0xC0010003") => {
+                trace!(
+                    "SET_PKT_LEN 不受支持，回退到 GET_PKT_LEN/DA 默认读包长度继续读取: {}",
+                    e
+                );
             }
-        } else {
-            trace!("SET_PKT_LEN 不受支持（已忽略）");
+            Err(e) => return Err(e),
         }
 
         // 2. 发送 READ_DATA 命令及参数

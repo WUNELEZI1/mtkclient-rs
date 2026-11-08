@@ -86,6 +86,12 @@ fn ensure_output_file_path(path: &str) -> Result<(), String> {
 }
 
 fn parse_packet_length(data: &[u8]) -> Option<usize> {
+    if data.len() >= 8 {
+        let value = u32::from_le_bytes(data[4..8].try_into().ok()?);
+        if value > 0 {
+            return Some(value as usize);
+        }
+    }
     if data.len() >= 4 {
         let value = u32::from_le_bytes(data[..4].try_into().ok()?);
         if value > 0 {
@@ -315,8 +321,29 @@ mod tests {
             parse_packet_length(&0x40000u32.to_le_bytes()),
             Some(0x40000)
         );
+        let mut pair = Vec::new();
+        pair.extend_from_slice(&0x40000u32.to_le_bytes());
+        pair.extend_from_slice(&0x200000u32.to_le_bytes());
+        assert_eq!(parse_packet_length(&pair), Some(0x200000));
+
+        let mut pair_with_zero_read = Vec::new();
+        pair_with_zero_read.extend_from_slice(&0x40000u32.to_le_bytes());
+        pair_with_zero_read.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(parse_packet_length(&pair_with_zero_read), Some(0x40000));
+
         assert_eq!(parse_packet_length(&0u32.to_le_bytes()), None);
         assert_eq!(parse_packet_length(&[1, 2, 3]), None);
+    }
+
+    #[test]
+    fn set_packet_length_16_byte_response_is_not_a_length() {
+        let mut response = Vec::new();
+        response.extend_from_slice(&0u32.to_le_bytes());
+        response.extend_from_slice(&0u32.to_le_bytes());
+        response.extend_from_slice(&0u32.to_le_bytes());
+        response.extend_from_slice(&0u32.to_le_bytes());
+
+        assert_eq!(parse_packet_length(&response), None);
     }
 
     #[test]
@@ -366,6 +393,8 @@ mod tests {
         assert!(final_read_status_from_payload(&0u32.to_le_bytes()).is_ok());
         let err = final_read_status_from_payload(&1u32.to_le_bytes()).unwrap_err();
         assert!(err.contains("0x00000001"));
+        let err = final_read_status_from_payload(&0xC0010003u32.to_le_bytes()).unwrap_err();
+        assert!(err.contains("0xC0010003"));
         assert!(final_read_status_from_payload(&[]).is_ok());
     }
 }
