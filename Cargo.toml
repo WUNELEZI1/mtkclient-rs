@@ -28,6 +28,9 @@ serialport = { version = "4.7", default-features = false }
 # 加密算法（sha256 已自研，见 src/sha.rs）
 aes = "0.9"
 cbc = "0.2"
+# boot 镜像 ramdisk 解压：gzip（flate2，纯 Rust 后端）/ xz（lzma_rs）；lz4 为内置纯 Rust 实现
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+lzma-rs = "0.3"
 # USB 通信（nusb: 纯 Rust USB 库，Windows WinUSB 后端；仅用同步 I/O，
 # 显式关闭默认特性以锁定不启用 smol/tokio 异步运行时，保持纯同步、最小体积）
 nusb = { version = "0.2.5", default-features = false }

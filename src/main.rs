@@ -417,6 +417,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return cmd::detect::cmd_detect().map_err(|e| e.to_string().into());
     }
 
+    // boot / proinfo 为离线镜像解析命令，不需要连接设备，直接进入文件解析流程
+    if cmd == "boot" {
+        return cmd::bootimg::cmd_boot(&app_config.cmd_args)
+            .map_err(|e| e.to_string().into());
+    }
+    if cmd == "proinfo" {
+        return cmd::proinfo::cmd_proinfo(&app_config.cmd_args)
+            .map_err(|e| e.to_string().into());
+    }
+
     let usb_context = UsbContext::new().inspect_err(|e| {
         error!("{}", e);
     })?;

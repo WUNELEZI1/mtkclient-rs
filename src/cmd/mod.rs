@@ -16,6 +16,8 @@
 pub mod buildprop;
 pub mod cli;
 pub mod detect;
+pub mod bootimg;
+pub mod proinfo;
 pub mod dump;
 // 已移除: fastboot 改为独立二进制 fastboot-rs
 pub mod io;
@@ -125,6 +127,15 @@ pub fn print_help() {
     println!("  multi \"<cmd1>;<cmd2>;...\"    一次 DA 会话执行多个命令");
     println!("  run <script.json>             从 JSON 脚本文件批量执行命令");
     println!();
+    println!("{}", "离线镜像解析（无需连接设备）:".bold());
+    println!(
+        "  boot <boot.img> [--extract <dir>]   解析 boot/recovery 镜像：头部信息、抽取 kernel/ramdisk/dtbo/dtb、"
+    );
+    println!(
+        "                                    解压 ramdisk、列出 cpio 条目、自动判定 boot/recovery"
+    );
+    println!("  proinfo <proinfo.bin>          解析 MTK proinfo 分区（含 magic 块表与启发式扫描）");
+    println!();
     println!("{}", "XML (V6) DA（新平台 MT6789+）:".bold());
     println!("  xml init [主机标识]           初始化 XML 会话（主机信息 + 运行参数）");
     println!("  xml hw-info / prop <key>      读取硬件信息 / 系统属性");
@@ -208,7 +219,7 @@ pub fn print_help() {
 /// 返回 Ok(()) 表示命令格式正确，Err 表示命令不存在或参数不合法
 fn validate_command(cmd: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        "printgpt" | "dumppreloader" | "adb" | "fs_shell" | "frp" => {}
+        "printgpt" | "dumppreloader" | "adb" | "fs_shell" | "frp" | "boot" | "proinfo" => {}
         "peek" => {
             if args.is_empty() {
                 return Err("用法: peek <addr> [size]".into());
