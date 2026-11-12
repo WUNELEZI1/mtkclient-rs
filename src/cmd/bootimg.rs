@@ -104,34 +104,43 @@ pub fn parse(buf: &[u8]) -> Result<BootImage, String> {
         ramdisk_load: rd_u32(buf, 20),
         second_size: rd_u32(buf, 24),
         tags_load: rd_u32(buf, 32),
-        name: cstr(&buf[44..60]),
-        cmdline: cstr(&buf[60..572]),
+        name: cstr(&buf[48..64]),
+        cmdline: cstr(&buf[64..576]),
         recovery_dtbo_size: if matches!(version, Version::V1 | Version::V2) {
-            rd_u32(buf, 1640)
+            rd_u32(buf, 1632)
         } else {
             0
         },
         recovery_dtbo_offset: if matches!(version, Version::V1 | Version::V2) {
-            rd_u64(buf, 1644)
+            rd_u64(buf, 1636)
         } else {
             0
         },
         dtb_size: if version == Version::V2 {
-            rd_u32(buf, 1656)
+            rd_u32(buf, 1648)
         } else {
             0
         },
-        dtb_offset: if version == Version::V2 {
-            rd_u64(buf, 1660)
-        } else {
-            0
-        },
+        // 头部 @1652 的 dtb_addr 是「加载地址」，不是文件内偏移；
+        // v2 的 dtb 实际顺序追加在其它段之后（页对齐），故此处先置 0，下面顺序计算。
+        dtb_offset: 0,
         kernel_off: ps,
         ramdisk_off: 0,
         second_off: 0,
     };
     bi.ramdisk_off = ps + align_up(bi.kernel_size as u64, ps);
     bi.second_off = bi.ramdisk_off + align_up(bi.ramdisk_size as u64, ps);
+    // v2 dtb 文件偏移：在 recovery_dtbo 之后（若无则紧跟 second/ramdisk），按页对齐顺序追加
+    bi.dtb_offset = if bi.dtb_size > 0 {
+        let base = if bi.recovery_dtbo_size > 0 {
+            bi.recovery_dtbo_offset + bi.recovery_dtbo_size as u64
+        } else {
+            bi.second_off
+        };
+        align_up(base, ps)
+    } else {
+        0
+    };
     Ok(bi)
 }
 
@@ -193,14 +202,19 @@ fn lz4_frame_decompress(data: &[u8]) -> Result<Vec<u8>, String> {
     let mut pos = 4;
     let flg = *data.get(pos).ok_or("lz4 frame: 截断")?;
     pos += 1;
-    let _hc = *data.get(pos).ok_or("lz4 frame: 截断")?;
+    let _bd = *data.get(pos).ok_or("lz4 frame: 截断")?; // BD：块最大尺寸
     pos += 1;
     let content_size = (flg & 0x08) != 0;
-    let _dict_id = (flg & 0x01) != 0;
+    let dict_id = (flg & 0x01) != 0;
     let block_chksum = (flg & 0x10) != 0;
     if content_size {
-        pos += 8;
+        pos += 8; // 8 字节 content_size 字段
     }
+    if dict_id {
+        pos += 4; // 4 字节 dictID 字段
+    }
+    pos += 1; // HC：1 字节 Header Checksum（标准 frame 必带，覆盖 FLG/BD/可选字段；
+              // 之前漏跳这 1 字节，会令后续块长度整体错位）
     let mut out = Vec::new();
     loop {
         if pos + 4 > data.len() {
