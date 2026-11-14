@@ -388,15 +388,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let terminal_logger = TerminalLogger { level: log_level };
 
-    if effective_usb_log {
-        // TeeLogger：终端 + tmp/usb_debug.log（覆盖模式）
-        let usb_log_path = crate::system::paths::get_tmp_path("usb_debug.log");
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&usb_log_path)
-            .map_err(|e| format!("无法创建 {}: {}", usb_log_path.display(), e))?;
+    if effective_usb_log || cli.log_file.is_some() {
+        // TeeLogger：终端 + 文件。--usb_log 写 tmp/usb_debug.log（覆盖）；
+        // --log_file <path> 写用户指定文件（追加，便于跨会话留档）。
+        let (path, append) = if let Some(ref p) = cli.log_file {
+            (std::path::PathBuf::from(p), true)
+        } else {
+            (crate::system::paths::get_tmp_path("usb_debug.log"), false)
+        };
+        let mut opts = std::fs::OpenOptions::new();
+        opts.create(true).write(true);
+        if append {
+            opts.append(true);
+        } else {
+            opts.truncate(true);
+        }
+        let file = opts
+            .open(&path)
+            .map_err(|e| format!("无法创建 {}: {}", path.display(), e))?;
 
         let tee_logger = TeeLogger {
             terminal: terminal_logger,

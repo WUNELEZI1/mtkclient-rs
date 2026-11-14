@@ -341,6 +341,7 @@ Options:
       --quiet              Quiet mode (errors and final results only)
       --quiet_dump         Quiet dump mode (no progress bar / USB read logs)
       --usb_log            USB communication trace log (to usb_debug.log)
+      --log_file <FILE>    Tee all logs to FILE (append mode)
       --patch_da           Patch DA (default: on)
       --no_elevate         Skip administrator elevation check
       --mode <mode>        Work mode: brom (default) | preloader | auto (reserved)
@@ -421,6 +422,7 @@ MTK 设备底层刷机工具 - 支持 87 种芯片 | Windows 10/11 x64
       --quiet              静默模式（只输出错误和最终结果）
       --quiet_dump         静默 dump 模式（不打印进度条和 USB 读取日志）
       --usb_log            启用 USB 通信追踪日志（输出到 usb_debug.log）
+      --log_file <FILE>    全部日志同步写入指定文件（追加模式）
       --patch_da           是否 patch DA（默认开启）
       --no_elevate         跳过管理员提权检查
       --mode <mode>        工作模式：brom（默认）、preloader、auto（预留）
@@ -501,6 +503,7 @@ Options :
       --quiet              Mode silencieux (erreurs et résultats finaux uniquement)
       --quiet_dump         Mode dump silencieux (pas de barre de progression ni logs USB)
       --usb_log            Trace USB (vers usb_debug.log)
+      --log_file <FICHIER> Duplique tous les logs vers FICHIER (ajout)
       --patch_da           Patche le DA (activé par défaut)
       --no_elevate         Ignore la vérification d'élévation administrateur
       --mode <mode>        Mode de travail : brom (défaut) | preloader | auto (réservé)
@@ -581,6 +584,7 @@ const HELP_RU: &str = r#"mtkclient-rs
       --quiet              Тихий режим (только ошибки и итоговые результаты)
       --quiet_dump         Тихий режим дампа (без прогресс-бара и логов чтения USB)
       --usb_log            Трассировка USB (в usb_debug.log)
+      --log_file <ФАЙЛ>    Дублировать все логи в ФАЙЛ (дозапись)
       --patch_da           Патчить DA (по умолчанию включено)
       --no_elevate         Пропустить проверку повышения прав
       --mode <mode>        Режим работы: brom (по умолчанию) | preloader | auto (резерв)
@@ -661,6 +665,7 @@ Opciones:
       --quiet              Modo silencioso (solo errores y resultados finales)
       --quiet_dump         Modo dump silencioso (sin barra de progreso ni logs USB)
       --usb_log            Traza de comunicación USB (a usb_debug.log)
+      --log_file <ARCHIVO> Duplica todos los logs a ARCHIVO (añadir)
       --patch_da           Parchea el DA (activado por defecto)
       --no_elevate         Omite la comprobación de elevación de administrador
       --mode <mode>        Modo de trabajo: brom (por defecto) | preloader | auto (reservado)
@@ -741,6 +746,7 @@ const HELP_AR: &str = r#"mtkclient-rs
       --quiet              وضع صامت (الأخطاء والنتائج النهائية فقط)
       --quiet_dump         وضع تفريغ صامت (بدون شريط تقدم أو سجلات قراءة USB)
       --usb_log            تتبع اتصالات USB (إلى usb_debug.log)
+      --log_file <ملف>     نسخ كل السجلات إلى ملف (وضع الإلحاق)
       --patch_da           تعديل DA (مفعّل افتراضيًا)
       --no_elevate         تخطي فحص رفع صلاحيات المسؤول
       --mode <mode>        وضع العمل: brom (افتراضي) | preloader | auto (محجوز)

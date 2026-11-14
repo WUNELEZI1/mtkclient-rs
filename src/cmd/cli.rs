@@ -61,6 +61,13 @@ pub struct Cli {
     pub usb_log: bool,
 
     #[arg(
+        long = "log_file",
+        value_name = "FILE",
+        help = "把全部日志同步 tee 到指定文件（追加模式；与 --usb_log 独立）"
+    )]
+    pub log_file: Option<String>,
+
+    #[arg(
         long = "patch_da",
         default_value_t = true,
         help = "是否 patch DA（默认开启）"
