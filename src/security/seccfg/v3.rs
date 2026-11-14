@@ -27,6 +27,8 @@ pub(crate) struct SecCfgV3 {
     pub(crate) page_count: u32,
     pub(crate) seccfg_attr: u32,
     pub(crate) seccfg_status: u32,
+    /// SIU（安全镜像更新）状态位，回写时必须原样保留
+    pub(crate) siu_status: u32,
     pub(crate) endflag: u32,
     pub(crate) hwtype: String,
     pub(crate) imginfo: Vec<[u8; 0x68]>,
@@ -119,6 +121,7 @@ impl SecCfgV3 {
         let imginfo: Vec<[u8; 0x68]> = plain.imgs.iter().map(|i| i.raw).collect();
         let seccfg_status = plain.status;
         let seccfg_attr = plain.attr;
+        let siu_status = plain.siu_status;
         // seccfg_ext 必须原样保留，否则回写会把扩展区截断（旧实现固定写空 → 设备异常）
         let mut ext = plain.ext.clone();
         if plain.marker_offset != 0 {
@@ -143,6 +146,7 @@ impl SecCfgV3 {
             page_count: pg_count,
             seccfg_attr,
             seccfg_status,
+            siu_status,
             endflag,
             hwtype,
             imginfo,
@@ -188,7 +192,7 @@ impl SecCfgV3 {
         for img in &self.imginfo {
             inner.extend_from_slice(img);
         }
-        inner.extend_from_slice(&0u32.to_le_bytes());
+        inner.extend_from_slice(&self.siu_status.to_le_bytes());
         inner.extend_from_slice(&self.seccfg_status.to_le_bytes());
         inner.extend_from_slice(&new_attr.to_le_bytes());
         inner.extend_from_slice(&self.seccfg_ext);
@@ -247,7 +251,7 @@ mod tests {
             plain[off..off + n.len()].copy_from_slice(n.as_bytes());
             plain[off + 32..off + 36].copy_from_slice(&(0x1000u32).to_le_bytes());
         }
-        plain.extend_from_slice(&0u32.to_le_bytes()); // siu_status
+        plain.extend_from_slice(&0x1234u32.to_le_bytes()); // siu_status（回写需保留）
         plain.extend_from_slice(&plain::STATUS_COMPLETE.to_le_bytes());
         plain.extend_from_slice(&attr.to_le_bytes());
         plain.extend(std::iter::repeat_n(0xA5u8, ext_len));
@@ -286,6 +290,7 @@ mod tests {
         // 扩展区必须完整保留
         assert_eq!(v3.seccfg_ext.len(), 0x1004);
         assert!(v3.seccfg_ext.iter().all(|&b| b == 0xA5));
+        assert_eq!(v3.siu_status, 0x1234);
         assert_eq!(p.non_empty_names(), vec!["preloader", "boot", "system"]);
     }
 
@@ -301,6 +306,8 @@ mod tests {
         // 扩展区不能被截断（旧实现固定写空 Vec）
         assert_eq!(v3b.seccfg_ext.len(), 0x1004);
         assert!(v3b.seccfg_ext.iter().all(|&b| b == 0xA5));
+        // SIU 状态位必须原样保留（旧实现写 0，会清掉 SIU 更新标记）
+        assert_eq!(v3b.siu_status, 0x1234);
     }
 
     #[test]
