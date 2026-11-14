@@ -317,6 +317,8 @@ Commands:
                                 ls/cat/extract/info/quit; from the active slot if no file
     fs_shell proinfo [file]     Interactively inspect the MTK proinfo partition (NV data)
     dumppreloader               Extract the preloader from RAM (BROM exploit)
+    dumpbrom [file]             Extract the BROM itself (128KB @ 0x0) for analysis
+    genkey                      Generate a random 32-byte RPMB key (hex)
     adb                         Enable ADB in DA mode and reboot
     peek <addr> [size]          Read device memory (default 4 bytes), hex dump output
     poke <addr> <hex>           Write data to device memory
@@ -395,6 +397,8 @@ MTK 设备底层刷机工具 - 支持 87 种芯片 | Windows 10/11 x64
                                 省略文件时自动读当前 A/B 槽位的 boot 分区
     fs_shell proinfo [file]     交互式查看 MTK proinfo 分区（NV 数据）
     dumppreloader               从 RAM 提取 Preloader（BROM Exploit）
+    dumpbrom [file]             提取 BROM 本体（0x0 起 128KB，供逆向分析）
+    genkey                      生成 32 字节随机 RPMB 密钥（hex 输出）
     adb                         在 DA 模式下开启 ADB 并重启
     peek <addr> [size]          读取设备内存（默认 4 字节），输出 hex dump
     poke <addr> <hex>           写入数据到设备内存
@@ -473,6 +477,8 @@ Commandes :
     fs_shell boot [file]        Navigue interactivement le ramdisk d'une image boot (cpio)
     fs_shell proinfo [file]     Inspecte interactivement la partition proinfo MTK (données NV)
     dumppreloader               Extrait le preloader depuis la RAM (exploit BROM)
+    dumpbrom [fichier]          Extrait le BROM lui-même (128 Ko @ 0x0)
+    genkey                      Génère une clé RPMB aléatoire de 32 octets (hex)
     adb                         Active ADB en mode DA et redémarre
     peek <addr> [size]          Lit la mémoire de l'appareil (4 octets par défaut), hex dump
     poke <addr> <hex>           Écrit des données dans la mémoire de l'appareil
@@ -551,6 +557,8 @@ const HELP_RU: &str = r#"mtkclient-rs
     fs_shell boot [file]        Интерактивный просмотр ramdisk образа boot (cpio)
     fs_shell proinfo [file]     Интерактивный просмотр раздела proinfo MTK (данные NV)
     dumppreloader               Извлечь preloader из RAM (эксплойт BROM)
+    dumpbrom [файл]             Извлечь сам BROM (128 КБ @ 0x0)
+    genkey                      Сгенерировать случайный 32-байтовый RPMB-ключ (hex)
     adb                         Включить ADB в режиме DA и перезагрузить
     peek <addr> [size]          Прочитать память устройства (по умолчанию 4 байта), hex dump
     poke <addr> <hex>           Записать данные в память устройства
@@ -629,6 +637,8 @@ Comandos:
     fs_shell boot [file]        Navega interactivamente el ramdisk de una imagen boot (cpio)
     fs_shell proinfo [file]     Inspecciona interactivamente la partición proinfo MTK (NV)
     dumppreloader               Extrae el preloader de la RAM (exploit BROM)
+    dumpbrom [archivo]          Extrae el propio BROM (128KB @ 0x0)
+    genkey                      Genera una clave RPMB aleatoria de 32 bytes (hex)
     adb                         Activa ADB en modo DA y reinicia
     peek <addr> [size]          Lee memoria del dispositivo (4 bytes por defecto), hex dump
     poke <addr> <hex>           Escribe datos en la memoria del dispositivo
@@ -707,6 +717,8 @@ const HELP_AR: &str = r#"mtkclient-rs
     fs_shell boot [file]        تصفح تفاعلي لـ ramdisk صورة boot (cpio)
     fs_shell proinfo [file]     فحص تفاعلي لقسم proinfo الخاص بـ MTK (بيانات NV)
     dumppreloader               استخراج preloader من RAM (ثغرة BROM)
+    dumpbrom [ملف]              استخراج BROM نفسه (128KB @ 0x0)
+    genkey                      توليد مفتاح RPMB عشوائي بحجم 32 بايت (hex)
     adb                         تفعيل ADB في وضع DA وإعادة التشغيل
     peek <addr> [size]          قراءة ذاكرة الجهاز (4 بايت افتراضيًا)، إخراج hex dump
     poke <addr> <hex>           كتابة بيانات إلى ذاكرة الجهاز
