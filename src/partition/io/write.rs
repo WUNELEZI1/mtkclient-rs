@@ -124,7 +124,10 @@ impl<'a> DAXFlash<'a> {
             offset += effective_n as u64;
         }
 
-        info!("  校验通过 (共 {} 字节)", offset);
+        info!(
+            "{}",
+            crate::i18n::tr("log_verify_ok", &[&offset.to_string()])
+        );
         Ok(())
     }
 
@@ -134,7 +137,10 @@ impl<'a> DAXFlash<'a> {
     /// 增加校验：文件大小不能超过分区大小，超过时报错。
     /// 支持断点续传：取消后可通过 `.wresume` 文件从断点继续。
     pub fn write_partition(&mut self, part_name: &str, in_file: &str) -> Result<(), String> {
-        info!("写入文件 {} 到分区 {}...", in_file, part_name);
+        info!(
+            "{}",
+            crate::i18n::tr("log_write_start", &[in_file, part_name])
+        );
 
         // 打开文件（流式读取，避免全量载入内存）
         let file = std::fs::File::open(in_file).map_err(|e| format!("无法打开文件: {}", e))?;
@@ -230,7 +236,10 @@ impl<'a> DAXFlash<'a> {
 
         // 成功：删除续传状态文件
         remove_write_resume_file(in_file);
-        info!("  写入完成: {} 字节写入分区 {}", file_size, part_name);
+        info!(
+            "{}",
+            crate::i18n::tr("log_write_done", &[&file_size.to_string(), part_name])
+        );
         Ok(())
     }
 

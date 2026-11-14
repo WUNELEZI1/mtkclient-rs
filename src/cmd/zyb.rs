@@ -31,7 +31,7 @@ pub(crate) fn handle_zyb_command(
         }
         "seccfg" => {
             if sub_args.is_empty() {
-                return Err("用法: mtkclient zyb seccfg unlock/lock".into());
+                return Err("用法: mtkclient zyb seccfg unlock|lock|info [文件]".into());
             }
             match sub_args[0].as_str() {
                 "unlock" => {
@@ -44,7 +44,15 @@ pub(crate) fn handle_zyb_command(
                         .map_err(|e| format!("锁定失败: {}", e))?;
                     info!("{}", "Bootloader 已锁定".green());
                 }
-                _ => return Err("用法: mtkclient zyb seccfg unlock/lock".into()),
+                "info" => {
+                    match sub_args.get(1) {
+                        // 提供文件则离线解析，不连接设备
+                        Some(path) => crate::security::seccfg::seccfg_info_file(path)?,
+                        None => crate::security::seccfg::seccfg_info(da)
+                            .map_err(|e| format!("seccfg 分析失败: {}", e))?,
+                    }
+                }
+                _ => return Err("用法: mtkclient zyb seccfg unlock|lock|info [文件]".into()),
             }
         }
         "oem" => {

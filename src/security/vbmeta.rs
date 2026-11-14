@@ -64,7 +64,10 @@ pub fn vbmeta_disable(da: &mut DAXFlash, mode: u32) -> Result<(), String> {
                     info!("    descriptor: {} ({})", d.tag_debug_name(), pn);
                 }
             }
-            info!("  当前 flags=0x{:02X} -> 目标 0x{:02X}", vb.header.flags, mode);
+            info!(
+                "  当前 flags=0x{:02X} -> 目标 0x{:02X}",
+                vb.header.flags, mode
+            );
 
             let modified = vb.disable_verification(mode);
             da.write_flash_data(addr, &modified, 1, 8)?;
@@ -124,6 +127,5 @@ fn patch_vbmeta_data(data: &[u8], mode: u32) -> Result<Vec<u8>, String> {
 
 /// 检测当前活跃的 A/B 槽位（公共模块：misc bootctrl + 启发，带会话级缓存）
 fn detect_active_slot(da: &mut DAXFlash) -> Result<Option<String>, String> {
-    crate::partition::slot::detect_active_slot(da)
-        .map(|s| s.map(|c| c.to_string()))
+    crate::partition::slot::detect_active_slot(da).map(|s| s.map(|c| c.to_string()))
 }

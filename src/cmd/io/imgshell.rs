@@ -15,7 +15,7 @@ use crate::color::Colorize;
 use crate::da::DAXFlash;
 use log::info;
 
-use crate::cmd::bootimg::{decompress, parse as parse_boot, parse_cpio, BootImage};
+use crate::cmd::bootimg::{BootImage, decompress, parse as parse_boot, parse_cpio};
 use crate::cmd::proinfo;
 
 /// fs_shell 扩展入口：`cmd = "boot" | "proinfo"`。
@@ -66,11 +66,17 @@ fn shell_boot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::err
     let entries = parse_cpio(&cpio).map_err(|e| format!("cpio 解析失败: {e}"))?;
 
     println!("{}", "═══ boot ramdisk (cpio) 浏览 ═══".cyan().bold());
-    println!("  镜像: {}", file.cloned().unwrap_or_else(|| "设备 boot 分区".into()));
+    println!(
+        "  镜像: {}",
+        file.cloned().unwrap_or_else(|| "设备 boot 分区".into())
+    );
     println!("  版本: {:?}  page_size: {}", bi.version, bi.page_size);
     println!("  cmdline: {}", bi.cmdline);
     println!("  cpio 条目: {}", entries.len());
-    println!("{}", "命令: ls [path] | cat <file> | extract <dir> | info | quit".dimmed());
+    println!(
+        "{}",
+        "命令: ls [path] | cat <file> | extract <dir> | info | quit".dimmed()
+    );
 
     let mut stdin = std::io::stdin().lock();
     loop {
@@ -104,7 +110,10 @@ fn shell_boot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::err
                     .iter()
                     .filter(|e| prefix.is_empty() || e.name.starts_with(prefix))
                     .count();
-                for e in entries.iter().filter(|e| prefix.is_empty() || e.name.starts_with(prefix)) {
+                for e in entries
+                    .iter()
+                    .filter(|e| prefix.is_empty() || e.name.starts_with(prefix))
+                {
                     let kind = if e.mode & 0o170000 == 0o040000 {
                         "d"
                     } else if e.mode & 0o170000 == 0o120000 {
@@ -112,7 +121,12 @@ fn shell_boot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::err
                     } else {
                         "-"
                     };
-                    println!("  {kind} {:>7} {:<40} {}", e.data.len(), e.name, format!("{:04o}", e.mode & 0o7777).dimmed());
+                    println!(
+                        "  {kind} {:>7} {:<40} {}",
+                        e.data.len(),
+                        e.name,
+                        format!("{:04o}", e.mode & 0o7777).dimmed()
+                    );
                 }
                 println!("{}", format!("共 {shown} 条").dimmed());
             }
@@ -143,7 +157,10 @@ fn shell_boot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::err
                 }
                 println!("{}", format!("已导出 {n} 个条目到 {dir}/").green());
             }
-            other => println!("{}", format!("未知命令: {other}（ls/cat/extract/info/quit）").yellow()),
+            other => println!(
+                "{}",
+                format!("未知命令: {other}（ls/cat/extract/info/quit）").yellow()
+            ),
         }
     }
     Ok(())
@@ -159,7 +176,10 @@ fn shell_proinfo(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::
     let analysis = proinfo::parse(&buf);
 
     println!("{}", "═══ proinfo 浏览 ═══".cyan().bold());
-    println!("  镜像: {}", file.cloned().unwrap_or_else(|| "设备 proinfo 分区".into()));
+    println!(
+        "  镜像: {}",
+        file.cloned().unwrap_or_else(|| "设备 proinfo 分区".into())
+    );
     println!("{}", "命令: show | raw <len> | quit".dimmed());
 
     let mut stdin = std::io::stdin().lock();
@@ -178,7 +198,10 @@ fn shell_proinfo(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::
         match parts.next().unwrap_or("") {
             "quit" | "exit" | "q" => break,
             "show" => {
-                println!("{}", format!("==== proinfo 解析 ({} 字节) ====", buf.len()).bold());
+                println!(
+                    "{}",
+                    format!("==== proinfo 解析 ({} 字节) ====", buf.len()).bold()
+                );
                 if let Some(m) = &analysis.magic {
                     println!("  magic  : {m}");
                 }
@@ -188,12 +211,18 @@ fn shell_proinfo(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::
                 if !analysis.blocks.is_empty() {
                     println!("  块表(有 magic):");
                     for b in &analysis.blocks {
-                        println!("    {:<20} offset={:#x} length={}", b.name, b.offset, b.length);
+                        println!(
+                            "    {:<20} offset={:#x} length={}",
+                            b.name, b.offset, b.length
+                        );
                     }
                 } else {
                     println!("  未识别到 PROINFO magic；启发式扫描候选:");
                     for b in &analysis.scan {
-                        println!("    {:<20} offset={:#x} length={}", b.name, b.offset, b.length);
+                        println!(
+                            "    {:<20} offset={:#x} length={}",
+                            b.name, b.offset, b.length
+                        );
                     }
                     if analysis.scan.is_empty() {
                         println!("    (无候选，可能布局与假定格式不同)");
@@ -216,7 +245,13 @@ fn dump_hex(data: &[u8]) {
         let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02X}")).collect();
         let ascii: String = chunk
             .iter()
-            .map(|&b| if (0x20..0x7F).contains(&b) { b as char } else { '.' })
+            .map(|&b| {
+                if (0x20..0x7F).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
             .collect();
         println!("  {:08X}  {:<47}  {}", i * 16, hex.join(" "), ascii);
     }

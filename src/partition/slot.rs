@@ -46,9 +46,7 @@ fn detect_active_slot_uncached(da: &mut DAXFlash) -> Result<Option<char>, String
         let off = 0x2000;
         if &misc_data[off..off + 4] == BOOTCTRL_MAGIC {
             // active_slot 在 magic + 8（跳过 u32 保留位）
-            let active = u32::from_le_bytes(
-                misc_data[off + 8..off + 12].try_into().unwrap(),
-            );
+            let active = u32::from_le_bytes(misc_data[off + 8..off + 12].try_into().unwrap());
             let slot = if active == 0 { 'a' } else { 'b' };
             return Ok(Some(slot));
         }

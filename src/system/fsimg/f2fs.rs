@@ -180,7 +180,8 @@ pub fn create_minimal_f2fs(partition_size: u64) -> Vec<u8> {
     // 最远到 main_blkaddr + ROOT_DATA_BLOCK_OFFSET），避免为整个分区分配内存——format 大分区
     // （如 userdata 上百 GB）若 `vec![0u8; partition_size]` 会 OOM。剩余区域全为零，由调用方用
     // sparse 的 DONT_CARE 表示。
-    let structure_len = ((main_blkaddr + ROOT_DATA_BLOCK_OFFSET + 1) as u64 * BLOCK_SIZE as u64) as usize;
+    let structure_len =
+        ((main_blkaddr + ROOT_DATA_BLOCK_OFFSET + 1) as u64 * BLOCK_SIZE as u64) as usize;
     let mut image = vec![0u8; structure_len];
 
     // ==================== Superblock (块 0 和 1) ====================
@@ -268,9 +269,9 @@ pub fn create_minimal_f2fs(partition_size: u64) -> Vec<u8> {
         // Segment 7 (SSA): block 3584 used
         // Segment 8 (root main): root inode + root dir data = 2 blocks
         let vblocks = match seg_idx {
-            0 => 2,                             // SB: 2 blocks
-            1..=7 => 1,                         // CP, SIT, NAT, SSA: 1 block each
-            8 => 2,                             // root main: root inode + root dir data
+            0 => 2,     // SB: 2 blocks
+            1..=7 => 1, // CP, SIT, NAT, SSA: 1 block each
+            8 => 2,     // root main: root inode + root dir data
             _ => 0,
         };
         let block_idx = sit_block_offset + seg_idx / SIT_ENTRY_PER_BLOCK as usize * BLOCK_SIZE;
@@ -283,8 +284,16 @@ pub fn create_minimal_f2fs(partition_size: u64) -> Vec<u8> {
     let nat_block_offset = nat_blkaddr as usize * BLOCK_SIZE;
     let nat_entry_idx = ROOT_NID as usize % NAT_ENTRY_PER_BLOCK as usize;
     let nat_entry_offset = nat_entry_idx * 9;
-    write_u32_le(&mut image, nat_block_offset + nat_entry_offset + 1, root_ino); // ino
-    write_u32_le(&mut image, nat_block_offset + nat_entry_offset + 5, main_blkaddr); // block_addr
+    write_u32_le(
+        &mut image,
+        nat_block_offset + nat_entry_offset + 1,
+        root_ino,
+    ); // ino
+    write_u32_le(
+        &mut image,
+        nat_block_offset + nat_entry_offset + 5,
+        main_blkaddr,
+    ); // block_addr
 
     // ==================== SSA (块 ssa_blkaddr) ====================
     // 只需要根 inode 所在 block 的 SSA 条目
@@ -320,7 +329,11 @@ pub fn create_minimal_f2fs(partition_size: u64) -> Vec<u8> {
     // i_links = 2 (for "." and "..")
     write_u32_le(&mut image, root_node_offset + INODE_I_LINKS, 2);
     // i_size = 4096 (1 block for directory entries)
-    write_u64_le(&mut image, root_node_offset + INODE_I_SIZE, BLOCK_SIZE as u64);
+    write_u64_le(
+        &mut image,
+        root_node_offset + INODE_I_SIZE,
+        BLOCK_SIZE as u64,
+    );
     // i_blocks = 2 blocks = 16 sectors (512-byte sectors in f2fs)
     write_u64_le(&mut image, root_node_offset + INODE_I_BLOCKS, 16);
 
@@ -420,8 +433,8 @@ fn write_superblock(
 
     // UUID
     let uuid: [u8; 16] = [
-        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-        0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
+        0xFF,
     ];
     image[sb + SB_UUID..sb + SB_UUID + 16].copy_from_slice(&uuid);
 
@@ -468,7 +481,11 @@ fn write_checkpoint(
     // checkpoint_ver = 1
     write_u64_le(image, cp + CP_CHECKPOINT_VER, 1);
     // user_block_count = main area blocks
-    write_u64_le(image, cp + CP_USER_BLOCK_COUNT, main_segments as u64 * BLOCKS_PER_SEG as u64);
+    write_u64_le(
+        image,
+        cp + CP_USER_BLOCK_COUNT,
+        main_segments as u64 * BLOCKS_PER_SEG as u64,
+    );
     // valid_block_count = 2 (root inode + root data)
     write_u64_le(image, cp + CP_VALID_BLOCK_COUNT, 2);
     // rsvd_segment_count = 0
@@ -499,9 +516,17 @@ fn write_checkpoint(
     write_u32_le(image, cp + CP_NEXT_FREE_NID, 4);
 
     // SIT bitmap size
-    write_u32_le(image, cp + CP_SIT_VER_BITMAP_BYTESIZE, sit_ver_bitmap_bytesize);
+    write_u32_le(
+        image,
+        cp + CP_SIT_VER_BITMAP_BYTESIZE,
+        sit_ver_bitmap_bytesize,
+    );
     // NAT bitmap size
-    write_u32_le(image, cp + CP_NAT_VER_BITMAP_BYTESIZE, nat_ver_bitmap_bytesize);
+    write_u32_le(
+        image,
+        cp + CP_NAT_VER_BITMAP_BYTESIZE,
+        nat_ver_bitmap_bytesize,
+    );
     // checksum_offset = F2FS_BLKSIZE - 4 = 4092
     write_u32_le(image, cp + CP_CHECKSUM_OFFSET, BLOCK_SIZE as u32 - 4);
 

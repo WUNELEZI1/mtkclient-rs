@@ -224,7 +224,11 @@ impl VbmetaImage {
     pub fn info(&self) -> String {
         let h = &self.header;
         let mut s = String::new();
-        let _ = writeln!(s, "Minimum libavb version: {}.{}", h.required_libavb_version_major, h.required_libavb_version_minor);
+        let _ = writeln!(
+            s,
+            "Minimum libavb version: {}.{}",
+            h.required_libavb_version_major, h.required_libavb_version_minor
+        );
         let _ = writeln!(s, "Header Size: {AVB_HEADER_SIZE} bytes");
         let _ = writeln!(s, "Release String: '{}'", h.release_string);
         let _ = writeln!(s, "Descriptors:");
@@ -242,8 +246,16 @@ impl VbmetaImage {
         let _ = writeln!(s, "Rollback Index: {}", h.rollback_index);
         let _ = writeln!(s, "Rollback Index Location: {}", h.rollback_index_location);
         let _ = writeln!(s, "Flags: {}", h.flags);
-        let _ = writeln!(s, "Hashtree disabled: {}", h.flags & FLAG_HASHTREE_DISABLED != 0);
-        let _ = writeln!(s, "Verification disabled: {}", h.flags & FLAG_VERIFICATION_DISABLED != 0);
+        let _ = writeln!(
+            s,
+            "Hashtree disabled: {}",
+            h.flags & FLAG_HASHTREE_DISABLED != 0
+        );
+        let _ = writeln!(
+            s,
+            "Verification disabled: {}",
+            h.flags & FLAG_VERIFICATION_DISABLED != 0
+        );
         s
     }
 
@@ -253,7 +265,8 @@ impl VbmetaImage {
     /// 注意：改 flags 后原签名失效，但 flags 位本身会被 bootloader 先读——
     /// 校验关闭路径下不会因签名失效而拒绝启动（与官方 avbtool 行为一致）。
     pub fn disable_verification(&self, flags: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity(AVB_HEADER_SIZE + self.auth_block.len() + self.aux_block.len());
+        let mut out =
+            Vec::with_capacity(AVB_HEADER_SIZE + self.auth_block.len() + self.aux_block.len());
         out.extend_from_slice(&encode_header(&self.rebuild_header(flags)));
         out.extend_from_slice(&self.auth_block);
         out.extend_from_slice(&self.aux_block);
@@ -267,7 +280,9 @@ impl VbmetaImage {
         // 公钥部分仍在辅助块开头（public_key_offset），descriptor 移到其后。
         let h = &self.header;
         let pk_end = (h.public_key_offset + h.public_key_size) as usize;
-        let pk = if (h.public_key_size as usize) <= self.aux_block.len() && pk_end <= self.aux_block.len() {
+        let pk = if (h.public_key_size as usize) <= self.aux_block.len()
+            && pk_end <= self.aux_block.len()
+        {
             self.aux_block[..pk_end].to_vec()
         } else {
             Vec::new()
@@ -314,7 +329,8 @@ fn parse_partition_name(tag: &DescriptorTag, raw: &[u8]) -> Option<String> {
         if name_len_off + 4 > raw.len() {
             return None;
         }
-        let nlen = u32::from_be_bytes(raw[name_len_off..name_len_off + 4].try_into().ok()?) as usize;
+        let nlen =
+            u32::from_be_bytes(raw[name_len_off..name_len_off + 4].try_into().ok()?) as usize;
         if nlen == 0 || nlen > 64 || name_off + nlen > raw.len() {
             return None;
         }

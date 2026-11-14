@@ -13,17 +13,18 @@
 //! - `print_help`       — 打印帮助信息
 //! - `handle_command`   — 单命令执行入口（处理 Phase1 dump/bypass + Phase2 DA 命令）
 
+pub mod bootimg;
 pub mod buildprop;
 pub mod cli;
 pub mod detect;
-pub mod bootimg;
-pub mod proinfo;
 pub mod dump;
+pub mod proinfo;
 // 已移除: fastboot 改为独立二进制 fastboot-rs
 pub mod io;
 pub mod multi;
 pub mod partition_table;
 pub mod preloader_boot_mode;
+pub mod rpmb;
 pub mod script;
 pub mod xml;
 
@@ -98,6 +99,9 @@ pub fn print_help() {
     println!("{}", "安全与解锁:".bold());
     println!("  zyb seccfg unlock             解锁 Bootloader（seccfg V3/V4 + 自动禁用 vbmeta）");
     println!("  zyb seccfg lock               锁定 Bootloader（seccfg V3/V4）");
+    println!(
+        "  zyb seccfg info [文件]        查看 seccfg 状态（hwtype/锁状态/镜像列表，可离线解析）"
+    );
     println!("  zyb oem unlock                FRP OEM 解锁（修改 frp 分区标志位）");
     println!("  zyb oem lock                  FRP OEM 回锁（修改 frp 分区标志位）");
     println!("  zyb vbmeta <mode>             修补 vbmeta（0=关闭验证 1=启用 2/3=保留）");
@@ -124,6 +128,7 @@ pub fn print_help() {
     println!("  peek <addr> [size]            读取设备内存（默认 4 字节），输出 hex dump");
     println!("  poke <addr> <hex_data>        写入数据到设备内存（hex 格式）");
     println!("  fs_shell                      交互式浏览 super 分区文件系统");
+    println!("  rpmb info|init|read|write     RPMB 密钥烧写与分区读写（set-key 需 --yes，不可逆）");
     println!("  multi \"<cmd1>;<cmd2>;...\"    一次 DA 会话执行多个命令");
     println!("  run <script.json>             从 JSON 脚本文件批量执行命令");
     println!();
@@ -220,6 +225,35 @@ pub fn print_help() {
 fn validate_command(cmd: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         "printgpt" | "dumppreloader" | "adb" | "fs_shell" | "frp" | "boot" | "proinfo" => {}
+        "rpmb" => {
+            if args.is_empty() {
+                return Err("用法: mtkclient rpmb info|init|set-key|read|write".into());
+            }
+            match args[0].as_str() {
+                "info" | "init" => {}
+                "set-key" | "setkey" => {
+                    if args.len() < 2 {
+                        return Err("用法: rpmb set-key <32字节hex|random> --yes".into());
+                    }
+                    if args[1] != "random" {
+                        // 提前校验密钥，避免加载 DA 后才发现格式错误
+                        crate::da::xflash::protocol::rpmb::parse_key_hex(&args[1])?;
+                    }
+                }
+                "read" | "r" | "write" | "w" => {
+                    if args.len() < 2 {
+                        return Err("用法: rpmb read|write <file> [--sector N] [--yes]".into());
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "未知 rpmb 子命令: {}（可用: info/init/set-key/read/write）",
+                        other
+                    )
+                    .into());
+                }
+            }
+        }
         "peek" => {
             if args.is_empty() {
                 return Err("用法: peek <addr> [size]".into());
@@ -293,8 +327,8 @@ fn validate_command(cmd: &str, args: &[String]) -> Result<(), Box<dyn std::error
             }
             match args[0].as_str() {
                 "seccfg" => {
-                    if args.len() < 2 || !matches!(args[1].as_str(), "unlock" | "lock") {
-                        return Err("用法: mtkclient zyb seccfg unlock|lock".into());
+                    if args.len() < 2 || !matches!(args[1].as_str(), "unlock" | "lock" | "info") {
+                        return Err("用法: mtkclient zyb seccfg unlock|lock|info [文件]".into());
                     }
                 }
                 "oem" => {

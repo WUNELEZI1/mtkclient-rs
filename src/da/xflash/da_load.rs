@@ -201,7 +201,7 @@ impl<'a> DAXFlash<'a> {
             warn!("DA extensions 未启用");
         }
 
-        info!("DA 加载完成");
+        info!("{}", crate::i18n::t("log_da_loaded"));
 
         // === 保存 DA 会话状态 ===
         // DA 加载成功后，将当前设备状态写入 .state 文件，
@@ -251,7 +251,7 @@ impl<'a> DAXFlash<'a> {
                             6 => "UFS_CARD",
                             _ => "eMMC",
                         };
-                        info!("DA Extensions 加载成功，存储类型已设置为 {}", type_name);
+                        info!("{}", crate::i18n::tr("log_da_ext_ready", &[&type_name]));
                         self.daext = true;
                     } else {
                         warn!("custom_set_storage 失败，extensions 功能可能受限");

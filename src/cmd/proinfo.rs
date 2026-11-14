@@ -63,11 +63,15 @@ pub fn parse(buf: &[u8]) -> ProInfo {
         let mut p = 0;
         while p + 40 <= buf.len() {
             let nb = &buf[p..p + 32];
-            if nb.iter().all(|&b| b == 0 || b.is_ascii_graphic() || b == b' ')
+            if nb
+                .iter()
+                .all(|&b| b == 0 || b.is_ascii_graphic() || b == b' ')
                 && !nb.iter().all(|&b| b == 0)
             {
-                let offset = u32::from_le_bytes([buf[p + 32], buf[p + 33], buf[p + 34], buf[p + 35]]);
-                let length = u32::from_le_bytes([buf[p + 36], buf[p + 37], buf[p + 38], buf[p + 39]]);
+                let offset =
+                    u32::from_le_bytes([buf[p + 32], buf[p + 33], buf[p + 34], buf[p + 35]]);
+                let length =
+                    u32::from_le_bytes([buf[p + 36], buf[p + 37], buf[p + 38], buf[p + 39]]);
                 if offset % 4 == 0
                     && offset as usize <= buf.len()
                     && length < 0x4000
@@ -75,7 +79,9 @@ pub fn parse(buf: &[u8]) -> ProInfo {
                     && offset != 0
                 {
                     info.scan.push(ProInfoBlock {
-                        name: String::from_utf8_lossy(nb).trim_end_matches('\0').to_string(),
+                        name: String::from_utf8_lossy(nb)
+                            .trim_end_matches('\0')
+                            .to_string(),
                         offset,
                         length,
                     });
@@ -96,7 +102,10 @@ pub fn cmd_proinfo(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let buf = std::fs::read(file).map_err(|e| format!("读取 {} 失败: {}", file, e))?;
     let info = parse(&buf);
 
-    println!("{}", format!("==== proinfo 解析 ({} 字节) ====", buf.len()).bold());
+    println!(
+        "{}",
+        format!("==== proinfo 解析 ({} 字节) ====", buf.len()).bold()
+    );
     if let Some(m) = &info.magic {
         println!("  magic  : {}", m);
     }
@@ -106,12 +115,18 @@ pub fn cmd_proinfo(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if !info.blocks.is_empty() {
         println!("  块表(有 magic):");
         for b in &info.blocks {
-            println!("    {:<20} offset={:#x} length={}", b.name, b.offset, b.length);
+            println!(
+                "    {:<20} offset={:#x} length={}",
+                b.name, b.offset, b.length
+            );
         }
     } else {
         println!("  未识别到 PROINFO magic；启发式扫描候选:");
         for b in &info.scan {
-            println!("    {:<20} offset={:#x} length={}", b.name, b.offset, b.length);
+            println!(
+                "    {:<20} offset={:#x} length={}",
+                b.name, b.offset, b.length
+            );
         }
         if info.scan.is_empty() {
             println!("    (无候选，可能布局与假定格式不同)");

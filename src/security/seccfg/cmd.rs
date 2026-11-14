@@ -12,10 +12,29 @@ use super::build::build_v4_image_online;
 use super::v3::SecCfgV3;
 use super::v4::SecCfgV4;
 
+/// 在线读取 seccfg 并输出结构化分析（`zyb seccfg info`）
+pub fn seccfg_info(da: &mut DAXFlash) -> Result<(), String> {
+    let (seccfg_addr, seccfg_size) = da.find_partition_addr("seccfg")?;
+    let data = da.readflash_data(seccfg_addr, seccfg_size)?;
+    info!(
+        "读取 seccfg 分区: addr=0x{:X}, size={} 字节",
+        seccfg_addr,
+        data.len()
+    );
+    super::info::print_seccfg_report(&data)
+}
+
+/// 离线分析 seccfg 镜像文件（`zyb seccfg info <file>`）
+pub fn seccfg_info_file(path: &str) -> Result<(), String> {
+    let data = std::fs::read(path).map_err(|e| format!("读取 {} 失败: {}", path, e))?;
+    info!("离线分析 seccfg: {} ({} 字节)", path, data.len());
+    super::info::print_seccfg_report(&data)
+}
+
 /// 在线模式解锁 bootloader
 /// 对齐刷机匣：读取 seccfg 分区，更新锁状态并重新签名后写回
 pub fn unlock_bootloader(da: &mut DAXFlash) -> Result<(), String> {
-    info!("开始在线解锁 Bootloader...");
+    info!("{}", crate::i18n::t("log_unlock_start"));
     let (seccfg_addr, seccfg_size) = da.find_partition_addr("seccfg")?;
     let seccfg_data = da.readflash_data(seccfg_addr, seccfg_size)?;
     info!(
@@ -44,14 +63,17 @@ pub fn unlock_bootloader(da: &mut DAXFlash) -> Result<(), String> {
 
     // 对齐 Python mtkclient：HACC 后直接 writeflash，不延迟不同步
     da.write_flash_data(seccfg_addr, &new_data, 1, 8)?;
-    info!("{}", "Bootloader 解锁成功".green().bold());
+    info!("{}", crate::i18n::t("log_unlock_ok").green().bold());
 
     // 解锁后自动禁用 vbmeta 校验（flags=3：hashtree+verification 全关），
     // 避免 dm-verity 在未原厂签名的系统上启动失败。
     info!("自动禁用 vbmeta 校验（避免 dm-verity 启动失败）...");
     match super::super::vbmeta::vbmeta_disable(da, 3) {
         Ok(()) => info!("{}", "vbmeta 校验已禁用".green()),
-        Err(e) => info!("提示: vbmeta 自动禁用未成功（{}），如设备因 dm-verity 无法启动请手动运行 'zyb vbmeta 3'", e),
+        Err(e) => info!(
+            "提示: vbmeta 自动禁用未成功（{}），如设备因 dm-verity 无法启动请手动运行 'zyb vbmeta 3'",
+            e
+        ),
     }
 
     Ok(())
@@ -59,7 +81,7 @@ pub fn unlock_bootloader(da: &mut DAXFlash) -> Result<(), String> {
 
 /// 在线模式锁定 bootloader
 pub fn lock_bootloader(da: &mut DAXFlash) -> Result<(), String> {
-    info!("开始在线锁定 Bootloader...");
+    info!("{}", crate::i18n::t("log_lock_start"));
     let (seccfg_addr, seccfg_size) = da.find_partition_addr("seccfg")?;
     let seccfg_data = da.readflash_data(seccfg_addr, seccfg_size)?;
 
@@ -88,6 +110,6 @@ pub fn lock_bootloader(da: &mut DAXFlash) -> Result<(), String> {
 
     // 对齐 Python mtkclient：HACC 后直接 writeflash，不延迟不同步
     da.write_flash_data(seccfg_addr, &new_data, 1, 8)?;
-    info!("Bootloader 锁定成功");
+    info!("{}", crate::i18n::t("log_lock_ok"));
     Ok(())
 }

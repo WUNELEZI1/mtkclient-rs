@@ -3,7 +3,8 @@
 //! 默认 `en-US`；支持 `en/en-US`、`zh-CN`、`fr/fr-FR`、`ru/ru-RU`、`es/es-ES`、`ar/ar-SA`。
 //! 语言来源优先级：命令行 `--language <LANG>`（任意位置，
 //! 如 `mtkclient-rs help --language zh-CN`）> `MTK_LANG` > `LC_ALL`/`LANG`。
-//! 说明：深层协议/日志消息将逐步迁移到本模块；设备返回的原始文本不翻译。
+//! 说明：设备返回的原始文本不翻译；工具自身的流程日志按“高频优先”逐步迁移到本模块
+//! （连接 / DA 加载 / 分区读写 / seccfg / RPMB 已迁移），未迁移的深层调试日志保持中文。
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -98,147 +99,469 @@ pub fn detect_env() {
 }
 
 static MSGS: &[(&str, [&str; LANG_COUNT])] = &[
-    ("os_unsupported", [
-        "Unsupported OS: Windows {0}.{1} (Build {2}). This program requires Windows 10 or Windows 11.",
-        "不支持的操作系统: Windows {0}.{1} (Build {2})。本程序需要 Windows 10 或 Windows 11。",
-        "OS non pris en charge : Windows {0}.{1} (Build {2}). Windows 10 ou 11 requis.",
-        "Неподдерживаемая ОС: Windows {0}.{1} (сборка {2}). Требуется Windows 10 или 11.",
-        "SO no compatible: Windows {0}.{1} (compilación {2}). Se requiere Windows 10 u 11.",
-        "نظام غير مدعوم: Windows {0}.{1} (البنية {2}). يتطلب Windows 10 أو 11.",
-    ]),
-    ("arch_unsupported", [
-        "Error: this build supports only 64-bit (x86_64).",
-        "错误: 本程序仅支持 64-bit (x86_64) 架构。",
-        "Erreur : cette build ne prend en charge que le 64 bits (x86_64).",
-        "Ошибка: эта сборка поддерживает только 64-bit (x86_64).",
-        "Error: esta compilación solo admite 64 bits (x86_64).",
-        "خطأ: هذا البناء يدعم 64-بت (x86_64) فقط.",
-    ]),
-    ("os_warning", [
-        "Warning: fully tested only on Windows 10/11.",
-        "警告: 本程序仅在 Windows 10/11 上经过充分测试。",
-        "Avertissement : testé uniquement sur Windows 10/11.",
-        "Предупреждение: полностью протестировано только на Windows 10/11.",
-        "Advertencia: probado completamente solo en Windows 10/11.",
-        "تحذير: تم اختباره بالكامل على Windows 10/11 فقط.",
-    ]),
-    ("get_updates", ["Get updates:", "获取更新:", "Mises à jour :", "Обновления:", "Actualizaciones:", "التحديثات:"]),
-    ("free_tool_notice", [
-        "This tool is completely free. Do not pay for it. Reselling, cracking or removing author info is forbidden.",
-        "本工具完全免费，请勿被骗！禁止任何形式的倒卖、破解或去除作者信息。违者必究。",
-        "Cet outil est entièrement gratuit. Revente, crack ou suppression des mentions d'auteur interdits.",
-        "Этот инструмент полностью бесплатен. Перепродажа, взлом или удаление информации об авторе запрещены.",
-        "Esta herramienta es totalmente gratuita. Prohibida su reventa, crack o eliminación de la autoría.",
-        "هذه الأداة مجانية تمامًا. يُمنع بيعها أو كسرها أو إزالة معلومات المؤلف.",
-    ]),
-    ("data_dir_missing", [
-        "--data-dir path does not exist or is not a directory: {0}",
-        "--data-dir 路径不存在或不是目录: {0}",
-        "le chemin --data-dir n'existe pas ou n'est pas un répertoire : {0}",
-        "путь --data-dir не существует или не является каталогом: {0}",
-        "la ruta --data-dir no existe o no es un directorio: {0}",
-        "المسار --data-dir غير موجود أو ليس دليلًا: {0}",
-    ]),
-    ("elevate_request", [
-        "[MAIN] Administrator rights are required to install the WinUSB driver; requesting elevation...",
-        "[MAIN] 需要管理员权限以安装 WinUSB 驱动，正在请求提权...",
-        "[MAIN] Droits administrateur requis pour installer le pilote WinUSB ; élévation en cours...",
-        "[MAIN] Для установки драйвера WinUSB нужны права администратора; запрос повышения...",
-        "[MAIN] Se requieren derechos de administrador para instalar el controlador WinUSB; elevando...",
-        "[MAIN] مطلوب صلاحيات المسؤول لتثبيت تعريف WinUSB؛ جارٍ طلب الرفع...",
-    ]),
-    ("elevate_failed", [
-        "[MAIN] Elevation failed: {0}",
-        "[MAIN] 提权失败: {0}",
-        "[MAIN] Échec de l'élévation : {0}",
-        "[MAIN] Ошибка повышения прав: {0}",
-        "[MAIN] Error de elevación: {0}",
-        "[MAIN] فشل الرفع: {0}",
-    ]),
-    ("elevate_hint", [
-        "[MAIN] Please right-click and run as administrator (WinUSB switch will be unavailable otherwise)",
-        "[MAIN] 请右键以管理员身份运行本程序（否则将无法切换 WinUSB）",
-        "[MAIN] Veuillez exécuter en tant qu'administrateur (sinon WinUSB ne pourra pas être activé)",
-        "[MAIN] Запустите от имени администратора (иначе переключение WinUSB будет недоступно)",
-        "[MAIN] Ejecute como administrador (de lo contrario no se podrá cambiar a WinUSB)",
-        "[MAIN] شغّل كمسؤول (وإلا فلن يكون التبديل إلى WinUSB متاحًا)",
-    ]),
-    ("connected_preloader", [
-        "Connected (Preloader mode)",
-        "连接成功 (Preloader 模式)",
-        "Connecté (mode Preloader)",
-        "Подключено (режим Preloader)",
-        "Conectado (modo Preloader)",
-        "متصل (وضع Preloader)",
-    ]),
-    ("connected_brom", [
-        "Connected (BROM mode)",
-        "连接成功 (BROM 模式)",
-        "Connecté (mode BROM)",
-        "Подключено (режим BROM)",
-        "Conectado (modo BROM)",
-        "متصل (وضع BROM)",
-    ]),
-    ("no_preloader_forced_dump", [
-        "No --preloader specified; will force-dump from device and overwrite the same-named file",
-        "未指定 --preloader，将强制从设备 dump 并覆盖同名文件",
-        "Aucun --preloader spécifié ; extraction forcée depuis l'appareil avec écrasement du fichier",
-        "--preloader не указан; будет принудительно извлечён с устройства с перезаписью файла",
-        "No se especificó --preloader; se extraerá del dispositivo sobrescribiendo el archivo",
-        "لم يتم تحديد --preloader؛ سيتم الاستخراج القسري من الجهاز مع استبدال الملف",
-    ]),
-    ("adb_rebooting", [
-        "ADB enabled; device is rebooting into the system",
-        "ADB 已启用，设备正在重启进入系统",
-        "ADB activé ; l'appareil redémarre vers le système",
-        "ADB включён; устройство перезагружается в систему",
-        "ADB activado; el dispositivo reinicia al sistema",
-        "تم تفعيل ADB؛ الجهاز يعيد التشغيل إلى النظام",
-    ]),
-    ("unknown_command", [
-        "Unknown command: {0}",
-        "未知命令: {0}",
-        "Commande inconnue : {0}",
-        "Неизвестная команда: {0}",
-        "Comando desconocido: {0}",
-        "أمر غير معروف: {0}",
-    ]),
-    ("usage_r_gpt", ["usage: mtkclient r gpt <dir>", "用法: mtkclient r gpt <dir>", "usage : mtkclient r gpt <dir>", "использование: mtkclient r gpt <dir>", "uso: mtkclient r gpt <dir>", "الاستخدام: mtkclient r gpt <dir>"]),
-    ("usage_rl", ["usage: mtkclient rl <dir>", "用法: mtkclient rl <dir>", "usage : mtkclient rl <dir>", "использование: mtkclient rl <dir>", "uso: mtkclient rl <dir>", "الاستخدام: mtkclient rl <dir>"]),
-    ("usage_wl", ["usage: mtkclient wl <dir>", "用法: mtkclient wl <dir>", "usage : mtkclient wl <dir>", "использование: mtkclient wl <dir>", "uso: mtkclient wl <dir>", "الاستخدام: mtkclient wl <dir>"]),
-    ("usage_w_gpt", ["usage: mtkclient w gpt <file>", "用法: mtkclient w gpt <文件>", "usage : mtkclient w gpt <fichier>", "использование: mtkclient w gpt <файл>", "uso: mtkclient w gpt <archivo>", "الاستخدام: mtkclient w gpt <ملف>"]),
-    ("read_gpt_failed", [
-        "failed to read GPT: {0}",
-        "读取 GPT 失败: {0}",
-        "échec de la lecture du GPT : {0}",
-        "не удалось прочитать GPT: {0}",
-        "error al leer el GPT: {0}",
-        "فشل قراءة GPT: {0}",
-    ]),
-    ("gpt_unavailable", [
-        "GPT data unavailable",
-        "GPT 数据不可用",
-        "données GPT indisponibles",
-        "данные GPT недоступны",
-        "datos GPT no disponibles",
-        "بيانات GPT غير متاحة",
-    ]),
-    ("parse_gpt_failed", [
-        "failed to parse GPT: {0}",
-        "解析 GPT 失败: {0}",
-        "échec de l'analyse du GPT : {0}",
-        "не удалось разобрать GPT: {0}",
-        "error al analizar el GPT: {0}",
-        "فشل تحليل GPT: {0}",
-    ]),
-    ("no_super_in_gpt", [
-        "no super partition found in GPT",
-        "GPT 中未找到 super 分区",
-        "aucune partition super dans le GPT",
-        "раздел super не найден в GPT",
-        "no se encontró la partición super en el GPT",
-        "لم يتم العثور على قسم super في GPT",
-    ]),
+    (
+        "os_unsupported",
+        [
+            "Unsupported OS: Windows {0}.{1} (Build {2}). This program requires Windows 10 or Windows 11.",
+            "不支持的操作系统: Windows {0}.{1} (Build {2})。本程序需要 Windows 10 或 Windows 11。",
+            "OS non pris en charge : Windows {0}.{1} (Build {2}). Windows 10 ou 11 requis.",
+            "Неподдерживаемая ОС: Windows {0}.{1} (сборка {2}). Требуется Windows 10 или 11.",
+            "SO no compatible: Windows {0}.{1} (compilación {2}). Se requiere Windows 10 u 11.",
+            "نظام غير مدعوم: Windows {0}.{1} (البنية {2}). يتطلب Windows 10 أو 11.",
+        ],
+    ),
+    (
+        "arch_unsupported",
+        [
+            "Error: this build supports only 64-bit (x86_64).",
+            "错误: 本程序仅支持 64-bit (x86_64) 架构。",
+            "Erreur : cette build ne prend en charge que le 64 bits (x86_64).",
+            "Ошибка: эта сборка поддерживает только 64-bit (x86_64).",
+            "Error: esta compilación solo admite 64 bits (x86_64).",
+            "خطأ: هذا البناء يدعم 64-بت (x86_64) فقط.",
+        ],
+    ),
+    (
+        "os_warning",
+        [
+            "Warning: fully tested only on Windows 10/11.",
+            "警告: 本程序仅在 Windows 10/11 上经过充分测试。",
+            "Avertissement : testé uniquement sur Windows 10/11.",
+            "Предупреждение: полностью протестировано только на Windows 10/11.",
+            "Advertencia: probado completamente solo en Windows 10/11.",
+            "تحذير: تم اختباره بالكامل على Windows 10/11 فقط.",
+        ],
+    ),
+    (
+        "get_updates",
+        [
+            "Get updates:",
+            "获取更新:",
+            "Mises à jour :",
+            "Обновления:",
+            "Actualizaciones:",
+            "التحديثات:",
+        ],
+    ),
+    (
+        "free_tool_notice",
+        [
+            "This tool is completely free. Do not pay for it. Reselling, cracking or removing author info is forbidden.",
+            "本工具完全免费，请勿被骗！禁止任何形式的倒卖、破解或去除作者信息。违者必究。",
+            "Cet outil est entièrement gratuit. Revente, crack ou suppression des mentions d'auteur interdits.",
+            "Этот инструмент полностью бесплатен. Перепродажа, взлом или удаление информации об авторе запрещены.",
+            "Esta herramienta es totalmente gratuita. Prohibida su reventa, crack o eliminación de la autoría.",
+            "هذه الأداة مجانية تمامًا. يُمنع بيعها أو كسرها أو إزالة معلومات المؤلف.",
+        ],
+    ),
+    (
+        "data_dir_missing",
+        [
+            "--data-dir path does not exist or is not a directory: {0}",
+            "--data-dir 路径不存在或不是目录: {0}",
+            "le chemin --data-dir n'existe pas ou n'est pas un répertoire : {0}",
+            "путь --data-dir не существует или не является каталогом: {0}",
+            "la ruta --data-dir no existe o no es un directorio: {0}",
+            "المسار --data-dir غير موجود أو ليس دليلًا: {0}",
+        ],
+    ),
+    (
+        "elevate_request",
+        [
+            "[MAIN] Administrator rights are required to install the WinUSB driver; requesting elevation...",
+            "[MAIN] 需要管理员权限以安装 WinUSB 驱动，正在请求提权...",
+            "[MAIN] Droits administrateur requis pour installer le pilote WinUSB ; élévation en cours...",
+            "[MAIN] Для установки драйвера WinUSB нужны права администратора; запрос повышения...",
+            "[MAIN] Se requieren derechos de administrador para instalar el controlador WinUSB; elevando...",
+            "[MAIN] مطلوب صلاحيات المسؤول لتثبيت تعريف WinUSB؛ جارٍ طلب الرفع...",
+        ],
+    ),
+    (
+        "elevate_failed",
+        [
+            "[MAIN] Elevation failed: {0}",
+            "[MAIN] 提权失败: {0}",
+            "[MAIN] Échec de l'élévation : {0}",
+            "[MAIN] Ошибка повышения прав: {0}",
+            "[MAIN] Error de elevación: {0}",
+            "[MAIN] فشل الرفع: {0}",
+        ],
+    ),
+    (
+        "elevate_hint",
+        [
+            "[MAIN] Please right-click and run as administrator (WinUSB switch will be unavailable otherwise)",
+            "[MAIN] 请右键以管理员身份运行本程序（否则将无法切换 WinUSB）",
+            "[MAIN] Veuillez exécuter en tant qu'administrateur (sinon WinUSB ne pourra pas être activé)",
+            "[MAIN] Запустите от имени администратора (иначе переключение WinUSB будет недоступно)",
+            "[MAIN] Ejecute como administrador (de lo contrario no se podrá cambiar a WinUSB)",
+            "[MAIN] شغّل كمسؤول (وإلا فلن يكون التبديل إلى WinUSB متاحًا)",
+        ],
+    ),
+    (
+        "connected_preloader",
+        [
+            "Connected (Preloader mode)",
+            "连接成功 (Preloader 模式)",
+            "Connecté (mode Preloader)",
+            "Подключено (режим Preloader)",
+            "Conectado (modo Preloader)",
+            "متصل (وضع Preloader)",
+        ],
+    ),
+    (
+        "connected_brom",
+        [
+            "Connected (BROM mode)",
+            "连接成功 (BROM 模式)",
+            "Connecté (mode BROM)",
+            "Подключено (режим BROM)",
+            "Conectado (modo BROM)",
+            "متصل (وضع BROM)",
+        ],
+    ),
+    (
+        "no_preloader_forced_dump",
+        [
+            "No --preloader specified; will force-dump from device and overwrite the same-named file",
+            "未指定 --preloader，将强制从设备 dump 并覆盖同名文件",
+            "Aucun --preloader spécifié ; extraction forcée depuis l'appareil avec écrasement du fichier",
+            "--preloader не указан; будет принудительно извлечён с устройства с перезаписью файла",
+            "No se especificó --preloader; se extraerá del dispositivo sobrescribiendo el archivo",
+            "لم يتم تحديد --preloader؛ سيتم الاستخراج القسري من الجهاز مع استبدال الملف",
+        ],
+    ),
+    (
+        "adb_rebooting",
+        [
+            "ADB enabled; device is rebooting into the system",
+            "ADB 已启用，设备正在重启进入系统",
+            "ADB activé ; l'appareil redémarre vers le système",
+            "ADB включён; устройство перезагружается в систему",
+            "ADB activado; el dispositivo reinicia al sistema",
+            "تم تفعيل ADB؛ الجهاز يعيد التشغيل إلى النظام",
+        ],
+    ),
+    (
+        "unknown_command",
+        [
+            "Unknown command: {0}",
+            "未知命令: {0}",
+            "Commande inconnue : {0}",
+            "Неизвестная команда: {0}",
+            "Comando desconocido: {0}",
+            "أمر غير معروف: {0}",
+        ],
+    ),
+    (
+        "usage_r_gpt",
+        [
+            "usage: mtkclient r gpt <dir>",
+            "用法: mtkclient r gpt <dir>",
+            "usage : mtkclient r gpt <dir>",
+            "использование: mtkclient r gpt <dir>",
+            "uso: mtkclient r gpt <dir>",
+            "الاستخدام: mtkclient r gpt <dir>",
+        ],
+    ),
+    (
+        "usage_rl",
+        [
+            "usage: mtkclient rl <dir>",
+            "用法: mtkclient rl <dir>",
+            "usage : mtkclient rl <dir>",
+            "использование: mtkclient rl <dir>",
+            "uso: mtkclient rl <dir>",
+            "الاستخدام: mtkclient rl <dir>",
+        ],
+    ),
+    (
+        "usage_wl",
+        [
+            "usage: mtkclient wl <dir>",
+            "用法: mtkclient wl <dir>",
+            "usage : mtkclient wl <dir>",
+            "использование: mtkclient wl <dir>",
+            "uso: mtkclient wl <dir>",
+            "الاستخدام: mtkclient wl <dir>",
+        ],
+    ),
+    (
+        "usage_w_gpt",
+        [
+            "usage: mtkclient w gpt <file>",
+            "用法: mtkclient w gpt <文件>",
+            "usage : mtkclient w gpt <fichier>",
+            "использование: mtkclient w gpt <файл>",
+            "uso: mtkclient w gpt <archivo>",
+            "الاستخدام: mtkclient w gpt <ملف>",
+        ],
+    ),
+    (
+        "read_gpt_failed",
+        [
+            "failed to read GPT: {0}",
+            "读取 GPT 失败: {0}",
+            "échec de la lecture du GPT : {0}",
+            "не удалось прочитать GPT: {0}",
+            "error al leer el GPT: {0}",
+            "فشل قراءة GPT: {0}",
+        ],
+    ),
+    (
+        "gpt_unavailable",
+        [
+            "GPT data unavailable",
+            "GPT 数据不可用",
+            "données GPT indisponibles",
+            "данные GPT недоступны",
+            "datos GPT no disponibles",
+            "بيانات GPT غير متاحة",
+        ],
+    ),
+    (
+        "parse_gpt_failed",
+        [
+            "failed to parse GPT: {0}",
+            "解析 GPT 失败: {0}",
+            "échec de l'analyse du GPT : {0}",
+            "не удалось разобрать GPT: {0}",
+            "error al analizar el GPT: {0}",
+            "فشل تحليل GPT: {0}",
+        ],
+    ),
+    (
+        "no_super_in_gpt",
+        [
+            "no super partition found in GPT",
+            "GPT 中未找到 super 分区",
+            "aucune partition super dans le GPT",
+            "раздел super не найден в GPT",
+            "no se encontró la partición super en el GPT",
+            "لم يتم العثور على قسم super في GPT",
+        ],
+    ),
+    // ── 深层流程日志（连接 / DA / 分区读写 / seccfg）─────────────────
+    (
+        "log_wait_device",
+        [
+            "Waiting for device (BROM: Vol+ + Vol- + Power)",
+            "等待设备连接 (BROM: Vol+ + Vol- + Power)",
+            "En attente de l'appareil (BROM : Vol+ + Vol- + Power)",
+            "Ожидание устройства (BROM: Vol+ + Vol- + Power)",
+            "Esperando el dispositivo (BROM: Vol+ + Vol- + Power)",
+            "في انتظار الجهاز (BROM: Vol+ + Vol- + Power)",
+        ],
+    ),
+    (
+        "log_auto_detect",
+        [
+            "[AUTO] Auto mode: waiting for a BROM or Preloader device...",
+            "[AUTO] 自动检测模式：等待 BROM 或 Preloader 设备出现...",
+            "[AUTO] Mode auto : attente d'un appareil BROM ou Preloader...",
+            "[AUTO] Авторежим: ожидание устройства BROM или Preloader...",
+            "[AUTO] Modo automático: esperando un dispositivo BROM o Preloader...",
+            "[AUTO] الوضع التلقائي: في انتظار جهاز BROM أو Preloader...",
+        ],
+    ),
+    (
+        "log_brom_usb_found",
+        [
+            "[AUTO] BROM WinUSB device detected",
+            "[AUTO] 检测到 BROM WinUSB 设备",
+            "[AUTO] Appareil BROM WinUSB détecté",
+            "[AUTO] Обнаружено устройство BROM WinUSB",
+            "[AUTO] Dispositivo BROM WinUSB detectado",
+            "[AUTO] تم اكتشاف جهاز BROM WinUSB",
+        ],
+    ),
+    (
+        "log_brom_com_ok",
+        [
+            "[AUTO] BROM serial handshake succeeded",
+            "[AUTO] BROM 串口握手成功",
+            "[AUTO] Poignée de main série BROM réussie",
+            "[AUTO] Рукопожатие по COM-порту BROM успешно",
+            "[AUTO] Handshake serie BROM correcto",
+            "[AUTO] نجحت مصافحة منفذ BROM التسلسلي",
+        ],
+    ),
+    (
+        "log_da_loaded",
+        [
+            "DA loaded",
+            "DA 加载完成",
+            "DA chargé",
+            "DA загружен",
+            "DA cargado",
+            "تم تحميل DA",
+        ],
+    ),
+    (
+        "log_da_ext_ready",
+        [
+            "DA Extensions loaded, storage type set to {0}",
+            "DA Extensions 加载成功，存储类型已设置为 {0}",
+            "DA Extensions chargé, type de stockage : {0}",
+            "DA Extensions загружены, тип хранилища: {0}",
+            "DA Extensions cargado, tipo de almacenamiento: {0}",
+            "تم تحميل DA Extensions، نوع التخزين: {0}",
+        ],
+    ),
+    (
+        "log_skip_existing",
+        [
+            "  File already complete ({0} bytes), skipping read",
+            "  文件已存在且完整 ({0} 字节)，跳过读取",
+            "  Fichier déjà complet ({0} octets), lecture ignorée",
+            "  Файл уже полон ({0} байт), чтение пропущено",
+            "  Archivo ya completo ({0} bytes), se omite la lectura",
+            "  الملف مكتمل بالفعل ({0} بايت)، تم تخطي القراءة",
+        ],
+    ),
+    (
+        "log_saved_to",
+        [
+            "  Saved to: {0}",
+            "  已保存到: {0}",
+            "  Enregistré dans : {0}",
+            "  Сохранено в: {0}",
+            "  Guardado en: {0}",
+            "  تم الحفظ في: {0}",
+        ],
+    ),
+    (
+        "log_write_start",
+        [
+            "Writing {0} to partition {1}...",
+            "写入文件 {0} 到分区 {1}...",
+            "Écriture de {0} vers la partition {1}...",
+            "Запись {0} в раздел {1}...",
+            "Escribiendo {0} en la partición {1}...",
+            "جارٍ كتابة {0} إلى القسم {1}...",
+        ],
+    ),
+    (
+        "log_write_done",
+        [
+            "  Write complete: {0} bytes written to partition {1}",
+            "  写入完成: {0} 字节写入分区 {1}",
+            "  Écriture terminée : {0} octets écrits dans {1}",
+            "  Запись завершена: {0} байт записано в раздел {1}",
+            "  Escritura completada: {0} bytes en la partición {1}",
+            "  اكتملت الكتابة: {0} بايت إلى القسم {1}",
+        ],
+    ),
+    (
+        "log_verify_ok",
+        [
+            "  Verification passed ({0} bytes)",
+            "  校验通过 (共 {0} 字节)",
+            "  Vérification réussie ({0} octets)",
+            "  Проверка пройдена ({0} байт)",
+            "  Verificación correcta ({0} bytes)",
+            "  تم التحقق بنجاح ({0} بايت)",
+        ],
+    ),
+    (
+        "log_erase_start",
+        [
+            "Erasing {0}...",
+            "正在擦除 {0}...",
+            "Effacement de {0}...",
+            "Стирание {0}...",
+            "Borrando {0}...",
+            "جارٍ مسح {0}...",
+        ],
+    ),
+    (
+        "log_erased",
+        [
+            "{0} erased",
+            "{0} 已擦除",
+            "{0} effacé",
+            "{0} стёрт",
+            "{0} borrado",
+            "تم مسح {0}",
+        ],
+    ),
+    (
+        "log_format_start",
+        [
+            "Formatting {0} (f2fs)...",
+            "正在格式化 {0} (f2fs)...",
+            "Formatage de {0} (f2fs)...",
+            "Форматирование {0} (f2fs)...",
+            "Formateando {0} (f2fs)...",
+            "جارٍ تهيئة {0} (f2fs)...",
+        ],
+    ),
+    (
+        "log_format_done",
+        [
+            "{0} formatted (f2fs)",
+            "{0} 已格式化 (f2fs)",
+            "{0} formaté (f2fs)",
+            "{0} отформатирован (f2fs)",
+            "{0} formateado (f2fs)",
+            "تمت تهيئة {0} (f2fs)",
+        ],
+    ),
+    (
+        "log_unlock_start",
+        [
+            "Unlocking the bootloader online...",
+            "开始在线解锁 Bootloader...",
+            "Déverrouillage du bootloader en ligne...",
+            "Разблокировка bootloader онлайн...",
+            "Desbloqueando el bootloader en línea...",
+            "جارٍ فتح قفل bootloader عبر الإنترنت...",
+        ],
+    ),
+    (
+        "log_unlock_ok",
+        [
+            "Bootloader unlocked",
+            "Bootloader 解锁成功",
+            "Bootloader déverrouillé",
+            "Bootloader разблокирован",
+            "Bootloader desbloqueado",
+            "تم فتح قفل bootloader",
+        ],
+    ),
+    (
+        "log_lock_start",
+        [
+            "Locking the bootloader online...",
+            "开始在线锁定 Bootloader...",
+            "Verrouillage du bootloader en ligne...",
+            "Блокировка bootloader онлайн...",
+            "Bloqueando el bootloader en línea...",
+            "جارٍ قفل bootloader عبر الإنترنت...",
+        ],
+    ),
+    (
+        "log_lock_ok",
+        [
+            "Bootloader locked",
+            "Bootloader 锁定成功",
+            "Bootloader verrouillé",
+            "Bootloader заблокирован",
+            "Bootloader bloqueado",
+            "تم قفل bootloader",
+        ],
+    ),
+    (
+        "log_rpmb_key_ok",
+        [
+            "RPMB key written and verified by echo",
+            "RPMB 密钥已写入并通过回显校验",
+            "Clé RPMB écrite et vérifiée par écho",
+            "RPMB-ключ записан и подтверждён эхом",
+            "Clave RPMB escrita y verificada por eco",
+            "تم كتابة مفتاح RPMB والتحقق منه",
+        ],
+    ),
 ];
 
 pub fn t(key: &str) -> &'static str {
@@ -297,6 +620,7 @@ Commands:
   Security & unlocking:
     zyb seccfg unlock           Unlock the bootloader (seccfg V3/V4 + auto vbmeta disable)
     zyb seccfg lock             Lock the bootloader (seccfg V3/V4)
+    zyb seccfg info [file]      Show seccfg state (hwtype, lock state, image list)
     zyb oem unlock              FRP OEM unlock (patches the frp partition flag)
     zyb oem lock                FRP OEM relock
     zyb vbmeta <0-3>            Patch vbmeta (0=verification off, 1=on, 2/3=reserved)
@@ -319,6 +643,7 @@ Commands:
     dumppreloader               Extract the preloader from RAM (BROM exploit)
     dumpbrom [file]             Extract the BROM itself (128KB @ 0x0) for analysis
     genkey                      Generate a random 32-byte RPMB key (hex)
+    rpmb info|init|read|write        RPMB key programming and partition access
     adb                         Enable ADB in DA mode and reboot
     peek <addr> [size]          Read device memory (default 4 bytes), hex dump output
     poke <addr> <hex>           Write data to device memory
@@ -378,6 +703,7 @@ MTK 设备底层刷机工具 - 支持 87 种芯片 | Windows 10/11 x64
   安全与解锁:
     zyb seccfg unlock           解锁 Bootloader（seccfg V3/V4 + 自动禁用 vbmeta）
     zyb seccfg lock             锁定 Bootloader（seccfg V3/V4）
+    zyb seccfg info [文件]      查看 seccfg 状态（hwtype/锁状态/镜像列表）
     zyb oem unlock              FRP OEM 解锁（修改 frp 分区标志位）
     zyb oem lock                FRP OEM 回锁
     zyb vbmeta <0-3>            修补 vbmeta（0=关闭验证 1=启用 2/3=保留）
@@ -400,6 +726,7 @@ MTK 设备底层刷机工具 - 支持 87 种芯片 | Windows 10/11 x64
     dumppreloader               从 RAM 提取 Preloader（BROM Exploit）
     dumpbrom [file]             提取 BROM 本体（0x0 起 128KB，供逆向分析）
     genkey                      生成 32 字节随机 RPMB 密钥（hex 输出）
+    rpmb info|init|read|write        RPMB 密钥烧写与分区读写
     adb                         在 DA 模式下开启 ADB 并重启
     peek <addr> [size]          读取设备内存（默认 4 字节），输出 hex dump
     poke <addr> <hex>           写入数据到设备内存
@@ -460,6 +787,7 @@ Commandes :
   Sécurité & déverrouillage :
     zyb seccfg unlock           Déverrouille le bootloader (seccfg V3/V4 + vbmeta désactivé)
     zyb seccfg lock             Verrouille le bootloader (seccfg V3/V4)
+    zyb seccfg info [fichier]   Affiche l'état seccfg (hwtype, verrou, images)
     zyb oem unlock              Déverrouillage FRP OEM (patch du flag de la partition frp)
     zyb oem lock                Reverrouillage FRP OEM
     zyb vbmeta <0-3>            Patche vbmeta (0=vérification off, 1=on, 2/3=réservé)
@@ -481,6 +809,7 @@ Commandes :
     dumppreloader               Extrait le preloader depuis la RAM (exploit BROM)
     dumpbrom [fichier]          Extrait le BROM lui-même (128 Ko @ 0x0)
     genkey                      Génère une clé RPMB aléatoire de 32 octets (hex)
+    rpmb info|init|read|write        Programmation de clé RPMB et accès à la partition
     adb                         Active ADB en mode DA et redémarre
     peek <addr> [size]          Lit la mémoire de l'appareil (4 octets par défaut), hex dump
     poke <addr> <hex>           Écrit des données dans la mémoire de l'appareil
@@ -541,6 +870,7 @@ const HELP_RU: &str = r#"mtkclient-rs
   Безопасность и разблокировка:
     zyb seccfg unlock           Разблокировать bootloader (seccfg V3/V4 + авто-отключение vbmeta)
     zyb seccfg lock             Заблокировать bootloader (seccfg V3/V4)
+    zyb seccfg info [файл]      Показать состояние seccfg (hwtype, блокировка, образы)
     zyb oem unlock              FRP OEM разблокировка (патч флага раздела frp)
     zyb oem lock                FRP OEM блокировка
     zyb vbmeta <0-3>            Патч vbmeta (0=проверка выкл, 1=вкл, 2/3=резерв)
@@ -562,6 +892,7 @@ const HELP_RU: &str = r#"mtkclient-rs
     dumppreloader               Извлечь preloader из RAM (эксплойт BROM)
     dumpbrom [файл]             Извлечь сам BROM (128 КБ @ 0x0)
     genkey                      Сгенерировать случайный 32-байтовый RPMB-ключ (hex)
+    rpmb info|init|read|write        Прошивка ключа RPMB и доступ к разделу
     adb                         Включить ADB в режиме DA и перезагрузить
     peek <addr> [size]          Прочитать память устройства (по умолчанию 4 байта), hex dump
     poke <addr> <hex>           Записать данные в память устройства
@@ -622,6 +953,7 @@ Comandos:
   Seguridad y desbloqueo:
     zyb seccfg unlock           Desbloquea el bootloader (seccfg V3/V4 + vbmeta desactivado)
     zyb seccfg lock             Bloquea el bootloader (seccfg V3/V4)
+    zyb seccfg info [archivo]   Muestra el estado seccfg (hwtype, bloqueo, imágenes)
     zyb oem unlock              Desbloqueo FRP OEM (parchea el flag de la partición frp)
     zyb oem lock                Rebloqueo FRP OEM
     zyb vbmeta <0-3>            Parchea vbmeta (0=verificación off, 1=on, 2/3=reservado)
@@ -643,6 +975,7 @@ Comandos:
     dumppreloader               Extrae el preloader de la RAM (exploit BROM)
     dumpbrom [archivo]          Extrae el propio BROM (128KB @ 0x0)
     genkey                      Genera una clave RPMB aleatoria de 32 bytes (hex)
+    rpmb info|init|read|write        Programación de clave RPMB y acceso a la partición
     adb                         Activa ADB en modo DA y reinicia
     peek <addr> [size]          Lee memoria del dispositivo (4 bytes por defecto), hex dump
     poke <addr> <hex>           Escribe datos en la memoria del dispositivo
@@ -703,6 +1036,7 @@ const HELP_AR: &str = r#"mtkclient-rs
   الأمان وفتح القفل:
     zyb seccfg unlock           فتح قفل bootloader (seccfg V3/V4 + تعطيل vbmeta تلقائيًا)
     zyb seccfg lock             قفل bootloader (seccfg V3/V4)
+    zyb seccfg info [ملف]       عرض حالة seccfg (نوع التشفير، القفل، الصور)
     zyb oem unlock              فتح FRP OEM (تعديل علم قسم frp)
     zyb oem lock                إعادة قفل FRP OEM
     zyb vbmeta <0-3>            تعديل vbmeta (0=إيقاف التحقق 1=تشغيل 2/3=احتياطي)
@@ -724,6 +1058,7 @@ const HELP_AR: &str = r#"mtkclient-rs
     dumppreloader               استخراج preloader من RAM (ثغرة BROM)
     dumpbrom [ملف]              استخراج BROM نفسه (128KB @ 0x0)
     genkey                      توليد مفتاح RPMB عشوائي بحجم 32 بايت (hex)
+    rpmb info|init|read|write        برمجة مفتاح RPMB والوصول إلى القسم
     adb                         تفعيل ADB في وضع DA وإعادة التشغيل
     peek <addr> [size]          قراءة ذاكرة الجهاز (4 بايت افتراضيًا)، إخراج hex dump
     poke <addr> <hex>           كتابة بيانات إلى ذاكرة الجهاز
@@ -775,14 +1110,53 @@ mod tests {
 
     #[test]
     fn extract_language_anywhere() {
-        let rest = extract_from_args(vec![
-            "help".into(),
-            "--language".into(),
-            "zh-CN".into(),
-        ]);
+        let rest = extract_from_args(vec!["help".into(), "--language".into(), "zh-CN".into()]);
         assert_eq!(rest, vec!["help".to_string()]);
         assert_eq!(lang(), Lang::ZhCn);
         set(Lang::En);
+    }
+
+    #[test]
+    fn catalog_is_complete() {
+        for (key, texts) in MSGS {
+            for (i, text) in texts.iter().enumerate() {
+                assert!(
+                    !text.trim().is_empty(),
+                    "key={} lang_idx={} 翻译为空",
+                    key,
+                    i
+                );
+            }
+            // 占位符数量必须跨语言一致，避免 tr() 替换出错
+            let count = texts[0].matches('{').count();
+            for (i, text) in texts.iter().enumerate() {
+                assert_eq!(
+                    text.matches('{').count(),
+                    count,
+                    "key={} lang_idx={} 占位符数量不一致",
+                    key,
+                    i
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn log_keys_are_localized() {
+        for key in ["log_da_loaded", "log_wait_device", "log_write_done"] {
+            assert!(!t(key).is_empty(), "缺少 key: {}", key);
+        }
+        set(Lang::En);
+        assert_eq!(t("log_da_loaded"), "DA loaded");
+        set(Lang::ZhCn);
+        assert_eq!(t("log_da_loaded"), "DA 加载完成");
+        set(Lang::Fr);
+        assert_eq!(t("log_da_loaded"), "DA chargé");
+        set(Lang::En);
+        assert_eq!(
+            tr("log_write_done", &["1024", "boot"]).contains("boot"),
+            true
+        );
     }
 
     #[test]

@@ -71,8 +71,7 @@ pub fn create_minimal_ext4(partition_size: u64) -> Vec<u8> {
     let inodes_per_group = INODES_PER_GROUP;
 
     // 计算 inode table 占用的块数
-    let inode_table_blocks =
-        (inodes_per_group as u64 * INODE_SIZE as u64).div_ceil(BLOCK_SIZE); // 16
+    let inode_table_blocks = (inodes_per_group as u64 * INODE_SIZE as u64).div_ceil(BLOCK_SIZE); // 16
 
     // 块号布局（4096 字节块，block 编号从 0 起）。旧实现把 GDT 写在偏移 2048（那是 1KiB 块布局下
     // 的位置），导致内核 / e2fsck 按 4096 块布局在 block 1 处读到的是 bitmap 而非 GDT，报
@@ -166,8 +165,8 @@ pub fn create_minimal_ext4(partition_size: u64) -> Vec<u8> {
     // s_uuid (0x68) - 16 字节 UUID
     // 使用固定 UUID 以便可重复
     let uuid: [u8; 16] = [
-        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-        0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
+        0xFF,
     ];
     sb[0x68..0x78].copy_from_slice(&uuid);
     // s_volume_name (0x78) - 16 字节
@@ -219,8 +218,8 @@ pub fn create_minimal_ext4(partition_size: u64) -> Vec<u8> {
     // 保持为零
 
     // ==================== Group Descriptors (block 1, 偏移 4096) ====================
-    let gdt = &mut image[(gdt_blk as usize) * BLOCK_SIZE as usize
-        .. (gdt_blk as usize) * BLOCK_SIZE as usize + 32];
+    let gdt = &mut image
+        [(gdt_blk as usize) * BLOCK_SIZE as usize..(gdt_blk as usize) * BLOCK_SIZE as usize + 32];
 
     // bg_block_bitmap_lo (0x00)
     write_u32_le(gdt, 0x00, block_bitmap_blk);
@@ -462,10 +461,7 @@ mod tests {
         // 验证根目录 inode（inode table 在 block 4）
         let inode_table_start = 4 * 4096;
         let root_inode_off = inode_table_start + 256;
-        let i_mode = u16::from_le_bytes([
-            image[root_inode_off],
-            image[root_inode_off + 1],
-        ]);
+        let i_mode = u16::from_le_bytes([image[root_inode_off], image[root_inode_off + 1]]);
         assert_eq!(i_mode, 0x41ED);
 
         // 验证根目录数据块位置

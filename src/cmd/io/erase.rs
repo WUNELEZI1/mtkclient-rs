@@ -9,7 +9,7 @@ pub fn cmd_erase(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::
     }
     da.erase_partition(&args[0])
         .map_err(|e| format!("擦除失败: {}", e))?;
-    info!("{}", format!("{} 已擦除", args[0]).green());
+    info!("{}", crate::i18n::tr("log_erased", &[&args[0]]).green());
     Ok(())
 }
 
@@ -55,14 +55,14 @@ pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error
     );
 
     for &part in &partitions {
-        info!("正在擦除 {}...", part);
+        info!("{}", crate::i18n::tr("log_erase_start", &[part]));
         da.erase_partition(part)
             .map_err(|e| format!("擦除 {} 失败: {}", part, e))?;
-        info!("{}", format!("{} 已擦除", part).green());
+        info!("{}", crate::i18n::tr("log_erased", &[part]).green());
 
         // format：userdata 在擦除后刷入最小 f2fs（erase + format 双保险）
         if part == "userdata" {
-            info!("正在格式化 {} (f2fs)...", part);
+            info!("{}", crate::i18n::tr("log_format_start", &[part]));
             let fmt = da
                 .find_partition_addr(part)
                 .map_err(|e| format!("查找 {} 失败: {}", part, e))
@@ -73,7 +73,7 @@ pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error
                 });
             match fmt {
                 Ok((addr, img)) => match da.write_flash_data(addr, &img, 1, 8) {
-                    Ok(()) => info!("{}", format!("{} 已格式化 (f2fs)", part).green()),
+                    Ok(()) => info!("{}", crate::i18n::tr("log_format_done", &[part]).green()),
                     Err(e) => warn!("格式化 {} 失败（已擦除，跳过格式化）: {}", part, e),
                 },
                 Err(e) => warn!("生成 {} 格式化镜像失败: {}", part, e),

@@ -64,7 +64,10 @@ impl<'a> DAXFlash<'a> {
         // 断点续传检查（复用统一辅助函数：完整则跳过、部分则截断到 512 对齐并返回偏移）
         let start_offset = compute_read_resume_offset(out_file, size);
         if start_offset >= size {
-            info!("  文件已存在且完整 ({} 字节)，跳过读取", start_offset);
+            info!(
+                "{}",
+                crate::i18n::tr("log_skip_existing", &[&start_offset.to_string()])
+            );
             return Ok(());
         }
         if start_offset > 0 {
@@ -153,7 +156,10 @@ impl<'a> DAXFlash<'a> {
         })?;
 
         bar.finish_with_message(format!("{} 读取完成 ({} 字节)", part_name, total));
-        info!("  已保存到: {}", out_file);
+        info!(
+            "{}",
+            crate::i18n::tr("log_saved_to", &[&out_file.to_string()])
+        );
         Ok(())
     }
 
@@ -201,7 +207,10 @@ impl<'a> DAXFlash<'a> {
             );
         }
         if start_offset >= logical_size {
-            info!("  文件已存在且完整 ({} 字节)，跳过读取", start_offset);
+            info!(
+                "{}",
+                crate::i18n::tr("log_skip_existing", &[&start_offset.to_string()])
+            );
             return Ok(());
         }
 

@@ -53,7 +53,14 @@ fn rd_u32(b: &[u8], o: usize) -> u32 {
 }
 fn rd_u64(b: &[u8], o: usize) -> u64 {
     u64::from_le_bytes([
-        b[o], b[o + 1], b[o + 2], b[o + 3], b[o + 4], b[o + 5], b[o + 6], b[o + 7],
+        b[o],
+        b[o + 1],
+        b[o + 2],
+        b[o + 3],
+        b[o + 4],
+        b[o + 5],
+        b[o + 6],
+        b[o + 7],
     ])
 }
 fn cstr(b: &[u8]) -> String {
@@ -66,7 +73,12 @@ fn align_up(x: u64, a: u64) -> u64 {
 fn slice<'a>(buf: &'a [u8], off: u64, size: u32) -> Result<&'a [u8], String> {
     let end = off + size as u64;
     if end > buf.len() as u64 {
-        return Err(format!("越界: off={} size={} > buflen={}", off, size, buf.len()));
+        return Err(format!(
+            "越界: off={} size={} > buflen={}",
+            off,
+            size,
+            buf.len()
+        ));
     }
     Ok(&buf[off as usize..end as usize])
 }
@@ -182,8 +194,8 @@ fn lz4_legacy_decompress(data: &[u8]) -> Result<Vec<u8>, String> {
     let mut pos = 4;
     let mut out = Vec::new();
     while pos + 4 <= data.len() {
-        let csize = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
-            as usize;
+        let csize =
+            u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
         pos += 4;
         if csize == 0 {
             break;
@@ -214,7 +226,7 @@ fn lz4_frame_decompress(data: &[u8]) -> Result<Vec<u8>, String> {
         pos += 4; // 4 字节 dictID 字段
     }
     pos += 1; // HC：1 字节 Header Checksum（标准 frame 必带，覆盖 FLG/BD/可选字段；
-              // 之前漏跳这 1 字节，会令后续块长度整体错位）
+    // 之前漏跳这 1 字节，会令后续块长度整体错位）
     let mut out = Vec::new();
     loop {
         if pos + 4 > data.len() {
@@ -401,7 +413,11 @@ pub fn cmd_boot(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 i += 1;
             }
             _ => {
-                return Err(format!("未知参数: {}（用法: boot <boot.img> [--extract <dir>]）", args[i]).into());
+                return Err(format!(
+                    "未知参数: {}（用法: boot <boot.img> [--extract <dir>]）",
+                    args[i]
+                )
+                .into());
             }
         }
     }

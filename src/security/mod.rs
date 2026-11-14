@@ -9,13 +9,13 @@
 //! - `frp` - FRP (Factory Reset Protection) 解锁
 //! - `obfuscate` - 反逆向：编译期字符串混淆宏 `obf!` 与反调试探测
 
+pub mod avb;
 #[path = "frp.rs"]
 pub mod frp;
 #[path = "obfuscate.rs"]
 pub mod obfuscate;
 #[path = "seccfg/mod.rs"]
 pub mod seccfg;
-pub mod avb;
 #[path = "sej.rs"]
 pub mod sej;
 #[path = "vbmeta.rs"]

@@ -71,7 +71,7 @@ impl ConnectionManager {
         }
 
         if work_mode == WorkMode::Auto {
-            info!("[AUTO] 自动检测模式：等待 BROM 或 Preloader 设备出现...");
+            info!("{}", crate::i18n::t("log_auto_detect"));
             // auto 模式检测顺序：BROM(PID=0x0003) 优先，Preloader(PID=0x2000) 兜底。
             // 设备若处于 BROM 下载态应直接用 BROM，避免被 Preloader 分支抢先/忽略。
             loop {
@@ -83,7 +83,7 @@ impl ConnectionManager {
                 let detection_result = detect_brom_driver_from_usb_bus();
                 match detection_result {
                     UsbBusDetectionResult::WinUsbReady => {
-                        info!("{}", "[AUTO] 检测到 BROM WinUSB 设备".green().bold());
+                        info!("{}", crate::i18n::t("log_brom_usb_found").green().bold());
                         return self.fallback_to_winusb_with_retry(context, 0);
                     }
                     // `SerialPort` 变体仅由 Windows SetupAPI 驱动分类产生，
@@ -94,7 +94,7 @@ impl ConnectionManager {
                             info!("[AUTO] 检测到 BROM COM 口: {}", port_name);
                             match self.serial_handshake_and_switch(port_name, context) {
                                 Ok(preloader) => {
-                                    info!("{}", "[AUTO] BROM 串口握手成功".green().bold());
+                                    info!("{}", crate::i18n::t("log_brom_com_ok").green().bold());
                                     self.mode = DeviceMode::Brom;
                                     self.stage = UsbStage::Brom;
                                     self.port_name = Some(port_name.clone());
@@ -165,7 +165,7 @@ impl ConnectionManager {
             }
         }
 
-        info!("等待设备连接 (BROM: Vol+ + Vol- + Power)");
+        info!("{}", crate::i18n::t("log_wait_device"));
 
         // 启动诊断（一次性，不改变后续检测/连接流程）：用 nusb 枚举当前是否已有
         // 联发科 BROM 设备（VID=0x0E8D, PID=0x0003），便于在“设备已插入但驱动/阶段

@@ -315,10 +315,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "QQ:".dimmed(),
         "3535571067".green()
     );
-    println!(
-        "{}",
-        i18n::t("free_tool_notice").red().dimmed()
-    );
+    println!("{}", i18n::t("free_tool_notice").red().dimmed());
     println!();
 
     let is_help = argv.iter().skip(1).any(|a| a == "-h" || a == "--help")
@@ -434,12 +431,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // boot / proinfo 为离线镜像解析命令，不需要连接设备，直接进入文件解析流程
     if cmd == "boot" {
-        return cmd::bootimg::cmd_boot(&app_config.cmd_args)
-            .map_err(|e| e.to_string().into());
+        return cmd::bootimg::cmd_boot(&app_config.cmd_args).map_err(|e| e.to_string().into());
     }
     if cmd == "proinfo" {
-        return cmd::proinfo::cmd_proinfo(&app_config.cmd_args)
-            .map_err(|e| e.to_string().into());
+        return cmd::proinfo::cmd_proinfo(&app_config.cmd_args).map_err(|e| e.to_string().into());
+    }
+
+    // zyb seccfg info <file>：离线解析 seccfg 镜像（无需设备）
+    if cmd == "zyb"
+        && app_config.cmd_args.first().map(|s| s.as_str()) == Some("seccfg")
+        && app_config.cmd_args.get(1).map(|s| s.as_str()) == Some("info")
+        && let Some(path) = app_config.cmd_args.get(2)
+    {
+        return crate::security::seccfg::seccfg_info_file(path).map_err(|e| e.to_string().into());
     }
 
     // avb 离线命令：解析 / 禁用 vbmeta 镜像文件（自研 avbtool，无需设备）
@@ -547,16 +551,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///   （默认覆盖原文件，out 省略时写 `<file>.disabled`）。
 fn cmd_avb_offline(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     use crate::color::Colorize;
-    use crate::security::avb::{
-        VbmetaImage, FLAG_HASHTREE_DISABLED, FLAG_VERIFICATION_DISABLED,
-    };
+    use crate::security::avb::{FLAG_HASHTREE_DISABLED, FLAG_VERIFICATION_DISABLED, VbmetaImage};
 
     let usage = "用法: mtkclient-rs avb <info|disable> <vbmeta.img> [out]";
     let action = args.first().ok_or(usage)?;
     let file = args.get(1).ok_or(usage)?;
     let data = std::fs::read(file).map_err(|e| format!("读取 {file} 失败: {e}"))?;
-    let vb = VbmetaImage::parse(&data)
-        .map_err(|e| format!("解析 vbmeta 失败: {e}"))?;
+    let vb = VbmetaImage::parse(&data).map_err(|e| format!("解析 vbmeta 失败: {e}"))?;
 
     match action.as_str() {
         "info" => {

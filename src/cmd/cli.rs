@@ -124,6 +124,7 @@ pub struct Cli {
   安全与解锁:\n\
     zyb seccfg unlock           解锁 Bootloader（seccfg V3/V4 + 自动禁用 vbmeta）\n\
     zyb seccfg lock             锁定 Bootloader（seccfg V3/V4）\n\
+    zyb seccfg info [文件]      查看 seccfg 状态（hwtype/锁状态/镜像列表）\n\
     zyb oem unlock              FRP OEM 解锁（修改 frp 分区标志位）\n\
     zyb oem lock                FRP OEM 回锁\n\
     zyb vbmeta <0-3>            修补 vbmeta（0=关闭验证 1=启用 2/3=保留）\n\

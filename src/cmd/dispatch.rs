@@ -94,43 +94,39 @@ pub fn dispatch_cmd(
                     let path = if args.is_empty() { name } else { out };
                     std::fs::write(&path, &data)
                         .map_err(|e| crate::error::AppError::Protocol(format!("写出失败: {e}")))?;
-                    info!("{}", format!("BROM 已提取: {} ({} 字节)", path, data.len()).green());
+                    info!(
+                        "{}",
+                        format!("BROM 已提取: {} ({} 字节)", path, data.len()).green()
+                    );
                 }
                 Err(e) => {
-                    return Err(crate::error::AppError::Protocol(format!("BROM 提取失败: {e}")))
+                    return Err(crate::error::AppError::Protocol(format!(
+                        "BROM 提取失败: {e}"
+                    )));
                 }
             }
+        }
+        "rpmb" => {
+            super::rpmb::cmd_rpmb(da, args)
+                .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "genkey" => {
             // RPMB 密钥生成（参考 mtkclient）：32 字节随机密钥。
             // 生成后可用 mtkclient 家族的 rpmb 烧写流程写入设备。
-            let mut key = vec![0u8; 32];
-            // 无外部 rand 依赖：以系统熵源（/dev/urandom）填充，失败退回时间熵混合。
-            match std::fs::read("/dev/urandom") {
-                Ok(mut buf) => {
-                    buf.truncate(32);
-                    let n = buf.len().min(32);
-                    key[..n].copy_from_slice(&buf[..n]);
-                }
-                Err(_) => {
-                    let mut seed = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_nanos() as u64)
-                        .unwrap_or(0x9E37_79B9_7F4A_7C15);
-                    for b in key.iter_mut() {
-                        // xorshift64* 混合
-                        seed ^= seed << 13;
-                        seed ^= seed >> 7;
-                        seed ^= seed << 17;
-                        *b = (seed >> 24) as u8;
-                    }
-                }
-            }
+            // 复用 rpmb 模块的实现（读取 /dev/urandom 必须用 read_exact，
+            // std::fs::read 会因字符设备不返回 EOF 而无限读取直至 OOM）
+            let key = crate::da::xflash::protocol::rpmb::generate_key();
             let hex: String = key.iter().map(|b| format!("{b:02X}")).collect();
             println!("{}", "═══ RPMB 密钥（32 字节）═══".cyan().bold());
             println!("  hex : {hex}");
-            println!("{}", "  ⚠ 密钥仅在本次生成，请立即保存（写入设备后无法再读出）".yellow());
-            println!("{}", "  烧写流程: 参考 mtkclient rpmb key 写入（DA payload 编程）".dimmed());
+            println!(
+                "{}",
+                "  ⚠ 密钥仅在本次生成，请立即保存（写入设备后无法再读出）".yellow()
+            );
+            println!(
+                "{}",
+                "  烧写流程: 参考 mtkclient rpmb key 写入（DA payload 编程）".dimmed()
+            );
         }
         "chain" => {
             // 智能利用链规划：探测设备状态并打印推荐执行链（只读，不执行）
@@ -141,9 +137,7 @@ pub fn dispatch_cmd(
                     crate::exploit::chain::Goal::Write
                 }
                 Some("peek") | Some("poke") => crate::exploit::chain::Goal::MemoryAccess,
-                Some("dump") | Some("dumppreloader") => {
-                    crate::exploit::chain::Goal::DumpPreloader
-                }
+                Some("dump") | Some("dumppreloader") => crate::exploit::chain::Goal::DumpPreloader,
                 _ => crate::exploit::chain::Goal::Write,
             };
             let caps = crate::exploit::chain::DeviceCapabilities {
@@ -188,14 +182,21 @@ pub fn dispatch_cmd(
                 }
             }
             // 默认：读 GPT 获取 super 分区地址
-            da.read_gpt()
-                .map_err(|e| crate::error::AppError::Protocol(crate::i18n::tr("read_gpt_failed", &[&e.to_string()])))?;
-            let gpt_data = da
-                .last_gpt_data
-                .as_ref()
-                .ok_or_else(|| crate::error::AppError::Protocol(crate::i18n::t("gpt_unavailable").into()))?;
-            let gpt_info = crate::partition::gpt::GptInfo::parse(gpt_data)
-                .map_err(|e| crate::error::AppError::Parse(crate::i18n::tr("parse_gpt_failed", &[&e.to_string()])))?;
+            da.read_gpt().map_err(|e| {
+                crate::error::AppError::Protocol(crate::i18n::tr(
+                    "read_gpt_failed",
+                    &[&e.to_string()],
+                ))
+            })?;
+            let gpt_data = da.last_gpt_data.as_ref().ok_or_else(|| {
+                crate::error::AppError::Protocol(crate::i18n::t("gpt_unavailable").into())
+            })?;
+            let gpt_info = crate::partition::gpt::GptInfo::parse(gpt_data).map_err(|e| {
+                crate::error::AppError::Parse(crate::i18n::tr(
+                    "parse_gpt_failed",
+                    &[&e.to_string()],
+                ))
+            })?;
 
             let super_entry = gpt_info
                 .find_partition("super")
@@ -221,7 +222,8 @@ pub fn dispatch_cmd(
             error!("{}", msg.clone().red());
             super::print_help();
             return Err(crate::error::AppError::Protocol(msg));
-        }    }
+        }
+    }
 
     Ok(())
 }

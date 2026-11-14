@@ -14,6 +14,7 @@
 pub(crate) mod ack;
 pub(crate) mod devctrl;
 pub(crate) mod read;
+pub(crate) mod rpmb;
 pub(crate) mod shutdown;
 
 // =============================================================================
