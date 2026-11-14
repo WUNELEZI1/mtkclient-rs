@@ -16,6 +16,7 @@ pub mod io;
 pub mod lp;
 #[path = "partition_table.rs"]
 pub mod partition_table;
+pub mod slot;
 pub(crate) mod write;
 
 pub use gpt::GptInfo;

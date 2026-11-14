@@ -15,6 +15,7 @@ pub mod frp;
 pub mod obfuscate;
 #[path = "seccfg/mod.rs"]
 pub mod seccfg;
+pub mod avb;
 #[path = "sej.rs"]
 pub mod sej;
 #[path = "vbmeta.rs"]

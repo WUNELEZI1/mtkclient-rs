@@ -209,6 +209,19 @@ impl<'a> DAXFlash<'a> {
             return Ok((entry.start_addr, entry.size));
         }
 
+        // 2.5 A/B 槽位自动解析：裸名未命中但 name_a / name_b 存在时补后缀重查
+        if let Some(slotted) = crate::partition::slot::resolve_slot_partition(self, partition) {
+            let gpt_data = self
+                .last_gpt_data
+                .as_ref()
+                .ok_or_else(|| "无 GPT 数据，请先运行 printgpt".to_string())?;
+            let gpt_info = GptInfo::parse(gpt_data)?;
+            if let Some(entry) = gpt_info.find_partition(&slotted) {
+                debug!("A/B 槽位解析: {} -> {}", partition, slotted);
+                return Ok((entry.start_addr, entry.size));
+            }
+        }
+
         // 3. GPT 中未找到，尝试从 super 动态分区解析 logical partition
         if partition != "super" && partition != "metadata" {
             if self.super_metadata.is_none() {

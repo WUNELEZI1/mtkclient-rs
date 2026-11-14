@@ -46,8 +46,13 @@ pub fn unlock_bootloader(da: &mut DAXFlash) -> Result<(), String> {
     da.write_flash_data(seccfg_addr, &new_data, 1, 8)?;
     info!("{}", "Bootloader 解锁成功".green().bold());
 
-    info!("Bootloader 已解锁");
-    info!("提示: 如果设备因 dm-verity 无法启动，请手动运行 'zyb vbmeta 3' 禁用验证");
+    // 解锁后自动禁用 vbmeta 校验（flags=3：hashtree+verification 全关），
+    // 避免 dm-verity 在未原厂签名的系统上启动失败。
+    info!("自动禁用 vbmeta 校验（避免 dm-verity 启动失败）...");
+    match super::super::vbmeta::vbmeta_disable(da, 3) {
+        Ok(()) => info!("{}", "vbmeta 校验已禁用".green()),
+        Err(e) => info!("提示: vbmeta 自动禁用未成功（{}），如设备因 dm-verity 无法启动请手动运行 'zyb vbmeta 3'", e),
+    }
 
     Ok(())
 }

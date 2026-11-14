@@ -15,14 +15,15 @@ pub fn cmd_erase(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::
 
 /// 清除用户数据（恢复出厂设置）
 ///
-/// 擦除 userdata、md_udc、metadata 三个分区。
-/// 刷入新系统后需要执行此命令才能正常开机。
+/// **erase + format**：先擦除 userdata、md_udc、metadata 三个分区，
+/// 再对 userdata 刷入最小 f2fs 镜像（自研生成器，无 mke2fs 依赖），
+/// 确保分区处于可挂载状态（部分 bootloader 不会自动重建文件系统）。
 ///
 /// 注意：
 ///   - metadata 分区存储动态分区元数据，擦除后 super_metadata 缓存被清除。
 ///   - 下次需要动态分区读操作时，将从设备重新读取 metadata。
 ///   - 设备重启后 bootloader 会自动重建 metadata 分区。
-///   - 擦除顺序：userdata → md_udc → metadata（metadata 最后擦除）。
+///   - 顺序：erase userdata → format userdata(f2fs) → erase md_udc → erase metadata。
 pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error>> {
     let partitions = ["userdata", "md_udc", "metadata"];
 
@@ -58,6 +59,26 @@ pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error
         da.erase_partition(part)
             .map_err(|e| format!("擦除 {} 失败: {}", part, e))?;
         info!("{}", format!("{} 已擦除", part).green());
+
+        // format：userdata 在擦除后刷入最小 f2fs（erase + format 双保险）
+        if part == "userdata" {
+            info!("正在格式化 {} (f2fs)...", part);
+            let fmt = da
+                .find_partition_addr(part)
+                .map_err(|e| format!("查找 {} 失败: {}", part, e))
+                .and_then(|(addr, size)| {
+                    crate::system::fsimg::format_image_for(part, size)
+                        .map(|img| (addr, img))
+                        .ok_or_else(|| "不支持该分区的格式化".to_string())
+                });
+            match fmt {
+                Ok((addr, img)) => match da.write_flash_data(addr, &img, 1, 8) {
+                    Ok(()) => info!("{}", format!("{} 已格式化 (f2fs)", part).green()),
+                    Err(e) => warn!("格式化 {} 失败（已擦除，跳过格式化）: {}", part, e),
+                },
+                Err(e) => warn!("生成 {} 格式化镜像失败: {}", part, e),
+            }
+        }
     }
 
     // metadata 擦除后，清除 super_metadata 缓存，下次需要时重新读取

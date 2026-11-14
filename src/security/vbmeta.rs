@@ -51,7 +51,22 @@ pub fn vbmeta_disable(da: &mut DAXFlash, mode: u32) -> Result<(), String> {
             let data = da.readflash_data(addr, size)?;
             info!("  读取到 {} 字节", data.len());
 
-            let modified = patch_vbmeta_data(&data, mode)?;
+            // 自研 avbtool 解析：descriptor 摘要 + 严格 AVB0 校验
+            let vb = match crate::security::avb::VbmetaImage::parse(&data) {
+                Ok(v) => v,
+                Err(e) => {
+                    info!("  {} 跳过（非标准 vbmeta: {}）", name, e);
+                    continue;
+                }
+            };
+            for d in &vb.descriptors {
+                if let Some(pn) = &d.partition_name {
+                    info!("    descriptor: {} ({})", d.tag_debug_name(), pn);
+                }
+            }
+            info!("  当前 flags=0x{:02X} -> 目标 0x{:02X}", vb.header.flags, mode);
+
+            let modified = vb.disable_verification(mode);
             da.write_flash_data(addr, &modified, 1, 8)?;
             info!("{}", format!("  {} 已修补", name).green());
             patched_any = true;
@@ -107,50 +122,8 @@ fn patch_vbmeta_data(data: &[u8], mode: u32) -> Result<Vec<u8>, String> {
     Ok(result)
 }
 
-/// 检测当前活跃的 A/B 槽位（通过读取 misc 分区的 bootctrl 结构）
+/// 检测当前活跃的 A/B 槽位（公共模块：misc bootctrl + 启发，带会话级缓存）
 fn detect_active_slot(da: &mut DAXFlash) -> Result<Option<String>, String> {
-    let (misc_addr, misc_size) = match da.find_partition_addr("misc") {
-        Ok((addr, size)) => (addr, size.min(0x10000)), // 最多读 64KB
-        Err(_) => return Ok(None),
-    };
-
-    let misc_data = match da.readflash_data(misc_addr, misc_size) {
-        Ok(data) => data,
-        Err(_) => return Ok(None),
-    };
-
-    if misc_data.len() < 0x2010 {
-        return Ok(None);
-    }
-
-    // 检查 bootctrl 结构（偏移 0x2000）
-    let bootctrl_offset = 0x2000;
-    let magic = u32::from_le_bytes([
-        misc_data[bootctrl_offset],
-        misc_data[bootctrl_offset + 1],
-        misc_data[bootctrl_offset + 2],
-        misc_data[bootctrl_offset + 3],
-    ]);
-
-    if magic == 0x424F4F54 {
-        // "BOOT"
-        let active_slot = u32::from_le_bytes([
-            misc_data[bootctrl_offset + 8],
-            misc_data[bootctrl_offset + 9],
-            misc_data[bootctrl_offset + 10],
-            misc_data[bootctrl_offset + 11],
-        ]);
-        let slot = if active_slot == 0 { "a" } else { "b" };
-        return Ok(Some(slot.to_string()));
-    }
-
-    // fallback: 在数据中搜索槽位标记
-    let data_str = String::from_utf8_lossy(&misc_data);
-    if data_str.contains("_a") && !data_str.contains("_b") {
-        return Ok(Some("a".to_string()));
-    } else if data_str.contains("_b") && !data_str.contains("_a") {
-        return Ok(Some("b".to_string()));
-    }
-
-    Ok(None)
+    crate::partition::slot::detect_active_slot(da)
+        .map(|s| s.map(|c| c.to_string()))
 }

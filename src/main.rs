@@ -433,6 +433,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| e.to_string().into());
     }
 
+    // avb 离线命令：解析 / 禁用 vbmeta 镜像文件（自研 avbtool，无需设备）
+    if cmd == "avb" {
+        return cmd_avb_offline(&app_config.cmd_args);
+    }
+
     let usb_context = UsbContext::new().inspect_err(|e| {
         error!("{}", e);
     })?;
@@ -523,4 +528,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     Ok(())
+}
+
+/// `mtkclient-rs avb <info|disable> <file> [out]`
+///
+/// 自研 avbtool 的离线模式：
+/// - `avb info <vbmeta.img>`：`avbtool info-image` 等价格式输出；
+/// - `avb disable <vbmeta.img> [out]`：flags=3（关闭 hashtree+verification）后写出
+///   （默认覆盖原文件，out 省略时写 `<file>.disabled`）。
+fn cmd_avb_offline(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::color::Colorize;
+    use crate::security::avb::{
+        VbmetaImage, FLAG_HASHTREE_DISABLED, FLAG_VERIFICATION_DISABLED,
+    };
+
+    let usage = "用法: mtkclient-rs avb <info|disable> <vbmeta.img> [out]";
+    let action = args.first().ok_or(usage)?;
+    let file = args.get(1).ok_or(usage)?;
+    let data = std::fs::read(file).map_err(|e| format!("读取 {file} 失败: {e}"))?;
+    let vb = VbmetaImage::parse(&data)
+        .map_err(|e| format!("解析 vbmeta 失败: {e}"))?;
+
+    match action.as_str() {
+        "info" => {
+            print!("{}", vb.info());
+            Ok(())
+        }
+        "disable" => {
+            let out_path = args
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| format!("{file}.disabled"));
+            let flags = FLAG_HASHTREE_DISABLED | FLAG_VERIFICATION_DISABLED;
+            let patched = vb.disable_verification(flags);
+            std::fs::write(&out_path, &patched)
+                .map_err(|e| format!("写出 {out_path} 失败: {e}"))?;
+            println!(
+                "{}",
+                format!("vbmeta 已禁用校验 (flags=0x{flags:02X}) -> {out_path}").green()
+            );
+            Ok(())
+        }
+        _ => Err(usage.into()),
+    }
 }

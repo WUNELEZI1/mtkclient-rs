@@ -32,3 +32,12 @@ rustflags = [
     "--remap-path-prefix=/usr/local/cargo=",
     "--remap-path-prefix=/root/.cargo=",
 ]
+# 32 位（i686）目标同样抹除本地构建路径。
+[target.i686-pc-windows-msvc]
+rustflags = [
+    "--remap-path-prefix=C:\\Users\\wqy=",
+    "--remap-path-prefix=D:\\test\\ZybClient=",
+    "--remap-path-prefix=/workspace/repo=",
+    "--remap-path-prefix=/usr/local/cargo=",
+    "--remap-path-prefix=/root/.cargo=",
+]

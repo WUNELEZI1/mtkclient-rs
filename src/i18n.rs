@@ -310,6 +310,12 @@ Commands:
       reboot meta               Reboot to META mode
       --via misc|para|da|xml|preloader   Reboot path (default: misc)
   Misc:
+    chain <goal>                Show the planned smart exploit chain for a goal
+                                (read|rp|write|peek|dump) — device-state aware
+    avb <info|disable> <file>   Offline avbtool: parse vbmeta / disable verification
+    fs_shell boot [file]        Interactively browse a boot image ramdisk (cpio):
+                                ls/cat/extract/info/quit; from the active slot if no file
+    fs_shell proinfo [file]     Interactively inspect the MTK proinfo partition (NV data)
     dumppreloader               Extract the preloader from RAM (BROM exploit)
     adb                         Enable ADB in DA mode and reboot
     peek <addr> [size]          Read device memory (default 4 bytes), hex dump output
@@ -382,6 +388,12 @@ MTK 设备底层刷机工具 - 支持 87 种芯片 | Windows 10/11 x64
       reboot meta               重启到 META 模式
       --via misc|para|da|xml|preloader   重启途径（默认 misc）
   其他:
+    chain <goal>                显示目标的智能利用链规划（read|rp|write|peek|dump），
+                                按设备状态动态选择 kamakiri/carbonara 等最优路径
+    avb <info|disable> <file>   离线 avbtool：解析 vbmeta / 禁用校验（自研，无需设备）
+    fs_shell boot [file]        交互式浏览 boot 镜像 ramdisk（cpio）：ls/cat/extract/quit；
+                                省略文件时自动读当前 A/B 槽位的 boot 分区
+    fs_shell proinfo [file]     交互式查看 MTK proinfo 分区（NV 数据）
     dumppreloader               从 RAM 提取 Preloader（BROM Exploit）
     adb                         在 DA 模式下开启 ADB 并重启
     peek <addr> [size]          读取设备内存（默认 4 字节），输出 hex dump
@@ -455,6 +467,11 @@ Commandes :
       reboot meta               Redémarre en mode META
       --via misc|para|da|xml|preloader   Voie de redémarrage (défaut : misc)
   Divers :
+    chain <goal>                Affiche la chaîne d'exploit planifiée pour un objectif
+                                (read|rp|write|peek|dump) — selon l'état de l'appareil
+    avb <info|disable> <file>   avbtool hors ligne : analyse vbmeta / désactive la vérification
+    fs_shell boot [file]        Navigue interactivement le ramdisk d'une image boot (cpio)
+    fs_shell proinfo [file]     Inspecte interactivement la partition proinfo MTK (données NV)
     dumppreloader               Extrait le preloader depuis la RAM (exploit BROM)
     adb                         Active ADB en mode DA et redémarre
     peek <addr> [size]          Lit la mémoire de l'appareil (4 octets par défaut), hex dump
@@ -528,6 +545,11 @@ const HELP_RU: &str = r#"mtkclient-rs
       reboot meta               Перезагрузка в режим META
       --via misc|para|da|xml|preloader   Путь перезагрузки (по умолчанию misc)
   Прочее:
+    chain <goal>                Показать запланированную цепочку эксплойтов для цели
+                                (read|rp|write|peek|dump) — с учётом состояния устройства
+    avb <info|disable> <file>   Автономный avbtool: разбор vbmeta / отключение проверки
+    fs_shell boot [file]        Интерактивный просмотр ramdisk образа boot (cpio)
+    fs_shell proinfo [file]     Интерактивный просмотр раздела proinfo MTK (данные NV)
     dumppreloader               Извлечь preloader из RAM (эксплойт BROM)
     adb                         Включить ADB в режиме DA и перезагрузить
     peek <addr> [size]          Прочитать память устройства (по умолчанию 4 байта), hex dump
@@ -601,6 +623,11 @@ Comandos:
       reboot meta               Reinicia a modo META
       --via misc|para|da|xml|preloader   Vía de reinicio (por defecto: misc)
   Varios:
+    chain <goal>                Muestra la cadena de exploit planificada para un objetivo
+                                (read|rp|write|peek|dump) — según el estado del dispositivo
+    avb <info|disable> <file>   avbtool sin conexión: analiza vbmeta / desactiva la verificación
+    fs_shell boot [file]        Navega interactivamente el ramdisk de una imagen boot (cpio)
+    fs_shell proinfo [file]     Inspecciona interactivamente la partición proinfo MTK (NV)
     dumppreloader               Extrae el preloader de la RAM (exploit BROM)
     adb                         Activa ADB en modo DA y reinicia
     peek <addr> [size]          Lee memoria del dispositivo (4 bytes por defecto), hex dump
@@ -674,6 +701,11 @@ const HELP_AR: &str = r#"mtkclient-rs
       reboot meta               إعادة التشغيل إلى وضع META
       --via misc|para|da|xml|preloader   مسار إعادة التشغيل (الافتراضي: misc)
   متفرقات:
+    chain <goal>                عرض سلسلة الاستغلال المخططة لهدف معين
+                                (read|rp|write|peek|dump) — حسب حالة الجهاز
+    avb <info|disable> <file>   أداة avbtool دون اتصال: تحليل vbmeta / تعطيل التحقق
+    fs_shell boot [file]        تصفح تفاعلي لـ ramdisk صورة boot (cpio)
+    fs_shell proinfo [file]     فحص تفاعلي لقسم proinfo الخاص بـ MTK (بيانات NV)
     dumppreloader               استخراج preloader من RAM (ثغرة BROM)
     adb                         تفعيل ADB في وضع DA وإعادة التشغيل
     peek <addr> [size]          قراءة ذاكرة الجهاز (4 بايت افتراضيًا)، إخراج hex dump

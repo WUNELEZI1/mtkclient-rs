@@ -86,6 +86,34 @@ pub fn dispatch_cmd(
             )
             .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
+        "chain" => {
+            // 智能利用链规划：探测设备状态并打印推荐执行链（只读，不执行）
+            let goal = match args.first().map(|s| s.as_str()) {
+                Some("read") | Some("printgpt") => crate::exploit::chain::Goal::ReadInfo,
+                Some("rp") => crate::exploit::chain::Goal::ReadPartition,
+                Some("write") | Some("unlock") | Some("erase") => {
+                    crate::exploit::chain::Goal::Write
+                }
+                Some("peek") | Some("poke") => crate::exploit::chain::Goal::MemoryAccess,
+                Some("dump") | Some("dumppreloader") => {
+                    crate::exploit::chain::Goal::DumpPreloader
+                }
+                _ => crate::exploit::chain::Goal::Write,
+            };
+            let caps = crate::exploit::chain::DeviceCapabilities {
+                hw_code: da.preloader.chip.as_ref().map(|c| c.hw_code).unwrap_or(0),
+                chip_name: da.preloader.chip.as_ref().map(|c| c.name.to_string()),
+                // SLA/DAA 状态：BROM 阶段探测标志（安全启用时需要 exploit 链）。
+                // chain 命令运行于 DA 会话内，此处按保守值（已绕过阶段）上报。
+                security_enabled: false,
+                da_loaded: true, // chain 命令在 DA 会话内运行
+                preloader_available: false,
+                carbonara_applicable: true,
+                preloader_mode: da.preloader.is_preloader_mode,
+            };
+            let steps = crate::exploit::chain::plan(goal, &caps);
+            crate::exploit::chain::log_plan(&steps, goal);
+        }
         "slot" => {
             super::io::cmd_slot(da, args)
                 .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
@@ -104,7 +132,16 @@ pub fn dispatch_cmd(
                 .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "fs_shell" => {
-            // 读 GPT 获取 super 分区地址
+            // 扩展模式：fs_shell boot [file] / fs_shell proinfo [file]
+            // —— 除 super 外还支持 boot ramdisk (cpio) 与 proinfo NV 浏览
+            if let Some(mode) = args.first().map(|s| s.as_str()) {
+                if mode == "boot" || mode == "proinfo" {
+                    super::io::cmd_imgshell(da, mode, &args[1..])
+                        .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
+                    return Ok(());
+                }
+            }
+            // 默认：读 GPT 获取 super 分区地址
             da.read_gpt()
                 .map_err(|e| crate::error::AppError::Protocol(crate::i18n::tr("read_gpt_failed", &[&e.to_string()])))?;
             let gpt_data = da
