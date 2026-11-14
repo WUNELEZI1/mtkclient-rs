@@ -185,6 +185,7 @@ mod da;
 mod error;
 #[path = "exploit/mod.rs"]
 mod exploit;
+mod i18n;
 #[path = "partition/mod.rs"]
 mod partition;
 #[path = "preloader/mod.rs"]
@@ -245,19 +246,28 @@ fn check_windows_version() -> Result<(), String> {
     // Windows 10 = Major 10, Build >= 10240
     // Windows 11 = Major 10, Build >= 22000
     if info.dw_major_version < 10 {
-        return Err(format!(
-            "不支持的操作系统: Windows {}.{} (Build {})。本程序需要 Windows 10 或 Windows 11 (64-bit)。",
-            info.dw_major_version, info.dw_minor_version, info.dw_build_number
+        return Err(i18n::tr(
+            "os_unsupported",
+            &[
+                &info.dw_major_version.to_string(),
+                &info.dw_minor_version.to_string(),
+                &info.dw_build_number.to_string(),
+            ],
         ));
     }
     Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 语言选择优先于一切输出：`--language <LANG>` 可出现在任意位置
+    // （如 `mtkclient-rs help --language zh-CN`），未指定时回退环境变量。
+    i18n::detect_env();
+    let argv: Vec<String> = i18n::extract_from_args(std::env::args().collect());
+
     // 编译时限制：仅支持 x86_64 架构
     #[cfg(not(target_arch = "x86_64"))]
     {
-        eprintln!("错误: 本程序仅支持 64-bit (x86_64) 架构。");
+        eprintln!("{}", i18n::t("arch_unsupported"));
         std::process::exit(1);
     }
 
@@ -281,7 +291,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        eprintln!("警告: 本程序仅在 Windows 10/11 上经过充分测试。");
+        eprintln!("{}", i18n::t("os_warning"));
     }
 
     cancel::install_ctrlc_handler();
@@ -298,7 +308,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "{} {}  {} {}",
-        "获取更新:".dimmed(),
+        i18n::t("get_updates").dimmed(),
         "https://gitee.com/WUNELEZI1/mtkclient-rs/releases"
             .blue()
             .underline(),
@@ -307,20 +317,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "{}",
-        "本工具完全免费，请勿被骗！禁止任何形式的倒卖、破解或去除作者信息。违者必究。"
-            .red()
-            .dimmed()
+        i18n::t("free_tool_notice").red().dimmed()
     );
     println!();
 
-    let raw_args: Vec<String> = std::env::args().collect();
-    let is_help = raw_args.iter().any(|a| a == "-h" || a == "--help");
+    let is_help = argv.iter().skip(1).any(|a| a == "-h" || a == "--help")
+        || argv.get(1).map(|a| a == "help").unwrap_or(false);
     if is_help {
-        cmd::print_help();
+        print!("{}", i18n::help());
         return Ok(());
     }
 
-    let cli = cmd::cli::Cli::parse();
+    let cli = cmd::cli::Cli::parse_from(argv);
 
     // === --data-dir 覆盖（GUI 传入的解压数据目录）===
     if let Some(ref data_dir) = cli.data_dir {
@@ -329,7 +337,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             debug!("使用 --data-dir: {}", data_path.display());
             system::paths::set_data_dir(data_path);
         } else {
-            warn!("--data-dir 路径不存在或不是目录: {}", data_dir);
+            warn!("{}", i18n::tr("data_dir_missing", &[data_dir]));
         }
     }
 
@@ -342,12 +350,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             && std::env::var_os("MTKCLIENT_ELEVATED").is_none()
         {
             // 提示用户（UAC 弹窗会覆盖这个）
-            eprintln!("[MAIN] 需要管理员权限以安装 WinUSB 驱动，正在请求提权...");
+            eprintln!("{}", i18n::t("elevate_request"));
             if let Err(e) = connection::driver::restart_as_admin() {
-                eprintln!("[MAIN] 提权失败: {}", e);
-                eprintln!(
-                    "[MAIN] 请右键以管理员身份运行本程序，或加 --检测管理员权限 跳过（将无法切换 WinUSB）"
-                );
+                eprintln!("{}", i18n::tr("elevate_failed", &[&e.to_string()]));
+                eprintln!("{}", i18n::t("elevate_hint"));
                 return Err(e.into());
             }
             // restart_as_admin 内部 std::process::exit(0)，不会回到这里
@@ -408,7 +414,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cmd = app_config.command.as_deref().unwrap_or("");
 
     if cmd.is_empty() {
-        cmd::print_help();
+        print!("{}", i18n::help());
         return Ok(());
     }
 
@@ -467,10 +473,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match work_mode {
         crate::system::config::WorkMode::Preloader => {
-            info!("{}", "连接成功 (Preloader 模式)".green().bold());
+            info!("{}", i18n::t("connected_preloader").green().bold());
         }
         _ => {
-            info!("{}", "连接成功 (BROM 模式)".green().bold());
+            info!("{}", i18n::t("connected_brom").green().bold());
         }
     }
 
@@ -484,10 +490,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !final_preloader_path.is_empty() {
         debug!("使用指定的 preloader 文件: {}", final_preloader_path);
     } else {
-        debug!(
-            "{}",
-            "未指定 --preloader，将强制从设备 dump 并覆盖同名文件".yellow()
-        );
+        debug!("{}", i18n::t("no_preloader_forced_dump").yellow());
     }
 
     // 传递用户指定的 DA 文件路径给 preloader（供后台线程预解析和 upload_da 使用）

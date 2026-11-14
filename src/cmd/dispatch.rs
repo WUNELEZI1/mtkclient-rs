@@ -33,7 +33,7 @@ pub fn dispatch_cmd(
         }
         "r" => {
             if args.first().map(|s| s.as_str()) == Some("gpt") {
-                let dir = args.get(1).ok_or("用法: mtkclient r gpt <dir>")?;
+                let dir = args.get(1).ok_or(crate::i18n::t("usage_r_gpt"))?;
                 super::partition_table::cmd_read_gpt(da, dir, log_level)
                     .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
             } else {
@@ -42,18 +42,18 @@ pub fn dispatch_cmd(
             }
         }
         "rl" => {
-            let dir = args.first().ok_or("用法: mtkclient rl <dir>")?;
+            let dir = args.first().ok_or(crate::i18n::t("usage_rl"))?;
             super::partition_table::cmd_read_all(da, dir, app_config)
                 .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "wl" => {
-            let dir = args.first().ok_or("用法: mtkclient wl <dir>")?;
+            let dir = args.first().ok_or(crate::i18n::t("usage_wl"))?;
             super::partition_table::cmd_write_all(da, dir, verify)
                 .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "w" => {
             if args.first().map(|s| s.as_str()) == Some("gpt") {
-                let file = args.get(1).ok_or("用法: mtkclient w gpt <文件>")?;
+                let file = args.get(1).ok_or(crate::i18n::t("usage_w_gpt"))?;
                 super::partition_table::cmd_write_gpt(da, file)
                     .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
             } else {
@@ -93,7 +93,7 @@ pub fn dispatch_cmd(
         "adb" => {
             da.enable_adb_and_reboot()
                 .map_err(|e| crate::error::AppError::Usb(e.to_string()))?;
-            info!("{}", "ADB 已启用，设备正在重启进入系统".green());
+            info!("{}", crate::i18n::t("adb_rebooting").green());
         }
         "peek" => {
             super::io::cmd_peek(da, args)
@@ -106,19 +106,19 @@ pub fn dispatch_cmd(
         "fs_shell" => {
             // 读 GPT 获取 super 分区地址
             da.read_gpt()
-                .map_err(|e| crate::error::AppError::Protocol(format!("读取 GPT 失败: {}", e)))?;
+                .map_err(|e| crate::error::AppError::Protocol(crate::i18n::tr("read_gpt_failed", &[&e.to_string()])))?;
             let gpt_data = da
                 .last_gpt_data
                 .as_ref()
-                .ok_or_else(|| crate::error::AppError::Protocol("GPT 数据不可用".into()))?;
+                .ok_or_else(|| crate::error::AppError::Protocol(crate::i18n::t("gpt_unavailable").into()))?;
             let gpt_info = crate::partition::gpt::GptInfo::parse(gpt_data)
-                .map_err(|e| crate::error::AppError::Parse(format!("解析 GPT 失败: {}", e)))?;
+                .map_err(|e| crate::error::AppError::Parse(crate::i18n::tr("parse_gpt_failed", &[&e.to_string()])))?;
 
             let super_entry = gpt_info
                 .find_partition("super")
                 .or_else(|| gpt_info.find_partition("super_b"))
                 .ok_or_else(|| {
-                    crate::error::AppError::Protocol("GPT 中未找到 super 分区".into())
+                    crate::error::AppError::Protocol(crate::i18n::t("no_super_in_gpt").into())
                 })?;
             let super_addr = super_entry.start_addr;
 
@@ -134,14 +134,11 @@ pub fn dispatch_cmd(
                 .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         _ => {
-            error!("{}", format!("未知命令: {}", cmd).red());
+            let msg = crate::i18n::tr("unknown_command", &[cmd]);
+            error!("{}", msg.clone().red());
             super::print_help();
-            return Err(crate::error::AppError::Protocol(format!(
-                "未知命令: {}",
-                cmd
-            )));
-        }
-    }
+            return Err(crate::error::AppError::Protocol(msg));
+        }    }
 
     Ok(())
 }
