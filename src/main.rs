@@ -179,7 +179,10 @@ mod cancel;
 mod cmd;
 mod color;
 #[path = "connection/mod.rs"]
+mod confirm;
 mod connection;
+
+mod core;
 #[path = "da/mod.rs"]
 mod da;
 mod error;
@@ -196,6 +199,7 @@ mod resume;
 mod security;
 mod sha;
 mod system;
+mod transport;
 #[path = "usb/mod.rs"]
 mod usb;
 mod util;
@@ -447,6 +451,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // avb 离线命令：解析 / 禁用 vbmeta 镜像文件（自研 avbtool，无需设备）
+    // plan：离线查看规划结果（不连接设备）
+    if cmd == "plan" {
+        let plan_mode = match app_config.work_mode {
+            crate::system::config::WorkMode::Brom => "brom",
+            crate::system::config::WorkMode::Preloader => "preloader",
+            crate::system::config::WorkMode::Auto => "auto",
+        };
+        return cmd::plan::cmd_plan(
+            &app_config.cmd_args,
+            app_config.da_path.as_deref(),
+            plan_mode,
+        )
+        .map_err(|e| e.to_string().into());
+    }
+
     if cmd == "avb" {
         return cmd_avb_offline(&app_config.cmd_args);
     }

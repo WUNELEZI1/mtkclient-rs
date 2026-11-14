@@ -23,6 +23,7 @@ pub mod proinfo;
 pub mod io;
 pub mod multi;
 pub mod partition_table;
+pub mod plan;
 pub mod preloader_boot_mode;
 pub mod rpmb;
 pub mod script;
@@ -128,6 +129,9 @@ pub fn print_help() {
     println!("  peek <addr> [size]            读取设备内存（默认 4 字节），输出 hex dump");
     println!("  poke <addr> <hex_data>        写入数据到设备内存（hex 格式）");
     println!("  fs_shell                      交互式浏览 super 分区文件系统");
+    println!(
+        "  plan <op>                     离线查看规划结果（≥2 条路径 + 选择理由，不连接设备）"
+    );
     println!("  rpmb info|init|read|write     RPMB 密钥烧写与分区读写（set-key 需 --yes，不可逆）");
     println!("  multi \"<cmd1>;<cmd2>;...\"    一次 DA 会话执行多个命令");
     println!("  run <script.json>             从 JSON 脚本文件批量执行命令");

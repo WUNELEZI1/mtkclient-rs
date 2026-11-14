@@ -562,6 +562,39 @@ static MSGS: &[(&str, [&str; LANG_COUNT])] = &[
             "تم كتابة مفتاح RPMB والتحقق منه",
         ],
     ),
+    (
+        "plan_usage",
+        [
+            "usage: mtkclient plan <printgpt|read|write|erase|seccfg|rpmb> [--chip 0xNNNN] [--da FILE]",
+            "用法: mtkclient plan <printgpt|read|write|erase|seccfg|rpmb> [--chip 0xNNNN] [--da 文件]",
+            "usage : mtkclient plan <printgpt|read|write|erase|seccfg|rpmb> [--chip 0xNNNN] [--da FICHIER]",
+            "использование: mtkclient plan <printgpt|read|write|erase|seccfg|rpmb> [--chip 0xNNNN] [--da ФАЙЛ]",
+            "uso: mtkclient plan <printgpt|read|write|erase|seccfg|rpmb> [--chip 0xNNNN] [--da ARCHIVO]",
+            "الاستخدام: mtkclient plan <printgpt|read|write|erase|seccfg|rpmb> [--chip 0xNNNN] [--da ملف]",
+        ],
+    ),
+    (
+        "plan_unknown_op",
+        [
+            "unknown op: {0} (available: printgpt/read/write/erase/seccfg/rpmb)",
+            "未知操作: {0}（可用: printgpt/read/write/erase/seccfg/rpmb）",
+            "opération inconnue : {0} (disponibles : printgpt/read/write/erase/seccfg/rpmb)",
+            "неизвестная операция: {0} (доступно: printgpt/read/write/erase/seccfg/rpmb)",
+            "operación desconocida: {0} (disponibles: printgpt/read/write/erase/seccfg/rpmb)",
+            "عملية غير معروفة: {0} (المتاح: printgpt/read/write/erase/seccfg/rpmb)",
+        ],
+    ),
+    (
+        "plan_bad_mode",
+        [
+            "invalid --mode: {0} (brom/preloader/auto)",
+            "非法 --mode: {0}（brom/preloader/auto）",
+            "--mode invalide : {0} (brom/preloader/auto)",
+            "неверный --mode: {0} (brom/preloader/auto)",
+            "--mode no válido: {0} (brom/preloader/auto)",
+            "--mode غير صالح: {0} (brom/preloader/auto)",
+        ],
+    ),
 ];
 
 pub fn t(key: &str) -> &'static str {
@@ -635,6 +668,7 @@ Commands:
       --via misc|para|da|xml|preloader   Reboot path (default: misc)
   Misc:
     chain <goal>                Show the planned smart exploit chain for a goal
+    plan <op>                   Show planned paths (>=2) and reasons, offline
                                 (read|rp|write|peek|dump) — device-state aware
     avb <info|disable> <file>   Offline avbtool: parse vbmeta / disable verification
     fs_shell boot [file]        Interactively browse a boot image ramdisk (cpio):
@@ -718,6 +752,7 @@ MTK 设备底层刷机工具 - 支持 87 种芯片 | Windows 10/11 x64
       --via misc|para|da|xml|preloader   重启途径（默认 misc）
   其他:
     chain <goal>                显示目标的智能利用链规划（read|rp|write|peek|dump），
+    plan <op>                   离线查看规划路径（≥2 条）与选择理由，不连接设备
                                 按设备状态动态选择 kamakiri/carbonara 等最优路径
     avb <info|disable> <file>   离线 avbtool：解析 vbmeta / 禁用校验（自研，无需设备）
     fs_shell boot [file]        交互式浏览 boot 镜像 ramdisk（cpio）：ls/cat/extract/quit；
@@ -802,6 +837,7 @@ Commandes :
       --via misc|para|da|xml|preloader   Voie de redémarrage (défaut : misc)
   Divers :
     chain <goal>                Affiche la chaîne d'exploit planifiée pour un objectif
+    plan <op>                   Affiche les chemins planifiés (>=2) et les raisons, hors ligne
                                 (read|rp|write|peek|dump) — selon l'état de l'appareil
     avb <info|disable> <file>   avbtool hors ligne : analyse vbmeta / désactive la vérification
     fs_shell boot [file]        Navigue interactivement le ramdisk d'une image boot (cpio)
@@ -885,6 +921,7 @@ const HELP_RU: &str = r#"mtkclient-rs
       --via misc|para|da|xml|preloader   Путь перезагрузки (по умолчанию misc)
   Прочее:
     chain <goal>                Показать запланированную цепочку эксплойтов для цели
+    plan <op>                   Показать план путей (>=2) и причины, офлайн
                                 (read|rp|write|peek|dump) — с учётом состояния устройства
     avb <info|disable> <file>   Автономный avbtool: разбор vbmeta / отключение проверки
     fs_shell boot [file]        Интерактивный просмотр ramdisk образа boot (cpio)
@@ -968,6 +1005,7 @@ Comandos:
       --via misc|para|da|xml|preloader   Vía de reinicio (por defecto: misc)
   Varios:
     chain <goal>                Muestra la cadena de exploit planificada para un objetivo
+    plan <op>                   Muestra rutas planificadas (>=2) y motivos, sin conexión
                                 (read|rp|write|peek|dump) — según el estado del dispositivo
     avb <info|disable> <file>   avbtool sin conexión: analiza vbmeta / desactiva la verificación
     fs_shell boot [file]        Navega interactivamente el ramdisk de una imagen boot (cpio)
@@ -1051,6 +1089,7 @@ const HELP_AR: &str = r#"mtkclient-rs
       --via misc|para|da|xml|preloader   مسار إعادة التشغيل (الافتراضي: misc)
   متفرقات:
     chain <goal>                عرض سلسلة الاستغلال المخططة لهدف معين
+    plan <op>                   عرض المسارات المخططة (>=2) والأسباب، دون اتصال
                                 (read|rp|write|peek|dump) — حسب حالة الجهاز
     avb <info|disable> <file>   أداة avbtool دون اتصال: تحليل vbmeta / تعطيل التحقق
     fs_shell boot [file]        تصفح تفاعلي لـ ramdisk صورة boot (cpio)

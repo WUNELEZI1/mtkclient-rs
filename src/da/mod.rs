@@ -9,6 +9,7 @@
 //! DAXFlash 是整个 DA 子系统的核心结构体，在此 re-export。
 
 pub mod ext;
+pub mod fixture;
 pub mod loader;
 pub mod xflash;
 pub mod xml;

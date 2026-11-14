@@ -144,6 +144,7 @@ pub struct Cli {
     poke <addr> <hex>           写入数据到设备内存\n\
     fs_shell                    交互式浏览 super 分区文件系统\n\
     multi \"<cmd1>;<cmd2>...\"   一次 DA 会话执行多个命令\n\
+    plan <op>                   离线查看规划（≥2 条路径 + 选择理由，不连接设备）
     run <script.json>           从 JSON 脚本文件批量执行命令"
     )]
     pub command: Option<String>,
