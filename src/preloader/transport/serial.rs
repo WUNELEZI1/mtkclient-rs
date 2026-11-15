@@ -315,6 +315,7 @@ fn serial_do_handshake(
 
 impl BromTransport for SerialPortTransport {
     fn write(&mut self, data: &[u8]) -> Result<usize, String> {
+        super::trace_io("->", data);
         let port = self.port.as_mut().ok_or("串口已关闭")?;
         port.write_all(data)
             .map_err(|e| format!("serial write: {}", e))?;
@@ -325,6 +326,7 @@ impl BromTransport for SerialPortTransport {
         let port = self.port.as_mut().ok_or("串口已关闭")?;
         port.read_exact(buf)
             .map_err(|e| format!("serial read_exact: {}", e))?;
+        super::trace_io("<-", buf);
         Ok(buf.len())
     }
 

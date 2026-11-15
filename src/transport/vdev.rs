@@ -54,6 +54,10 @@ pub enum DeviceFault {
     Silent,
     /// 从第 N 个主机字节起，设备断开（主机侧表现为 Disconnected）
     Dead,
+    /// 累计写入字节达到 N 时断开（模拟写入中途拔线，用于验证断点续传）
+    WriteDead(u64),
+    /// 累计写入字节达到 N 时静默（模拟写入卡死）
+    WriteSilent(u64),
 }
 
 /// 设备画像。
@@ -84,6 +88,14 @@ pub struct DeviceProfile {
     pub emmc_info: bool,
     /// 设备侧接受的 exploit 名称（仿真专用）
     pub exploits: Vec<String>,
+    /// 当前活动 A/B 槽（None = 非 A/B 设备）
+    pub slot: Option<char>,
+    /// bootctrl 是否可读（false 时若 _a/_b 同时存在 → 槽位不可判定）
+    pub bootctrl: bool,
+    /// seccfg 分区的 lock_state（1=locked, 3=unlocked）
+    pub seccfg_lock_state: u32,
+    /// seccfg 的 dm_verity_state（0x10 偏移）
+    pub seccfg_dm_verity: u32,
 }
 
 impl Default for DeviceProfile {
@@ -106,6 +118,10 @@ impl Default for DeviceProfile {
             faults: Vec::new(),
             emmc_info: true,
             exploits: vec![],
+            slot: Some('a'),
+            bootctrl: true,
+            seccfg_lock_state: 1,
+            seccfg_dm_verity: 0,
         }
     }
 }
@@ -145,7 +161,7 @@ impl DeviceProfile {
             brom_auth_required: self.brom_auth,
             preloader_patched: self.preloader_patched,
             da_signature_failed: self.da_sig_failed,
-            current_slot: None,
+            current_slot: self.slot,
         }
     }
 
@@ -207,15 +223,27 @@ impl DeviceProfile {
                     if parts.len() != 2 {
                         return Err(format!("fault 需要 kind:at: {}", v));
                     }
-                    let at = num(parts[1])?.0 as usize;
-                    let kind = match parts[0] {
-                        "silent" => DeviceFault::Silent,
-                        "dead" => DeviceFault::Dead,
+                    let at = num(parts[1])?.0;
+                    match parts[0] {
+                        "silent" => p.faults.push((at as usize, DeviceFault::Silent)),
+                        "dead" => p.faults.push((at as usize, DeviceFault::Dead)),
+                        "write_dead" => p.faults.push((0, DeviceFault::WriteDead(at))),
+                        "write_silent" => p.faults.push((0, DeviceFault::WriteSilent(at))),
                         other => return Err(format!("未知 fault 类型: {}", other)),
-                    };
-                    p.faults.push((at, kind));
+                    }
                 }
                 "exploit" => p.exploits.push(v.to_string()),
+                "slot" => {
+                    p.slot = match v {
+                        "none" | "off" | "-" => None,
+                        "a" | "A" => Some('a'),
+                        "b" | "B" => Some('b'),
+                        other => return Err(format!("slot 只能是 a/b/none: {}", other)),
+                    }
+                }
+                "bootctrl" => p.bootctrl = truthy(v),
+                "seccfg.lock_state" => p.seccfg_lock_state = num(v)?.as_num::<u32>(k)?,
+                "seccfg.dm_verity" => p.seccfg_dm_verity = num(v)?.as_num::<u32>(k)?,
                 other => return Err(format!("未知配置项: {}", other)),
             }
         }
@@ -286,6 +314,21 @@ impl DeviceProfile {
                 p.name = "MT6768 (unplugged)".into();
                 p.faults = vec![(120, DeviceFault::Dead)];
             }
+            // 写入中途拔线：写到 10MB 断开，用于验证断点续传
+            "flaky-write" => {
+                p.name = "MT6768 (write drops @10MB)".into();
+                p.faults = vec![(0, DeviceFault::WriteDead(10 * 1024 * 1024))];
+                p.exploits = vec!["kamakiri2".into()];
+            }
+            // A/B 混合布局 + bootctrl 不可读：槽位不可判定（vbmeta 必须报错而不是猜）
+            "ab-unknown-slot" => {
+                p.name = "MT6877 (A/B, bootctrl unreadable)".into();
+                p.da_code = 0x6877;
+                p.partitions = ab_partitions();
+                p.slot = None;
+                p.bootctrl = false;
+                p.exploits = vec!["kamakiri2".into()];
+            }
             // DA 拒绝服务（SEND_DA 状态错误）：用于验证错误传播
             "no-emmc-info" => {
                 p.name = "MT6768 (no emmc info)".into();
@@ -314,6 +357,9 @@ fn layout(items: &[(&str, u64)]) -> Vec<(String, u64, u64)> {
 
 fn default_partitions() -> Vec<(String, u64, u64)> {
     layout(&[
+        ("seccfg", 0x20_000),
+        ("misc", 0x10_0000),
+        ("para", 0x80_000),
         ("boot_a", 0x20_00000),
         ("boot_b", 0x20_00000),
         ("recovery", 0x30_00000),
@@ -327,6 +373,8 @@ fn default_partitions() -> Vec<(String, u64, u64)> {
 
 fn v6_partitions() -> Vec<(String, u64, u64)> {
     layout(&[
+        ("seccfg", 0x20_000),
+        ("misc", 0x10_0000),
         ("boot_a", 0x60_00000),
         ("init_boot_a", 0x80_0000),
         ("vendor_boot_a", 0x60_00000),
@@ -338,11 +386,15 @@ fn v6_partitions() -> Vec<(String, u64, u64)> {
 
 fn ab_partitions() -> Vec<(String, u64, u64)> {
     layout(&[
+        ("seccfg", 0x20_000),
+        ("misc", 0x10_0000),
         ("boot_a", 0x40_00000),
         ("boot_b", 0x40_00000),
         ("vendor_boot_a", 0x40_00000),
         ("vbmeta_a", 0x10000),
+        ("vbmeta_b", 0x10000),
         ("vbmeta_system_a", 0x10000),
+        ("vbmeta_system_b", 0x10000),
         ("super", 0x2000_00000),
         ("userdata", 0x10000_00000),
     ])
@@ -429,6 +481,17 @@ pub struct VirtualDevice {
     pending_read: Option<(u64, u64)>,
     /// 存储镜像（GPT 区域）
     image: Vec<u8>,
+    /// 分区内容（按 4 KiB 页存，稀疏；未命中回落到 image / 0x00）
+    pages: std::collections::HashMap<u64, Vec<u8>>,
+    /// 已擦除区间（读回 0xFF）。用区间表示而不是逐页填充，
+    /// 否则擦一个 1 GiB 的分区会直接吃掉 1 GiB 内存。
+    erased: Vec<(u64, u64)>,
+    /// 当前写入事务
+    write: Option<WriteSession>,
+    /// FORMAT 事务阶段（0=空闲 1=等第一个 ack 2=等收尾 ack）
+    format_stage: u8,
+    /// 本设备累计被写入的字节数（故障注入用）
+    total_written: u64,
     faults: Vec<(usize, DeviceFault)>,
     host_bytes: usize,
     dead: bool,
@@ -442,9 +505,28 @@ pub struct VirtualDevice {
 /// 镜像窗口大小：足够覆盖 LBA0.. 主 GPT + 分区项（32KB 读取足够，留余量）。
 const IMAGE_LEN: usize = 1024 * 1024;
 
+/// 存储页大小（稀疏存储粒度）。
+const PAGE: u64 = 4096;
+/// 仿真状态文件的魔数（8 字节，紧跟 u32 版本号）。
+const STATE_MAGIC: &[u8; 8] = b"VDEV1\0\0\0";
+/// 仿真状态文件布局版本；布局变更时递增，避免读到旧格式后静默错乱。
+const STATE_VERSION: u32 = 1;
+
+/// 一次写入事务（设备侧）。
+#[derive(Debug)]
+struct WriteSession {
+    addr: u64,
+    size: u64,
+    written: u64,
+    /// 0=期待 0u32 1=期待 checksum 2=期待数据
+    stage: u8,
+    checksum: u32,
+}
+
 impl VirtualDevice {
     pub fn new(profile: DeviceProfile) -> Self {
         let image = build_image(&profile);
+        let pages = build_pages(&profile);
         let faults = profile.faults.clone();
         Self {
             profile,
@@ -458,7 +540,12 @@ impl VirtualDevice {
             bypassed: false,
             pending_cmd: None,
             pending_read: None,
+            pages,
+            erased: Vec::new(),
             image,
+            write: None,
+            format_stage: 0,
+            total_written: 0,
             faults,
             host_bytes: 0,
             dead: false,
@@ -478,6 +565,106 @@ impl VirtualDevice {
     #[allow(dead_code)]
     pub fn profile_text(text: &str) -> Result<Self, String> {
         DeviceProfile::from_text(text).map(Self::new)
+    }
+
+    /// 保存 flash 状态（页 + 擦除区间）到文件，用于跨进程复现"拔插重连"。
+    pub fn save_state(&self, path: &str) -> Result<(), String> {
+        // 头部固定 12 字节：magic(8) + 版本(4)，与 `load_state` 的 p=12 严格对称
+        let mut buf = Vec::with_capacity(12 + self.pages.len() * (8 + PAGE as usize));
+        buf.extend_from_slice(STATE_MAGIC);
+        buf.extend_from_slice(&STATE_VERSION.to_le_bytes());
+        buf.extend_from_slice(&(self.pages.len() as u32).to_le_bytes());
+        for (k, v) in &self.pages {
+            buf.extend_from_slice(&k.to_le_bytes());
+            buf.extend_from_slice(v);
+        }
+        buf.extend_from_slice(&(self.erased.len() as u32).to_le_bytes());
+        for (s, e) in &self.erased {
+            buf.extend_from_slice(&s.to_le_bytes());
+            buf.extend_from_slice(&e.to_le_bytes());
+        }
+        buf.extend_from_slice(&self.total_written.to_le_bytes());
+        std::fs::write(path, buf).map_err(|e| format!("保存仿真状态失败: {}", e))
+    }
+
+    /// 载入 flash 状态（`save_state` 的逆操作）。
+    pub fn load_state(&mut self, path: &str) -> Result<(), String> {
+        let buf = std::fs::read(path).map_err(|e| format!("读取仿真状态失败: {}", e))?;
+        if buf.len() < 12 || &buf[0..8] != STATE_MAGIC {
+            return Err("仿真状态文件格式不匹配".to_string());
+        }
+        let ver = u32::from_le_bytes(buf[8..12].try_into().unwrap());
+        if ver != STATE_VERSION {
+            return Err(format!(
+                "仿真状态文件版本不支持: {}（当前 {}）",
+                ver, STATE_VERSION
+            ));
+        }
+        let mut p = 12usize;
+        let rd_u32 = |b: &[u8], o: usize| -> u32 {
+            u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+        };
+        let pages = rd_u32(&buf, p) as usize;
+        p += 4;
+        // 页数上限：防止损坏文件导致巨额预分配（4 GiB 的 4 KiB 页 = 1M，留 8 倍余量）
+        if pages > 8 * 1024 * 1024 || 12 + 4 + pages * (8 + PAGE as usize) > buf.len() {
+            return Err("仿真状态文件被截断（页区）".to_string());
+        }
+        self.pages.clear();
+        for _ in 0..pages {
+            if p + 8 + PAGE as usize > buf.len() {
+                return Err("仿真状态文件被截断（页区）".to_string());
+            }
+            let key = u64::from_le_bytes(buf[p..p + 8].try_into().unwrap());
+            p += 8;
+            self.pages.insert(key, buf[p..p + PAGE as usize].to_vec());
+            p += PAGE as usize;
+        }
+        let ranges = if p + 4 <= buf.len() {
+            rd_u32(&buf, p) as usize
+        } else {
+            return Err("仿真状态文件被截断（擦除区）".to_string());
+        };
+        p += 4;
+        self.erased.clear();
+        if ranges > 1024 * 1024 || p + ranges * 16 > buf.len() {
+            return Err("仿真状态文件被截断（擦除区）".to_string());
+        }
+        for _ in 0..ranges {
+            if p + 16 > buf.len() {
+                return Err("仿真状态文件被截断（擦除区）".to_string());
+            }
+            let s = u64::from_le_bytes(buf[p..p + 8].try_into().unwrap());
+            let e = u64::from_le_bytes(buf[p + 8..p + 16].try_into().unwrap());
+            p += 16;
+            self.erased.push((s, e));
+        }
+        if p + 8 <= buf.len() {
+            self.total_written = u64::from_le_bytes(buf[p..p + 8].try_into().unwrap());
+        }
+        self.ev(format!("状态已载入: {} 页", self.pages.len()));
+        Ok(())
+    }
+
+    /// 模拟"拔插一次"：清故障与协议状态，**保留 flash 内容**（写入/擦除结果不丢）。
+    ///
+    /// 断点续传的语义正是建立在这条假设上：重连后存储里的数据还在，
+    /// 因此可以从 `.resume` 记录的偏移继续写。
+    pub fn replug(&mut self) {
+        self.out.clear();
+        self.state = State::Handshake(0);
+        self.dead = false;
+        self.silent = false;
+        self.host_bytes = 0;
+        self.da_stage = 0;
+        self.da_buf.clear();
+        self.pending_cmd = None;
+        self.pending_read = None;
+        self.write = None;
+        self.format_stage = 0;
+        self.faults.clear();
+        self.bypassed = false;
+        self.ev("replug: 已重连（flash 内容保留）");
     }
 
     fn ev(&mut self, msg: impl Into<String>) {
@@ -782,6 +969,18 @@ impl VirtualDevice {
     }
 
     fn on_da_payload(&mut self, payload: &[u8]) -> Result<(), PortError> {
+        // ── 写入事务：三个参数包 [0u32][checksum][data] 为一块，块末回一个 status
+        if self.write.is_some() {
+            let done = self.on_write_param(payload)?;
+            if done {
+                return Ok(());
+            }
+        }
+        // ── FORMAT 的两步 ack
+        if self.format_stage > 0 && payload.len() == 4 {
+            self.on_format_ack(payload)?;
+            return Ok(());
+        }
         // 参数块（长度 56 或紧跟"需要参数"的命令）
         if let Some(cmd) = self.pending_cmd {
             if payload.len() != 4 || !is_command_word(payload) {
@@ -834,6 +1033,17 @@ impl VirtualDevice {
                 self.pending_cmd = Some(cmd);
                 self.push_status(0);
             }
+            wire::XFLASH_CMD_WRITE_DATA => {
+                self.pending_cmd = Some(cmd);
+                self.push_status(0);
+            }
+            wire::XFLASH_CMD_FORMAT => {
+                self.pending_cmd = Some(cmd);
+                self.push_status(0);
+            }
+            wire::XFLASH_DEVCTRL_CC_OPTIONAL_DOWNLOAD_ACT => {
+                self.push_status(0);
+            }
             other => {
                 self.ev(format!("DA: 不支持命令 0x{:06X}", other));
                 self.push_status(wire::XFLASH_STATUS_UNSUPPORTED);
@@ -871,6 +1081,42 @@ impl VirtualDevice {
                 self.ev(format!("SET_STORAGE: type={}", t));
                 self.push_status(0);
             }
+            wire::XFLASH_CMD_WRITE_DATA => {
+                if param.len() < 24 {
+                    self.push_status(1);
+                    return Ok(());
+                }
+                let parttype = u32::from_le_bytes(param[4..8].try_into().unwrap());
+                let addr = u64::from_le_bytes(param[8..16].try_into().unwrap());
+                let size = u64::from_le_bytes(param[16..24].try_into().unwrap());
+                self.ev(format!(
+                    "WRITE_DATA: addr=0x{:X} size={} parttype={}",
+                    addr, size, parttype
+                ));
+                self.write = Some(WriteSession {
+                    addr,
+                    size,
+                    written: 0,
+                    stage: 0,
+                    checksum: 0,
+                });
+                self.push_status(0);
+            }
+            wire::XFLASH_CMD_FORMAT => {
+                if param.len() < 24 {
+                    self.push_status(1);
+                    return Ok(());
+                }
+                let addr = u64::from_le_bytes(param[8..16].try_into().unwrap());
+                let size = u64::from_le_bytes(param[16..24].try_into().unwrap());
+                self.erase_range(addr, size);
+                self.ev(format!("FORMAT: addr=0x{:X} size={}", addr, size));
+                self.push_status(0);
+                // 设备侧耗时：CONTINUE + 等待毫秒，等主机 ack 后给 COMPLETE
+                self.push_status(wire::XFLASH_STATUS_CONTINUE);
+                self.push_status(2);
+                self.format_stage = 1;
+            }
             other => {
                 self.ev(format!("DA: 命令 0x{:06X} 不接受参数", other));
                 self.push_status(wire::XFLASH_STATUS_UNSUPPORTED);
@@ -879,26 +1125,217 @@ impl VirtualDevice {
         Ok(())
     }
 
+    /// 读一段 flash：先查稀疏页（写入/擦除过的内容），再回落到 GPT 镜像。
     fn read_window(&self, addr: u64, size: u64) -> Vec<u8> {
-        let start = addr as usize;
-        let len = size as usize;
-        let mut out = vec![0u8; len];
-        if start < self.image.len() {
-            let end = (start + len).min(self.image.len());
-            out[..end - start].copy_from_slice(&self.image[start..end]);
+        let mut out = Vec::with_capacity(size as usize);
+        let mut pos = addr;
+        let end = addr + size;
+        while pos < end {
+            let page = pos / PAGE;
+            let off = (pos % PAGE) as usize;
+            let take = ((PAGE - off as u64).min(end - pos)) as usize;
+            let buf = self.page_bytes(page);
+            out.extend_from_slice(&buf[off..off + take]);
+            pos += take as u64;
         }
         out
     }
 
+    /// 该地址是否落在已擦除区间内。
+    fn is_erased(&self, addr: u64) -> bool {
+        self.erased.iter().any(|(s, e)| addr >= *s && addr < *e)
+    }
+
+    /// 取一页（4 KiB）当前内容：稀疏页优先 → 已擦除区间（0xFF）→ GPT 镜像 → 0x00。
+    fn page_bytes(&self, page: u64) -> Vec<u8> {
+        if let Some(v) = self.pages.get(&page) {
+            return v.clone();
+        }
+        let mut v = vec![0u8; PAGE as usize];
+        if self.is_erased(page * PAGE) {
+            v.fill(0xFF);
+            return v;
+        }
+        let base = page * PAGE;
+        if base < self.image.len() as u64 {
+            let end = (base + PAGE).min(self.image.len() as u64);
+            v[..(end - base) as usize].copy_from_slice(&self.image[base as usize..end as usize]);
+        }
+        v
+    }
+
+    /// 写一段数据到稀疏页（自动读-改-写，保证页内其他字节不变）。
+    fn write_range(&mut self, addr: u64, data: &[u8]) {
+        let mut pos = addr;
+        let end = addr + data.len() as u64;
+        let mut src = 0usize;
+        while pos < end {
+            let page = pos / PAGE;
+            let off = (pos % PAGE) as usize;
+            let take = ((PAGE - off as u64).min(end - pos)) as usize;
+            let mut buf = self.page_bytes(page);
+            buf[off..off + take].copy_from_slice(&data[src..src + take]);
+            self.pages.insert(page, buf);
+            pos += take as u64;
+            src += take;
+        }
+    }
+
+    /// 擦除一段区域：真机擦除后读回 0xFF。
+    ///
+    /// 先丢弃该区间内被写过的页，再记录一条擦除区间（合并相邻区间），
+    /// 这样擦 1 GiB 也只占几条记录，而不是 26 万个 4 KiB 页。
+    fn erase_range(&mut self, addr: u64, size: u64) {
+        let end = addr + size;
+        let (p0, p1) = (addr / PAGE, (end + PAGE - 1) / PAGE);
+        self.pages.retain(|p, _| *p < p0 || *p >= p1);
+        self.erased.push((addr, end));
+        // 合并相邻/重叠区间
+        self.erased.sort_unstable();
+        let mut merged: Vec<(u64, u64)> = Vec::with_capacity(self.erased.len());
+        for (s, e) in self.erased.drain(..) {
+            match merged.last_mut() {
+                Some(last) if s <= last.1 => last.1 = last.1.max(e),
+                _ => merged.push((s, e)),
+            }
+        }
+        self.erased = merged;
+    }
+
+    /// 已写入的总字节数（诊断用）。
+    #[allow(dead_code)]
+    pub fn written_bytes(&self) -> u64 {
+        self.total_written
+    }
+
+    /// 写入事务：处理 [0u32][checksum][data] 三个参数包。
+    /// 返回 Ok(true) 表示该负载已被写入事务消费。
+    fn on_write_param(&mut self, payload: &[u8]) -> Result<bool, PortError> {
+        let Some(mut ws) = self.write.take() else {
+            return Ok(false);
+        };
+        match ws.stage {
+            0 => {
+                if payload.len() == 4 && payload.iter().all(|b| *b == 0) {
+                    ws.stage = 1;
+                    self.write = Some(ws);
+                    return Ok(true);
+                }
+            }
+            1 => {
+                if payload.len() == 4 {
+                    ws.checksum = u32::from_le_bytes(payload[..4].try_into().unwrap());
+                    ws.stage = 2;
+                    self.write = Some(ws);
+                    return Ok(true);
+                }
+            }
+            _ => {
+                if payload.len() % 512 != 0 {
+                    self.ev(format!(
+                        "WRITE_DATA: 分块未对齐 512（{} 字节）",
+                        payload.len()
+                    ));
+                    self.push_status(wire::XFLASH_STATUS_CHECKSUM);
+                    return Ok(true);
+                }
+                // 校验和（对齐 mtkclient: sum(data) & 0xFFFF）
+                let sum = (payload.iter().map(|b| *b as u32).sum::<u32>()) & 0xFFFF;
+                if sum != ws.checksum {
+                    self.ev(format!(
+                        "WRITE_DATA: checksum 不匹配 期望 0x{:04X} 实际 0x{:04X}",
+                        ws.checksum, sum
+                    ));
+                    self.push_status(wire::XFLASH_STATUS_CHECKSUM);
+                    return Ok(true);
+                }
+                // 写入中途故障注入
+                self.total_written += payload.len() as u64;
+                let want_dead = self
+                    .faults
+                    .iter()
+                    .find_map(|(_, k)| match k {
+                        DeviceFault::WriteDead(at) if self.total_written >= *at => Some(true),
+                        _ => None,
+                    })
+                    .unwrap_or(false);
+                if want_dead {
+                    self.dead = true;
+                    self.ev(format!("fault: write dead at {} bytes", self.total_written));
+                    return Err(PortError::Disconnected);
+                }
+                let want_silent = self.faults.iter().any(
+                    |(_, k)| matches!(k, DeviceFault::WriteSilent(at) if self.total_written >= *at),
+                );
+                if want_silent {
+                    self.silent = true;
+                    self.ev(format!(
+                        "fault: write silent at {} bytes",
+                        self.total_written
+                    ));
+                    return Ok(true);
+                }
+
+                self.write_range(ws.addr + ws.written, payload);
+                ws.written += payload.len() as u64;
+                ws.stage = 0;
+                self.push_status(0);
+                if ws.written >= ws.size {
+                    // 事务收尾 status（主机 end_write 会读它）
+                    self.push_status(0);
+                    self.ev(format!(
+                        "WRITE_DATA 完成: 0x{:X} + {} 字节",
+                        ws.addr, ws.written
+                    ));
+                    self.write = None;
+                } else {
+                    self.write = Some(ws);
+                }
+                return Ok(true);
+            }
+        }
+        // 不符合预期：拒绝该负载，终止写入事务
+        self.ev(format!(
+            "WRITE_DATA: 非预期参数 len={} stage={}",
+            payload.len(),
+            ws.stage
+        ));
+        self.push_status(wire::XFLASH_STATUS_CHECKSUM);
+        Ok(true)
+    }
+
+    /// FORMAT 的 ack 处理：第一次 ack → COMPLETE；第二次 ack → 收尾 0。
+    fn on_format_ack(&mut self, payload: &[u8]) -> Result<(), PortError> {
+        if payload.len() != 4 {
+            return Ok(());
+        }
+        match self.format_stage {
+            1 => {
+                self.push_status(wire::XFLASH_STATUS_COMPLETE);
+                self.format_stage = 2;
+            }
+            _ => {
+                self.push_status(0);
+                self.format_stage = 0;
+                self.ev("FORMAT 完成");
+            }
+        }
+        Ok(())
+    }
+
     fn emmc_info_payload(&self) -> Vec<u8> {
-        // 104 字节：type(4) block(4) boot1(8) boot2(8) rpmb(8) user(8) ...
+        // 104 字节，严格对齐 mtkclient `get_emmc_info` 的解析顺序：
+        //   0 type(4) | 4 block(4) | 8 boot1(8) | 16 boot2(8) | 24 rpmb(8)
+        //   32 gp1 | 40 gp2 | 48 gp3 | 56 gp4 | **64 user(8)** | 72 cid(16) | 88 fwver(8)
+        // 注意：user_size 在 0x40 而不是 0x20（0x20 是 gp1），
+        // 早期实现两边都写在 0x20，"互相自洽但与真机不符"。
         let mut v = vec![0u8; 104];
         v[0..4].copy_from_slice(&self.profile.storage.emmc_type.to_le_bytes());
         v[4..8].copy_from_slice(&self.profile.storage.block.to_le_bytes());
         v[8..16].copy_from_slice(&self.profile.storage.boot1.to_le_bytes());
         v[16..24].copy_from_slice(&self.profile.storage.boot2.to_le_bytes());
         v[24..32].copy_from_slice(&self.profile.storage.rpmb.to_le_bytes());
-        v[32..40].copy_from_slice(&self.profile.storage.user.to_le_bytes());
+        v[64..72].copy_from_slice(&self.profile.storage.user.to_le_bytes());
         v
     }
 }
@@ -916,6 +1353,9 @@ fn is_command_word(payload: &[u8]) -> bool {
             | wire::XFLASH_CMD_GET_DA_VER
             | wire::XFLASH_DEVCTRL_ACK
             | wire::XFLASH_DEVCTRL_SET_STORAGE
+            | wire::XFLASH_CMD_WRITE_DATA
+            | wire::XFLASH_CMD_FORMAT
+            | wire::XFLASH_DEVCTRL_CC_OPTIONAL_DOWNLOAD_ACT
     )
 }
 
@@ -983,6 +1423,81 @@ fn crc32(data: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+/// 生成各分区的初始内容（按 4 KiB 页稀疏存放）。
+///
+/// 只有"有内容的分区"才占页：GPT 之外的空白区域读回 0x00，不会白白吃内存。
+fn build_pages(profile: &DeviceProfile) -> std::collections::HashMap<u64, Vec<u8>> {
+    use std::collections::HashMap;
+    let mut pages: HashMap<u64, Vec<u8>> = HashMap::new();
+
+    let mut put = |addr: u64, data: &[u8]| {
+        let mut pos = addr;
+        let end = addr + data.len() as u64;
+        let mut src = 0usize;
+        while pos < end {
+            let page = pos / PAGE;
+            let off = (pos % PAGE) as usize;
+            let take = ((PAGE - off as u64).min(end - pos)) as usize;
+            let buf = pages
+                .entry(page)
+                .or_insert_with(|| vec![0u8; PAGE as usize]);
+            buf[off..off + take].copy_from_slice(&data[src..src + take]);
+            pos += take as u64;
+            src += take;
+        }
+    };
+
+    for (name, start_lba, size) in &profile.partitions {
+        let addr = start_lba * 512;
+        match name.as_str() {
+            // seccfg：真实 V4 结构（28 字节头 + 32 字节哈希），供 unlock 测试
+            "seccfg" => {
+                let mut hdr = [0u8; 28];
+                hdr[0..4].copy_from_slice(&0x4D4D_4D4Du32.to_le_bytes());
+                hdr[4..8].copy_from_slice(&4u32.to_le_bytes());
+                hdr[8..12].copy_from_slice(&0x3Cu32.to_le_bytes());
+                hdr[12..16].copy_from_slice(&profile.seccfg_lock_state.to_le_bytes());
+                hdr[16..20].copy_from_slice(&profile.seccfg_dm_verity.to_le_bytes());
+                hdr[20..24].copy_from_slice(&0u32.to_le_bytes()); // sboot_runtime
+                hdr[24..28].copy_from_slice(&0x4545_4545u32.to_le_bytes());
+                let digest = crate::sha::Sha256::digest(&hdr);
+                let mut img = hdr.to_vec();
+                img.extend_from_slice(&digest);
+                put(addr, &img);
+            }
+            // vbmeta / vbmeta_system_*：合法 AVB 镜像（flags=0，含 boot descriptor）
+            n if n.starts_with("vbmeta") => {
+                let img = crate::security::avb::synthetic_vbmeta(0, &["boot"]);
+                put(addr, &img);
+            }
+            // misc：boot_control 结构（偏移 0x2000 的 "BOOT" + 活动槽）
+            "misc" => {
+                let mut img = vec![0u8; 0x3000];
+                if profile.bootctrl {
+                    img[0x2000..0x2004].copy_from_slice(b"BOOT");
+                    let slot = match profile.slot {
+                        Some('b') => 1u32,
+                        _ => 0u32,
+                    };
+                    img[0x2008..0x200C].copy_from_slice(&slot.to_le_bytes());
+                }
+                put(addr, &img);
+            }
+            // 其余分区：写入可辨识的初始内容（前 64 KiB），便于验证读写回环
+            _ => {
+                let len = (*size).min(64 * 1024) as usize;
+                let mut img = vec![0u8; len];
+                let seed = name.bytes().fold(0u8, |a, b| a.wrapping_add(b));
+                for (i, b) in img.iter_mut().enumerate() {
+                    *b = seed.wrapping_add(i as u8);
+                }
+                put(addr, &img);
+            }
+        }
+    }
+    pages
 }
 
 fn build_image(profile: &DeviceProfile) -> Vec<u8> {
@@ -1095,6 +1610,69 @@ mod tests {
     }
 
     #[test]
+    fn emmc_info_reports_user_at_0x40() {
+        let dev = VirtualDevice::from_preset("v5-clean").unwrap();
+        let p = dev.emmc_info_payload();
+        assert_eq!(p.len(), 104);
+        assert_eq!(
+            u64::from_le_bytes(p[0x40..0x48].try_into().unwrap()),
+            dev.profile.storage.user
+        );
+    }
+
+    #[test]
+    fn write_with_bad_checksum_is_rejected() {
+        use crate::da::engine::DaEngine;
+        let mut dev = VirtualDevice::from_preset("v5-clean").unwrap();
+        let mut e = DaEngine::new();
+        e.connect(&mut dev).unwrap();
+        e.load_da(&mut dev, &[0xAB; 256]).unwrap();
+        e.begin_write(&mut dev, 0x100000, 512, 1, 8).unwrap();
+        // 直接构造一个校验和错误的分块
+        let data = [0x11u8; 512];
+        let bad = 0x1234u32.to_le_bytes();
+        let zero = 0u32.to_le_bytes();
+        let hdr = |len: usize| {
+            let mut h = Vec::new();
+            h.extend_from_slice(&wire::XFLASH_MAGIC.to_le_bytes());
+            h.extend_from_slice(&wire::XFLASH_TYPE_FLOW.to_le_bytes());
+            h.extend_from_slice(&(len as u32).to_le_bytes());
+            h
+        };
+        let mut pkt = Vec::new();
+        pkt.extend(hdr(4));
+        pkt.extend(zero);
+        pkt.extend(hdr(4));
+        pkt.extend(bad);
+        pkt.extend(hdr(data.len()));
+        pkt.extend(data);
+        dev.write(&pkt).unwrap();
+        let mut st = [0u8; 16];
+        let n = dev.read(&mut st).unwrap();
+        // 回包：12 字节头 + 4 字节状态
+        let status = u32::from_le_bytes(st[n - 4..n].try_into().unwrap());
+        assert_eq!(status, wire::XFLASH_STATUS_CHECKSUM);
+        assert!(
+            dev.events.iter().any(|e| e.contains("checksum 不匹配")),
+            "设备应记录校验和错误: {:?}",
+            dev.events
+        );
+    }
+
+    #[test]
+    fn erase_sets_erased_range_without_materializing_pages() {
+        let mut dev = VirtualDevice::from_preset("v5-clean").unwrap();
+        let before = dev.pages.len();
+        dev.erase_range(0, 64 * 1024 * 1024);
+        assert!(dev.pages.len() <= before, "擦除不应物化页");
+        let head = dev.read_window(0, 512);
+        assert!(head.iter().all(|b| *b == 0xFF));
+        // 幂等：再擦一次，结果相同
+        dev.erase_range(0, 64 * 1024 * 1024);
+        assert!(dev.read_window(0, 512).iter().all(|b| *b == 0xFF));
+    }
+
+    #[test]
     fn profile_text_roundtrip() {
         let text = "\
 name=MT6765
@@ -1134,5 +1712,56 @@ exploit=kamakiri2
         handshake(&mut dev);
         dev.write(&[0x7E]).unwrap();
         assert!(dev.events.iter().any(|e| e.contains("未支持命令")));
+    }
+
+    /// 状态文件的读写布局必须严格对称——跨进程断点续传全靠它。
+    #[test]
+    fn state_roundtrip_preserves_pages_and_erased() {
+        let mut dev = VirtualDevice::from_preset("v5-clean").unwrap();
+        dev.write_range(0x1000, &[0xAB; 8192]); // 两页
+        dev.write_range(0x9000, &[0xCD; 4096]); // 一页
+        dev.erase_range(0x2_0000, 0x1_0000);
+        dev.total_written = 0x1234;
+
+        let path = std::env::temp_dir().join(format!("vdev-state-{}.bin", std::process::id()));
+        let path = path.to_string_lossy().to_string();
+        dev.save_state(&path).unwrap();
+
+        let mut dst = VirtualDevice::from_preset("v5-clean").unwrap();
+        dst.load_state(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(dst.pages, dev.pages); // 预设自带的种子页也要一页不差
+        assert_eq!(dst.total_written, 0x1234);
+        assert_eq!(dst.erased, dev.erased);
+        assert!(
+            dev.erased
+                .iter()
+                .any(|(s, e)| *s <= 0x2_0000 && *e >= 0x3_0000)
+        );
+        // 内容逐字节一致（含页内未被写的空白部分）
+        assert_eq!(dst.read_window(0x1000, 8192), vec![0xAB; 8192]);
+        assert_eq!(dst.read_window(0x9000, 4096), vec![0xCD; 4096]);
+        assert_eq!(dst.read_window(0x2_0000, 4096), vec![0xFF; 4096]);
+    }
+
+    #[test]
+    fn state_load_rejects_bad_magic_and_version() {
+        let dir = std::env::temp_dir();
+        let bad = dir.join(format!("vdev-bad-{}.bin", std::process::id()));
+        let bad = bad.to_string_lossy().to_string();
+
+        std::fs::write(&bad, b"nope\0\0\0\0\0\0\0\0").unwrap();
+        let mut dev = VirtualDevice::from_preset("v5-clean").unwrap();
+        assert!(dev.load_state(&bad).unwrap_err().contains("格式不匹配"));
+
+        let mut v2 = Vec::from(*STATE_MAGIC);
+        v2.extend_from_slice(&99u32.to_le_bytes());
+        std::fs::write(&bad, &v2).unwrap();
+        assert!(dev.load_state(&bad).unwrap_err().contains("版本不支持"));
+
+        std::fs::write(&bad, &v2[..10]).unwrap();
+        assert!(dev.load_state(&bad).unwrap_err().contains("格式不匹配"));
+        let _ = std::fs::remove_file(&bad);
     }
 }

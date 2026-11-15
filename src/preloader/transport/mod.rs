@@ -21,6 +21,40 @@ pub(crate) mod usb;
 // Re-exports — 保持 crate::preloader::transport::* 的对外可达性
 pub use serial::SerialPortTransport;
 
+/// `--log 3` 下把线上字节打成带时间戳的 hex dump。
+///
+/// 只做格式化，不做缓冲/改写：真机的写入路径（`UsbDevice::write`）与仿真
+/// （`da::engine`）看到的是同一批字节，便于逐字节对拍。
+pub fn trace_io(dir: &str, data: &[u8]) {
+    if !log::log_enabled!(log::Level::Trace) || data.is_empty() {
+        return;
+    }
+    let ts = crate::util::now_iso8601();
+    let preview: String = data
+        .iter()
+        .take(64)
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if data.len() <= 64 {
+        log::trace!(
+            "[io] {} {} {}B\n{}",
+            ts,
+            dir,
+            data.len(),
+            crate::da::engine::hexdump(data)
+        );
+    } else {
+        log::trace!(
+            "[io] {} {} {}B (首 64B: {} ...)",
+            ts,
+            dir,
+            data.len(),
+            preview
+        );
+    }
+}
+
 /// BROM 传输抽象层 — 统一 USB 和串口的读写接口
 pub trait BromTransport {
     fn write(&mut self, data: &[u8]) -> Result<usize, String>;

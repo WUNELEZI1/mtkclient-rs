@@ -10,6 +10,7 @@
 
 use log::{info, trace};
 
+use crate::confirm::DangerConfirm;
 use crate::core::capability::{Capability, CapabilitySet};
 use crate::core::device::ProtocolVersion;
 use crate::core::plan::{Mode, PlanStep};
@@ -71,13 +72,38 @@ pub struct ExecReport {
 /// 执行器。
 pub struct Executor {
     orch: Orchestrator,
+    /// 危险操作确认器（`--yes` / `--token` / 交互式终端）
+    confirm: DangerConfirm,
+    /// 命令行提供的确认 token
+    token: Option<String>,
 }
 
 impl Executor {
     pub fn new(mode: Mode) -> Self {
         Self {
             orch: Orchestrator::new(Planner::new(ExploitRegistry::builtin(), mode)),
+            confirm: DangerConfirm::new(false),
+            token: None,
         }
+    }
+
+    /// `--yes`：跳过交互（警告仍会打到 stderr）。
+    pub fn with_assume_yes(mut self, yes: bool) -> Self {
+        self.confirm = DangerConfirm::new(yes);
+        self
+    }
+
+    /// 命令行确认 token（设备 SN 后 4 位）。
+    pub fn with_token(mut self, token: Option<String>) -> Self {
+        self.token = token;
+        self
+    }
+
+    /// 允许交互式确认（stdin 为终端时由 CLI 打开）。
+    pub fn with_interactive(mut self, on: bool) -> Self {
+        self.confirm =
+            std::mem::replace(&mut self.confirm, DangerConfirm::new(false)).interactive(on);
+        self
     }
 
     /// 打印决策（人类可读 + 单行 JSON），返回日志对象。
@@ -135,7 +161,7 @@ impl Executor {
 
     /// 执行一个 op。
     pub fn execute(
-        &self,
+        &mut self,
         op: &dyn Op,
         session: &mut dyn Session,
         write_artifacts: bool,
@@ -203,6 +229,8 @@ impl Executor {
             session,
             write_artifacts,
             log_level,
+            confirm: &mut self.confirm,
+            token: self.token.clone(),
         };
         let outcome = op.run(&mut ctx).map_err(ExecError::Op)?;
         info!("[exec] 完成: {}", outcome.summary);
@@ -267,6 +295,10 @@ impl Executor {
 }
 
 #[cfg(test)]
+#[path = "ops_flow.rs"]
+mod ops_flow;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ops::printgpt::PrintGptOp;
@@ -307,7 +339,9 @@ mod tests {
                 .iter()
                 .find(|(k, _)| k == "partitions")
                 .map(|(_, v)| v.as_str()),
-            Some("8")
+            // 默认布局：seccfg/misc/para + boot_a/boot_b/recovery/vbmeta_a/vbmeta_b/
+            // super/userdata/metadata = 11
+            Some("11")
         );
     }
 

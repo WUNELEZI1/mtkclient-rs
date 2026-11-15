@@ -10,7 +10,11 @@ pub mod device;
 pub mod plan;
 pub mod safety;
 
+#[allow(unused_imports)]
 pub use capability::{Capability, CapabilitySet};
+#[allow(unused_imports)]
 pub use device::{DeviceState, KNOWN_V6_DA_CODES, ProtocolVersion};
+#[allow(unused_imports)]
 pub use plan::{Cost, Mode, Plan, PlanStep, Stage};
+#[allow(unused_imports)]
 pub use safety::SafetyFlags;

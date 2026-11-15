@@ -77,6 +77,9 @@ impl ConfirmContext {
 /// 确认器。
 pub struct DangerConfirm {
     assume_yes: bool,
+    /// 是否允许交互式输入（stdin 为 TTY 时由 CLI 打开）。
+    /// 测试与非交互环境保持 false，行为完全确定。
+    interactive: bool,
     approved: HashSet<&'static str>,
 }
 
@@ -84,8 +87,15 @@ impl DangerConfirm {
     pub fn new(assume_yes: bool) -> Self {
         Self {
             assume_yes,
+            interactive: false,
             approved: HashSet::new(),
         }
+    }
+
+    /// 打开交互式确认（仅在 stdin 是终端时由 CLI 调用）。
+    pub fn interactive(mut self, on: bool) -> Self {
+        self.interactive = on;
+        self
     }
 
     pub fn assume_yes(&self) -> bool {
@@ -116,6 +126,34 @@ impl DangerConfirm {
 
         if self.assume_yes {
             // 跳过交互，但警告照常返回
+            return Ok(warning);
+        }
+
+        // 交互式终端：直接问 y/N（不可逆操作仍要求输入 token，避免误按回车）
+        if self.interactive && input_token.is_none() {
+            if danger == Danger::Irreversible {
+                eprint!("{}", warning.as_deref().unwrap_or(""));
+                eprintln!("\n请输入设备 SN 后 4 位确认（{}）: ", ctx.token());
+            } else {
+                eprint!("{}", warning.as_deref().unwrap_or(""));
+                eprint!("继续执行？[y/N] ");
+            }
+            use std::io::BufRead;
+            let mut line = String::new();
+            if std::io::stdin().lock().read_line(&mut line).is_err() {
+                return Err(ConfirmError::Declined);
+            }
+            let ans = line.trim();
+            if danger == Danger::Irreversible {
+                if !ans.eq_ignore_ascii_case(&ctx.token()) {
+                    return Err(ConfirmError::TokenMismatch);
+                }
+            } else if !matches!(ans.to_ascii_lowercase().as_str(), "y" | "yes") {
+                return Err(ConfirmError::Declined);
+            }
+            if danger == Danger::High {
+                self.approved.insert(action);
+            }
             return Ok(warning);
         }
 
@@ -209,6 +247,15 @@ mod tests {
             c.require("seccfg unlock", Danger::High, &ctx(), None),
             Ok(None),
             "同会话第二次应免确认"
+        );
+    }
+
+    #[test]
+    fn non_interactive_without_token_says_need_token() {
+        let mut c = DangerConfirm::new(false);
+        assert_eq!(
+            c.require("write boot_a", Danger::High, &ctx(), None),
+            Err(ConfirmError::NeedToken)
         );
     }
 

@@ -156,6 +156,20 @@ pub struct Cli {
     pub data_dir: Option<String>,
 
     #[arg(
+        long = "yes",
+        default_value_t = false,
+        help = "危险操作（写/擦重点分区、seccfg、vbmeta）直接放行：跳过交互，但警告仍会打印到 stderr"
+    )]
+    pub yes: bool,
+
+    #[arg(
+        long = "token",
+        value_name = "TOKEN",
+        help = "危险操作确认 token（设备 SN 后 4 位）；与 --yes 二选一"
+    )]
+    pub token: Option<String>,
+
+    #[arg(
         long = "sim",
         visible_alias = "port",
         value_name = "SPEC",
@@ -163,6 +177,13 @@ pub struct Cli {
                 ；也接受 --port mock://<SPEC> 写法"
     )]
     pub sim: Option<String>,
+
+    #[arg(
+        long = "sim-state",
+        value_name = "FILE",
+        help = "仿真设备 flash 状态文件：跨进程保留写入/擦除结果（演示断点续传、模拟拔插重连）"
+    )]
+    pub sim_state: Option<String>,
 
     #[arg(allow_hyphen_values = true, help = "命令参数")]
     pub args: Vec<String>,

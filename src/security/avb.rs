@@ -351,6 +351,55 @@ fn parse_partition_name(tag: &DescriptorTag, raw: &[u8]) -> Option<String> {
     }
 }
 
+/// 构造一个最小合法 vbmeta 镜像（头 + hash descriptor 列表，无认证块）。
+///
+/// 用途：仿真设备与单测需要"能被 `VbmetaImage::parse` 解析、且 flags 可改"的镜像。
+/// 真实设备上有签名块；这里 algorithm_type=0（无签名）也是 avbtool 允许的合法形态
+/// （`avbtool make_vbmeta_image --flags N` 不指定 key 时即如此）。
+pub fn synthetic_vbmeta(flags: u32, partition_names: &[&str]) -> Vec<u8> {
+    let mut aux = Vec::new();
+    for name in partition_names {
+        let name = name.as_bytes();
+        let payload_len = 8 + 32 + 4 + 4 + 4 + 4 + name.len();
+        aux.extend_from_slice(&3u64.to_be_bytes()); // tag = Hash
+        aux.extend_from_slice(&(payload_len as u64).to_be_bytes());
+        aux.extend_from_slice(&0x10_0000u64.to_be_bytes()); // image_size
+        let mut algo = b"sha256".to_vec();
+        algo.resize(32, 0);
+        aux.extend_from_slice(&algo);
+        aux.extend_from_slice(&(name.len() as u32).to_be_bytes());
+        aux.extend_from_slice(&0u32.to_be_bytes()); // salt_len
+        aux.extend_from_slice(&0u32.to_be_bytes()); // digest_len
+        aux.extend_from_slice(&0u32.to_be_bytes()); // flags
+        aux.extend_from_slice(name);
+    }
+
+    let h = VbmetaHeader {
+        required_libavb_version_major: 1,
+        required_libavb_version_minor: 0,
+        authentication_data_block_size: 0,
+        auxiliary_data_block_size: aux.len() as u64,
+        algorithm_type: 0,
+        hash_offset: 0,
+        hash_size: 0,
+        signature_offset: 0,
+        signature_size: 0,
+        public_key_offset: 0,
+        public_key_size: 0,
+        public_key_metadata_offset: 0,
+        public_key_metadata_size: 0,
+        descriptors_offset: 0,
+        descriptors_size: aux.len() as u64,
+        rollback_index: 0,
+        flags,
+        rollback_index_location: 0,
+        release_string: "synthetic".to_string(),
+    };
+    let mut out = encode_header(&h);
+    out.extend_from_slice(&aux);
+    out
+}
+
 /// 头结构按 libavb 字节序编码（供 strip 后重组）。
 fn encode_header(h: &VbmetaHeader) -> Vec<u8> {
     let mut b = Vec::with_capacity(AVB_HEADER_SIZE);

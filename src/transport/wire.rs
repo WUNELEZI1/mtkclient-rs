@@ -55,16 +55,39 @@ pub const XFLASH_SYNC_SIGNAL: u32 = 0x434E5953;
 
 /// 命令：READ_DATA（读 flash）
 pub const XFLASH_CMD_READ_DATA: u32 = 0x010005;
+/// 命令：WRITE_DATA（写 flash）
+pub const XFLASH_CMD_WRITE_DATA: u32 = 0x010004;
+/// 命令：FORMAT（擦除 / 格式化）
+pub const XFLASH_CMD_FORMAT: u32 = 0x010003;
 /// 命令：DEVICE_CTRL 前缀
 pub const XFLASH_CMD_DEVICE_CTRL: u32 = 0x010009;
 /// 命令：GET_DA_VER
 pub const XFLASH_CMD_GET_DA_VER: u32 = 0x010106;
-/// 子命令：eMMC 信息查询
-pub const XFLASH_CMD_EMMC_INFO: u32 = 0x00040001;
+/// 子命令：eMMC 信息查询（mtkclient `Cmd.GET_EMMC_INFO = 0x040001`，高位补零后同值）
+pub const XFLASH_CMD_EMMC_INFO: u32 = 0x0004_0001;
 /// devctrl：DA extensions CUSTOM_ACK
 pub const XFLASH_DEVCTRL_ACK: u32 = 0x0F0000;
 /// devctrl：CUSTOM_SET_STORAGE
 pub const XFLASH_DEVCTRL_SET_STORAGE: u32 = 0x0F0005;
+/// devctrl：CC_OPTIONAL_DOWNLOAD_ACT（写完成后必须发送，否则 DA 认为事务未结束）
+///
+/// 数值取自 mtkclient `Library/DA/xflash/xflash_param.py`：
+/// `CC_OPTIONAL_DOWNLOAD_ACT = 0x080005`。
+pub const XFLASH_DEVCTRL_CC_OPTIONAL_DOWNLOAD_ACT: u32 = 0x08_0005;
+
+/// 写入参数块长度（storage/parttype/addr/size + 32 字节 NandExtension）
+pub const XFLASH_WRITE_PARAM_LEN: usize = 56;
+/// 擦除（FORMAT）参数块长度：同上
+pub const XFLASH_FORMAT_PARAM_LEN: usize = 56;
+/// 参数分块大小（对齐 mtkclient `send_param`：payload 按 0x200 分块发送）
+pub const XFLASH_PARAM_CHUNK: usize = 0x200;
+
+/// FORMAT 进行中
+pub const XFLASH_STATUS_CONTINUE: u32 = 0x4004_0004;
+/// FORMAT 完成
+pub const XFLASH_STATUS_COMPLETE: u32 = 0x4004_0005;
+/// 写入校验和错误（设备侧拒绝该分块）
+pub const XFLASH_STATUS_CHECKSUM: u32 = 0xC003_0006;
 /// DA extensions ACK 期望的 magic
 pub const XFLASH_ACK_MAGIC: u32 = 0xA1A2A3A4;
 /// 不支持的命令状态字
@@ -86,6 +109,8 @@ mod tests {
         assert_eq!(XFLASH_TYPE_FLOW, p::DATA_TYPE_FLOW);
         assert_eq!(XFLASH_TYPE_MESSAGE, p::DATA_TYPE_MESSAGE);
         assert_eq!(XFLASH_CMD_READ_DATA, p::CMD_READ_DATA);
+        assert_eq!(XFLASH_CMD_WRITE_DATA, p::CMD_WRITE_DATA);
+        assert_eq!(XFLASH_CMD_FORMAT, p::CMD_FORMAT);
         assert_eq!(XFLASH_CMD_DEVICE_CTRL, 0x010009);
         assert_eq!(XFLASH_CMD_GET_DA_VER, p::GET_DA_VER_CMD);
         assert_eq!(XFLASH_SYNC_SIGNAL, p::CMD_SYNC_SIGNAL);

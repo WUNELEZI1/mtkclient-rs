@@ -5,15 +5,20 @@ use std::time::Duration;
 /// UsbDevice 实现 BROM 传输
 impl BromTransport for UsbDevice {
     fn write(&mut self, data: &[u8]) -> Result<usize, String> {
+        super::trace_io("->", data);
         UsbDevice::write(self, data)
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<usize, String> {
-        UsbDevice::read_exact(self, buf)
+        let n = UsbDevice::read_exact(self, buf)?;
+        super::trace_io("<-", &buf[..n.min(buf.len())]);
+        Ok(n)
     }
 
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
-        UsbDevice::read(self, buf)
+        let n = UsbDevice::read(self, buf)?;
+        super::trace_io("<-", &buf[..n.min(buf.len())]);
+        Ok(n)
     }
 
     fn submit_read_request(&mut self, len: usize) -> Result<bool, String> {

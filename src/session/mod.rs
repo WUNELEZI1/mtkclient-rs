@@ -31,6 +31,15 @@ pub struct DeviceInfo {
     pub emmc_type: String,
 }
 
+/// 分区定位结果（能力驱动路径统一用字节地址，不暴露 GPT 细节）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartitionSpan {
+    pub addr: u64,
+    pub size: u64,
+    /// 8 = 用户区（GPT 分区），0/1 = boot1/boot2
+    pub parttype: u32,
+}
+
 /// 一次执行所需的最小会话能力。
 ///
 /// 方法刻意与 [`crate::core::plan::PlanStep`] 一一对应，Executor 只做"翻译"。
@@ -64,6 +73,51 @@ pub trait Session {
     fn super_metadata(&mut self) -> Option<crate::partition::lp::SuperMetadata> {
         None
     }
+
+    // ── 分区 IO（读 / 写 / 擦） ─────────────────────────────
+    //
+    // 这些方法是 ops 层唯一的数据通道：真机走 DAXFlash，仿真走 da::engine，
+    // 因此同一份 `ops::write` 代码在两边的行为完全同构。
+
+    /// 定位分区（含特殊分区 boot1/boot2）。
+    fn find_partition(&mut self, name: &str) -> Result<PartitionSpan, String>;
+
+    /// 按地址读取（一次调用可能很大，由后端自行分块）。
+    fn read_flash(&mut self, addr: u64, size: u64) -> Result<Vec<u8>, String>;
+
+    /// 按地址写入一段内存数据（seccfg / vbmeta / 小镜像）。
+    fn write_flash(&mut self, addr: u64, data: &[u8]) -> Result<(), String>;
+
+    /// 流式写入：从 `src` 读 `total` 字节写到 `addr + start`，
+    /// 每写入一块回调 `on_progress(已写入总量)`（断点续传的持久化点）。
+    ///
+    /// `total` 是**本次要写的总长度**（从 offset 0 起算，含已写部分）。
+    fn write_stream(
+        &mut self,
+        addr: u64,
+        src: &mut dyn std::io::Read,
+        total: u64,
+        start: u64,
+        on_progress: &mut dyn FnMut(u64),
+    ) -> Result<(), String>;
+
+    /// 按分区名擦除（后端自行解析地址）。返回擦除字节数。
+    fn erase_partition(&mut self, name: &str) -> Result<u64, String>;
+
+    /// 活动 A/B 槽位。
+    ///
+    /// - `Ok(Some(c))`：确定的活动槽；
+    /// - `Ok(None)`：非 A/B 设备；
+    /// - `Err(_)`：**无法判定**（A/B 但 bootctrl 读不到）——调用方必须报错，不能猜。
+    fn active_slot(&mut self) -> Result<Option<char>, String>;
+
+    /// 用设备侧密钥对 seccfg 头部摘要签名（V4 的 32 字节哈希尾）。
+    fn seccfg_sign(&mut self, digest: &[u8; 32], hwtype: &str) -> Result<Vec<u8>, String>;
+
+    /// 设备序列号（危险操作确认 token 用）。
+    fn serial(&mut self) -> Option<String> {
+        None
+    }
 }
 
 // =============================================================================
@@ -80,6 +134,8 @@ pub struct SimSession {
     state: DeviceState,
     /// 设备侧已接受的 exploit 带来的能力（仿真里由设备确认"exploit 生效"）
     granted: CapabilitySet,
+    /// 已打开的存储信息（写/擦时的 storage 参数）
+    storage: Option<crate::da::engine::StorageInfo>,
 }
 
 impl SimSession {
@@ -93,6 +149,7 @@ impl SimSession {
             info: None,
             state,
             granted: CapabilitySet::EMPTY,
+            storage: None,
         }
     }
 
@@ -105,6 +162,30 @@ impl SimSession {
     /// 设备侧事件日志（测试断言 / 诊断用）。
     pub fn events(&self) -> &[String] {
         &self.dev.events
+    }
+
+    /// 保存虚拟设备的 flash 状态（跨进程续传演示用）。
+    pub fn save_state(&self, path: &str) -> Result<(), String> {
+        self.dev.save_state(path)
+    }
+
+    /// 载入虚拟设备的 flash 状态。
+    pub fn load_state(&mut self, path: &str) -> Result<(), String> {
+        self.dev.load_state(path)?;
+        self.engine = DaEngine::new();
+        self.gpt = None;
+        self.info = None;
+        self.storage = None;
+        Ok(())
+    }
+
+    /// 模拟拔插重连：协议状态清零、flash 内容保留（断点续传测试用）。
+    pub fn replug(&mut self) {
+        self.dev.replug();
+        self.engine = DaEngine::new();
+        self.gpt = None;
+        self.info = None;
+        self.storage = None;
     }
 
     fn map_err(e: EngineError) -> String {
@@ -211,6 +292,7 @@ impl Session for SimSession {
         self.engine
             .open_storage(&mut self.dev)
             .map_err(SimSession::map_err)?;
+        self.storage = Some(storage);
         self.info = Some(DeviceInfo {
             name: self.state.name.clone(),
             hw_code: self.state.hw_code,
@@ -258,6 +340,181 @@ impl Session for SimSession {
         self.info
             .clone()
             .ok_or_else(|| "无法获取设备信息".to_string())
+    }
+
+    fn find_partition(&mut self, name: &str) -> Result<PartitionSpan, String> {
+        // boot1/boot2 是特殊分区（不在 GPT 里）
+        let (parttype, special_size) = match name {
+            "boot1" | "boot2" => {
+                let st = self.ensure_storage()?;
+                let size = if name == "boot1" { st.boot1 } else { st.boot2 };
+                (if name == "boot1" { 0u32 } else { 1u32 }, size)
+            }
+            _ => (8u32, 0u64),
+        };
+        if self.gpt.is_none() {
+            self.parse_gpt()?;
+        }
+        let gpt = self.gpt.clone().ok_or_else(|| "GPT 不可用".to_string())?;
+        let info = crate::partition::GptInfo::parse(&gpt)?;
+        let entry = info
+            .find_partition(name)
+            .ok_or_else(|| format!("未找到分区: {}", name))?;
+        let size = if special_size > 0 {
+            special_size
+        } else {
+            entry.size
+        };
+        Ok(PartitionSpan {
+            addr: entry.start_addr,
+            size,
+            parttype,
+        })
+    }
+
+    fn read_flash(&mut self, addr: u64, size: u64) -> Result<Vec<u8>, String> {
+        // 单次 READ_DATA 上限 1 MiB（真机 DA 同样按包长分块）
+        let mut out = Vec::with_capacity(size as usize);
+        let mut pos = 0u64;
+        while pos < size {
+            let take = (size - pos).min(0x10_0000);
+            let chunk = self
+                .engine
+                .read_flash(&mut self.dev, addr + pos, take)
+                .map_err(SimSession::map_err)?;
+            out.extend_from_slice(&chunk);
+            pos += take;
+        }
+        Ok(out)
+    }
+
+    fn write_flash(&mut self, addr: u64, data: &[u8]) -> Result<(), String> {
+        let storage = self.storage_type();
+        self.engine
+            .begin_write(&mut self.dev, addr, data.len() as u64, storage, 8)
+            .map_err(SimSession::map_err)?;
+        let mut pos = 0usize;
+        while pos < data.len() {
+            let take = (data.len() - pos).min(0x10_0000);
+            let mut chunk = data[pos..pos + take].to_vec();
+            while !chunk.len().is_multiple_of(512) {
+                chunk.push(0);
+            }
+            self.engine
+                .write_chunk(&mut self.dev, &chunk)
+                .map_err(SimSession::map_err)?;
+            pos += take;
+        }
+        self.engine
+            .end_write(&mut self.dev)
+            .map_err(SimSession::map_err)
+    }
+
+    fn write_stream(
+        &mut self,
+        addr: u64,
+        src: &mut dyn std::io::Read,
+        total: u64,
+        start: u64,
+        on_progress: &mut dyn FnMut(u64),
+    ) -> Result<(), String> {
+        let storage = self.storage_type();
+        self.engine
+            .begin_write(&mut self.dev, addr + start, total - start, storage, 8)
+            .map_err(SimSession::map_err)?;
+        let mut pos = start;
+        let mut buf = vec![0u8; 0x10_0000];
+        while pos < total {
+            let want = ((total - pos) as usize).min(buf.len());
+            let mut n = 0usize;
+            while n < want {
+                let r = src
+                    .read(&mut buf[n..want])
+                    .map_err(|e| format!("读取源数据失败: {}", e))?;
+                if r == 0 {
+                    break;
+                }
+                n += r;
+            }
+            if n == 0 {
+                return Err(format!("源数据提前结束: 期望 {} 字节", total - pos));
+            }
+            let mut chunk = buf[..n].to_vec();
+            while !chunk.len().is_multiple_of(512) {
+                chunk.push(0);
+            }
+            self.engine
+                .write_chunk(&mut self.dev, &chunk)
+                .map_err(SimSession::map_err)?;
+            pos += n as u64;
+            on_progress(pos);
+        }
+        self.engine
+            .end_write(&mut self.dev)
+            .map_err(SimSession::map_err)
+    }
+
+    fn erase_partition(&mut self, name: &str) -> Result<u64, String> {
+        let span = self.find_partition(name)?;
+        if span.size == 0 {
+            return Err(format!("分区 {} 大小为 0", name));
+        }
+        self.engine
+            .format(&mut self.dev, span.parttype, span.addr, span.size)
+            .map_err(SimSession::map_err)?;
+        Ok(span.size)
+    }
+
+    fn active_slot(&mut self) -> Result<Option<char>, String> {
+        if self.gpt.is_none() {
+            self.parse_gpt()?;
+        }
+        let has_a = self.partition_exists("boot_a") || self.partition_exists("vbmeta_a");
+        let has_b = self.partition_exists("boot_b") || self.partition_exists("vbmeta_b");
+        if !has_a && !has_b {
+            return Ok(None);
+        }
+        // bootctrl 可读性由画像决定（真机由 misc 的 boot_control 结构决定）
+        if self.dev.profile.bootctrl
+            && let Some(s) = self.dev.profile.slot
+        {
+            return Ok(Some(s));
+        }
+        match (has_a, has_b) {
+            (true, true) => Err(
+                "无法确定活动 A/B 槽位（bootctrl 读取失败，且 GPT 中 _a/_b 同时存在）".to_string(),
+            ),
+            (true, false) => Ok(Some('a')),
+            _ => Ok(Some('b')),
+        }
+    }
+
+    fn seccfg_sign(&mut self, digest: &[u8; 32], _hwtype: &str) -> Result<Vec<u8>, String> {
+        // 仿真设备不校验 seccfg 哈希，直接返回明文摘要（sim-only；真机走 HACC/SEJ）
+        Ok(digest.to_vec())
+    }
+}
+
+impl SimSession {
+    fn ensure_storage(&mut self) -> Result<crate::da::engine::StorageInfo, String> {
+        if let Some(s) = self.storage {
+            return Ok(s);
+        }
+        let s = self.engine.query_storage(&mut self.dev).unwrap_or_default();
+        self.storage = Some(s);
+        Ok(s)
+    }
+
+    fn storage_type(&self) -> u32 {
+        self.storage.map(|s| s.storage_type()).unwrap_or(0)
+    }
+
+    fn partition_exists(&self, name: &str) -> bool {
+        self.gpt
+            .as_ref()
+            .and_then(|g| crate::partition::GptInfo::parse(g).ok())
+            .map(|i| i.find_partition(name).is_some())
+            .unwrap_or(false)
     }
 }
 

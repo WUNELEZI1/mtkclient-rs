@@ -9,11 +9,9 @@
 //! - `print_gpt_table`  — 表格格式化输出
 
 use crate::color::Colorize;
-use log::{debug, error, info, trace, warn};
-use std::time::SystemTime;
+use log::{info, trace, warn};
 
 use crate::da::DAXFlash;
-use crate::partition::generate_scatter_from_gpt;
 use crate::system::config::AppConfig;
 
 mod emmc;

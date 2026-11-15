@@ -358,6 +358,22 @@ impl DaEngine {
         Self::wr(port, &cmd.to_le_bytes())
     }
 
+    /// 发送一组参数：每个参数一个 header，payload 按 0x200 分块写入，
+    /// 全部写完后读一次 status（对齐 mtkclient `send_param`）。
+    fn send_params(port: &mut dyn StreamPort, params: &[&[u8]]) -> Result<(), EngineError> {
+        for payload in params {
+            let mut pkt = [0u8; 12];
+            pkt[0..4].copy_from_slice(&wire::XFLASH_MAGIC.to_le_bytes());
+            pkt[4..8].copy_from_slice(&wire::XFLASH_TYPE_FLOW.to_le_bytes());
+            pkt[8..12].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+            Self::wr(port, &pkt)?;
+            for chunk in payload.chunks(wire::XFLASH_PARAM_CHUNK) {
+                Self::wr(port, chunk)?;
+            }
+        }
+        Self::expect_status(port, "send_param")
+    }
+
     fn send_payload(port: &mut dyn StreamPort, payload: &[u8]) -> Result<(), EngineError> {
         let mut pkt = [0u8; 12];
         pkt[0..4].copy_from_slice(&wire::XFLASH_MAGIC.to_le_bytes());
@@ -474,6 +490,132 @@ impl DaEngine {
         Ok(data)
     }
 
+    // ── 阶段 3：写 / 擦 ─────────────────────────────────────
+
+    /// 开始一次写入事务：WRITE_DATA + 56 字节参数。
+    ///
+    /// 参数布局（对齐 mtkclient `cmd_write_data`）：
+    /// storage(4) parttype(4) addr(8) size(8) + 32 字节 NandExtension(全零)。
+    /// 之后每个分块用 [`Self::write_chunk`]，最后 [`Self::end_write`] 收尾。
+    pub fn begin_write(
+        &mut self,
+        port: &mut dyn StreamPort,
+        addr: u64,
+        size: u64,
+        storage: u32,
+        parttype: u32,
+    ) -> Result<(), EngineError> {
+        if !matches!(self.phase, Phase::Da1 | Phase::Ready) {
+            return Err(EngineError::OutOfOrder {
+                phase: self.phase,
+                want: "DA 已加载",
+            });
+        }
+        Self::send_cmd(port, wire::XFLASH_CMD_WRITE_DATA)?;
+        Self::expect_status(port, "WRITE_DATA cmd")?;
+
+        let mut param = [0u8; wire::XFLASH_WRITE_PARAM_LEN];
+        param[0..4].copy_from_slice(&storage.to_le_bytes());
+        param[4..8].copy_from_slice(&parttype.to_le_bytes());
+        param[8..16].copy_from_slice(&addr.to_le_bytes());
+        param[16..24].copy_from_slice(&size.to_le_bytes());
+        // 24..56 为 NandExtension（eMMC 场景全零）
+        Self::send_params(port, &[&param])?;
+        trace!(
+            "[engine] WRITE_DATA 开始: addr=0x{:X} size={} parttype={}",
+            addr, size, parttype
+        );
+        Ok(())
+    }
+
+    /// 写入一个分块：参数列表 [0u32, checksum, data]。
+    pub fn write_chunk(
+        &mut self,
+        port: &mut dyn StreamPort,
+        data: &[u8],
+    ) -> Result<(), EngineError> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        if !data.len().is_multiple_of(512) {
+            return Err(EngineError::Protocol(format!(
+                "写入分块必须 512 字节对齐，实际 {}",
+                data.len()
+            )));
+        }
+        let zero = 0u32.to_le_bytes();
+        // 对齐 mtkclient: checksum = sum(data) & 0xFFFF
+        let checksum = (crate::da::xflash::chunk_checksum(data) & 0xFFFF).to_le_bytes();
+        Self::send_params(port, &[&zero, &checksum, data])?;
+        Ok(())
+    }
+
+    /// 结束写入事务：最终 status + CC_OPTIONAL_DOWNLOAD_ACT。
+    pub fn end_write(&mut self, port: &mut dyn StreamPort) -> Result<(), EngineError> {
+        Self::expect_status(port, "WRITE_DATA final")?;
+        Self::send_cmd(port, wire::XFLASH_CMD_DEVICE_CTRL)?;
+        Self::expect_status(port, "DEVICE_CTRL")?;
+        Self::send_cmd(port, wire::XFLASH_DEVCTRL_CC_OPTIONAL_DOWNLOAD_ACT)?;
+        Self::expect_status(port, "CC_OPTIONAL_DOWNLOAD_ACT")?;
+        trace!("[engine] WRITE_DATA 事务完成");
+        Ok(())
+    }
+
+    /// 擦除一段物理区域（FORMAT）。
+    ///
+    /// 设备可能返回 `STATUS_CONTINUE`（附带毫秒等待），此时按 mtkclient 的
+    /// 做法 sleep + ack 后重读状态，直到 `STATUS_COMPLETE`。
+    pub fn format(
+        &mut self,
+        port: &mut dyn StreamPort,
+        parttype: u32,
+        addr: u64,
+        size: u64,
+    ) -> Result<(), EngineError> {
+        if !matches!(self.phase, Phase::Da1 | Phase::Ready) {
+            return Err(EngineError::OutOfOrder {
+                phase: self.phase,
+                want: "DA 已加载",
+            });
+        }
+        Self::send_cmd(port, wire::XFLASH_CMD_FORMAT)?;
+        Self::expect_status(port, "FORMAT cmd")?;
+
+        let mut param = [0u8; wire::XFLASH_FORMAT_PARAM_LEN];
+        param[0..4].copy_from_slice(&1u32.to_le_bytes()); // storage=1 (eMMC/UFS)
+        param[4..8].copy_from_slice(&parttype.to_le_bytes());
+        param[8..16].copy_from_slice(&addr.to_le_bytes());
+        param[16..24].copy_from_slice(&size.to_le_bytes());
+        Self::send_params(port, &[&param])?;
+
+        let mut st = Self::status(port)?;
+        let mut waits = 0u32;
+        while st == wire::XFLASH_STATUS_CONTINUE {
+            // 设备用"下一个 4 字节"告知等待毫秒数
+            let wait_ms = Self::status(port)?.min(5_000) as u64;
+            waits += 1;
+            if waits > 600 {
+                return Err(EngineError::Protocol("FORMAT 等待超时".into()));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+            Self::send_payload(port, &0u32.to_le_bytes())?; // ack
+            st = Self::status(port)?;
+        }
+        if st != wire::XFLASH_STATUS_COMPLETE && st != 0 {
+            return Err(EngineError::Protocol(format!(
+                "FORMAT 失败: status=0x{:08X}",
+                st
+            )));
+        }
+        if st == wire::XFLASH_STATUS_COMPLETE {
+            // COMPLETE 后必须 ack，否则 DA 卡在等待状态
+            Self::send_payload(port, &0u32.to_le_bytes())?;
+            let _ = Self::status(port);
+        }
+        trace!("[engine] FORMAT 完成: addr=0x{:X} size={}", addr, size);
+        Ok(())
+    }
+
     // ── 阶段 3：打开存储 ────────────────────────────────────
 
     /// 查询存储信息（eMMC / UFS 容量与块大小）。
@@ -496,13 +638,24 @@ impl DaEngine {
                 payload.len()
             )));
         }
-        let rd = |o: usize| u64::from_le_bytes(payload[o..o + 8].try_into().unwrap());
+        let rd = |o: usize| {
+            if payload.len() >= o + 8 {
+                u64::from_le_bytes(payload[o..o + 8].try_into().unwrap())
+            } else {
+                0
+            }
+        };
+        // 布局（对齐 mtkclient `get_emmc_info`）：
+        //   0 type(4) 4 block(4) 8 boot1(8) 16 boot2(8) 24 rpmb(8)
+        //   32 gp1 40 gp2 48 gp3 56 gp4 64 user(8) 72 cid(16) 88 fwver(8)
+        // 早期实现把 user 读在 32（实际是 gp1），会让容量显示为 0，
+        // 并掩盖"分区超出盘尾"这类边界问题。
         let info = StorageInfo {
             emmc_type: u32::from_le_bytes(payload[0..4].try_into().unwrap()),
             block: u32::from_le_bytes(payload[4..8].try_into().unwrap()),
             boot1: rd(8),
             boot2: rd(16),
-            user: rd(32),
+            user: rd(64),
         };
         self.storage = Some(info);
         debug!(
@@ -684,6 +837,55 @@ mod tests {
             e.read_flash(&mut dev, 0, 512),
             Err(EngineError::OutOfOrder { .. })
         ));
+    }
+
+    #[test]
+    fn emmc_user_size_is_at_offset_0x40() {
+        // 布局对齐 mtkclient get_emmc_info：user_size 在 0x40（0x20 是 gp1）。
+        let mut dev = VirtualDevice::from_preset("v5-clean").unwrap();
+        let mut e = DaEngine::new();
+        e.connect(&mut dev).unwrap();
+        e.load_da(&mut dev, &da_bytes()).unwrap();
+        let s = e.query_storage(&mut dev).unwrap();
+        assert_eq!(s.user, dev.profile.storage.user);
+        assert!(s.user > 0);
+        assert_eq!(s.boot1, dev.profile.storage.boot1);
+    }
+
+    #[test]
+    fn write_then_format_roundtrip() {
+        let mut dev = VirtualDevice::from_preset("v5-clean").unwrap();
+        let mut e = DaEngine::new();
+        e.connect(&mut dev).unwrap();
+        e.load_da(&mut dev, &da_bytes()).unwrap();
+        e.open_storage(&mut dev).unwrap();
+
+        let payload: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        e.begin_write(&mut dev, 0x100000, payload.len() as u64, 1, 8)
+            .unwrap();
+        for chunk in payload.chunks(1024) {
+            e.write_chunk(&mut dev, chunk).unwrap();
+        }
+        e.end_write(&mut dev).unwrap();
+
+        let back = e.read_flash(&mut dev, 0x100000, 4096).unwrap();
+        assert_eq!(back, payload);
+
+        // FORMAT 后应读回 0xFF
+        e.format(&mut dev, 8, 0x100000, 4096).unwrap();
+        let blank = e.read_flash(&mut dev, 0x100000, 4096).unwrap();
+        assert!(blank.iter().all(|b| *b == 0xFF));
+    }
+
+    #[test]
+    fn write_chunk_must_be_512_aligned() {
+        let mut dev = VirtualDevice::from_preset("v5-clean").unwrap();
+        let mut e = DaEngine::new();
+        e.connect(&mut dev).unwrap();
+        e.load_da(&mut dev, &da_bytes()).unwrap();
+        e.begin_write(&mut dev, 0x100000, 512, 1, 8).unwrap();
+        let err = e.write_chunk(&mut dev, &[0u8; 100]).unwrap_err();
+        assert!(err.to_string().contains("512"));
     }
 
     #[test]

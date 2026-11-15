@@ -2,17 +2,6 @@ use crate::color::Colorize;
 use crate::da::DAXFlash;
 use log::{info, warn};
 
-/// 擦除分区
-pub fn cmd_erase(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if args.is_empty() {
-        return Err("用法: mtkclient e <part>".into());
-    }
-    da.erase_partition(&args[0])
-        .map_err(|e| format!("擦除失败: {}", e))?;
-    info!("{}", crate::i18n::tr("log_erased", &[&args[0]]).green());
-    Ok(())
-}
-
 /// 清除用户数据（恢复出厂设置）
 ///
 /// **erase + format**：先擦除 userdata、md_udc、metadata 三个分区，

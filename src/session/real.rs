@@ -3,7 +3,7 @@
 //! 这里**不重写**任何协议逻辑，只做"步骤 → 既有方法"的映射，
 //! 因此接入 Orchestrator 不会改变真机行为。
 
-use super::{DeviceInfo, Session};
+use super::{DeviceInfo, PartitionSpan, Session};
 
 use crate::core::capability::{Capability, CapabilitySet};
 use crate::core::device::DeviceState;
@@ -135,5 +135,100 @@ impl Session for RealSession<'_, '_> {
             }
         }
         self.da.super_metadata.clone()
+    }
+
+    fn find_partition(&mut self, name: &str) -> Result<PartitionSpan, String> {
+        // 特殊分区（boot1/boot2）走 DAXFlash 的既有解析，parttype 不是 8
+        if let Some((parttype, addr, size)) = self.da.resolve_special_partition(name) {
+            return Ok(PartitionSpan {
+                addr,
+                size,
+                parttype,
+            });
+        }
+        if self.da.last_gpt_data.is_none() && !self.da.try_load_cached_gpt() {
+            self.da.read_gpt()?;
+        }
+        let (addr, size) = self.da.find_partition_addr(name)?;
+        Ok(PartitionSpan {
+            addr,
+            size,
+            parttype: 8,
+        })
+    }
+
+    fn read_flash(&mut self, addr: u64, size: u64) -> Result<Vec<u8>, String> {
+        self.da.readflash_data(addr, size)
+    }
+
+    fn write_flash(&mut self, addr: u64, data: &[u8]) -> Result<(), String> {
+        self.da.write_flash_data(addr, data, 1, 8)
+    }
+
+    fn write_stream(
+        &mut self,
+        addr: u64,
+        src: &mut dyn std::io::Read,
+        total: u64,
+        start: u64,
+        on_progress: &mut dyn FnMut(u64),
+    ) -> Result<(), String> {
+        // 复用既有流式写入（含进度条/包长协商）。断点续传由 ops 层的 checkpoint
+        // 负责持久化，因此这里不传 resume_input（空串 = 不写 .wresume）。
+        // `on_progress` 通过包装 Reader 触发：每读满一块即回调。
+        struct ProgressReader<'a, 'f> {
+            inner: &'a mut dyn std::io::Read,
+            done: u64,
+            cb: &'f mut dyn FnMut(u64),
+        }
+        impl std::io::Read for ProgressReader<'_, '_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.inner.read(buf)?;
+                if n > 0 {
+                    self.done += n as u64;
+                    (self.cb)(self.done);
+                }
+                Ok(n)
+            }
+        }
+        let mut reader = ProgressReader {
+            inner: src,
+            done: start,
+            cb: on_progress,
+        };
+        self.da
+            .write_flash_data_stream(addr + start, &mut reader, total - start, 1, 8, start, "")
+    }
+
+    fn erase_partition(&mut self, name: &str) -> Result<u64, String> {
+        let span = self.find_partition(name)?;
+        self.da.erase_partition(name)?;
+        Ok(span.size)
+    }
+
+    fn active_slot(&mut self) -> Result<Option<char>, String> {
+        crate::security::vbmeta::resolve_slot(self.da).map(|s| match s {
+            crate::security::vbmeta::SlotState::Known(c) => Some(c),
+            crate::security::vbmeta::SlotState::NotAb => None,
+        })
+    }
+
+    fn seccfg_sign(&mut self, digest: &[u8; 32], hwtype: &str) -> Result<Vec<u8>, String> {
+        let hw_code = self
+            .da
+            .preloader
+            .chip
+            .as_ref()
+            .map(|c| c.hw_code)
+            .ok_or_else(|| "芯片配置不可用，无法执行 HACC 签名".to_string())?;
+        crate::security::seccfg::build::sign_v4_digest(self.da, hwtype, digest, hw_code)
+    }
+
+    fn serial(&mut self) -> Option<String> {
+        // 优先用 CID（eMMC 唯一），退化到芯片名 + hw_code
+        if let Some(chip) = self.da.preloader.chip.as_ref() {
+            return Some(format!("{}-{:04X}", chip.name, chip.hw_code));
+        }
+        None
     }
 }

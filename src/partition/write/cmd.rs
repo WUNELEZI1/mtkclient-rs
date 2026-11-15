@@ -33,40 +33,33 @@ impl<'a> DAXFlash<'a> {
         } else {
             None
         };
-        // 工作传输单元：已 ≥2MB 则沿用（不降速），否则抬到 2MB（0x200000），上限 4MB（0x400000）。
-        // 性能关键：对齐刷机匣批量传输；DA 不支持 SET_PKT_LEN 时 send_devctrl 回空/报错，忽略即可。
+        // 工作传输单元：**以 DA 自报值为准**。
+        //
+        // 对齐 mtkclient `get_packet_length`（xflash_lib.py）：只 GET 不 SET，
+        // 之后 `write_packet_size = plen.write_packet_length`。
+        // 早期实现把 0x040008 当成 SET_PACKET_LENGTH（实际是 GET_RANDOM_ID），
+        // 并强行把包长抬到 2 MiB；在真实 DA 上这是"发一条 GET 却带参数"，
+        // 可能让状态机错位，且超过 DA 缓冲会导致截断。因此改为：
+        //   1. 用 DA 回报值；回报 0/失败时回退 256 KiB（老行为的下限）；
+        //   2. 需要主动抬升时，必须用环境变量 MTK_FORCE_PKT_LEN=<bytes> 显式开启。
         let mut target = match reported {
-            Some(v) if v >= 0x200000 => v.min(0x400000),
-            _ => 0x200000,
+            Some(v) if v > 0 => v,
+            _ => 0x4_0000,
         };
-        // 主动 SET_PKT_LEN 抬升。SET 成功后重新 GET 确认 DA 实际接受的包长度，
-        // 防 DA 端溢出：部分 DA 只接受更小的值，盲目按请求值传输会触发溢出/截断。
-        // 仅当 DA 明确回报更小正数时才回退，GET 失败/返回 0 沿用请求值。
-        if self
-            .send_devctrl(SET_PKT_LEN, Some(&(target as u32).to_le_bytes()))
-            .is_ok()
+        if let Ok(force) = std::env::var("MTK_FORCE_PKT_LEN")
+            && let Ok(v) = force.trim().parse::<usize>()
+            && v >= 0x200
         {
-            trace!(
-                "DA 写包长度已提升至 {} 字节 ({:.2} MiB)",
-                target,
-                target as f64 / 1024.0 / 1024.0
-            );
-            if let Ok(ack) = self.send_devctrl(GET_PKT_LEN, None) {
-                let actual = if ack.len() >= 4 {
-                    u32::from_le_bytes(ack[..4].try_into().unwrap())
-                } else {
-                    0
-                };
-                if actual > 0 && (actual as usize) < target {
-                    warn!(
-                        "DA 实际接受写包长度 {} < 请求 {}，回退以避免 DA 端溢出",
-                        actual, target
-                    );
-                    target = actual as usize;
-                }
+            target = v.min(0x40_0000);
+            if self
+                .send_devctrl(SET_PKT_LEN, Some(&(target as u32).to_le_bytes()))
+                .is_ok()
+            {
+                warn!(
+                    "已按 MTK_FORCE_PKT_LEN 请求包长 {} 字节（DA 支持性未经验证）",
+                    target
+                );
             }
-        } else {
-            trace!("SET_PKT_LEN 不受支持（已忽略）");
         }
         Ok(target)
     }

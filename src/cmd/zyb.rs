@@ -11,6 +11,8 @@ use crate::da::DAXFlash;
 pub(crate) fn handle_zyb_command(
     da: &mut DAXFlash,
     args: &[String],
+    app_config: &crate::system::config::AppConfig,
+    log_level: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
         return Err("用法: mtkclient zyb <subcmd> [args]".into());
@@ -25,9 +27,13 @@ pub(crate) fn handle_zyb_command(
                 return Err("用法: mtkclient zyb vbmeta <mode> (0/1/2/3)".into());
             }
             let mode = sub_args[0].parse::<u32>().map_err(|_| "无效模式")?;
-            crate::security::vbmeta::vbmeta_disable(da, mode)
-                .map_err(|e| format!("修补失败: {}", e))?;
-            info!("{}", "vbmeta 已修补".green());
+            // 能力驱动路径（槽位感知 + 不可判定即中止），与 `--sim vbmeta` 同一份实现
+            super::dispatch::run_op(
+                da,
+                &crate::ops::vbmeta::VbmetaOp { mode },
+                app_config,
+                log_level,
+            )?;
         }
         "seccfg" => {
             if sub_args.is_empty() {
@@ -35,13 +41,25 @@ pub(crate) fn handle_zyb_command(
             }
             match sub_args[0].as_str() {
                 "unlock" => {
-                    da.unlock_bootloader()
-                        .map_err(|e| format!("解锁失败: {}", e))?;
+                    super::dispatch::run_op(
+                        da,
+                        &crate::ops::seccfg::SeccfgOp {
+                            action: crate::ops::seccfg::SeccfgAction::Unlock,
+                        },
+                        app_config,
+                        log_level,
+                    )?;
                     info!("{}", "Bootloader 已解锁".green());
                 }
                 "lock" => {
-                    da.lock_bootloader()
-                        .map_err(|e| format!("锁定失败: {}", e))?;
+                    super::dispatch::run_op(
+                        da,
+                        &crate::ops::seccfg::SeccfgOp {
+                            action: crate::ops::seccfg::SeccfgAction::Lock,
+                        },
+                        app_config,
+                        log_level,
+                    )?;
                     info!("{}", "Bootloader 已锁定".green());
                 }
                 "info" => {

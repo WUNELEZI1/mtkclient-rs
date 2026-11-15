@@ -1,22 +1,3 @@
-use crate::color::Colorize;
-use crate::da::DAXFlash;
-use log::info;
-
-/// 写入文件到分区
-pub fn cmd_write(
-    da: &mut DAXFlash,
-    args: &[String],
-    verify: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if args.len() < 2 {
-        return Err("用法: mtkclient w <part> <file>".into());
-    }
-    let result = if verify {
-        da.write_partition_with_verify(&args[0], &args[1])
-    } else {
-        da.write_partition(&args[0], &args[1])
-    };
-    result.map_err(|e| format!("写入失败: {}", e))?;
-    info!("{}", format!("{} <- {}", args[0], args[1]).green());
-    Ok(())
-}
+//! 分区写入：已迁到 `ops::write`（能力驱动 + 断点续传 + 回读校验）。
+//!
+//! 保留本文件仅为模块结构稳定；设备侧入口见 `cmd::dispatch::run_op`。

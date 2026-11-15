@@ -95,41 +95,7 @@ pub(crate) fn build_v4_image_online(
 ) -> Result<Vec<u8>, String> {
     let (header, new_lock, _, _) = build_v4_header(v4, lockflag)?;
     let digest = Sha256::digest(header);
-
-    // 对齐 Python SecCfgV4.create()：根据 hwtype 选择加密方式
-    // hwtype 在 parse() 时通过 SW→V3→V4(legacy)→V2 顺序解密验证确定
-    let enc_hash = match v4.hwtype.as_str() {
-        "SW" => {
-            let enc = sej_sec_cfg_sw_encrypt(&digest)?;
-            let mut out = [0u8; 32];
-            out.copy_from_slice(&enc[..32.min(enc.len())]);
-            out.to_vec()
-        }
-        "V2" => {
-            // V2: 尝试 HACC，失败回退到 V2 软件加密
-            match with_backend(da, || sej_hacc_sign(&digest, hw_code, false)) {
-                Ok(sig) => sig,
-                Err(_) => {
-                    info!("[SECCFG] HACC 不可用，使用 V2 软件加密");
-                    let enc = sej_sec_cfg_hw_encrypt(&digest)?;
-                    let mut out = [0u8; 32];
-                    out.copy_from_slice(&enc[..32.min(enc.len())]);
-                    out.to_vec()
-                }
-            }
-        }
-        "V3" => {
-            // V3: HACC 是唯一正确路径（密钥来自芯片 HUID/HUK）
-            let sig = with_backend(da, || sej_hacc_sign(&digest, hw_code, false))?;
-            sig
-        }
-        "V4" => {
-            // V4(legacy): HACC 是唯一正确路径
-            let sig = with_backend(da, || sej_hacc_sign(&digest, hw_code, true))?;
-            sig
-        }
-        _ => return Err(format!("不支持的 hwtype: {}", v4.hwtype)),
-    };
+    let enc_hash = sign_v4_digest(da, &v4.hwtype, &digest, hw_code)?;
 
     let mut result = header.to_vec();
     result.extend_from_slice(&enc_hash);
@@ -145,6 +111,68 @@ pub(crate) fn build_v4_image_online(
         v4.lock_state, new_lock
     );
     Ok(result)
+}
+
+/// 按 hwtype 对 28 字节头的 SHA256 摘要做签名/加密。
+///
+/// 抽出来供 `session::RealSession`（能力驱动路径）与既有 `unlock_bootloader`
+/// 共用同一份实现，避免两条路径的签名方式漂移。
+pub(crate) fn sign_v4_digest(
+    da: &mut DAXFlash,
+    hwtype: &str,
+    digest: &[u8; 32],
+    hw_code: u16,
+) -> Result<Vec<u8>, String> {
+    // 对齐 Python SecCfgV4.create()：根据 hwtype 选择加密方式
+    // hwtype 在 parse() 时通过 SW→V3→V4(legacy)→V2 顺序解密验证确定
+    let enc_hash = match hwtype {
+        "SW" => {
+            let enc = sej_sec_cfg_sw_encrypt(digest)?;
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&enc[..32.min(enc.len())]);
+            out.to_vec()
+        }
+        "V2" => {
+            // V2: 尝试 HACC，失败回退到 V2 软件加密
+            match with_backend(da, || sej_hacc_sign(digest, hw_code, false)) {
+                Ok(sig) => sig,
+                Err(_) => {
+                    info!("[SECCFG] HACC 不可用，使用 V2 软件加密");
+                    let enc = sej_sec_cfg_hw_encrypt(digest)?;
+                    let mut out = [0u8; 32];
+                    out.copy_from_slice(&enc[..32.min(enc.len())]);
+                    out.to_vec()
+                }
+            }
+        }
+        "V3" => {
+            // V3: HACC 是唯一正确路径（密钥来自芯片 HUID/HUK）
+            with_backend(da, || sej_hacc_sign(digest, hw_code, false))?
+        }
+        "V4" => {
+            // V4(legacy): HACC 是唯一正确路径
+            with_backend(da, || sej_hacc_sign(digest, hw_code, true))?
+        }
+        other => return Err(format!("不支持的 hwtype: {}", other)),
+    };
+    Ok(enc_hash)
+}
+
+/// 把头部 + 签名哈希补零到分区大小（供能力驱动路径复用）。
+pub(crate) fn pad_seccfg_image(
+    header: &[u8; 28],
+    enc_hash: &[u8],
+    partition_size: usize,
+) -> Vec<u8> {
+    let mut result = header.to_vec();
+    result.extend_from_slice(enc_hash);
+    while !result.len().is_multiple_of(0x200) {
+        result.push(0);
+    }
+    while result.len() < partition_size {
+        result.push(0);
+    }
+    result
 }
 
 #[cfg(test)]

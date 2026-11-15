@@ -13,6 +13,28 @@ use crate::system::config::AppConfig;
 ///
 /// 被 `execute_single_command`、`multi::cmd_multi`、`script::dispatch_command` 共同调用，
 /// 确保三处命令列表和逻辑完全一致。
+/// 用能力驱动路径执行一个 op（真机）。
+///
+/// 与 `printgpt` 走同一条链路：RealSession（DA 已由 Phase1 上传）→ Executor →
+/// Orchestrator 决策 → 逐步执行 + 能力校验。确认策略来自 `--yes` / `--token`。
+pub(crate) fn run_op<O: crate::ops::Op>(
+    da: &mut DAXFlash,
+    op: &O,
+    app_config: &AppConfig,
+    log_level: u8,
+) -> Result<(), crate::error::AppError> {
+    let state = real_device_state(da);
+    let mode = crate::core::plan::Mode::parse(mode_label(app_config))
+        .unwrap_or(crate::core::plan::Mode::Auto);
+    let mut session = crate::session::RealSession::new(da, state, true);
+    crate::exec::Executor::new(mode)
+        .with_assume_yes(app_config.assume_yes)
+        .with_token(app_config.token.clone())
+        .execute(op, &mut session, true, log_level)
+        .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
+    Ok(())
+}
+
 pub fn dispatch_cmd(
     da: &mut DAXFlash,
     cmd: &str,
@@ -50,9 +72,22 @@ pub fn dispatch_cmd(
                 let dir = args.get(1).ok_or(crate::i18n::t("usage_r_gpt"))?;
                 super::partition_table::cmd_read_gpt(da, dir, log_level)
                     .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
-            } else {
+            } else if args.iter().any(|a| a == "--dp") {
+                // super 动态分区读取需要 super 元数据解析，仍走既有实现
                 super::io::cmd_read(da, args)
                     .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
+            } else {
+                let part = args.first().ok_or("用法: mtkclient r <part> <file>")?;
+                let out = args.get(1).ok_or("用法: mtkclient r <part> <file>")?;
+                run_op(
+                    da,
+                    &crate::ops::read::ReadOp {
+                        part: part.clone(),
+                        out: out.clone(),
+                    },
+                    app_config,
+                    log_level,
+                )?;
             }
         }
         "rl" => {
@@ -71,16 +106,38 @@ pub fn dispatch_cmd(
                 super::partition_table::cmd_write_gpt(da, file)
                     .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
             } else {
-                super::io::cmd_write(da, args, verify)
-                    .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
+                let part = args.first().ok_or("用法: mtkclient w <part> <file>")?;
+                let file = args.get(1).ok_or("用法: mtkclient w <part> <file>")?;
+                run_op(
+                    da,
+                    &crate::ops::write::WriteOp {
+                        part: part.clone(),
+                        file: file.clone(),
+                        verify,
+                    },
+                    app_config,
+                    log_level,
+                )?;
             }
         }
         "e" => {
-            super::io::cmd_erase(da, args)
-                .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
+            let part = args.first().ok_or("用法: mtkclient e <part>")?;
+            run_op(
+                da,
+                &crate::ops::erase::EraseOp {
+                    part: part.clone(),
+                    check: true,
+                },
+                app_config,
+                log_level,
+            )?;
+        }
+        "unlock" => {
+            // 一键解锁：seccfg unlock + vbmeta 关校验（同一 op，规划只做一次）
+            run_op(da, &crate::ops::unlock::UnlockOp, app_config, log_level)?;
         }
         "zyb" => {
-            super::handle_zyb_command(da, args)
+            super::handle_zyb_command(da, args, app_config, log_level)
                 .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "xml" => {
@@ -103,7 +160,20 @@ pub fn dispatch_cmd(
         "dumpbrom" => {
             // BROM 本体提取（0xD1 BROM 读取路径，与 dumppreloader 同链路）
             let out = args.first().cloned().unwrap_or_else(|| "brom.bin".into());
-            match da.preloader.dump_brom() {
+            // 可选第二个参数：显式长度（十六进制或十进制），默认 128 KiB
+            let size = match args.get(1) {
+                Some(v) => {
+                    let v = v.trim();
+                    let n = if let Some(h) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+                        usize::from_str_radix(h, 16)
+                    } else {
+                        v.parse::<usize>()
+                    };
+                    n.map_err(|_| crate::error::AppError::Protocol(format!("无效长度: {}", v)))?
+                }
+                None => crate::exploit::dump::DEFAULT_BROM_SIZE,
+            };
+            match da.preloader.dump_brom_with_size(size) {
                 Ok((data, name)) => {
                     let path = if args.is_empty() { name } else { out };
                     std::fs::write(&path, &data)
@@ -189,6 +259,43 @@ pub fn dispatch_cmd(
             // 扩展模式：fs_shell boot [file] / fs_shell proinfo [file]
             // —— 除 super 外还支持 boot ramdisk (cpio) 与 proinfo NV 浏览
             if let Some(mode) = args.first().map(|s| s.as_str()) {
+                // 非交互动作：fs_shell boot ls|cat|info / fs_shell proinfo show
+                let action = match args.get(1).map(|s| s.as_str()) {
+                    Some("ls") => Some(crate::ops::fsshell::FsAction::List(
+                        args.get(2).cloned().unwrap_or_default(),
+                    )),
+                    Some("cat") => Some(crate::ops::fsshell::FsAction::Cat(
+                        args.get(2).cloned().unwrap_or_default(),
+                    )),
+                    Some("info") => Some(crate::ops::fsshell::FsAction::Info),
+                    Some("show") => Some(crate::ops::fsshell::FsAction::Show),
+                    _ => None,
+                };
+                if let (Some(target), Some(action)) = (
+                    match mode {
+                        "boot" => Some(crate::ops::fsshell::FsTarget::Boot),
+                        "proinfo" => Some(crate::ops::fsshell::FsTarget::Proinfo),
+                        _ => None,
+                    },
+                    action,
+                ) {
+                    // 第三种形式：fs_shell <target> <action> [file]
+                    let file = args
+                        .get(2)
+                        .filter(|a| a.ends_with(".img") || a.ends_with(".bin"))
+                        .cloned();
+                    run_op(
+                        da,
+                        &crate::ops::fsshell::FsShellOp {
+                            target,
+                            file,
+                            action,
+                        },
+                        app_config,
+                        log_level,
+                    )?;
+                    return Ok(());
+                }
                 if mode == "boot" || mode == "proinfo" {
                     super::io::cmd_imgshell(da, mode, &args[1..])
                         .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;

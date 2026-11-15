@@ -3,21 +3,28 @@
 //! 流程：加载设备画像 → 构建虚拟设备 → 构建会话 → 交给 Executor 走
 //! Orchestrator → 打印决策链 → 逐步执行 → op 输出。
 //!
-//! 设备画像来源：
-//! - 内置预设名：`v5-clean` / `v5-sla` / `v5-daa` / `v6` / `ufs-ab` / `flaky` / `unplug` / `no-emmc-info`
-//! - `.sim` 文本文件路径（`key=value`，见 `transport::vdev::DeviceProfile::from_text`）
+//! 支持的命令（与真机同一份 ops 代码）：
+//! `printgpt` / `r` / `w` / `e` / `seccfg unlock|lock` / `vbmeta <mode>` / `unlock`
 //!
 //! 例：
 //! ```text
 //! mtkclient-rs --sim v5-clean printgpt
-//! mtkclient-rs --port mock://./profiles/mt6768.sim --log 3 printgpt
+//! mtkclient-rs --sim v5-clean r boot_a boot.img --yes
+//! mtkclient-rs --sim flaky-write w boot_a boot.img --yes
+//! mtkclient-rs --sim v5-clean --log 3 unlock --yes
 //! ```
 
 use log::info;
 
 use crate::core::plan::Mode;
 use crate::exec::Executor;
+use crate::ops::erase::EraseOp;
 use crate::ops::printgpt::PrintGptOp;
+use crate::ops::read::ReadOp;
+use crate::ops::seccfg::{SeccfgAction, SeccfgOp};
+use crate::ops::unlock::UnlockOp;
+use crate::ops::vbmeta::VbmetaOp;
+use crate::ops::write::WriteOp;
 use crate::session::SimSession;
 use crate::system::config::AppConfig;
 use crate::transport::vdev::{DeviceProfile, VirtualDevice};
@@ -29,13 +36,7 @@ pub fn run_sim(
     log_level: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cmd = app_config.command.as_deref().unwrap_or("");
-    if cmd != "printgpt" {
-        return Err(format!(
-            "仿真模式当前仅支持 printgpt（收到 '{}'）；其余 op 待接入 Executor",
-            cmd
-        )
-        .into());
-    }
+    let args = &app_config.cmd_args;
 
     let profile = load_profile(spec)?;
     let virt = VirtualDevice::new(profile.clone());
@@ -60,6 +61,12 @@ pub fn run_sim(
     };
 
     let mut session = SimSession::new(virt).with_da(da);
+    if let Some(state) = app_config.sim_state.as_deref()
+        && std::path::Path::new(state).exists()
+    {
+        session.load_state(state)?;
+        println!("[sim] 已载入 flash 状态: {}", state);
+    }
 
     let mode = match app_config.work_mode {
         crate::system::config::WorkMode::Brom => Mode::Brom,
@@ -70,24 +77,148 @@ pub fn run_sim(
     let explicit_mode = std::env::args().any(|a| a == "--mode");
     let mode = if explicit_mode { mode } else { Mode::Auto };
 
-    let exec = Executor::new(mode);
-    let op = PrintGptOp;
-    let report = exec
-        .execute(&op, &mut session, true, log_level)
-        .map_err(|e| {
-            // 失败也要把已获得的设备侧线索带出来，便于定位
-            format!("{}\n[sim] 设备事件:\n{}", e, dump_events(&session))
-        })?;
+    let interactive = !app_config.assume_yes && std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let mut exec = Executor::new(mode)
+        .with_assume_yes(app_config.assume_yes)
+        .with_token(app_config.token.clone())
+        .with_interactive(interactive);
+
+    let report = match cmd {
+        "printgpt" => exec.execute(&PrintGptOp, &mut session, true, log_level),
+        "r" | "read" => {
+            let part = args.first().ok_or("用法: --sim <预设> r <part> <file>")?;
+            let out = args
+                .get(1)
+                .ok_or("用法: --sim <预设> r <part> <file>")?
+                .clone();
+            exec.execute(
+                &ReadOp {
+                    part: part.clone(),
+                    out,
+                },
+                &mut session,
+                true,
+                log_level,
+            )
+        }
+        "w" | "write" => {
+            let part = args
+                .first()
+                .ok_or("用法: --sim <预设> w <part> <file> [--verify]")?;
+            let file = args
+                .get(1)
+                .ok_or("用法: --sim <预设> w <part> <file> [--verify]")?
+                .clone();
+            let verify = app_config.verify || args.iter().any(|a| a == "--verify");
+            exec.execute(
+                &WriteOp {
+                    part: part.clone(),
+                    file,
+                    verify,
+                },
+                &mut session,
+                true,
+                log_level,
+            )
+        }
+        "e" | "erase" => {
+            let part = args.first().ok_or("用法: --sim <预设> e <part>")?;
+            exec.execute(
+                &EraseOp {
+                    part: part.clone(),
+                    check: true,
+                },
+                &mut session,
+                true,
+                log_level,
+            )
+        }
+        "seccfg" => {
+            let action = match args.first().map(|s| s.as_str()) {
+                Some("unlock") => SeccfgAction::Unlock,
+                Some("lock") => SeccfgAction::Lock,
+                _ => return Err("用法: --sim <预设> seccfg unlock|lock".into()),
+            };
+            exec.execute(&SeccfgOp { action }, &mut session, true, log_level)
+        }
+        "vbmeta" => {
+            let mode: u32 = args
+                .first()
+                .ok_or("用法: --sim <预设> vbmeta <0-3>")?
+                .parse()
+                .map_err(|_| "vbmeta 模式必须是 0-3")?;
+            exec.execute(&VbmetaOp { mode }, &mut session, true, log_level)
+        }
+        "unlock" => exec.execute(&UnlockOp, &mut session, true, log_level),
+        "fs_shell" => {
+            use crate::ops::fsshell::{FsAction, FsShellOp, FsTarget};
+            let target = match args.first().map(|s| s.as_str()) {
+                Some("boot") => FsTarget::Boot,
+                Some("proinfo") => FsTarget::Proinfo,
+                _ => {
+                    return Err(
+                        "用法: --sim <预设> fs_shell boot|proinfo <ls|cat|info|show> [arg]".into(),
+                    );
+                }
+            };
+            let action = match args.get(1).map(|s| s.as_str()) {
+                Some("ls") => FsAction::List(args.get(2).cloned().unwrap_or_default()),
+                Some("cat") => {
+                    FsAction::Cat(args.get(2).ok_or("用法: fs_shell boot cat <path>")?.clone())
+                }
+                Some("info") => FsAction::Info,
+                Some("show") => FsAction::Show,
+                _ => {
+                    return Err(
+                        "用法: --sim <预设> fs_shell boot|proinfo <ls|cat|info|show> [arg]".into(),
+                    );
+                }
+            };
+            exec.execute(
+                &FsShellOp {
+                    target,
+                    file: None,
+                    action,
+                },
+                &mut session,
+                true,
+                log_level,
+            )
+        }
+        other => {
+            return Err(format!(
+                "仿真模式不支持命令 '{}'（支持: printgpt/r/w/e/seccfg/vbmeta/unlock）",
+                other
+            )
+            .into());
+        }
+    }
+    .map_err(|e| {
+        // 失败也要把设备侧状态落盘，便于"重连后续传"
+        if let Some(state) = app_config.sim_state.as_deref() {
+            let _ = session.save_state(state);
+        }
+        // 失败也要把已获得的设备侧线索带出来，便于定位
+        format!("{}\n[sim] 设备事件:\n{}", e, dump_events(&session))
+    })?;
+
+    if let Some(state) = app_config.sim_state.as_deref() {
+        session.save_state(state)?;
+    }
 
     info!(
         "[sim] 执行完成：{} 步，cost={}",
         report.executed.len(),
         report.decision.selected_cost
     );
+    println!("[sim] 结果: {}", report.outcome.summary);
     if log_level >= 2 {
         println!("[sim] 执行步骤: {}", report.executed.join(" -> "));
         for (step, gained) in &report.gains {
             println!("[sim]   {} => [{}]", step, gained.join(","));
+        }
+        for (k, v) in &report.outcome.facts {
+            println!("[sim]   {}={}", k, v);
         }
         println!("{}", dump_events(&session));
     }
@@ -125,8 +256,10 @@ fn load_profile(spec: &str) -> Result<DeviceProfile, Box<dyn std::error::Error>>
         "v6",
         "ufs-ab",
         "flaky",
+        "flaky-write",
         "unplug",
         "no-emmc-info",
+        "ab-unknown-slot",
     ];
     Err(format!(
         "未知仿真规格 '{}'（可用预设: {}；或给出 .sim 文件路径）",
@@ -165,6 +298,7 @@ mod tests {
     #[test]
     fn preset_lookup_and_unknown_hint() {
         assert!(load_profile("mock://v6").is_ok());
+        assert!(load_profile("mock://flaky-write").is_ok());
         let err = load_profile("mock://no-such").unwrap_err().to_string();
         assert!(err.contains("可用预设"));
     }

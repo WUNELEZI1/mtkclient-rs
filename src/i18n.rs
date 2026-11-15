@@ -657,6 +657,9 @@ Commands:
     zyb oem unlock              FRP OEM unlock (patches the frp partition flag)
     zyb oem lock                FRP OEM relock
     zyb vbmeta <0-3>            Patch vbmeta (0=verification off, 1=on, 2/3=reserved)
+    unlock [--yes]              One-shot unlock: seccfg unlock + disable vbmeta checks
+    fs_shell boot ls|cat|info   Browse boot ramdisk (read-only, capability-gated)
+    fs_shell proinfo show       Parse proinfo NV blocks
     zyb erase_data              Wipe user data + metadata (factory reset)
     frp                         FRP OEM unlock (alias of zyb oem unlock)
   Reboot control:
@@ -744,6 +747,9 @@ MTK 设备底层刷机工具 - 支持 87 种芯片 | Windows 10/11 x64
     zyb oem unlock              FRP OEM 解锁（修改 frp 分区标志位）
     zyb oem lock                FRP OEM 回锁
     zyb vbmeta <0-3>            修补 vbmeta（0=关闭验证 1=启用 2/3=保留）
+    unlock [--yes]              一键解锁：seccfg unlock + 关闭 vbmeta 校验
+    fs_shell boot ls|cat|info   浏览 boot ramdisk（只读，能力门控）
+    fs_shell proinfo show       解析 proinfo NV 块
     zyb erase_data              清除用户数据 + metadata（恢复出厂设置）
     frp                         FRP OEM 解锁（zyb oem unlock 的别名）
   重启控制:
@@ -832,6 +838,8 @@ Commandes :
     zyb oem unlock              Déverrouillage FRP OEM (patch du flag de la partition frp)
     zyb oem lock                Reverrouillage FRP OEM
     zyb vbmeta <0-3>            Patche vbmeta (0=vérification off, 1=on, 2/3=réservé)
+    unlock [--yes]              Déverrouillage en une passe : seccfg + vbmeta
+    fs_shell boot ls|cat|info   Parcourir le ramdisk boot (lecture seule)
     zyb erase_data              Efface données utilisateur + metadata (reset usine)
     frp                         Déverrouillage FRP OEM (alias de zyb oem unlock)
   Contrôle du redémarrage :
@@ -919,6 +927,8 @@ const HELP_RU: &str = r#"mtkclient-rs
     zyb oem unlock              FRP OEM разблокировка (патч флага раздела frp)
     zyb oem lock                FRP OEM блокировка
     zyb vbmeta <0-3>            Патч vbmeta (0=проверка выкл, 1=вкл, 2/3=резерв)
+    unlock [--yes]              Разблокировка одной командой: seccfg + vbmeta
+    fs_shell boot ls|cat|info   Просмотр ramdisk boot (только чтение)
     zyb erase_data              Очистка пользовательских данных + metadata (сброс к заводским)
     frp                         FRP OEM разблокировка (синоним zyb oem unlock)
   Управление перезагрузкой:
@@ -1006,6 +1016,8 @@ Comandos:
     zyb oem unlock              Desbloqueo FRP OEM (parchea el flag de la partición frp)
     zyb oem lock                Rebloqueo FRP OEM
     zyb vbmeta <0-3>            Parchea vbmeta (0=verificación off, 1=on, 2/3=reservado)
+    unlock [--yes]              Desbloqueo en un paso: seccfg + vbmeta
+    fs_shell boot ls|cat|info   Explorar ramdisk boot (solo lectura)
     zyb erase_data              Borra datos de usuario + metadata (restablecimiento de fábrica)
     frp                         Desbloqueo FRP OEM (alias de zyb oem unlock)
   Control de reinicio:
@@ -1093,6 +1105,8 @@ const HELP_AR: &str = r#"mtkclient-rs
     zyb oem unlock              فتح FRP OEM (تعديل علم قسم frp)
     zyb oem lock                إعادة قفل FRP OEM
     zyb vbmeta <0-3>            تعديل vbmeta (0=إيقاف التحقق 1=تشغيل 2/3=احتياطي)
+    unlock [--yes]              فتح Bootloader بخطوة واحدة: seccfg + vbmeta
+    fs_shell boot ls|cat|info   تصفح ramdisk الخاص بـ boot (قراءة فقط)
     zyb erase_data              مسح بيانات المستخدم + metadata (إعادة ضبط المصنع)
     frp                         فتح FRP OEM (مرادف zyb oem unlock)
   التحكم بإعادة التشغيل:
