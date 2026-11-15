@@ -9,8 +9,7 @@
 
 use log::{info, warn};
 
-use super::{Op, OpCtx, OpOutcome, is_critical_partition};
-use crate::confirm::Danger;
+use super::{Op, OpCtx, OpOutcome, danger_for_partition};
 use crate::core::capability::{Capability, CapabilitySet};
 
 /// 擦除分区。
@@ -37,12 +36,8 @@ impl Op for EraseOp {
             return Err(format!("分区 {} 大小为 0，无法擦除", self.part));
         }
 
-        // 擦除一律确认：这是不可"读回来"的操作
-        let danger = if is_critical_partition(&self.part) {
-            Danger::High
-        } else {
-            Danger::High
-        };
+        // 擦除一律确认（擦掉就读不回来了）；不可恢复分区每次都要 token
+        let danger = danger_for_partition(&self.part);
         ctx.confirm_action(
             "erase",
             danger,

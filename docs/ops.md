@@ -31,13 +31,15 @@ pub trait Op {
 
 | 动作 | `Danger` 级别 | 确认方式 |
 |---|---|---|
-| 写/擦**重点分区** | `Irreversible` | 每次都要 token（设备 SN 后 4 位）或交互输入 token |
-| seccfg lock/unlock、vbmeta 改写 | `High` | 同会话确认一次；`--yes` 可跳过交互 |
-| 普通数据分区写/擦 | 无 | 不打断 |
+| 写/擦**不可恢复分区**（preloader / seccfg / nvram / nvdata / nvcfg / persist / proinfo / protect1-2 / frp） | `Irreversible` | **每次**都要 token（设备 SN 后 4 位）或交互输入，不缓存 |
+| 写/擦其余重点分区（boot / lk / tee / dtbo / misc / para / super / userdata / `vbmeta*` …） | `High` | 同会话确认一次；`--yes` 可跳过交互 |
+| seccfg lock/unlock、vbmeta 改写 | `High` | 同上 |
+| 普通数据分区写/擦 | 无 | 不打断（擦除仍会确认一次，因为擦掉读不回来） |
 
-- 重点分区判定见 `ops::is_critical_partition()`：preloader / seccfg / nvram / nvdata / persist /
-  protect1-2 / proinfo / frp / misc / para / expdb / metadata / userdata / super / boot /
-  init_boot / vendor_boot / recovery / lk / tee / dtbo / `vbmeta*` / `md1img` / `scp` / `sspm` / `spmfw` …
+- 重点分区判定见 `ops::is_critical_partition()`；不可恢复子集见 `ops::is_irreversible_partition()`，
+  危险等级由 `ops::danger_for_partition()` 统一给出（写/擦共用，避免两处判定漂移）。
+- 名字末尾是 `a`/`b` 的分区名（`userdata` / `nvdata` / `para` / `data`）**不会**被当成槽后缀剥掉——
+  只剥 `_a` / `_b`。这一点有回归测试（`critical_partition_names_with_trailing_a_or_b`）。
 - **`--yes` 不等于静默**：警告仍打 stderr，并写一行 `[audit] <时间> action=... sn=... token=... fp=...`
   审计日志，事后可追溯。
 
@@ -101,3 +103,22 @@ Planner / Executor / Session **都不用改**。能力声明由
 `exec/ops_flow.rs::operations_declare_the_capabilities_they_use` 锁住（只读 op 不得声明写、
 写 op 不得多要 RPMB/XML 这类无关能力）；声明漏了会在规划阶段直接暴露成
 `gap=[storage_write]` —— 少声明拿不到能力，多声明会被测试拦住。
+
+## 八、与上游 mtkclient 的差异（逐条核对过源码）
+
+核对基准：`bkerler/mtkclient@main`，`mtkclient/Library/DA/xflash/{xflash_lib,xflash_param}.py`、
+`mtkclient/Library/Hardware/seccfg.py`。
+
+| 项 | 上游 | 本仓库 | 为什么不同 |
+|---|---|---|---|
+| 命令常量 | `WRITE_DATA=0x010004` / `FORMAT=0x010003` / `READ_DATA=0x010005` / `CC_OPTIONAL_DOWNLOAD_ACT=0x080005` | 完全一致（`transport::wire`，有与旧协议层的一致性测试） | — |
+| 写参数块 | `pack("<IIQQ") + NandExtension(8×u32)` = 56 B | 同 | — |
+| 数据分块 | `[0u32][sum(data)&0xFFFF][data]`，按 0x200 切，每包一次 status | 同 | — |
+| 写收尾 | 全部包发完后 `status()`，非 0 报错；成功则 `CC_OPTIONAL_DOWNLOAD_ACT` | 同 | — |
+| FORMAT | `xsend`→status→56B 参数→循环 `CONTINUE` 时 sleep(status()/1000) 再 `ack()`→COMPLETE | 同 | — |
+| 包长 | `GET_PACKET_LENGTH=0x040007`，回 `<II>`；**没有** SET 命令 | 以 DA 自报为准，`MTK_FORCE_PKT_LEN` 仅作显式覆盖 | 曾误把 `0x040008`（实为 `GET_RANDOM_ID`）当 SET 用，已删 |
+| eMMC 信息 | `0 type / 4 block / 8 boot1 … 32 gp1 … **64 user_size**` | 同（`user_size` 在 **0x40**） | 早期两边都写 0x20，"自洽但与真机不符" |
+| 镜像大于分区 | `length = min(fsize, plength)` —— **静默截断** | 直接拒绝，不写 | 截断 = 悄悄写坏，宁可报错让用户处理 |
+| seccfg `0x10` | `critical=True` 时 unlock 写 `1`（DM_VERITY_GENERAL_ERROR），`lock` 写 `0` | 一律写 `0` | 无真机对拍时，把设备推进 dm-verity 错误态风险过高 |
+| dumpbrom | 按 2 MiB 逐 dword 读，**不解析头部长度** | 同（默认 2 MiB，可显式指定，尾部 0xFF 裁剪并告警） | 头部长度字段无可靠公开出处 |
+| 擦除后校验 | 无 | 抽样读前 4 KiB 断言全 `0xFF`/`0x00` | 廉价地抓"命令成功但没真擦" |

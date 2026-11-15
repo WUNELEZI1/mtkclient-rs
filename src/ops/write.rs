@@ -11,8 +11,7 @@
 use log::{info, warn};
 
 use super::checkpoint::{PERSIST_INTERVAL, WriteCheckpoint};
-use super::{Op, OpCtx, OpOutcome, is_critical_partition};
-use crate::confirm::Danger;
+use super::{Op, OpCtx, OpOutcome, danger_for_partition, is_critical_partition};
 use crate::core::capability::{Capability, CapabilitySet};
 
 /// 回读校验分块。
@@ -63,7 +62,7 @@ impl Op for WriteOp {
         if is_critical_partition(&self.part) {
             ctx.confirm_action(
                 "write",
-                Danger::High,
+                danger_for_partition(&self.part),
                 &format!("写入重点分区 {} ({} 字节)", self.part, file_size),
             )?;
         }

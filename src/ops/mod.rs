@@ -75,14 +75,26 @@ impl OpCtx<'_> {
     }
 }
 
+/// 去掉 A/B 槽后缀（`boot_a` → `boot`）。
+///
+/// 只剥 `_a`/`_b` 或紧邻的单字母槽后缀；**不能无脑 `trim_end_matches('a')`**——
+/// `userdata` / `nvdata` / `para` 的词尾 a 是名字的一部分，剥掉就再也匹配不到重点分区。
+fn strip_slot(name: &str) -> &str {
+    if let Some(s) = name.strip_suffix("_a").or_else(|| name.strip_suffix("_b")) {
+        return s;
+    }
+    if let Some(s) = name.strip_suffix('a').or_else(|| name.strip_suffix('b')) {
+        return s;
+    }
+    name
+}
+
 /// 重点分区（擦/写需要确认）。
 ///
 /// 判定原则：写坏之后**设备无法自行恢复**或会丢失回滚/校准数据的分区。
 /// 普通数据分区（如 super 内的子分区、vendor 等）不在列表内。
 pub fn is_critical_partition(name: &str) -> bool {
-    let bare = name.trim_end_matches(|c| c == 'a' || c == 'b');
-    let bare = bare.trim_end_matches('_');
-    const EXACT: [&str; 24] = [
+    const EXACT: [&str; 25] = [
         "preloader",
         "preloader_backup",
         "seccfg",
@@ -99,6 +111,7 @@ pub fn is_critical_partition(name: &str) -> bool {
         "expdb",
         "metadata",
         "userdata",
+        "data",
         "super",
         "boot",
         "init_boot",
@@ -108,18 +121,50 @@ pub fn is_critical_partition(name: &str) -> bool {
         "tee",
         "dtbo",
     ];
-    if EXACT.contains(&bare) {
-        return true;
+    // 原名与"去掉槽后缀"两种写法都算，避免 `boot_a` 漏判、`userdata` 误剥
+    [name, strip_slot(name)].iter().any(|n| {
+        EXACT.contains(n)
+            || n.starts_with("vbmeta")
+            || n.starts_with("tee")
+            || n.starts_with("lk")
+            || n.starts_with("md1img")
+            || n.starts_with("scp")
+            || n.starts_with("sspm")
+            || n.starts_with("spmfw")
+            || n.starts_with("cam_vpu")
+            || n.starts_with("gz")
+    })
+}
+
+/// 不可恢复分区：写坏/擦掉之后设备**无法自行恢复**（变砖，或丢校准/回滚数据）。
+///
+/// 这批分区要求每次操作都重新确认（`Danger::Irreversible`），不接受"本次会话已确认过"。
+pub fn is_irreversible_partition(name: &str) -> bool {
+    const SET: [&str; 11] = [
+        "preloader",
+        "preloader_backup",
+        "seccfg",
+        "nvram",
+        "nvdata",
+        "nvcfg",
+        "persist",
+        "proinfo",
+        "protect1",
+        "protect2",
+        "frp",
+    ];
+    [name, strip_slot(name)]
+        .iter()
+        .any(|n| SET.contains(n) || n.starts_with("preloader"))
+}
+
+/// 该分区写/擦的危险等级。
+pub fn danger_for_partition(name: &str) -> Danger {
+    if is_irreversible_partition(name) {
+        Danger::Irreversible
+    } else {
+        Danger::High
     }
-    name.starts_with("vbmeta")
-        || name.starts_with("tee")
-        || name.starts_with("lk")
-        || name.starts_with("md1img")
-        || name.starts_with("scp")
-        || name.starts_with("sspm")
-        || name.starts_with("spmfw")
-        || name.starts_with("cam_vpu")
-        || name.starts_with("gz")
 }
 
 /// 执行结果。
@@ -156,7 +201,11 @@ pub fn required_caps(op: &str) -> Option<CapabilitySet> {
             Capability::StorageWrite,
             Capability::GptParsed,
         ],
-        "unlock" => &[Capability::StorageRead, Capability::StorageWrite],
+        "unlock" => &[
+            Capability::StorageRead,
+            Capability::StorageWrite,
+            Capability::GptParsed,
+        ],
         "fs_shell" => &[Capability::StorageRead, Capability::GptParsed],
         "rpmb" => &[Capability::RpmbAccess],
         _ => return None,
@@ -199,9 +248,115 @@ mod tests {
         );
     }
 
+    /// 词尾恰好是 a/b 的分区名不能被当成槽后缀剥掉（曾经 `userdata` → `userdat` 漏判）。
+    #[test]
+    fn critical_partition_names_with_trailing_a_or_b() {
+        for name in ["userdata", "nvdata", "para", "data", "nvdata_bak"] {
+            let expect = name != "nvdata_bak"; // bak 不在列表内，仅确保不 panic
+            assert_eq!(
+                is_critical_partition(name),
+                expect,
+                "{} 的重点分区判定不对",
+                name
+            );
+        }
+        // 带槽后缀的照样命中
+        assert!(is_critical_partition("boot_a"));
+        assert!(is_critical_partition("boot_b"));
+        assert!(is_critical_partition("vbmeta_system_b"));
+        assert!(is_critical_partition("lk"));
+        // 普通分区不打断
+        assert!(!is_critical_partition("vendor"));
+        assert!(!is_critical_partition("system"));
+    }
+
+    #[test]
+    fn irreversible_set_is_a_subset_of_critical() {
+        for name in [
+            "preloader",
+            "preloader_backup",
+            "seccfg",
+            "nvram",
+            "nvdata",
+            "nvcfg",
+            "persist",
+            "proinfo",
+            "protect1",
+            "protect2",
+            "frp",
+        ] {
+            assert!(is_critical_partition(name), "{} 应是重点分区", name);
+            assert!(is_irreversible_partition(name), "{} 应不可恢复", name);
+            assert_eq!(danger_for_partition(name), Danger::Irreversible);
+        }
+        // boot 是重点但可恢复（刷回去就行）
+        assert!(is_critical_partition("boot_a"));
+        assert!(!is_irreversible_partition("boot_a"));
+        assert_eq!(danger_for_partition("boot_a"), Danger::High);
+    }
+
     #[test]
     fn unknown_op_has_no_caps() {
         assert!(required_caps("nope").is_none());
         assert_eq!(op_static_name("nope"), "unknown");
+    }
+
+    /// `required_caps(op)` 表与各 `Op::required_caps()` 必须逐位一致。
+    ///
+    /// 两处定义一旦漂移，`plan`（读表）和 `exec`（读 trait）就会对同一个操作给出
+    /// 不同的能力缺口，规划出的步骤也会跟着错。
+    #[test]
+    fn capability_table_matches_each_op() {
+        let ops: Vec<(&str, CapabilitySet)> = vec![
+            ("printgpt", printgpt::PrintGptOp.required_caps()),
+            (
+                "read",
+                read::ReadOp {
+                    part: "boot_a".into(),
+                    out: "x".into(),
+                }
+                .required_caps(),
+            ),
+            (
+                "write",
+                write::WriteOp {
+                    part: "boot_a".into(),
+                    file: "x".into(),
+                    verify: false,
+                }
+                .required_caps(),
+            ),
+            (
+                "erase",
+                erase::EraseOp {
+                    part: "boot_a".into(),
+                    check: true,
+                }
+                .required_caps(),
+            ),
+            (
+                "seccfg",
+                seccfg::SeccfgOp {
+                    action: seccfg::SeccfgAction::Unlock,
+                }
+                .required_caps(),
+            ),
+            ("vbmeta", vbmeta::VbmetaOp { mode: 3 }.required_caps()),
+            ("unlock", unlock::UnlockOp.required_caps()),
+            (
+                "fs_shell",
+                fsshell::FsShellOp {
+                    target: fsshell::FsTarget::Boot,
+                    file: None,
+                    action: fsshell::FsAction::Info,
+                }
+                .required_caps(),
+            ),
+        ];
+        for (name, want) in ops {
+            let got = required_caps(name).unwrap_or_else(|| panic!("{} 未登记能力", name));
+            assert_eq!(got, want, "{} 的能力表与 Op 实现不一致", name);
+            assert_eq!(op_static_name(name), name);
+        }
     }
 }
