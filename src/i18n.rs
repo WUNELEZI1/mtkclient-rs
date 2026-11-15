@@ -670,6 +670,9 @@ Commands:
     chain <goal>                Show the planned smart exploit chain for a goal
     plan <op>                   Show planned paths (>=2) and reasons, offline
                                 (read|rp|write|peek|dump) — device-state aware
+    --sim <preset>              Run fully offline against a simulated MTK device
+                                (v5-clean|v5-sla|v5-daa|v6|ufs-ab|flaky|unplug),
+                                or --sim ./my.sim / --port mock://<preset>
     avb <info|disable> <file>   Offline avbtool: parse vbmeta / disable verification
     fs_shell boot [file]        Interactively browse a boot image ramdisk (cpio):
                                 ls/cat/extract/info/quit; from the active slot if no file
@@ -754,6 +757,9 @@ MTK 设备底层刷机工具 - 支持 87 种芯片 | Windows 10/11 x64
     chain <goal>                显示目标的智能利用链规划（read|rp|write|peek|dump），
     plan <op>                   离线查看规划路径（≥2 条）与选择理由，不连接设备
                                 按设备状态动态选择 kamakiri/carbonara 等最优路径
+    --sim <预设>                离线对着虚拟 MTK 设备跑（无需真机，多用于回归）：
+                                v5-clean|v5-sla|v5-daa|v6|ufs-ab|flaky|unplug；
+                                也支持 --sim ./my.sim 或 --port mock://<预设>
     avb <info|disable> <file>   离线 avbtool：解析 vbmeta / 禁用校验（自研，无需设备）
     fs_shell boot [file]        交互式浏览 boot 镜像 ramdisk（cpio）：ls/cat/extract/quit；
                                 省略文件时自动读当前 A/B 槽位的 boot 分区
@@ -839,6 +845,9 @@ Commandes :
     chain <goal>                Affiche la chaîne d'exploit planifiée pour un objectif
     plan <op>                   Affiche les chemins planifiés (>=2) et les raisons, hors ligne
                                 (read|rp|write|peek|dump) — selon l'état de l'appareil
+    --sim <preset>              Exécuter hors ligne sur un appareil MTK simulé
+                                (v5-clean|v5-sla|v5-daa|v6|ufs-ab|flaky|unplug),
+                                ou --sim ./mon.sim / --port mock://<preset>
     avb <info|disable> <file>   avbtool hors ligne : analyse vbmeta / désactive la vérification
     fs_shell boot [file]        Navigue interactivement le ramdisk d'une image boot (cpio)
     fs_shell proinfo [file]     Inspecte interactivement la partition proinfo MTK (données NV)
@@ -923,6 +932,9 @@ const HELP_RU: &str = r#"mtkclient-rs
     chain <goal>                Показать запланированную цепочку эксплойтов для цели
     plan <op>                   Показать план путей (>=2) и причины, офлайн
                                 (read|rp|write|peek|dump) — с учётом состояния устройства
+    --sim <preset>              Полностью офлайн-запуск на виртуальном MTK
+                                (v5-clean|v5-sla|v5-daa|v6|ufs-ab|flaky|unplug),
+                                или --sim ./my.sim / --port mock://<preset>
     avb <info|disable> <file>   Автономный avbtool: разбор vbmeta / отключение проверки
     fs_shell boot [file]        Интерактивный просмотр ramdisk образа boot (cpio)
     fs_shell proinfo [file]     Интерактивный просмотр раздела proinfo MTK (данные NV)
@@ -1007,6 +1019,9 @@ Comandos:
     chain <goal>                Muestra la cadena de exploit planificada para un objetivo
     plan <op>                   Muestra rutas planificadas (>=2) y motivos, sin conexión
                                 (read|rp|write|peek|dump) — según el estado del dispositivo
+    --sim <preset>              Ejecutar sin conexión contra un dispositivo MTK
+                                simulado (v5-clean|v5-sla|v5-daa|v6|ufs-ab|flaky),
+                                o --sim ./mi.sim / --port mock://<preset>
     avb <info|disable> <file>   avbtool sin conexión: analiza vbmeta / desactiva la verificación
     fs_shell boot [file]        Navega interactivamente el ramdisk de una imagen boot (cpio)
     fs_shell proinfo [file]     Inspecciona interactivamente la partición proinfo MTK (NV)
@@ -1091,6 +1106,9 @@ const HELP_AR: &str = r#"mtkclient-rs
     chain <goal>                عرض سلسلة الاستغلال المخططة لهدف معين
     plan <op>                   عرض المسارات المخططة (>=2) والأسباب، دون اتصال
                                 (read|rp|write|peek|dump) — حسب حالة الجهاز
+    --sim <preset>              تشغيل دون اتصال على جهاز MTK وهمي
+                                (v5-clean|v5-sla|v5-daa|v6|ufs-ab|flaky|unplug)،
+                                أو --sim ./my.sim / --port mock://<preset>
     avb <info|disable> <file>   أداة avbtool دون اتصال: تحليل vbmeta / تعطيل التحقق
     fs_shell boot [file]        تصفح تفاعلي لـ ramdisk صورة boot (cpio)
     fs_shell proinfo [file]     فحص تفاعلي لقسم proinfo الخاص بـ MTK (بيانات NV)
@@ -1199,6 +1217,15 @@ mod tests {
     }
 
     #[test]
+    fn help_mentions_sim_in_all_langs() {
+        for l in [Lang::En, Lang::ZhCn, Lang::Fr, Lang::Ru, Lang::Es, Lang::Ar] {
+            set(l);
+            assert!(help().contains("--sim"), "缺少 --sim: {:?}", l);
+            assert!(help().contains("mock://"), "缺少 mock://: {:?}", l);
+        }
+        set(Lang::En);
+    }
+
     fn help_mentions_language_in_all_langs() {
         for l in [Lang::En, Lang::ZhCn, Lang::Fr, Lang::Ru, Lang::Es, Lang::Ar] {
             set(l);

@@ -1,0 +1,1138 @@
+//! 虚拟 MTK 设备（100% 离线仿真）。
+//!
+//! 这是**设备侧**实现：它接收主机发出的字节，按 BROM / XFlash 协议解析，
+//! 并生成设备应答。配合 `da::engine`（主机侧状态机）即可在没有真机的情况下
+//! 跑完 `连接 → DA 上传 → 开存储 → 读 GPT` 全流程。
+//!
+//! 设计取舍：
+//! - 解析按**单字节喂入**，状态机状态显式保存，天然支持分片到达（模拟 USB 短包）；
+//! - 设备画像（[`DeviceProfile`]）描述"这是一台什么机器"：芯片、安全标志、
+//!   存储尺寸、分区布局、故障注入点；内置若干预设（见 [`preset`]）；
+//! - GPT 由分区列表**现场生成**（含两处 CRC），因此 `GptInfo::parse` 的校验路径
+//!   会被真实覆盖，不是写死的一段字节；
+//! - exploit 无法在字节流里复现，用仿真专用命令 [`wire::SIM_EXPLOIT_CMD`] 表示
+//!   "设备侧接受该 exploit"，用于验证编排链路（文档中已标注 sim-only）。
+
+use std::collections::VecDeque;
+
+use super::wire;
+use super::{PortError, PortKind, StreamPort};
+
+// =============================================================================
+// 设备画像
+// =============================================================================
+
+/// 存储画像。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StorageProfile {
+    pub boot1: u64,
+    pub boot2: u64,
+    pub user: u64,
+    pub rpmb: u64,
+    pub block: u32,
+    /// 0=eMMC 1=UFS 2=SD 3=MMC 6=UFS_CARD
+    pub emmc_type: u32,
+}
+
+impl Default for StorageProfile {
+    fn default() -> Self {
+        Self {
+            boot1: 0x40_0000,
+            boot2: 0x40_0000,
+            user: 0x1D1A_00000,
+            rpmb: 0x400_0000,
+            block: 512,
+            emmc_type: 0,
+        }
+    }
+}
+
+/// 故障注入（设备侧）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceFault {
+    /// 从第 N 个主机字节起，设备不再应答（主机侧表现为超时）
+    Silent,
+    /// 从第 N 个主机字节起，设备断开（主机侧表现为 Disconnected）
+    Dead,
+}
+
+/// 设备画像。
+#[derive(Debug, Clone)]
+pub struct DeviceProfile {
+    pub name: String,
+    pub hw_code: u16,
+    pub hw_sub: u16,
+    pub hw_ver: u16,
+    pub sw_ver: u16,
+    /// DA 头里声明的 da_code（0x6768 等）
+    pub da_code: u16,
+    /// true = V6(XML) 平台
+    pub v6: bool,
+    /// target config 原始位（安全标志）
+    pub safety: u32,
+    /// SEND_DA 返回 0x1D0D（SLA 拒绝）
+    pub sla_required: bool,
+    /// BROM 需要认证（拿不到 auth 时 BROM 路径不可达）
+    pub brom_auth: bool,
+    pub preloader_patched: bool,
+    pub da_sig_failed: bool,
+    pub storage: StorageProfile,
+    /// (名称, 起始 LBA, 字节数)
+    pub partitions: Vec<(String, u64, u64)>,
+    pub faults: Vec<(usize, DeviceFault)>,
+    /// 设备是否支持 eMMC 信息查询
+    pub emmc_info: bool,
+    /// 设备侧接受的 exploit 名称（仿真专用）
+    pub exploits: Vec<String>,
+}
+
+impl Default for DeviceProfile {
+    fn default() -> Self {
+        Self {
+            name: "MT6768".into(),
+            hw_code: 0x0707,
+            hw_sub: 0x8A00,
+            hw_ver: 0xCA00,
+            sw_ver: 0x0000,
+            da_code: 0x6768,
+            v6: false,
+            safety: 0,
+            sla_required: false,
+            brom_auth: false,
+            preloader_patched: false,
+            da_sig_failed: false,
+            storage: StorageProfile::default(),
+            partitions: Vec::new(),
+            faults: Vec::new(),
+            emmc_info: true,
+            exploits: vec![],
+        }
+    }
+}
+
+impl DeviceProfile {
+    /// 让 `storage.user` 至少覆盖最后一个分区（否则 GPT 里分区会超出盘尾，
+    /// 与真机不符且容易掩盖边界 bug）。
+    fn fit_storage(&mut self) {
+        let end = self
+            .partitions
+            .iter()
+            .map(|(_, start, size)| (start + size.div_ceil(512)) * 512)
+            .max()
+            .unwrap_or(0);
+        let need = end + 32 * 1024 * 1024;
+        if self.storage.user < need {
+            self.storage.user = need.next_power_of_two();
+        }
+        if self.storage.emmc_type != 1 && self.storage.block == 0 {
+            self.storage.block = 512;
+        }
+    }
+
+    /// 转换为规划层的设备状态。
+    pub fn to_state(&self) -> crate::core::device::DeviceState {
+        use crate::core::device::ProtocolVersion;
+        crate::core::device::DeviceState {
+            hw_code: self.hw_code,
+            da_code: self.da_code,
+            name: self.name.clone(),
+            protocol: if self.v6 {
+                ProtocolVersion::V6
+            } else {
+                ProtocolVersion::V5
+            },
+            safety: crate::core::safety::SafetyFlags::from_raw(self.safety),
+            brom_auth_required: self.brom_auth,
+            preloader_patched: self.preloader_patched,
+            da_signature_failed: self.da_sig_failed,
+            current_slot: None,
+        }
+    }
+
+    /// 从 `key=value` 文本解析（每行一条，`#` 开头为注释）。
+    ///
+    /// 分区用 `partition=name:start_lba:size_bytes`，故障用 `fault=silent:24`。
+    pub fn from_text(text: &str) -> Result<Self, String> {
+        let mut p = DeviceProfile::default();
+        p.partitions.clear();
+        for (i, raw) in text.lines().enumerate() {
+            let line = raw.split('#').next().unwrap_or("").trim();
+            if line.is_empty() {
+                continue;
+            }
+            let (k, v) = line
+                .split_once('=')
+                .ok_or_else(|| format!("第 {} 行缺少 '=': {}", i + 1, line))?;
+            let (k, v) = (k.trim(), v.trim());
+            match k {
+                "name" => p.name = v.to_string(),
+                "hw_code" => p.hw_code = num(v)?.as_num::<u16>(k)?,
+                "hw_sub" => p.hw_sub = num(v)?.as_num::<u16>(k)?,
+                "hw_ver" => p.hw_ver = num(v)?.as_num::<u16>(k)?,
+                "sw_ver" => p.sw_ver = num(v)?.as_num::<u16>(k)?,
+                "da_code" => p.da_code = num(v)?.as_num::<u16>(k)?,
+                "proto" => p.v6 = matches!(v, "v6" | "V6" | "xml"),
+                "safety" => p.safety = num(v)?.as_num::<u32>(k)?,
+                "sla" => p.sla_required = truthy(v),
+                "brom_auth" => p.brom_auth = truthy(v),
+                "preloader_patched" => p.preloader_patched = truthy(v),
+                "da_sig_failed" => p.da_sig_failed = truthy(v),
+                "emmc_info" => p.emmc_info = truthy(v),
+                "storage.boot1" => p.storage.boot1 = num(v)?.0,
+                "storage.boot2" => p.storage.boot2 = num(v)?.0,
+                "storage.user" => p.storage.user = num(v)?.0,
+                "storage.rpmb" => p.storage.rpmb = num(v)?.0,
+                "storage.block" => p.storage.block = num(v)?.as_num::<u32>(k)?,
+                "storage.type" => {
+                    p.storage.emmc_type = match v {
+                        "emmc" => 0,
+                        "ufs" => 1,
+                        "sd" => 2,
+                        "mmc" => 3,
+                        "ufs_card" => 6,
+                        other => return Err(format!("未知 storage.type: {}", other)),
+                    }
+                }
+                "partition" => {
+                    let parts: Vec<&str> = v.split(':').collect();
+                    if parts.len() != 3 {
+                        return Err(format!("partition 需要 name:start:size: {}", v));
+                    }
+                    let start = num(parts[1])?.0;
+                    let size = num(parts[2])?.0;
+                    p.partitions.push((parts[0].to_string(), start, size));
+                }
+                "fault" => {
+                    let parts: Vec<&str> = v.split(':').collect();
+                    if parts.len() != 2 {
+                        return Err(format!("fault 需要 kind:at: {}", v));
+                    }
+                    let at = num(parts[1])?.0 as usize;
+                    let kind = match parts[0] {
+                        "silent" => DeviceFault::Silent,
+                        "dead" => DeviceFault::Dead,
+                        other => return Err(format!("未知 fault 类型: {}", other)),
+                    };
+                    p.faults.push((at, kind));
+                }
+                "exploit" => p.exploits.push(v.to_string()),
+                other => return Err(format!("未知配置项: {}", other)),
+            }
+        }
+        if p.partitions.is_empty() {
+            p.partitions = default_partitions();
+        }
+        p.fit_storage();
+        Ok(p)
+    }
+
+    /// 内置预设（`--port mock://<预设名>`）。
+    pub fn preset(name: &str) -> Option<Self> {
+        let mut p = DeviceProfile::default();
+        p.partitions = default_partitions();
+        match name {
+            // 干净的 V5 机器：无安全标志，直接 DA 加载即可读表（cost=690 路径）
+            "v5-clean" => {
+                p.name = "MT6768 (V5 clean)".into();
+                p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
+            }
+            // SLA 打开的 V5 机器：必须先绕过，否则 SEND_DA 返回 0x1D0D
+            "v5-sla" => {
+                p.name = "MT6768 (SLA enabled)".into();
+                p.safety = 0x2; // SLA
+                p.sla_required = true;
+                p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
+            }
+            // DAA + SBC 双开：只有 DA 层 patch 能过
+            "v5-daa" => {
+                p.name = "MT6785 (DAA+SBC)".into();
+                p.hw_code = 0x0707;
+                p.da_code = 0x6785;
+                p.safety = 0x2 | 0x4; // SLA + DAA
+                p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
+            }
+            // V6 平台：BROM 不可达，只能走 DA
+            "v6" => {
+                p.name = "MT6983 (V6 XML)".into();
+                p.hw_code = 0x0A0A;
+                p.da_code = 0x6983;
+                p.v6 = true;
+                p.partitions = v6_partitions();
+                p.exploits = vec!["carbonara".into()];
+            }
+            // UFS + A/B 布局
+            "ufs-ab" => {
+                p.name = "MT6877 (UFS, A/B)".into();
+                p.da_code = 0x6877;
+                p.storage = StorageProfile {
+                    boot1: 0,
+                    boot2: 0,
+                    user: 0x3B80_00000,
+                    rpmb: 0x1000_0000,
+                    block: 4096,
+                    emmc_type: 1,
+                };
+                p.partitions = ab_partitions();
+                p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
+            }
+            // 传输不稳：第 400 个主机字节起设备静默（模拟线缆接触不良）
+            "flaky" => {
+                p.name = "MT6768 (flaky link)".into();
+                p.faults = vec![(400, DeviceFault::Silent)];
+                p.exploits = vec!["kamakiri2".into()];
+            }
+            // 半路掉线：DA 上传前断开
+            "unplug" => {
+                p.name = "MT6768 (unplugged)".into();
+                p.faults = vec![(120, DeviceFault::Dead)];
+            }
+            // DA 拒绝服务（SEND_DA 状态错误）：用于验证错误传播
+            "no-emmc-info" => {
+                p.name = "MT6768 (no emmc info)".into();
+                p.emmc_info = false;
+                p.exploits = vec!["kamakiri2".into()];
+            }
+            _ => return None,
+        }
+        p.fit_storage();
+        Some(p)
+    }
+}
+
+/// 按给定顺序从 LBA 34 起排布分区（1 MiB 对齐），返回 (名称, 起始 LBA, 字节数)。
+fn layout(items: &[(&str, u64)]) -> Vec<(String, u64, u64)> {
+    const ALIGN_LBA: u64 = 2048; // 1 MiB
+    let mut lba = 34u64;
+    let mut out = Vec::with_capacity(items.len());
+    for (name, size) in items {
+        let start = lba.div_ceil(ALIGN_LBA) * ALIGN_LBA;
+        out.push(((*name).to_string(), start, *size));
+        lba = start + size.div_ceil(512);
+    }
+    out
+}
+
+fn default_partitions() -> Vec<(String, u64, u64)> {
+    layout(&[
+        ("boot_a", 0x20_00000),
+        ("boot_b", 0x20_00000),
+        ("recovery", 0x30_00000),
+        ("vbmeta_a", 0x8000),
+        ("vbmeta_b", 0x8000),
+        ("super", 0x800_00000),
+        ("userdata", 0x4000_00000),
+        ("metadata", 0x200_0000),
+    ])
+}
+
+fn v6_partitions() -> Vec<(String, u64, u64)> {
+    layout(&[
+        ("boot_a", 0x60_00000),
+        ("init_boot_a", 0x80_0000),
+        ("vendor_boot_a", 0x60_00000),
+        ("vbmeta_system_a", 0x8000),
+        ("super", 0x1000_00000),
+        ("userdata", 0x8000_00000),
+    ])
+}
+
+fn ab_partitions() -> Vec<(String, u64, u64)> {
+    layout(&[
+        ("boot_a", 0x40_00000),
+        ("boot_b", 0x40_00000),
+        ("vendor_boot_a", 0x40_00000),
+        ("vbmeta_a", 0x10000),
+        ("vbmeta_system_a", 0x10000),
+        ("super", 0x2000_00000),
+        ("userdata", 0x10000_00000),
+    ])
+}
+
+fn truthy(v: &str) -> bool {
+    matches!(v, "1" | "true" | "yes" | "on")
+}
+
+struct ParsedNum(u64);
+impl ParsedNum {
+    fn as_num<T: TryFrom<u64>>(&self, key: &str) -> Result<T, String> {
+        T::try_from(self.0).map_err(|_| format!("{} 数值超出范围: {}", key, self.0))
+    }
+}
+
+fn num(v: &str) -> Result<ParsedNum, String> {
+    let s = v.trim();
+    let out = if let Some(h) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u64::from_str_radix(&h.replace('_', ""), 16).map_err(|e| format!("{}: {}", s, e))?
+    } else {
+        s.replace('_', "")
+            .parse::<u64>()
+            .map_err(|e| format!("{}: {}", s, e))?
+    };
+    Ok(ParsedNum(out))
+}
+
+// =============================================================================
+// 虚拟设备
+// =============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum State {
+    /// 握手：已收到 i 个字节
+    Handshake(usize),
+    /// BROM 单字节命令态
+    Brom,
+    /// 4 字节字命令（首字节为 0x00 时进入）
+    BromWord { buf: [u8; 4], n: usize },
+    /// SEND_DA 参数：0=addr 1=size 2=siglen
+    SendDaArgs { idx: u8, buf: [u8; 4], n: usize },
+    /// SEND_DA 数据体
+    SendDaData,
+    /// JUMP_DA 第一次地址回显
+    JumpEcho { buf: [u8; 4], n: usize },
+    /// JUMP_DA 第二次地址（触发跳转）
+    JumpTrigger { buf: [u8; 4], n: usize },
+    /// DA 包头
+    DaHeader { buf: [u8; 12], n: usize },
+    /// DA 负载
+    DaPayload { len: usize, buf: Vec<u8> },
+    /// 仿真专用 exploit 握手的 id 字节
+    ExploitId,
+}
+
+/// 仿真设备认识的 exploit 名称（id 即下标）。
+pub const SIM_EXPLOITS: [&str; 4] = ["kamakiri2", "carbonara", "heapbait", "hashimoto"];
+
+/// exploit 名称 → id（未登记的名字返回 None）。
+pub fn exploit_id(name: &str) -> Option<u8> {
+    SIM_EXPLOITS
+        .iter()
+        .position(|n| *n == name)
+        .map(|i| i as u8)
+}
+
+/// 虚拟设备。
+pub struct VirtualDevice {
+    pub profile: DeviceProfile,
+    out: VecDeque<u8>,
+    state: State,
+    /// 已上传的 DA 段数（0 → 下一个是 DA1，1 → DA2）
+    da_stage: u8,
+    send_addr: u32,
+    send_size: usize,
+    send_siglen: u32,
+    da_buf: Vec<u8>,
+    /// 安全标志是否已被 exploit 清除
+    bypassed: bool,
+    /// 当前等待参数的 DA 命令
+    pending_cmd: Option<u32>,
+    /// 最近一次 READ_DATA 请求
+    pending_read: Option<(u64, u64)>,
+    /// 存储镜像（GPT 区域）
+    image: Vec<u8>,
+    faults: Vec<(usize, DeviceFault)>,
+    host_bytes: usize,
+    dead: bool,
+    silent: bool,
+    /// 设备侧事件日志（测试断言用）
+    pub events: Vec<String>,
+    /// 主机侧写入缓冲区（诊断用）
+    pub written: Vec<u8>,
+}
+
+/// 镜像窗口大小：足够覆盖 LBA0.. 主 GPT + 分区项（32KB 读取足够，留余量）。
+const IMAGE_LEN: usize = 1024 * 1024;
+
+impl VirtualDevice {
+    pub fn new(profile: DeviceProfile) -> Self {
+        let image = build_image(&profile);
+        let faults = profile.faults.clone();
+        Self {
+            profile,
+            out: VecDeque::new(),
+            state: State::Handshake(0),
+            da_stage: 0,
+            send_addr: 0,
+            send_size: 0,
+            send_siglen: 0,
+            da_buf: Vec::new(),
+            bypassed: false,
+            pending_cmd: None,
+            pending_read: None,
+            image,
+            faults,
+            host_bytes: 0,
+            dead: false,
+            silent: false,
+            events: Vec::new(),
+            written: Vec::new(),
+        }
+    }
+
+    /// 由预设名构建设备（测试与外部工具入口）。
+    #[allow(dead_code)]
+    pub fn from_preset(name: &str) -> Option<Self> {
+        DeviceProfile::preset(name).map(Self::new)
+    }
+
+    /// 由画像文本构建设备（外部工具入口）。
+    #[allow(dead_code)]
+    pub fn profile_text(text: &str) -> Result<Self, String> {
+        DeviceProfile::from_text(text).map(Self::new)
+    }
+
+    fn ev(&mut self, msg: impl Into<String>) {
+        self.events.push(msg.into());
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        self.out.extend(bytes.iter().copied());
+    }
+
+    fn push_packet(&mut self, dtype: u32, payload: &[u8]) {
+        let mut hdr = [0u8; wire::XFLASH_HEADER_LEN];
+        hdr[0..4].copy_from_slice(&wire::XFLASH_MAGIC.to_le_bytes());
+        hdr[4..8].copy_from_slice(&dtype.to_le_bytes());
+        hdr[8..12].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        self.push(&hdr);
+        self.push(payload);
+    }
+
+    fn push_status(&mut self, value: u32) {
+        self.push_packet(wire::XFLASH_TYPE_FLOW, &value.to_le_bytes());
+    }
+
+    /// 单字节推进状态机。
+    fn feed(&mut self, b: u8) -> Result<(), PortError> {
+        self.host_bytes += 1;
+        self.written.push(b);
+        if self.dead {
+            return Err(PortError::Disconnected);
+        }
+        // 故障注入：到点后静默/断开
+        if self
+            .faults
+            .iter()
+            .any(|(at, kind)| *at == self.host_bytes && *kind == DeviceFault::Dead)
+        {
+            self.dead = true;
+            self.ev(format!("fault: dead at host byte {}", self.host_bytes));
+            return Err(PortError::Disconnected);
+        }
+        if self
+            .faults
+            .iter()
+            .any(|(at, kind)| *at == self.host_bytes && *kind == DeviceFault::Silent)
+        {
+            self.silent = true;
+            self.ev(format!("fault: silent at host byte {}", self.host_bytes));
+            return Ok(());
+        }
+        if self.silent {
+            return Ok(());
+        }
+
+        let state = std::mem::replace(&mut self.state, State::Brom);
+        self.state = match state {
+            State::Handshake(i) => {
+                let want = wire::BROM_HANDSHAKE[i];
+                if b != want {
+                    self.ev(format!("handshake: 期望 0x{:02X} 收到 0x{:02X}", want, b));
+                    // 回错字节，主机侧会重试
+                    self.push(&[!b]);
+                    State::Handshake(0)
+                } else {
+                    self.push(&[!b]);
+                    if i + 1 == wire::BROM_HANDSHAKE.len() {
+                        self.ev("handshake: ok");
+                        State::Brom
+                    } else {
+                        State::Handshake(i + 1)
+                    }
+                }
+            }
+            State::Brom => {
+                // BROM sync FE 不回显命令本身，只回一个状态字节
+                if b == 0xFE {
+                    self.push(&[wire::BROM_SYNC_FE_ACK]);
+                    State::Brom
+                } else if b == wire::SIM_EXPLOIT_CMD {
+                    // 仿真专用握手：命令本身不回显，应答为 [cmd, id, status]
+                    State::ExploitId
+                } else if b == 0x00 {
+                    // 可能是 4 字节字命令（BE，高字节为 0）
+                    State::BromWord {
+                        buf: [0, 0, 0, 0],
+                        n: 1,
+                    }
+                } else {
+                    self.on_brom_cmd(b)?
+                }
+            }
+            State::BromWord { mut buf, n } => {
+                buf[n] = b;
+                if n + 1 < 4 {
+                    State::BromWord { buf, n: n + 1 }
+                } else {
+                    let word = u32::from_be_bytes(buf);
+                    // 回显整个字
+                    self.push(&buf);
+                    let cmd = (word & 0xFF) as u8;
+                    self.on_brom_cmd_after_echo(cmd)?
+                }
+            }
+            State::SendDaArgs { idx, mut buf, n } => {
+                buf[n] = b;
+                if n + 1 < 4 {
+                    State::SendDaArgs { idx, buf, n: n + 1 }
+                } else {
+                    // 回显参数
+                    self.push(&buf);
+                    let val = u32::from_be_bytes(buf);
+                    match idx {
+                        0 => {
+                            self.send_addr = val;
+                            State::SendDaArgs {
+                                idx: 1,
+                                buf: [0; 4],
+                                n: 0,
+                            }
+                        }
+                        1 => {
+                            self.send_size = val as usize;
+                            State::SendDaArgs {
+                                idx: 2,
+                                buf: [0; 4],
+                                n: 0,
+                            }
+                        }
+                        _ => {
+                            self.send_siglen = val;
+                            // SLA 未绕过时拒绝
+                            let status = if self.profile.sla_required && !self.bypassed {
+                                wire::BROM_STATUS_SLA_REQUIRED
+                            } else {
+                                0
+                            };
+                            self.push(&status.to_be_bytes());
+                            self.ev(format!(
+                                "SEND_DA: addr=0x{:08X} size={} siglen={} status=0x{:04X}",
+                                self.send_addr, self.send_size, self.send_siglen, status
+                            ));
+                            if status != 0 {
+                                State::Brom
+                            } else {
+                                self.da_buf.clear();
+                                State::SendDaData
+                            }
+                        }
+                    }
+                }
+            }
+            State::SendDaData => {
+                self.da_buf.push(b);
+                if self.da_buf.len() >= self.send_size {
+                    let sum: u32 = self.da_buf.iter().map(|x| *x as u32).sum::<u32>() & 0xFFFF;
+                    self.push(&(sum as u16).to_be_bytes());
+                    self.push(&0u16.to_be_bytes());
+                    self.ev(format!(
+                        "SEND_DA: 收到 {} 字节, checksum=0x{:04X}",
+                        self.da_buf.len(),
+                        sum
+                    ));
+                    self.da_stage = self.da_stage.saturating_add(1);
+                    State::Brom
+                } else {
+                    State::SendDaData
+                }
+            }
+            State::JumpEcho { mut buf, n } => {
+                buf[n] = b;
+                if n + 1 < 4 {
+                    State::JumpEcho { buf, n: n + 1 }
+                } else {
+                    self.push(&buf);
+                    State::JumpTrigger { buf: [0; 4], n: 0 }
+                }
+            }
+            State::JumpTrigger { mut buf, n } => {
+                buf[n] = b;
+                if n + 1 < 4 {
+                    State::JumpTrigger { buf, n: n + 1 }
+                } else {
+                    let addr = u32::from_be_bytes(buf);
+                    self.ev(format!("JUMP_DA: 0x{:08X}", addr));
+                    self.push(&[wire::BROM_JUMP_ACK]);
+                    // DA 启动 → 发 SYNC
+                    self.push(&wire::XFLASH_SYNC_SIGNAL.to_le_bytes());
+                    self.ev("DA: SYNC 已发送");
+                    State::DaHeader { buf: [0; 12], n: 0 }
+                }
+            }
+            State::DaHeader { mut buf, n } => {
+                buf[n] = b;
+                if n + 1 < wire::XFLASH_HEADER_LEN {
+                    State::DaHeader { buf, n: n + 1 }
+                } else {
+                    let magic = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+                    let dtype = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+                    let len = u32::from_le_bytes(buf[8..12].try_into().unwrap()) as usize;
+                    if magic != wire::XFLASH_MAGIC {
+                        self.ev(format!("DA: 包头 magic 错误 0x{:08X}", magic));
+                        // 重新同步：丢弃到下一个 magic（简化：回到头态）
+                        return Ok(());
+                    }
+                    let _ = dtype;
+                    if len > 1024 * 1024 {
+                        self.ev(format!("DA: 包长异常 {}", len));
+                        return Ok(());
+                    }
+                    State::DaPayload {
+                        len,
+                        buf: Vec::with_capacity(len),
+                    }
+                }
+            }
+            State::ExploitId => {
+                let id = b as usize;
+                let accepted = id < SIM_EXPLOITS.len()
+                    && self.profile.exploits.iter().any(|n| n == SIM_EXPLOITS[id]);
+                let status = if accepted {
+                    self.bypassed = true;
+                    self.ev(format!("SIM exploit 接受: {}", SIM_EXPLOITS[id]));
+                    0u8
+                } else {
+                    self.ev(format!("SIM exploit 拒绝: id={}", b));
+                    1u8
+                };
+                self.push(&[wire::SIM_EXPLOIT_CMD, b, status]);
+                State::Brom
+            }
+            State::DaPayload { len, mut buf } => {
+                buf.push(b);
+                if buf.len() >= len {
+                    self.on_da_payload(&buf)?;
+                    State::DaHeader { buf: [0; 12], n: 0 }
+                } else {
+                    State::DaPayload { len, buf }
+                }
+            }
+        };
+        Ok(())
+    }
+
+    fn on_brom_cmd(&mut self, b: u8) -> Result<State, PortError> {
+        // 单字节命令：先回显，再给应答
+        self.push(&[b]);
+        self.on_brom_cmd_after_echo(b)
+    }
+
+    fn on_brom_cmd_after_echo(&mut self, cmd: u8) -> Result<State, PortError> {
+        Ok(match cmd {
+            wire::BROM_GET_HW_CODE => {
+                let mut resp = Vec::new();
+                resp.extend_from_slice(&self.profile.hw_code.to_be_bytes());
+                resp.extend_from_slice(&self.profile.hw_sub.to_be_bytes());
+                self.push(&resp);
+                self.ev(format!(
+                    "GET_HW_CODE: 0x{:04X}/0x{:04X}",
+                    self.profile.hw_code, self.profile.hw_sub
+                ));
+                State::Brom
+            }
+            wire::BROM_GET_TARGET_CONFIG => {
+                let mut resp = Vec::new();
+                resp.extend_from_slice(&self.profile.safety.to_be_bytes());
+                resp.extend_from_slice(&0u16.to_be_bytes());
+                self.push(&resp);
+                self.ev(format!("GET_TARGET_CONFIG: 0x{:08X}", self.profile.safety));
+                State::Brom
+            }
+            wire::BROM_SYNC => {
+                let mut resp = Vec::new();
+                resp.extend_from_slice(&self.profile.hw_ver.to_be_bytes());
+                resp.extend_from_slice(&self.profile.sw_ver.to_be_bytes());
+                resp.extend_from_slice(&0u16.to_be_bytes());
+                resp.extend_from_slice(&[0x01, 0x00]);
+                self.push(&resp);
+                self.ev("SYNC(0xFC): ok");
+                State::Brom
+            }
+            0xFE => {
+                self.push(&[wire::BROM_SYNC_FE_ACK]);
+                State::Brom
+            }
+            0xFF => State::Brom,
+            wire::BROM_SEND_DA => State::SendDaArgs {
+                idx: 0,
+                buf: [0; 4],
+                n: 0,
+            },
+            wire::BROM_JUMP_DA => State::JumpEcho { buf: [0; 4], n: 0 },
+            // SIM: exploit 握手 `0x1F <id>`，id 由主机与设备约定
+            0xD6 => {
+                self.push(&[0x00, 0x00]);
+                self.push(&[0x00, 0x00]);
+                State::Brom
+            }
+            other => {
+                self.ev(format!("BROM: 未支持命令 0x{:02X}", other));
+                State::Brom
+            }
+        })
+    }
+
+    fn on_da_payload(&mut self, payload: &[u8]) -> Result<(), PortError> {
+        // 参数块（长度 56 或紧跟"需要参数"的命令）
+        if let Some(cmd) = self.pending_cmd {
+            if payload.len() != 4 || !is_command_word(payload) {
+                self.on_da_param(cmd, payload)?;
+                self.pending_cmd = None;
+                return Ok(());
+            }
+            // 长度 4 且是已知命令 → 仍按命令处理（放弃上一次待参数，避免卡死）
+            self.pending_cmd = None;
+        }
+        if payload.len() != 4 {
+            self.ev(format!("DA: 未知负载 len={}", payload.len()));
+            self.push_status(0);
+            return Ok(());
+        }
+        let cmd = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+        self.ev(format!("DA cmd 0x{:06X}", cmd));
+        match cmd {
+            wire::XFLASH_CMD_READ_DATA => {
+                self.pending_cmd = Some(cmd);
+                self.push_status(0);
+            }
+            wire::XFLASH_CMD_DEVICE_CTRL => {
+                self.push_status(0);
+            }
+            wire::XFLASH_CMD_EMMC_INFO => {
+                if self.profile.emmc_info {
+                    self.push_status(0);
+                    let info = self.emmc_info_payload();
+                    self.push_packet(wire::XFLASH_TYPE_FLOW, &info);
+                    self.push_status(0);
+                } else {
+                    self.push_status(wire::XFLASH_STATUS_UNSUPPORTED);
+                }
+            }
+            wire::XFLASH_CMD_GET_DA_VER => {
+                self.push_status(0);
+                self.push_packet(wire::XFLASH_TYPE_FLOW, &0x0000_0107u32.to_le_bytes());
+                self.push_status(0);
+            }
+            wire::XFLASH_DEVCTRL_ACK => {
+                self.push_status(0);
+                self.push_packet(
+                    wire::XFLASH_TYPE_FLOW,
+                    &wire::XFLASH_ACK_MAGIC.to_le_bytes(),
+                );
+                self.push_status(0);
+            }
+            wire::XFLASH_DEVCTRL_SET_STORAGE => {
+                self.pending_cmd = Some(cmd);
+                self.push_status(0);
+            }
+            other => {
+                self.ev(format!("DA: 不支持命令 0x{:06X}", other));
+                self.push_status(wire::XFLASH_STATUS_UNSUPPORTED);
+            }
+        }
+        Ok(())
+    }
+
+    fn on_da_param(&mut self, cmd: u32, param: &[u8]) -> Result<(), PortError> {
+        match cmd {
+            wire::XFLASH_CMD_READ_DATA => {
+                if param.len() < 24 {
+                    self.push_status(1);
+                    return Ok(());
+                }
+                let parttype = u32::from_le_bytes(param[4..8].try_into().unwrap());
+                let addr = u64::from_le_bytes(param[8..16].try_into().unwrap());
+                let size = u64::from_le_bytes(param[16..24].try_into().unwrap());
+                self.pending_read = Some((addr, size));
+                self.ev(format!(
+                    "READ_DATA: addr=0x{:X} size={} parttype={}",
+                    addr, size, parttype
+                ));
+                self.push_status(0);
+                let data = self.read_window(addr, size);
+                self.push_packet(wire::XFLASH_TYPE_FLOW, &data);
+                self.push_status(0);
+            }
+            wire::XFLASH_DEVCTRL_SET_STORAGE => {
+                let t = if param.len() >= 4 {
+                    u32::from_le_bytes(param[0..4].try_into().unwrap())
+                } else {
+                    0
+                };
+                self.ev(format!("SET_STORAGE: type={}", t));
+                self.push_status(0);
+            }
+            other => {
+                self.ev(format!("DA: 命令 0x{:06X} 不接受参数", other));
+                self.push_status(wire::XFLASH_STATUS_UNSUPPORTED);
+            }
+        }
+        Ok(())
+    }
+
+    fn read_window(&self, addr: u64, size: u64) -> Vec<u8> {
+        let start = addr as usize;
+        let len = size as usize;
+        let mut out = vec![0u8; len];
+        if start < self.image.len() {
+            let end = (start + len).min(self.image.len());
+            out[..end - start].copy_from_slice(&self.image[start..end]);
+        }
+        out
+    }
+
+    fn emmc_info_payload(&self) -> Vec<u8> {
+        // 104 字节：type(4) block(4) boot1(8) boot2(8) rpmb(8) user(8) ...
+        let mut v = vec![0u8; 104];
+        v[0..4].copy_from_slice(&self.profile.storage.emmc_type.to_le_bytes());
+        v[4..8].copy_from_slice(&self.profile.storage.block.to_le_bytes());
+        v[8..16].copy_from_slice(&self.profile.storage.boot1.to_le_bytes());
+        v[16..24].copy_from_slice(&self.profile.storage.boot2.to_le_bytes());
+        v[24..32].copy_from_slice(&self.profile.storage.rpmb.to_le_bytes());
+        v[32..40].copy_from_slice(&self.profile.storage.user.to_le_bytes());
+        v
+    }
+}
+
+fn is_command_word(payload: &[u8]) -> bool {
+    if payload.len() != 4 {
+        return false;
+    }
+    let cmd = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+    matches!(
+        cmd,
+        wire::XFLASH_CMD_READ_DATA
+            | wire::XFLASH_CMD_DEVICE_CTRL
+            | wire::XFLASH_CMD_EMMC_INFO
+            | wire::XFLASH_CMD_GET_DA_VER
+            | wire::XFLASH_DEVCTRL_ACK
+            | wire::XFLASH_DEVCTRL_SET_STORAGE
+    )
+}
+
+impl StreamPort for VirtualDevice {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, PortError> {
+        if self.dead {
+            return Err(PortError::Disconnected);
+        }
+        if self.silent {
+            return Err(PortError::Timeout);
+        }
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if self.out.is_empty() {
+            return Err(PortError::Timeout);
+        }
+        let n = buf.len().min(self.out.len());
+        for slot in buf.iter_mut().take(n) {
+            *slot = self.out.pop_front().unwrap();
+        }
+        Ok(n)
+    }
+
+    fn write(&mut self, buf: &[u8]) -> Result<usize, PortError> {
+        for &b in buf {
+            self.feed(b)?;
+        }
+        if self.dead {
+            return Err(PortError::Disconnected);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> Result<(), PortError> {
+        Ok(())
+    }
+
+    fn kind(&self) -> PortKind {
+        PortKind::Mock
+    }
+}
+
+// =============================================================================
+// GPT 镜像生成
+// =============================================================================
+
+const GPT_ENTRIES: u32 = 128;
+const GPT_ENTRY_SIZE: u32 = 128;
+/// 每个分区的类型 GUID（Linux filesystem data，固定值即可）
+const TYPE_GUID: [u8; 16] = [
+    0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4,
+];
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB8_8320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    !crc
+}
+
+fn build_image(profile: &DeviceProfile) -> Vec<u8> {
+    let mut img = vec![0u8; IMAGE_LEN];
+    // LBA0: 保护性 MBR
+    img[0x1BE] = 0x00; // not bootable
+    img[0x1C2] = 0xEE; // type
+    img[0x1C6..0x1CA].copy_from_slice(&1u32.to_le_bytes());
+    let total_lbas = (profile.storage.user / 512).max(0x100000);
+    img[0x1CA..0x1CE]
+        .copy_from_slice(&((total_lbas - 1).min(u32::MAX as u64) as u32).to_le_bytes());
+    img[0x1FE] = 0x55;
+    img[0x1FF] = 0xAA;
+
+    // 分区项数组（LBA2 起，128*128）
+    let entries_off = 1024usize;
+    for (i, (name, start, size)) in profile.partitions.iter().enumerate() {
+        let e = entries_off + i * GPT_ENTRY_SIZE as usize;
+        img[e..e + 16].copy_from_slice(&TYPE_GUID);
+        let mut guid = [0u8; 16];
+        guid[0] = (i + 1) as u8;
+        guid[15] = 0x42;
+        img[e + 16..e + 32].copy_from_slice(&guid);
+        let first = *start;
+        let last = first + size / 512 - 1;
+        img[e + 32..e + 40].copy_from_slice(&first.to_le_bytes());
+        img[e + 40..e + 48].copy_from_slice(&last.to_le_bytes());
+        // 名称：UTF-16LE，最多 36 字符
+        for (j, ch) in name.encode_utf16().take(35).enumerate() {
+            img[e + 56 + j * 2..e + 58 + j * 2].copy_from_slice(&ch.to_le_bytes());
+        }
+    }
+    let entries_len = (GPT_ENTRIES * GPT_ENTRY_SIZE) as usize;
+    let entries_crc = crc32(&img[entries_off..entries_off + entries_len]);
+
+    // LBA1: 主 GPT 头
+    let h = 512usize;
+    img[h..h + 8].copy_from_slice(b"EFI PART");
+    img[h + 8..h + 12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+    img[h + 12..h + 16].copy_from_slice(&92u32.to_le_bytes());
+    img[h + 24..h + 32].copy_from_slice(&1u64.to_le_bytes()); // MyLBA
+    img[h + 32..h + 40].copy_from_slice(&(total_lbas - 1).to_le_bytes()); // AltLBA
+    img[h + 40..h + 48].copy_from_slice(&34u64.to_le_bytes()); // FirstUsable
+    img[h + 48..h + 56].copy_from_slice(&(total_lbas - 34).to_le_bytes()); // LastUsable
+    img[h + 56..h + 72].copy_from_slice(&[0x11; 16]); // DiskGUID
+    img[h + 72..h + 80].copy_from_slice(&2u64.to_le_bytes()); // PartEntryLBA
+    img[h + 80..h + 84].copy_from_slice(&GPT_ENTRIES.to_le_bytes());
+    img[h + 84..h + 88].copy_from_slice(&GPT_ENTRY_SIZE.to_le_bytes());
+    img[h + 88..h + 92].copy_from_slice(&entries_crc.to_le_bytes());
+    let hdr_crc = {
+        let mut tmp = img[h..h + 92].to_vec();
+        tmp[16..20].fill(0);
+        crc32(&tmp)
+    };
+    img[h + 16..h + 20].copy_from_slice(&hdr_crc.to_le_bytes());
+    img
+}
+
+// =============================================================================
+// 测试
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::partition::GptInfo;
+
+    fn handshake(dev: &mut VirtualDevice) {
+        for b in wire::BROM_HANDSHAKE {
+            dev.write(&[b]).unwrap();
+            let mut echo = [0u8; 1];
+            dev.read_exact(&mut echo).unwrap();
+            assert_eq!(echo[0], !b);
+        }
+    }
+
+    #[test]
+    fn handshake_echoes_inverted_bytes() {
+        let mut dev = VirtualDevice::from_preset("v5-clean").unwrap();
+        handshake(&mut dev);
+        assert!(dev.events.iter().any(|e| e.contains("handshake: ok")));
+    }
+
+    #[test]
+    fn hw_code_and_target_config() {
+        let mut dev = VirtualDevice::from_preset("v5-clean").unwrap();
+        handshake(&mut dev);
+        dev.write(&[wire::BROM_GET_HW_CODE]).unwrap();
+        let mut buf = [0u8; 5];
+        dev.read_exact(&mut buf).unwrap();
+        assert_eq!(buf[0], wire::BROM_GET_HW_CODE);
+        assert_eq!(u16::from_be_bytes([buf[1], buf[2]]), 0x0707);
+
+        dev.write(&[wire::BROM_GET_TARGET_CONFIG]).unwrap();
+        let mut buf = [0u8; 7];
+        dev.read_exact(&mut buf).unwrap();
+        assert_eq!(u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]), 0);
+    }
+
+    #[test]
+    fn gpt_image_parses_with_correct_crc() {
+        let p = DeviceProfile::preset("v5-clean").unwrap();
+        let img = build_image(&p);
+        let info = GptInfo::parse(&img).expect("GPT 可解析");
+        let report = info.crc_report().expect("CRC 可计算");
+        assert!(report.header_ok(), "头 CRC 必须正确");
+        assert!(report.partition_entries_ok(), "分区项 CRC 必须正确");
+        let names: Vec<String> = info.partitions().iter().map(|e| e.name.clone()).collect();
+        assert!(names.contains(&"super".to_string()), "实际: {:?}", names);
+    }
+
+    #[test]
+    fn profile_text_roundtrip() {
+        let text = "\
+name=MT6765
+hw_code=0x0707
+da_code=0x6765
+proto=v6
+safety=0x6
+sla=true
+storage.user=0x10000000
+partition=boot:34:0x2000000
+fault=silent:512
+exploit=kamakiri2
+";
+        let p = DeviceProfile::from_text(text).unwrap();
+        assert_eq!(p.name, "MT6765");
+        assert!(p.v6);
+        assert!(p.sla_required);
+        assert_eq!(p.safety, 6);
+        assert_eq!(p.partitions.len(), 1);
+        assert_eq!(p.faults, vec![(512, DeviceFault::Silent)]);
+        assert!(DeviceProfile::preset("nope").is_none());
+    }
+
+    #[test]
+    fn fault_injection_turns_silent_then_times_out() {
+        let mut p = DeviceProfile::preset("v5-clean").unwrap();
+        p.faults = vec![(2, DeviceFault::Silent)];
+        let mut dev = VirtualDevice::new(p);
+        dev.write(&[0xA0, 0x0A, 0x50, 0x05]).unwrap();
+        let mut b = [0u8; 1];
+        assert_eq!(dev.read(&mut b), Err(PortError::Timeout));
+    }
+
+    #[test]
+    fn unknown_brom_command_is_recorded_not_fatal() {
+        let mut dev = VirtualDevice::from_preset("v5-clean").unwrap();
+        handshake(&mut dev);
+        dev.write(&[0x7E]).unwrap();
+        assert!(dev.events.iter().any(|e| e.contains("未支持命令")));
+    }
+}

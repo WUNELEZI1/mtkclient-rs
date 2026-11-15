@@ -5,7 +5,7 @@
 //!
 //! 只读 DA 文件、不做任何设备 IO。
 
-use crate::core::capability::{Capability, CapabilitySet};
+use crate::core::capability::CapabilitySet;
 use crate::core::device::{DeviceState, ProtocolVersion};
 use crate::core::plan::Mode;
 use crate::exploit::orchestrator::Orchestrator;
@@ -19,7 +19,8 @@ pub fn cmd_plan(args: &[String], da_path: Option<&str>, cli_mode: &str) -> Resul
         .map(|s| s.as_str())
         .ok_or_else(|| crate::i18n::t("plan_usage").to_string())?;
 
-    let required = required_for(op).ok_or_else(|| crate::i18n::tr("plan_unknown_op", &[op]))?;
+    let required = crate::ops::required_caps(op)
+        .ok_or_else(|| crate::i18n::tr("plan_unknown_op", &[op]))?;
 
     // --da 覆盖全局 --loader
     let da_file = arg_value(args, "--da").or_else(|| da_path.map(|s| s.to_string()));
@@ -95,36 +96,7 @@ pub fn cmd_plan(args: &[String], da_path: Option<&str>, cli_mode: &str) -> Resul
 
 /// op 名需要 `'static`（进决策日志）。
 fn op_static(op: &str) -> &'static str {
-    match op {
-        "printgpt" => "printgpt",
-        "read" => "read",
-        "write" => "write",
-        "erase" => "erase",
-        "seccfg" => "seccfg",
-        "rpmb" => "rpmb",
-        _ => "unknown",
-    }
-}
-
-/// 每个 op 的目标能力。
-fn required_for(op: &str) -> Option<CapabilitySet> {
-    let caps: &[Capability] = match op {
-        "printgpt" => &[
-            Capability::StorageRead,
-            Capability::StorageWrite,
-            Capability::GptParsed,
-        ],
-        "read" => &[Capability::StorageRead],
-        "write" | "erase" => &[Capability::StorageWrite],
-        "seccfg" => &[Capability::StorageRead, Capability::StorageWrite],
-        "rpmb" => &[Capability::RpmbAccess],
-        _ => return None,
-    };
-    let mut set = CapabilitySet::EMPTY;
-    for c in caps {
-        set.insert(*c);
-    }
-    Some(set)
+    crate::ops::op_static_name(op)
 }
 
 fn arg_value(args: &[String], key: &str) -> Option<String> {
@@ -186,10 +158,11 @@ mod tests {
 
     #[test]
     fn required_caps_for_printgpt() {
-        let r = required_for("printgpt").unwrap();
+        use crate::core::capability::Capability;
+        let r = crate::ops::required_caps("printgpt").unwrap();
         assert!(r.contains(Capability::GptParsed));
         assert!(r.contains(Capability::StorageRead));
-        assert!(required_for("nope").is_none());
+        assert!(crate::ops::required_caps("nope").is_none());
     }
 
     #[test]

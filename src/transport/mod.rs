@@ -8,6 +8,8 @@
 //! `mock` 提供内存 pipe + 故障注入，供 fixture 回放与单测脱机运行。
 
 pub mod mock;
+pub mod vdev;
+pub mod wire;
 
 use std::fmt;
 

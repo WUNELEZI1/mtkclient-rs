@@ -27,6 +27,7 @@ pub mod plan;
 pub mod preloader_boot_mode;
 pub mod rpmb;
 pub mod script;
+pub mod sim;
 pub mod xml;
 
 // 重型入口函数下放到子模块，保持在 500 行以内

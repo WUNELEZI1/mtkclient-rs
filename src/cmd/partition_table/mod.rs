@@ -1,6 +1,6 @@
 //! GPT 分区表相关命令
 //!
-//! - `cmd_printgpt`     — 打印 GPT 表到控制台 + 生成 scatter.txt
+//! - `printgpt`         — 已迁到 `ops::printgpt`（能力驱动，见 exec 模块）
 //! - `cmd_read_gpt`     — 读取 GPT 原始数据到目录
 //! - `cmd_read_all`     — 读取全部分区到目录
 //! - `cmd_print_scatter`— 打印 scatter 到屏幕并保存文件
@@ -19,91 +19,14 @@ use crate::system::config::AppConfig;
 mod emmc;
 mod table;
 
-/// 打印 GPT 分区表
-pub fn cmd_printgpt(da: &mut DAXFlash, log_level: u8) {
-    match da.read_gpt() {
-        Ok(_) => {
-            let mut boot1_size: u64 = 0;
-            let mut boot2_size: u64 = 0;
-
-            // 尝试加载 super 动态分区元数据（用于 printgpt 展示 logical partition）
-            if da.super_metadata.is_none() {
-                debug!("正在尝试加载 super 动态分区元数据...");
-                if let Err(e) = da.ensure_super_metadata() {
-                    warn!("加载 super 动态分区元数据失败: {}", e);
-                }
-            } else {
-                debug!("super 元数据已缓存，跳过加载");
-            }
-
-            // 输出完整 EMMC 信息
-            if let Ok(emmc_info) = da.get_emmc_info() {
-                boot1_size = emmc_info.boot1_size;
-                boot2_size = emmc_info.boot2_size;
-                emmc::print_emmc_info(&emmc_info);
-            } else {
-                // 失败时降级到读 boot1/boot2
-                if let Ok(simple_info) = da.get_emmc_info_simple() {
-                    boot1_size = simple_info.boot1_size;
-                    boot2_size = simple_info.boot2_size;
-                    println!();
-                    println!("{}", " eMMC Info (简化) ".on_yellow().black());
-                    println!(
-                        "  Boot1: {} ({:.2} MB)",
-                        format!("0x{:06X}", simple_info.boot1_size).green(),
-                        simple_info.boot1_size as f64 / 1_048_576.0
-                    );
-                    println!(
-                        "  Boot2: {} ({:.2} MB)",
-                        format!("0x{:06X}", simple_info.boot2_size).green(),
-                        simple_info.boot2_size as f64 / 1_048_576.0
-                    );
-                } else {
-                    // 两种方式都失败，记录警告日志
-                    warn!("eMMC 信息获取失败 (get_emmc_info 和 get_emmc_info_simple 均返回错误)");
-                    println!();
-                    println!(
-                        "{}",
-                        " 警告: 无法获取 eMMC Boot1/Boot2 信息 "
-                            .on_red()
-                            .white()
-                            .bold()
-                    );
-                    println!(
-                        "{}",
-                        " 设备可能不支持 0x01010C 命令，或 DA 会话异常。".yellow()
-                    );
-                    println!(
-                        "{}",
-                        " 分区表仍将正常显示，但 Boot1/Boot2 行将缺失。".yellow()
-                    );
-                }
-            }
-
-            if let Ok(data) = da.get_last_gpt_data() {
-                table::print_gpt_table(data, boot1_size, boot2_size, da.super_metadata.as_ref());
-            }
-
-            info!("{}", "GPT 读取成功".green());
-            if log_level >= 3 {
-                let ts = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let file = format!("gpt_debug_{}.bin", ts);
-                if let Ok(data) = da.get_last_gpt_data() {
-                    let _ = std::fs::write(&file, data);
-                }
-            }
-            if let Ok(data) = da.get_last_gpt_data() {
-                match generate_scatter_from_gpt(data, "scatter.txt") {
-                    Ok(parts) => debug!("  scatter.txt 已生成 ({} 分区)", parts.len()),
-                    Err(e) => debug!("  Warning: scatter 生成失败: {}", e),
-                }
-            }
-        }
-        Err(e) => error!("{}", format!("GPT 读取失败: {}", e).red()),
-    }
+/// 供 ops 层复用表格渲染（保证与 `printgpt` 老命令输出一致）。
+pub(crate) fn print_gpt_table_public(
+    data: &[u8],
+    boot1_size: u64,
+    boot2_size: u64,
+    super_metadata: Option<&crate::partition::lp::SuperMetadata>,
+) {
+    table::print_gpt_table(data, boot1_size, boot2_size, super_metadata);
 }
 
 /// 读取 GPT 原始数据到指定路径

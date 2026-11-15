@@ -3,11 +3,13 @@
 //! 对齐 Python mtkclient Library/DA/ 目录结构：
 //! - `xflash` — XFlash 协议原语、DA 结构体（DAXFlash）、EMI 提取、诊断、IO
 //! - `xml`    — XML (V6) DA 协议（MT6789+ 新平台）：命令构造 + 会话 + 闪存操作
+//! - `engine` — 与 StreamPort 解耦的协议引擎（仿真 / CI 用，阶段完整）
 //! - `loader` — DA 两阶段上传（header 解析 + env 初始化 + upload）
 //! - `ext`    — DA Extension 命令（patch + generate + meta/adb 控制）
 //!
 //! DAXFlash 是整个 DA 子系统的核心结构体，在此 re-export。
 
+pub mod engine;
 pub mod ext;
 pub mod fixture;
 pub mod loader;

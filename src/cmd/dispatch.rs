@@ -23,7 +23,21 @@ pub fn dispatch_cmd(
 ) -> Result<(), crate::error::AppError> {
     match cmd {
         "printgpt" => {
-            super::partition_table::cmd_printgpt(da, log_level);
+            // 能力驱动入口：规划 → 执行 → 能力校验，不再硬编码流程。
+            // DA 已由 handle_command 的 Phase1 上传完成，因此 RealSession 直接声明
+            // DaLoaded，Planner 只会规划 "开存储 → 解析 GPT"。
+            let state = real_device_state(da);
+            let mode = crate::core::plan::Mode::parse(mode_label(app_config))
+                .unwrap_or(crate::core::plan::Mode::Auto);
+            let mut session = crate::session::RealSession::new(da, state, true);
+            crate::exec::Executor::new(mode)
+                .execute(
+                    &crate::ops::printgpt::PrintGptOp,
+                    &mut session,
+                    true,
+                    log_level,
+                )
+                .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "dumppreloader" => {
             // DA 模式会话下：cmd_dumppreloader 内部走 XFlash read_data 直接读出（快、稳），
@@ -226,6 +240,34 @@ pub fn dispatch_cmd(
     }
 
     Ok(())
+}
+
+/// 从已连接设备提取规划所需状态。
+///
+/// 安全标志在 Phase1 已完成（必要时已 bypass），因此这里按"已解决"上报；
+/// 协议版本无法从 DA 文件读取时交给 `DeviceState::is_v6` 用 da_code 名单预判。
+fn real_device_state(da: &DAXFlash) -> crate::core::device::DeviceState {
+    let chip = da.preloader.chip.as_ref();
+    crate::core::device::DeviceState {
+        hw_code: chip.map(|c| c.hw_code).unwrap_or(0),
+        da_code: chip.map(|c| c.da_code).unwrap_or(0),
+        name: chip.map(|c| c.name.to_string()).unwrap_or_default(),
+        protocol: crate::core::device::ProtocolVersion::Unknown,
+        safety: crate::core::safety::SafetyFlags::NONE,
+        brom_auth_required: false,
+        preloader_patched: false,
+        da_signature_failed: false,
+        current_slot: da.active_slot,
+    }
+}
+
+/// `AppConfig.work_mode` → 规划模式标签。
+fn mode_label(cfg: &AppConfig) -> &'static str {
+    match cfg.work_mode {
+        crate::system::config::WorkMode::Brom => "brom",
+        crate::system::config::WorkMode::Preloader => "preloader",
+        crate::system::config::WorkMode::Auto => "auto",
+    }
 }
 
 /// 执行单个 DA 命令（不处理 Phase1/Phase2）

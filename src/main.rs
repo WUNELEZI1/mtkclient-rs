@@ -186,9 +186,11 @@ mod core;
 #[path = "da/mod.rs"]
 mod da;
 mod error;
+mod exec;
 #[path = "exploit/mod.rs"]
 mod exploit;
 mod i18n;
+mod ops;
 #[path = "partition/mod.rs"]
 mod partition;
 #[path = "preloader/mod.rs"]
@@ -197,6 +199,7 @@ mod progress;
 mod resume;
 #[path = "security/mod.rs"]
 mod security;
+mod session;
 mod sha;
 mod system;
 mod transport;
@@ -468,6 +471,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if cmd == "avb" {
         return cmd_avb_offline(&app_config.cmd_args);
+    }
+
+    // 离线仿真（--sim / --port mock://...）：不碰 USB，走 Executor → Orchestrator
+    if let Some(spec) = cli.sim.clone() {
+        if let Err(e) = cmd::sim::run_sim(&app_config, &spec, cli.log_level) {
+            eprintln!();
+            eprintln!("{}", format!("[sim] 失败: {}", e).red().bold());
+            std::process::exit(1);
+        }
+        return Ok(());
     }
 
     let usb_context = UsbContext::new().inspect_err(|e| {

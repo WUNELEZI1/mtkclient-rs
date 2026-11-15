@@ -15,13 +15,36 @@
 | `exploit/orchestrator` | ✅ 新建（决策 + JSON 行日志） | `src/exploit/orchestrator.rs` |
 | `da/fixture` | ✅ 新建（六段粒度 + JSONL + mock 回放） | `src/da/fixture.rs` |
 | `confirm/` | ✅ 新建（token / 会话级 / `--yes` 仍警告） | `src/confirm/mod.rs` |
-| `ops/` | ⏳ 仍在 `cmd/`（未搬迁）；`plan` 命令作为入口之一 | `src/cmd/` |
+| `ops/` | ✅ **printgpt 已迁**（能力声明 + 执行分离）；其余命令仍在 `cmd/` | `src/ops/{mod,printgpt}.rs` |
+| `exec/`（唯一执行入口） | ✅ 新建：决策 → 逐步执行 → **每步校验能力真实增长** | `src/exec/mod.rs` |
+| `session/`（执行后端抽象） | ✅ 新建：`RealSession`（DAXFlash）/ `SimSession`（虚拟设备） | `src/session/{mod,real}.rs` |
+| `da/engine`（StreamPort 协议引擎） | ✅ 新建：握手 → DA 上传 → 开存储 → 读 flash，全走 `&mut dyn StreamPort` | `src/da/engine.rs` |
+| `transport/vdev`（虚拟设备） | ✅ 新建：BROM + XFlash 设备侧状态机，画像驱动，含故障注入 | `src/transport/{vdev,wire}.rs` |
 | `fs/` | ⏳ 仍在 `system/fsimg/`（f2fs 生成器尚未迁到 `fs/`，验收项 24 未完成） | `src/system/fsimg/` |
 | `slot/` `logging/` `cli/` | ⏳ 复用现有 `partition` / `progress`+`i18n` / `cmd::cli` | — |
 
 依赖方向：`core ← transport ← da ← exploit ← cmd`，`core` 不引用任何内部模块（`Stage` 定义在 core，避免反向依赖）。
 
-## 二、这轮新增的对外能力
+## 二、第一批之后的进展：能力驱动闭环已可运行
+
+```
+mtkclient-rs --sim v5-clean printgpt
+```
+
+`printgpt` 不再有硬编码流程，而是：
+
+1. `PrintGptOp::required_caps() = StorageRead | GptParsed`；
+2. `Executor` 把它交给 `Orchestrator.decide()`，得到 `Plan` 与决策日志；
+3. 按 `PlanStep` 调用 `Session`（真机 = `DAXFlash`，仿真 = `DaEngine + VirtualDevice`）；
+4. **每一步都校验能力确实增加**（`ExecError::NoProgress`），收尾核对 `required ⊆ acquired`
+   （`ExecError::Incomplete`）。
+
+因此"日志里写的路径"和"实际跑的路径"是同一份 `Plan`，不会再漂移。
+
+真机路径同样接到 Executor：`dispatch_cmd("printgpt")` → `RealSession`（DA 已被 Phase1 上传，
+故声明 `DaLoaded`，规划只剩"开存储 → 解析 GPT"）。详细说明见 [`simulation.md`](simulation.md)。
+
+## 三、这轮新增的对外能力
 
 ```bash
 # 离线查看规划，不需要设备
@@ -34,7 +57,7 @@ mtkclient plan seccfg --da DA.bin --chip 0x6768
 输出 = 人类可读规划 + 一行结构化 JSON（`{"event":"decision",...}`），
 `--log` 级别不影响该 JSON。
 
-## 三、验收元标准对照
+## 四、验收元标准对照
 
 | # | 项 | 状态 | 说明 |
 |---|---|---|---|
@@ -62,15 +85,17 @@ mtkclient plan seccfg --da DA.bin --chip 0x6768
 | 26 | 芯片表含 V6 / Heapbait 缺口 | ✅ 部分 | `KNOWN_V6_DA_CODES` + docs |
 | 27 | Cost 定义写进注释 | ✅ | `core/plan.rs` 模块注释 |
 
-## 四、下一步（按依赖顺序）
+## 五、下一步（按依赖顺序）
 
-1. **ops 迁移**：把 `cmd/partition_table::printgpt` 改成 `ops::printgpt`，走 `Orchestrator::decide` 后再执行，真正实现「唯一执行入口」。
-2. **seccfg 偏移 16 修复** + 回读校验（验收 6）。
-3. **vbmeta 槽位化**（验收 11-15）。
-4. **fixture 接入真实协议状态机**：把 `da/xflash/protocol` 的 send/read 收口到 `StreamPort`，才能让 printgpt 全链路脱机跑（验收 8）。
-5. **目录收口**：`system/fsimg → fs/`、`cmd/ops` 拆分、`slot/` 独立。
+1. ~~ops 迁移（printgpt 走 Orchestrator）~~ ✅ 已完成；其余 op（`r` / `w` / `e` / `seccfg` / `rpmb`）
+   按同一模式逐个接入（每个只需声明 `required_caps` + 实现 `run`）。
+2. **seccfg 偏移 16 修复**（`dm_verity_state`，unlock 写 0x00）+ 回读校验。
+3. **vbmeta 槽位化**：只处理活动槽，非活动槽 SKIP 并记录原因；混合布局分别处理。
+4. **A/B 缓存失效**（cache key 含 active_slot）+ **dumpbrom header 自描述**（fallback 128KB 并告警）。
+5. **写入路径收口 StreamPort**：`engine` 目前只有读路径；写/擦/RPMB 仍在 `DAXFlash`。
+6. **目录收口**：`system/fsimg → fs/`、`cmd/ops` 拆分、`slot/` 独立。
 
-## 五、禁区遵守情况
+## 六、禁区遵守情况
 
 - 未新增 exploit 解决“链少”；`heapbait`/`kamakiripl` 保持 `InProgress`，不进自动规划。
 - `chain` 保留为调试视图，未作为必需命令。

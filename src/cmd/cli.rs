@@ -155,6 +155,15 @@ pub struct Cli {
     )]
     pub data_dir: Option<String>,
 
+    #[arg(
+        long = "sim",
+        visible_alias = "port",
+        value_name = "SPEC",
+        help = "离线仿真：内置预设名（v5-clean/v5-sla/v5-daa/v6/ufs-ab/flaky/unplug/no-emmc-info）或 .sim 画像文件\
+                ；也接受 --port mock://<SPEC> 写法"
+    )]
+    pub sim: Option<String>,
+
     #[arg(allow_hyphen_values = true, help = "命令参数")]
     pub args: Vec<String>,
 }
