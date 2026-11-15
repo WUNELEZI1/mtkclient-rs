@@ -19,8 +19,8 @@ pub fn cmd_plan(args: &[String], da_path: Option<&str>, cli_mode: &str) -> Resul
         .map(|s| s.as_str())
         .ok_or_else(|| crate::i18n::t("plan_usage").to_string())?;
 
-    let required = crate::ops::required_caps(op)
-        .ok_or_else(|| crate::i18n::tr("plan_unknown_op", &[op]))?;
+    let required =
+        crate::ops::required_caps(op).ok_or_else(|| crate::i18n::tr("plan_unknown_op", &[op]))?;
 
     // --da 覆盖全局 --loader
     let da_file = arg_value(args, "--da").or_else(|| da_path.map(|s| s.to_string()));

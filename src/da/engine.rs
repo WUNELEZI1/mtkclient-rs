@@ -517,15 +517,25 @@ impl DaEngine {
 
     /// 打开存储：CUSTOM_SET_STORAGE（DA extensions 必须已加载才可用）。
     pub fn open_storage(&mut self, port: &mut dyn StreamPort) -> Result<(), EngineError> {
+        // 存储信息查询是"尽力而为"：老 DA / 定制 DA 可能不支持 0x00040001，
+        // 但只要 READ_DATA 能用，printgpt 依然应该成功（真机 cmd_printgpt 同此行为）。
         let storage = match self.storage {
-            Some(s) => s,
-            None => self.query_storage(port)?,
+            Some(s) => Some(s),
+            None => match self.query_storage(port) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    warn!("[engine] 存储信息查询失败（继续，容量字段显示为 0）: {}", e);
+                    None
+                }
+            },
         };
-        if let Err(e) = Self::devctrl_param(
-            port,
-            wire::XFLASH_DEVCTRL_SET_STORAGE,
-            &storage.storage_type().to_le_bytes(),
-        ) {
+        if let Some(s) = storage
+            && let Err(e) = Self::devctrl_param(
+                port,
+                wire::XFLASH_DEVCTRL_SET_STORAGE,
+                &s.storage_type().to_le_bytes(),
+            )
+        {
             // 真机上 DA extensions 未加载时会走到这里：存储仍可读，仅扩展功能受限
             warn!("[engine] CUSTOM_SET_STORAGE 失败（可忽略）: {}", e);
         }

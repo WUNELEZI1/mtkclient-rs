@@ -200,10 +200,14 @@ impl Session for SimSession {
                 .connect(&mut self.dev)
                 .map_err(SimSession::map_err)?;
         }
+        // 查询失败不阻断（老 DA 不支持），此时容量字段为 0 并已打警告
         let storage = self
             .engine
             .query_storage(&mut self.dev)
-            .map_err(SimSession::map_err)?;
+            .unwrap_or_else(|_| crate::da::engine::StorageInfo {
+                block: 512,
+                ..Default::default()
+            });
         self.engine
             .open_storage(&mut self.dev)
             .map_err(SimSession::map_err)?;

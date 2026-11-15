@@ -357,6 +357,16 @@ mod tests {
     }
 
     #[test]
+    fn missing_emmc_info_does_not_block_printgpt() {
+        // 老 DA / 定制 DA 不支持 0x00040001 时，容量字段降级为 0，但读表仍须成功
+        let mut s = sim("no-emmc-info");
+        let r = Executor::new(Mode::Auto)
+            .execute(&PrintGptOp, &mut s, false, 0)
+            .unwrap();
+        assert_eq!(r.executed.len(), 3);
+    }
+
+    #[test]
     fn plan_failure_is_reported_without_panic() {
         // 没有 DA 字节 → 无法规划出 StorageRead
         let dev = VirtualDevice::from_preset("v5-clean").unwrap();

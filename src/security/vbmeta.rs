@@ -134,7 +134,11 @@ pub fn vbmeta_disable(da: &mut DAXFlash, mode: u32) -> Result<(), String> {
         format!(
             "vbmeta 禁用成功: 修补 {} 个{}, 跳过 {} 个",
             patched.len(),
-            if skipped.is_empty() { "" } else { "（另有非活动槽跳过）" },
+            if skipped.is_empty() {
+                ""
+            } else {
+                "（另有非活动槽跳过）"
+            },
             skipped.len()
         )
         .green()
@@ -152,12 +156,12 @@ pub(crate) fn resolve_slot(da: &mut DAXFlash) -> Result<SlotState, String> {
         return Ok(SlotState::Known(c));
     }
 
-    let has_a = VBMETA_CANDIDATES.iter().any(|n| {
-        n.ends_with("_a") && da.find_partition_addr(n).is_ok()
-    });
-    let has_b = VBMETA_CANDIDATES.iter().any(|n| {
-        n.ends_with("_b") && da.find_partition_addr(n).is_ok()
-    });
+    let has_a = VBMETA_CANDIDATES
+        .iter()
+        .any(|n| n.ends_with("_a") && da.find_partition_addr(n).is_ok());
+    let has_b = VBMETA_CANDIDATES
+        .iter()
+        .any(|n| n.ends_with("_b") && da.find_partition_addr(n).is_ok());
 
     match (has_a, has_b) {
         (true, true) => Err(
@@ -183,7 +187,10 @@ mod tests {
 
     #[test]
     fn shared_vbmeta_is_always_patched() {
-        assert_eq!(decide_action("vbmeta", SlotState::Known('a')), VbAction::Patch);
+        assert_eq!(
+            decide_action("vbmeta", SlotState::Known('a')),
+            VbAction::Patch
+        );
         assert_eq!(decide_action("vbmeta", SlotState::NotAb), VbAction::Patch);
     }
 
