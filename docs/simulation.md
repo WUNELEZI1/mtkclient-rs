@@ -37,7 +37,7 @@ mtkclient-rs --sim v5-clean r boot_a out.img
 mtkclient-rs --sim v5-clean w boot_a boot.img --yes     # 写完自动回读校验
 mtkclient-rs --sim v5-clean e userdata --yes            # 擦后抽样断言 0xFF/0x00
 
-# 高危操作（写 seccfg / vbmeta 一律需要确认，--yes 也保留 stderr 警告）
+# 高危操作（写 seccfg / vbmeta 一律需要确认；交互式会先提示风险再问 y/N，加 --yes 则直接放行）
 mtkclient-rs --sim v5-clean seccfg unlock --yes
 mtkclient-rs --sim ufs-ab   vbmeta 3 --yes              # 只改活动槽，非活动槽打 [SKIP]
 mtkclient-rs --sim v5-clean unlock --yes                # seccfg unlock + vbmeta 一条链

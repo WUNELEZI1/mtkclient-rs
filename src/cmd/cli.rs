@@ -158,16 +158,9 @@ pub struct Cli {
     #[arg(
         long = "yes",
         default_value_t = false,
-        help = "危险操作（写/擦重点分区、seccfg、vbmeta）直接放行：跳过交互，但警告仍会打印到 stderr"
+        help = "危险操作（写/擦重点分区、seccfg、vbmeta）直接放行：跳过交互与警告。供脚本/程序调用；交互式使用时请用 y/N 确认"
     )]
     pub yes: bool,
-
-    #[arg(
-        long = "token",
-        value_name = "TOKEN",
-        help = "危险操作确认 token（设备 SN 后 4 位）；与 --yes 二选一"
-    )]
-    pub token: Option<String>,
 
     #[arg(
         long = "sim",

@@ -29,10 +29,19 @@ pub trait Op {
 
 ## 二、危险确认策略
 
-| 动作 | `Danger` 级别 | 确认方式 |
+确认只有**两种模式**，由 `--yes` 切换（不再有 token 机制）：
+
+| 模式 | 行为 | 用途 |
 |---|---|---|
-| 写/擦**不可恢复分区**（preloader / seccfg / nvram / nvdata / nvcfg / persist / proinfo / protect1-2 / frp） | `Irreversible` | **每次**都要 token（设备 SN 后 4 位）或交互输入，不缓存 |
-| 写/擦其余重点分区（boot / lk / tee / dtbo / misc / para / super / userdata / `vbmeta*` …） | `High` | 同会话确认一次；`--yes` 可跳过交互 |
+| **不加 `--yes`** | 先向 stderr 打印风险提示（含 `[audit]` 行：`时间 / action / sn / fp`），再交互式问 `继续执行？[y/N]`；回答 `y`/`yes` 才继续，其余一律取消 | 人直接在终端操作 |
+| **加 `--yes`** | 直接放行，**不打印任何警告** | 给脚本 / 其他程序调用，调用方自己负责确认后果，输出保持干净 |
+
+危险等级（`Danger`）**只影响警告文案的措辞**，不改变交互方式：
+
+| 动作 | `Danger` 级别 | 警告措辞 |
+|---|---|---|
+| 写/擦**不可恢复分区**（preloader / seccfg / nvram / nvdata / nvcfg / persist / proinfo / protect1-2 / frp） | `Irreversible` | "为**不可逆**操作" |
+| 写/擦其余重点分区（boot / lk / tee / dtbo / misc / para / super / userdata / `vbmeta*` …） | `High` | "为**高风险**操作" |
 | seccfg lock/unlock、vbmeta 改写 | `High` | 同上 |
 | 普通数据分区写/擦 | 无 | 不打断（擦除仍会确认一次，因为擦掉读不回来） |
 
@@ -40,8 +49,8 @@ pub trait Op {
   危险等级由 `ops::danger_for_partition()` 统一给出（写/擦共用，避免两处判定漂移）。
 - 名字末尾是 `a`/`b` 的分区名（`userdata` / `nvdata` / `para` / `data`）**不会**被当成槽后缀剥掉——
   只剥 `_a` / `_b`。这一点有回归测试（`critical_partition_names_with_trailing_a_or_b`）。
-- **`--yes` 不等于静默**：警告仍打 stderr，并写一行 `[audit] <时间> action=... sn=... token=... fp=...`
-  审计日志，事后可追溯。
+- 非交互环境（stdin 不是终端、被管道喂入）且**未加 `--yes`** 时，无法提问，确认器直接报错
+  并提示"请交互式运行回答 y，或加 `--yes` 跳过交互"——**绝不默认继续**。
 
 ## 三、写入路径的四道闸
 

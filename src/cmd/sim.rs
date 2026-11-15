@@ -80,7 +80,6 @@ pub fn run_sim(
     let interactive = !app_config.assume_yes && std::io::IsTerminal::is_terminal(&std::io::stdin());
     let mut exec = Executor::new(mode)
         .with_assume_yes(app_config.assume_yes)
-        .with_token(app_config.token.clone())
         .with_interactive(interactive);
 
     let report = match cmd {

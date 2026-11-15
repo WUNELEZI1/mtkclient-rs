@@ -100,8 +100,6 @@ pub struct AppConfig {
     pub cmd_args: Vec<String>,
     /// 危险操作直接放行（`--yes`）
     pub assume_yes: bool,
-    /// 危险操作确认 token（`--token`）
-    pub token: Option<String>,
     /// 仿真 flash 状态文件（`--sim-state`）
     pub sim_state: Option<String>,
 }
@@ -127,15 +125,9 @@ impl AppConfig {
             command: cli.command.clone(),
             cmd_args: cli.args.clone(),
             // `args` 是 `allow_hyphen_values` 的位置参数，写在命令之后的
-            // `--yes` / `--token xxx` 会被它吞掉，这里两种位置都认。
+            // `--yes` 会被它吞掉，这里两种位置都认。
             assume_yes: cli.yes || cli.args.iter().any(|a| a == "--yes"),
             sim_state: cli.sim_state.clone(),
-            token: cli.token.clone().or_else(|| {
-                cli.args
-                    .iter()
-                    .position(|a| a == "--token")
-                    .and_then(|i| cli.args.get(i + 1).cloned())
-            }),
         }
     }
 }

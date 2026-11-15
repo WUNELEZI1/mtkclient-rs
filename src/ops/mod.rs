@@ -30,17 +30,16 @@ pub struct OpCtx<'a> {
     /// 单测里置 false，避免污染仓库。
     pub write_artifacts: bool,
     pub log_level: u8,
-    /// 危险操作确认器（`--yes` / `--token` / 交互式终端）
+    /// 危险操作确认器（`--yes` / 交互式终端）
     pub confirm: &'a mut DangerConfirm,
-    /// 命令行提供的确认 token（设备 SN 后 4 位或版本串后 4 位）
-    pub token: Option<String>,
 }
 
 impl OpCtx<'_> {
     /// 危险操作确认。
     ///
-    /// 通过时把警告打到 stderr（`--yes` 也不例外，保证留痕），
-    /// 未通过时返回可操作的错误信息（提示 `--yes` / `--token`）。
+    /// - 不加 `--yes`：确认器先打印风险提示，再交互式问 `y/N`；
+    ///   非交互环境直接报错并提示加 `--yes`。
+    /// - 加 `--yes`：确认器静默放行（`--yes` 是给脚本/程序调用的，不打印警告）。
     pub fn confirm_action(
         &mut self,
         action: &'static str,
@@ -56,21 +55,14 @@ impl OpCtx<'_> {
             fingerprint: detail.to_string(),
             timestamp: crate::util::now_iso8601(),
         };
-        match self
-            .confirm
-            .require(action, danger, &ctx, self.token.as_deref())
-        {
-            Ok(Some(w)) => {
-                eprintln!("{}", w);
-                Ok(())
-            }
-            Ok(None) => Ok(()),
-            Err(ConfirmError::NeedToken) => Err(format!(
-                "{} 需要确认：请加 --yes 跳过交互，或 --token {} （设备 SN 后 4 位）",
+        match self.confirm.require(action, danger, &ctx) {
+            Ok(()) => Ok(()),
+            Err(ConfirmError::NeedConfirmation) => Err(format!(
+                "{} 需要确认（{}操作）：请在交互式终端回答 y，或加 --yes 跳过交互",
                 action,
-                ctx.token()
+                danger.label()
             )),
-            Err(e) => Err(format!("{} 未确认: {}", action, e)),
+            Err(ConfirmError::Declined) => Err(format!("{} 未确认: 操作已被取消", action)),
         }
     }
 }

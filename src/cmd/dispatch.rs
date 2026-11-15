@@ -16,7 +16,7 @@ use crate::system::config::AppConfig;
 /// 用能力驱动路径执行一个 op（真机）。
 ///
 /// 与 `printgpt` 走同一条链路：RealSession（DA 已由 Phase1 上传）→ Executor →
-/// Orchestrator 决策 → 逐步执行 + 能力校验。确认策略来自 `--yes` / `--token`。
+/// Orchestrator 决策 → 逐步执行 + 能力校验。确认策略来自 `--yes`（直接放行）或交互式 y/N。
 pub(crate) fn run_op<O: crate::ops::Op>(
     da: &mut DAXFlash,
     op: &O,
@@ -29,7 +29,6 @@ pub(crate) fn run_op<O: crate::ops::Op>(
     let mut session = crate::session::RealSession::new(da, state, true);
     crate::exec::Executor::new(mode)
         .with_assume_yes(app_config.assume_yes)
-        .with_token(app_config.token.clone())
         .execute(op, &mut session, true, log_level)
         .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
     Ok(())

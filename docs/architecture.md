@@ -14,7 +14,7 @@
 | `exploit/planner` | ✅ 新建（BFS + mode 约束 + V6 排除 + 条件 probe + Cost） | `src/exploit/planner.rs` |
 | `exploit/orchestrator` | ✅ 新建（决策 + JSON 行日志） | `src/exploit/orchestrator.rs` |
 | `da/fixture` | ✅ 新建（六段粒度 + JSONL + mock 回放） | `src/da/fixture.rs` |
-| `confirm/` | ✅ 新建（token / 会话级 / `--yes` 仍警告） | `src/confirm/mod.rs` |
+| `confirm/` | ✅ 新建（两种模式：`--yes` 直接放行 / 不加则风险提示 + 交互式 y/N，无 token） | `src/confirm/mod.rs` |
 | `ops/` | ✅ **全部迁完**：`printgpt` / `read` / `write` / `erase` / `seccfg` / `vbmeta` / `unlock` / `fs_shell`，每个只声明能力 + 实现 `run` | `src/ops/*.rs`（契约见 [`ops.md`](ops.md)） |
 | `exec/`（唯一执行入口） | ✅ 新建：决策 → 逐步执行 → **每步校验能力真实增长** | `src/exec/mod.rs` |
 | `session/`（执行后端抽象） | ✅ 新建：`RealSession`（DAXFlash）/ `SimSession`（虚拟设备） | `src/session/{mod,real}.rs` |
@@ -68,7 +68,7 @@ mtkclient-rs --sim v5-clean printgpt
   write_stream / erase_partition / active_slot / seccfg_sign / serial`；
 - `transport/vdev.rs` 增加设备侧写/擦状态机、稀疏页存储、故障注入（`WriteDead`/`WriteSilent`）、
   `save_state/load_state`（跨进程"重连"）；
-- `confirm` 增加交互式 y/N + `Irreversible` 输 token；`--yes` 仍出警告。
+- `confirm` 改为两种模式：不加 `--yes` 时打印风险提示 + 交互式 y/N；加 `--yes` 直接放行（静默），供脚本/程序调用。已删除 token 机制。
 
 ### 3.1 跨进程断点续传（仿真的"拔插重连"）
 
@@ -103,7 +103,7 @@ mtkclient plan seccfg --da DA.bin --chip 0x6768
 | 4 | Carbonara pattern 命中不规划 | ✅ | 5 条 pattern 单测 + 规划无解日志 |
 | 5 | Heapbait SLA 门控 probe → NotVulnerable | ⚠️ 部分 | 已实现 DA2 修补标记检查；`requires_sla` 无法静态验证，改为运行期记录（见 docs/heapbait_sla_gating.md） |
 | 6 | seccfg unlock 后偏移 16 == 0 | ✅ | `ops::seccfg` 写后回读断言；`seccfg_unlock_writes_dm_verity_zero` |
-| 7 | `--yes` 时警告仍出 stderr | ✅ | `DangerConfirm` 已接进 `OpCtx::confirm_action`，`--yes` 仍打警告 + `[audit]` 行 |
+| 7 | `--yes` 直接放行（静默）/ 不加则风险提示 + y/N | ✅ | `DangerConfirm` 两种模式；`--yes` 不打印警告，专为脚本/程序调用；非交互无 `--yes` 直接报错提示加 `--yes` |
 | 8 | mock 下 DA 协议脱机跑 | ✅ | `DaEngine` + `VirtualDevice` 跑完整 BROM→DA→读写擦状态机（读/写/擦/FORMAT/CC_OPTIONAL_DOWNLOAD_ACT 全覆盖） |
 | 9 | A/B 缓存 set_active 后读 boot 新槽 | ✅ | `slot a\|b` 写 misc 后同步 `da.active_slot` |
 | 10 | 新增日志走 LogKey | ✅ | help 六语言补齐 `unlock` / `fs_shell`；日志走统一 logger |
@@ -143,6 +143,6 @@ mtkclient plan seccfg --da DA.bin --chip 0x6768
 - 未新增 exploit 解决“链少”；`heapbait`/`kamakiripl` 保持 `InProgress`，不进自动规划。
 - `chain` 保留为调试视图，未作为必需命令。
 - `printgpt` 未硬编码“先加载 DA”，V6 由 Planner 排除。
-- `--yes` 不吞警告（`DangerConfirm` 返回 warning）。
+- `--yes` 是静默放行（专为程序调用），不加 `--yes` 才会提示风险并交互式问 y/N。
 - 未以 bkerler 原版为正确性标准；Carbonara 5 pattern、RPMB 用 SEJ 等结论均来自源码实测，并在 docs 记录差异。
 - 未引入 clap 之外的重依赖；JSON 手写、bitset 自研。
