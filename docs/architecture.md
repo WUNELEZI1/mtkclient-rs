@@ -89,11 +89,19 @@ mtkclient plan seccfg --da DA.bin --chip 0x6768
 
 1. ~~ops 迁移（printgpt 走 Orchestrator）~~ ✅ 已完成；其余 op（`r` / `w` / `e` / `seccfg` / `rpmb`）
    按同一模式逐个接入（每个只需声明 `required_caps` + 实现 `run`）。
-2. **seccfg 偏移 16 修复**（`dm_verity_state`，unlock 写 0x00）+ 回读校验。
-3. **vbmeta 槽位化**：只处理活动槽，非活动槽 SKIP 并记录原因；混合布局分别处理。
-4. **A/B 缓存失效**（cache key 含 active_slot）+ **dumpbrom header 自描述**（fallback 128KB 并告警）。
-5. **写入路径收口 StreamPort**：`engine` 目前只有读路径；写/擦/RPMB 仍在 `DAXFlash`。
-6. **目录收口**：`system/fsimg → fs/`、`cmd/ops` 拆分、`slot/` 独立。
+2. ~~seccfg 偏移 16 修复~~ ✅ 代码此前已按 `dm_verity_state` 实现（unlock/lock 均写 0），
+   本轮补 4 个断言测试，防止回退。
+3. ~~vbmeta 槽位化~~ ✅ 只处理活动槽，非活动槽 `[SKIP]` 并记录原因；共享 `vbmeta` 与
+   分槽 `vbmeta_system_*` 分别处理；**槽位无法确定时直接报错不猜**（bootctrl 失败 →
+   GPT 元数据 → 报错）。纯函数 `decide_action` 有 5 个测试。
+4. ~~A/B 缓存失效~~ ✅ `slot a|b` 写入 misc 后同步 `da.active_slot`，避免同会话内后续
+   vbmeta / 分区名解析仍用旧槽位。（当前不存在"按槽位分键的 GPT 缓存"，故无哈希键可加：
+   `da.active_slot` 是唯一的槽位缓存点。）
+5. **dumpbrom header 自描述**：⏸ 暂缓。MTK BROM 头部长度字段无可靠公开出处，
+   在无真机/固件对拍的情况下写死偏移属于"猜协议"，风险高于收益；保持 128KB 固定读取并
+   在文档中标注为已知限制。
+6. **写入路径收口 StreamPort**：`engine` 目前只有读路径；写/擦/RPMB 仍在 `DAXFlash`。
+7. **目录收口**：`system/fsimg → fs/`、`cmd/ops` 拆分、`slot/` 独立。
 
 ## 六、禁区遵守情况
 

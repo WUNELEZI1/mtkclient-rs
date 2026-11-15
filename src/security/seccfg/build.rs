@@ -146,3 +146,65 @@ pub(crate) fn build_v4_image_online(
     );
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 构造一个仅用于头部改写测试的 V4 描述（不涉及加密/HACC）。
+    fn v4(lock_state: u32, dm_verity_state: u32) -> SecCfgV4 {
+        SecCfgV4 {
+            magic: SecCfgV4::MAGIC,
+            seccfg_ver: 4,
+            seccfg_size: 0x3C,
+            lock_state,
+            dm_verity_state,
+            sboot_runtime: 0,
+            endflag: SecCfgV4::ENDFLAG,
+            hwtype: "V4".to_string(),
+        }
+    }
+
+    fn u32_at(buf: &[u8], off: usize) -> u32 {
+        u32::from_le_bytes(buf[off..off + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn unlock_writes_lock_state_3_and_dm_verity_0() {
+        // 输入里 dm_verity_state 故意置 1（DM_VERITY_GENERAL_ERROR），
+        // unlock 必须把它清回 0，否则强解 BL 后开机会报 dm-verity error。
+        let (header, lock, dm, sboot) = build_v4_header(&v4(1, 1), "unlock").unwrap();
+        assert_eq!(lock, 3, "LKS_UNLOCK");
+        assert_eq!(dm, 0, "dm_verity_state 必须为 0");
+        assert_eq!(sboot, 0);
+        assert_eq!(u32_at(&header, 0x0C), 3, "lock_state 在偏移 0x0C");
+        assert_eq!(u32_at(&header, 0x10), 0, "dm_verity_state 在偏移 0x10");
+        assert_eq!(u32_at(&header, 0x14), 0, "sboot_runtime 在偏移 0x14");
+        assert_eq!(header.len(), 28);
+    }
+
+    #[test]
+    fn lock_writes_lock_state_1_and_dm_verity_0() {
+        let (header, lock, dm, _) = build_v4_header(&v4(3, 0x10), "lock").unwrap();
+        assert_eq!(lock, 1, "LKS_DEFAULT");
+        assert_eq!(dm, 0);
+        assert_eq!(u32_at(&header, 0x0C), 1);
+        assert_eq!(u32_at(&header, 0x10), 0);
+    }
+
+    #[test]
+    fn already_unlocked_is_rejected() {
+        assert!(build_v4_header(&v4(3, 0), "unlock").is_err());
+        assert!(build_v4_header(&v4(1, 0), "lock").is_err());
+        assert!(build_v4_header(&v4(1, 0), "bogus").is_err());
+    }
+
+    #[test]
+    fn header_preserves_identity_fields() {
+        let (header, ..) = build_v4_header(&v4(1, 0), "unlock").unwrap();
+        assert_eq!(u32_at(&header, 0), SecCfgV4::MAGIC);
+        assert_eq!(u32_at(&header, 4), 4);
+        assert_eq!(u32_at(&header, 8), 0x3C);
+        assert_eq!(u32_at(&header, 0x18), SecCfgV4::ENDFLAG);
+    }
+}

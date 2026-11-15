@@ -83,6 +83,12 @@ fn set_slot(da: &mut DAXFlash, slot: char) -> Result<(), String> {
     // 直接从内存写入 misc 分区
     write_partition_from_memory(da, "misc", &new_misc)?;
 
+    // 缓存失效：`da.active_slot` 是本会话内"只读一次 misc"的缓存，
+    // 槽位刚被改写，必须同步更新，否则后续 vbmeta / r boot / 分区名解析
+    // 仍会用旧槽位（典型症状：切换后立刻 zyb vbmeta 改到上一个槽）。
+    da.active_slot = Some(slot);
+    log::debug!("active_slot 缓存已更新为 {:?}", da.active_slot);
+
     info!("{}", format!("A/B 槽位已设置为 {}", slot).green().bold());
     Ok(())
 }

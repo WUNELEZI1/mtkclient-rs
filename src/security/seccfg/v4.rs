@@ -34,7 +34,9 @@ impl SecCfgV4 {
         let ver = u32::from_le_bytes(data[4..8].try_into().unwrap());
         let size = u32::from_le_bytes(data[8..12].try_into().unwrap());
         let lock = u32::from_le_bytes(data[12..16].try_into().unwrap());
-        let crit_lock = u32::from_le_bytes(data[16..20].try_into().unwrap());
+        // 偏移 0x10 是 dm-verity 状态（历史命名 critical_lock_state 是 mtkclient 的误读，
+        // 写入非 0 值会触发 dm-verity error，见 build.rs 注释）
+        let dm_verity_state = u32::from_le_bytes(data[16..20].try_into().unwrap());
         let sboot = u32::from_le_bytes(data[20..24].try_into().unwrap());
         let endflag = u32::from_le_bytes(data[24..28].try_into().unwrap());
 
@@ -71,10 +73,10 @@ impl SecCfgV4 {
             lock.to_le_bytes()[1],
             lock.to_le_bytes()[2],
             lock.to_le_bytes()[3],
-            crit_lock.to_le_bytes()[0],
-            crit_lock.to_le_bytes()[1],
-            crit_lock.to_le_bytes()[2],
-            crit_lock.to_le_bytes()[3],
+            dm_verity_state.to_le_bytes()[0],
+            dm_verity_state.to_le_bytes()[1],
+            dm_verity_state.to_le_bytes()[2],
+            dm_verity_state.to_le_bytes()[3],
             sboot.to_le_bytes()[0],
             sboot.to_le_bytes()[1],
             sboot.to_le_bytes()[2],
@@ -110,7 +112,7 @@ impl SecCfgV4 {
             seccfg_ver: ver,
             seccfg_size: size,
             lock_state: lock,
-            dm_verity_state: crit_lock,
+            dm_verity_state,
             sboot_runtime: sboot,
             endflag,
             hwtype,
