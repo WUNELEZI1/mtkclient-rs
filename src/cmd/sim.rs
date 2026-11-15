@@ -27,6 +27,7 @@ use crate::ops::vbmeta::VbmetaOp;
 use crate::ops::write::WriteOp;
 use crate::session::SimSession;
 use crate::system::config::AppConfig;
+use crate::transport::RetryPolicy;
 use crate::transport::vdev::{ChaosConfig, DeviceProfile, VirtualDevice};
 
 /// 仿真入口。
@@ -74,7 +75,15 @@ pub fn run_sim(
         }
     };
 
-    let mut session = SimSession::new(virt).with_da(da);
+    // Phase 1.1b：瞬时超时有界重试（只作用于读方向；断开/静默立刻失败）。
+    let retry = RetryPolicy::with_max_retries(app_config.max_retries);
+    if app_config.max_retries > 0 {
+        println!(
+            "[sim] 有界重试: 最多 {} 次（仅瞬时超时）",
+            app_config.max_retries
+        );
+    }
+    let mut session = SimSession::new(virt).with_retry(retry).with_da(da);
     if let Some(state) = app_config.sim_state.as_deref()
         && std::path::Path::new(state).exists()
     {

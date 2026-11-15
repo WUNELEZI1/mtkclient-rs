@@ -200,15 +200,43 @@ mtkclient-rs --sim v5-clean printgpt --sim-chaos --sim-chaos-seed 1
 |---|---|---|---|
 | 位翻转 `bitflip` | 写入**校验和通过之后**落盘 | 落盘数据被改坏，只能靠回读校验/CRC 发现 | 闪存位衰变 |
 | 丢包 `drop` | 读回数据返回前 | 尾部若干字节被丢弃（短包），主机拿到更少字节 | 劣质线材 |
-| 静默 `silence` | 读 | 读超时并**锁存**，直到 `replug` 才恢复 | 线缆脱落 |
+| 静默 `silence` | 读 | 立即上报**断开**并锁存，直到 `replug` 才恢复 | 线缆脱落 |
 | 瞬时超时 `glitch` | 读 | 单次读超时后**自动恢复**（不锁存） | 接触不良抖动 |
 
 确定性：`SplitMix64(seed)`，同一种子 → 同一条故障序列（可复现回归）。
 
-> **已知发现（本步暴露）**：当前 DA 加载路径对"瞬时超时"没有有界重试，因此
-> `--sim-chaos` 可能在 `da_load` 阶段直接报"传输超时"。这正是混沌要暴露的
-> 问题——下一步（Phase 1.1b）加有界重试/续传硬化后，混沌应能稳定跑绿。
-
 新增测试（`transport::vdev::tests::chaos_*`）：PRNG 确定性、位翻转原语、
 静默锁存与重连恢复、瞬时超时不锁存、丢包截断且尾部真丢、关闭时行为完全一致、
 以及"位翻转在 checksum 通过后才发生、回读必不一致"的端到端用例。
+
+### 7.1 有界重试与续传硬化（Phase 1.1b）
+
+1.1 的混沌冒烟暴露了真实缺陷：`--sim-chaos --sim-chaos-seed 7` 在 `da_load`
+直接报"传输超时"。根因是底层读路径没有任何容错。1.1b 按"分层重试"修好：
+
+| 层级 | 语义 | 触发条件 |
+|---|---|---|
+| 字节级（`RetryingPort::read_exact`） | **续读式**重试：保留已读进度，只补读剩余字节 | 连续无进展的 `Timeout`，上限 `--max-retries`（默认 3），指数退避 10/20/40…封顶 100ms |
+| 命令级（`DaEngine::read_flash`） | 整条 `READ_DATA` 重发：先 `drain()` 清空输入缓冲，再重新同步 | 包被截断 / `magic` 错位 / 长度不符 / `Timeout` |
+
+关键设计（三条铁律）：
+
+- **断开绝不重试**：`Disconnected`（含静默锁存）立刻失败，交给上层触发断点续传 / 提示重插。
+  静默在仿真中直接上报 `Disconnected`——因为它等价于"线缆脱落，需要人工重插"，
+  当作可重试超时只会在死设备上白等。
+- **写永不重试**：写不是幂等操作，重发会污染设备侧状态。重试只作用于读方向。
+- **丢包只打数据块**：`drop` 仅对 ≥16 字节的读生效。真实 USB 短包不会丢尾部字节，
+  控制帧（握手 / 回显 / 状态字）丢字节只会让主机无限等待，与物理现实不符。
+
+验证：
+
+```text
+mtkclient-rs --sim v5-clean printgpt --sim-chaos --sim-chaos-seed 7    # 通过
+mtkclient-rs --sim v5-clean printgpt --sim-chaos --sim-chaos-seed 42   # 通过
+```
+
+对应测试：`retry_recovers_transient_timeouts`、`retry_is_bounded_and_reports_timeout`、
+`retry_resumes_after_partial_read`、`partial_read_then_persistent_timeout_fails`、
+`disconnected_is_never_retried`、`none_policy_never_retries`、`write_is_never_retried`、
+`backoff_is_exponential_and_capped`、`chaos_glitch_is_absorbed_by_bounded_retry`、
+`chaos_drop_recovers_via_read_command_retry`、`chaos_silence_fails_fast_without_retry`。

@@ -16,7 +16,7 @@
 use log::{debug, trace, warn};
 
 use crate::transport::wire;
-use crate::transport::{PortError, StreamPort};
+use crate::transport::{PortError, RetryPolicy, RetryingPort, StreamPort};
 
 /// 连接阶段的设备信息。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +109,8 @@ pub struct DaEngine {
     phase: Phase,
     info: Option<BromInfo>,
     storage: Option<StorageInfo>,
+    /// 瞬时超时的有界重试策略（Phase 1.1b）。默认 3 次，写方向不重试。
+    retry: RetryPolicy,
 }
 
 impl Default for DaEngine {
@@ -123,7 +125,22 @@ impl DaEngine {
             phase: Phase::Idle,
             info: None,
             storage: None,
+            retry: RetryPolicy::default(),
         }
+    }
+
+    /// 指定重试策略（`--max-retries`）。
+    pub fn with_retry(mut self, policy: RetryPolicy) -> Self {
+        self.retry = policy;
+        self
+    }
+
+    /// 在入口处包裹重试端口，使内部所有 `Self::rd` 自动获得有界重试。
+    ///
+    /// 只在**公开事务入口**包一次，内部私有原语不再重复包装，避免重试预算被放大。
+    #[inline]
+    fn retrying<'a>(&self, port: &'a mut dyn StreamPort) -> RetryingPort<'a> {
+        RetryingPort::new(port, self.retry)
     }
 
     pub fn phase(&self) -> Phase {
@@ -203,6 +220,9 @@ impl DaEngine {
 
     /// 握手 + 芯片识别 + 安全标志读取。
     pub fn connect(&mut self, port: &mut dyn StreamPort) -> Result<BromInfo, EngineError> {
+        // 入口包裹有界重试：握手期间任何"尚未读到字节"的瞬时超时都自动重试。
+        let mut rp = self.retrying(port);
+        let port: &mut dyn StreamPort = &mut rp;
         // 握手：逐字节发送，设备回按位取反
         for b in wire::BROM_HANDSHAKE {
             Self::wr(port, &[b])?;
@@ -254,6 +274,8 @@ impl DaEngine {
 
     /// 上传 DA1 并跳转，等待 DA 的 XFlash SYNC。
     pub fn load_da(&mut self, port: &mut dyn StreamPort, da: &[u8]) -> Result<(), EngineError> {
+        let mut rp = self.retrying(port);
+        let port: &mut dyn StreamPort = &mut rp;
         if self.phase == Phase::Idle {
             return Err(EngineError::OutOfOrder {
                 phase: self.phase,
@@ -467,6 +489,45 @@ impl DaEngine {
                 want: "DA 已加载",
             });
         }
+        let policy = self.retry;
+        let mut rp = self.retrying(port);
+        let port: &mut dyn StreamPort = &mut rp;
+        let mut attempt = 0u32;
+        loop {
+            match Self::read_flash_once(port, addr, size) {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    // 读是幂等的：包被截断 / 错位 / 瞬时超时，都可以"清空输入缓冲
+                    // + 重发 READ_DATA"整条重来。这是对抗丢包的正确层级（字节级
+                    // 续读救不了已经丢失的字节）。
+                    let retryable = matches!(
+                        e,
+                        EngineError::Port(PortError::Timeout) | EngineError::Protocol(_)
+                    );
+                    if !retryable || attempt >= policy.max_retries {
+                        return Err(e);
+                    }
+                    attempt += 1;
+                    warn!(
+                        "[engine] READ_DATA 失败（{}），清空输入缓冲后重试 {}/{}",
+                        e, attempt, policy.max_retries
+                    );
+                    let _ = port.drain();
+                    let d = policy.delay(attempt);
+                    if !d.is_zero() {
+                        std::thread::sleep(d);
+                    }
+                }
+            }
+        }
+    }
+
+    /// 单次 READ_DATA 事务（不含重试）。
+    fn read_flash_once(
+        port: &mut dyn StreamPort,
+        addr: u64,
+        size: u64,
+    ) -> Result<Vec<u8>, EngineError> {
         Self::send_cmd(port, wire::XFLASH_CMD_READ_DATA)?;
         Self::expect_status(port, "READ_DATA cmd")?;
 
@@ -505,6 +566,8 @@ impl DaEngine {
         storage: u32,
         parttype: u32,
     ) -> Result<(), EngineError> {
+        let mut rp = self.retrying(port);
+        let port: &mut dyn StreamPort = &mut rp;
         if !matches!(self.phase, Phase::Da1 | Phase::Ready) {
             return Err(EngineError::OutOfOrder {
                 phase: self.phase,
@@ -534,6 +597,8 @@ impl DaEngine {
         port: &mut dyn StreamPort,
         data: &[u8],
     ) -> Result<(), EngineError> {
+        let mut rp = self.retrying(port);
+        let port: &mut dyn StreamPort = &mut rp;
         if data.is_empty() {
             return Ok(());
         }
@@ -552,6 +617,8 @@ impl DaEngine {
 
     /// 结束写入事务：最终 status + CC_OPTIONAL_DOWNLOAD_ACT。
     pub fn end_write(&mut self, port: &mut dyn StreamPort) -> Result<(), EngineError> {
+        let mut rp = self.retrying(port);
+        let port: &mut dyn StreamPort = &mut rp;
         Self::expect_status(port, "WRITE_DATA final")?;
         Self::send_cmd(port, wire::XFLASH_CMD_DEVICE_CTRL)?;
         Self::expect_status(port, "DEVICE_CTRL")?;
@@ -572,6 +639,8 @@ impl DaEngine {
         addr: u64,
         size: u64,
     ) -> Result<(), EngineError> {
+        let mut rp = self.retrying(port);
+        let port: &mut dyn StreamPort = &mut rp;
         if !matches!(self.phase, Phase::Da1 | Phase::Ready) {
             return Err(EngineError::OutOfOrder {
                 phase: self.phase,
@@ -620,6 +689,8 @@ impl DaEngine {
 
     /// 查询存储信息（eMMC / UFS 容量与块大小）。
     pub fn query_storage(&mut self, port: &mut dyn StreamPort) -> Result<StorageInfo, EngineError> {
+        let mut rp = self.retrying(port);
+        let port: &mut dyn StreamPort = &mut rp;
         if !matches!(self.phase, Phase::Da1 | Phase::Ready) {
             return Err(EngineError::OutOfOrder {
                 phase: self.phase,
@@ -698,6 +769,8 @@ impl DaEngine {
 
     /// DA extensions 握手（CUSTOM_ACK），返回设备返回的 magic。
     pub fn load_da_extensions(&mut self, port: &mut dyn StreamPort) -> Result<u32, EngineError> {
+        let mut rp = self.retrying(port);
+        let port: &mut dyn StreamPort = &mut rp;
         Self::send_cmd(port, wire::XFLASH_CMD_DEVICE_CTRL)?;
         Self::expect_status(port, "DEVICE_CTRL")?;
         Self::send_cmd(port, wire::XFLASH_DEVCTRL_ACK)?;
@@ -718,6 +791,8 @@ impl DaEngine {
         port: &mut dyn StreamPort,
         name: &str,
     ) -> Result<(), EngineError> {
+        let mut rp = self.retrying(port);
+        let port: &mut dyn StreamPort = &mut rp;
         let id = crate::transport::vdev::exploit_id(name)
             .ok_or_else(|| EngineError::Protocol(format!("仿真设备不认识 exploit: {}", name)))?;
         Self::wr(port, &[wire::SIM_EXPLOIT_CMD, id])?;

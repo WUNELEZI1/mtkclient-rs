@@ -98,8 +98,10 @@ impl ChaosConfig {
         Self {
             seed: seed.unwrap_or(0x5EED_1234),
             bitflip_permille: 8,
+            // 静默 = 线缆脱落，必须人工重插，不属于"可自动恢复"的压力档位；
+            // 需要验证掉线/续传时用 `fault=silent` 或显式配置，不在默认档位随机触发。
             drop_permille: 8,
-            silence_permille: 1,
+            silence_permille: 0,
             glitch_permille: 8,
         }
     }
@@ -1504,7 +1506,9 @@ impl StreamPort for VirtualDevice {
             return Err(PortError::Disconnected);
         }
         if self.silent {
-            return Err(PortError::Timeout);
+            // 静默 = 线缆脱落，语义等同"断开"：必须立刻失败让上层触发续传/提示重插，
+            // 不能被当成可重试的瞬时超时（否则会在死设备上反复重试、白白干等）。
+            return Err(PortError::Disconnected);
         }
         // 混沌：瞬时超时（不锁存，下一次读自动恢复）/ 静默（锁存到 replug）。
         let mut go_silent = false;
@@ -1520,7 +1524,7 @@ impl StreamPort for VirtualDevice {
         }
         if go_silent {
             self.silent = true;
-            return Err(PortError::Timeout);
+            return Err(PortError::Disconnected);
         }
         if buf.is_empty() {
             return Ok(0);
@@ -1530,9 +1534,13 @@ impl StreamPort for VirtualDevice {
         }
         let m = buf.len().min(self.out.len());
         // 混沌：丢包——仍"在线上发出"了 m 字节，但尾部 d 字节丢失，主机只收到 deliver 字节。
+        //
+        // 只对数据块（≥16 字节）生效：真实 USB 短包不会"丢尾部字节"，控制帧
+        // （握手 / 命令回显 / 状态字，1~8 字节）丢字节只会让主机无限等待，
+        // 与物理现实不符。丢包要模拟的是大块数据传输被劣质线材/干扰截断。
         let mut deliver = m;
         if let Some(c) = self.chaos.as_mut() {
-            if m > 1 && c.rng.hit(c.cfg.drop_permille) {
+            if m >= 16 && c.rng.hit(c.cfg.drop_permille) {
                 c.drops += 1;
                 let d = 1 + (c.rng.next_u64() as usize % (m - 1));
                 deliver = m - d;
@@ -1563,6 +1571,12 @@ impl StreamPort for VirtualDevice {
 
     fn kind(&self) -> PortKind {
         PortKind::Mock
+    }
+
+    /// 清空未消费的输入字节（帧错位后重新同步）。
+    fn drain(&mut self) -> Result<(), PortError> {
+        self.out.clear();
+        Ok(())
     }
 }
 
@@ -1864,13 +1878,14 @@ exploit=kamakiri2
     }
 
     #[test]
-    fn fault_injection_turns_silent_then_times_out() {
+    fn fault_injection_turns_silent_then_disconnects() {
         let mut p = DeviceProfile::preset("v5-clean").unwrap();
         p.faults = vec![(2, DeviceFault::Silent)];
         let mut dev = VirtualDevice::new(p);
         dev.write(&[0xA0, 0x0A, 0x50, 0x05]).unwrap();
         let mut b = [0u8; 1];
-        assert_eq!(dev.read(&mut b), Err(PortError::Timeout));
+        // 静默锁存 = 需要重插，按"断开"上报（不可重试）
+        assert_eq!(dev.read(&mut b), Err(PortError::Disconnected));
     }
 
     #[test]
@@ -1995,9 +2010,10 @@ exploit=kamakiri2
             .with_chaos(cfg);
         dev.out.push_back(0x5A);
         let mut b = [0u8; 1];
-        assert_eq!(dev.read(&mut b), Err(PortError::Timeout));
+        // 静默锁存 = 必须重插，上报为 Disconnected（不可重试，立刻失败）
+        assert_eq!(dev.read(&mut b), Err(PortError::Disconnected));
         assert!(dev.silent, "静默必须锁存（直到 replug）");
-        assert_eq!(dev.read(&mut b), Err(PortError::Timeout));
+        assert_eq!(dev.read(&mut b), Err(PortError::Disconnected));
         // replug 后恢复（并让环境恢复平静，验证 replug 清掉的是锁存标志而非混沌本身）
         dev.replug();
         dev.chaos.as_mut().unwrap().cfg.silence_permille = 0;
@@ -2021,6 +2037,77 @@ exploit=kamakiri2
         assert_eq!(dev.read(&mut b), Err(PortError::Timeout));
         assert!(!dev.silent, "瞬时超时不得锁存");
         assert_eq!(dev.chaos_counts().3, 1);
+    }
+
+    /// Phase 1.1b 验收：真静默（掉线）必须**立刻**失败，绝不在死设备上重试干等。
+    #[test]
+    fn chaos_silence_fails_fast_without_retry() {
+        use crate::da::engine::{DaEngine, EngineError};
+        let cfg = ChaosConfig {
+            seed: 1,
+            silence_permille: 1000,
+            ..ChaosConfig::default()
+        };
+        let mut dev = VirtualDevice::from_preset("v5-clean")
+            .unwrap()
+            .with_chaos(cfg);
+        let mut e = DaEngine::new();
+        let start = std::time::Instant::now();
+        let err = e.connect(&mut dev).unwrap_err();
+        assert!(
+            matches!(err, EngineError::Port(PortError::Disconnected)),
+            "静默应上报断开，实际 {:?}",
+            err
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "静默必须立刻失败（不得退避重试）"
+        );
+    }
+
+    /// Phase 1.1b 验收：数据块被丢字节（长度不符）时，靠"清空输入缓冲 + 重发
+    /// READ_DATA"整条重来恢复——字节级续读救不了已丢失的字节。
+    #[test]
+    fn chaos_drop_recovers_via_read_command_retry() {
+        use crate::da::engine::DaEngine;
+        let cfg = ChaosConfig {
+            seed: 3,
+            drop_permille: 60,
+            ..ChaosConfig::default()
+        };
+        let mut dev = VirtualDevice::from_preset("v5-clean")
+            .unwrap()
+            .with_chaos(cfg);
+        let mut e = DaEngine::new();
+        e.connect(&mut dev).unwrap();
+        e.load_da(&mut dev, &[0xAB; 256]).unwrap();
+        let data = e
+            .read_flash(&mut dev, 0, 32768)
+            .expect("丢包后应通过整条 READ_DATA 重试恢复");
+        assert_eq!(data.len(), 32768);
+        assert!(dev.chaos_counts().1 > 0, "本用例必须真的注入过丢包");
+    }
+
+    /// Phase 1.1b 验收：混沌瞬时超时被有界重试吸收，DA 加载不应被单次抖动打断。
+    #[test]
+    fn chaos_glitch_is_absorbed_by_bounded_retry() {
+        use crate::da::engine::DaEngine;
+        let cfg = ChaosConfig {
+            seed: 7,
+            glitch_permille: 30,
+            ..ChaosConfig::default()
+        };
+        let mut dev = VirtualDevice::from_preset("v5-clean")
+            .unwrap()
+            .with_chaos(cfg);
+        let mut e = DaEngine::new();
+        e.connect(&mut dev).expect("握手应能扛住瞬时超时");
+        e.load_da(&mut dev, &[0xAB; 256])
+            .expect("DA 加载应能扛住瞬时超时");
+        assert!(
+            dev.chaos_counts().3 > 0,
+            "本用例必须真的注入过瞬时超时，否则测不到重试"
+        );
     }
 
     #[test]

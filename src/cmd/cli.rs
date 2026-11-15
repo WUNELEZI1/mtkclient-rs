@@ -192,6 +192,14 @@ pub struct Cli {
     )]
     pub sim_chaos_seed: Option<u64>,
 
+    #[arg(
+        long = "max-retries",
+        value_name = "N",
+        default_value_t = 3,
+        help = "瞬时超时的有界重试次数（仅读方向；断开/静默一律立刻失败）。默认 3"
+    )]
+    pub max_retries: u32,
+
     #[arg(allow_hyphen_values = true, help = "命令参数")]
     pub args: Vec<String>,
 }

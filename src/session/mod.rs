@@ -15,6 +15,7 @@ pub use real::RealSession;
 use crate::core::capability::{Capability, CapabilitySet};
 use crate::core::device::{DeviceState, ProtocolVersion};
 use crate::da::engine::{DaEngine, EngineError};
+use crate::transport::RetryPolicy;
 use crate::transport::vdev::VirtualDevice;
 
 /// 设备摘要（用于表格表头 / 日志）。
@@ -136,6 +137,8 @@ pub struct SimSession {
     granted: CapabilitySet,
     /// 已打开的存储信息（写/擦时的 storage 参数）
     storage: Option<crate::da::engine::StorageInfo>,
+    /// 瞬时超时有界重试策略（重连/重载状态后仍保留）
+    retry: RetryPolicy,
 }
 
 impl SimSession {
@@ -150,7 +153,15 @@ impl SimSession {
             state,
             granted: CapabilitySet::EMPTY,
             storage: None,
+            retry: RetryPolicy::default(),
         }
+    }
+
+    /// 设置瞬时超时重试策略（来自 `--max-retries`）。
+    pub fn with_retry(mut self, policy: RetryPolicy) -> Self {
+        self.retry = policy;
+        self.engine = std::mem::take(&mut self.engine).with_retry(policy);
+        self
     }
 
     /// 注入 DA 字节（仿真不会校验签名，但会走完整上传流程）。
@@ -172,7 +183,7 @@ impl SimSession {
     /// 载入虚拟设备的 flash 状态。
     pub fn load_state(&mut self, path: &str) -> Result<(), String> {
         self.dev.load_state(path)?;
-        self.engine = DaEngine::new();
+        self.engine = DaEngine::new().with_retry(self.retry);
         self.gpt = None;
         self.info = None;
         self.storage = None;
@@ -182,7 +193,7 @@ impl SimSession {
     /// 模拟拔插重连：协议状态清零、flash 内容保留（断点续传测试用）。
     pub fn replug(&mut self) {
         self.dev.replug();
-        self.engine = DaEngine::new();
+        self.engine = DaEngine::new().with_retry(self.retry);
         self.gpt = None;
         self.info = None;
         self.storage = None;

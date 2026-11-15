@@ -106,6 +106,8 @@ pub struct AppConfig {
     pub sim_chaos: bool,
     /// 混沌随机种子（`--sim-chaos-seed`）；固定种子可复现故障序列
     pub sim_chaos_seed: Option<u64>,
+    /// 瞬时超时重试次数（`--max-retries`，默认 3；只作用于读方向）
+    pub max_retries: u32,
 }
 
 impl AppConfig {
@@ -134,6 +136,7 @@ impl AppConfig {
             sim_state: cli.sim_state.clone(),
             sim_chaos: cli.sim_chaos,
             sim_chaos_seed: cli.sim_chaos_seed,
+            max_retries: cli.max_retries,
         }
     }
 }

@@ -377,7 +377,13 @@ mod tests {
         match err {
             ExecError::Step { step, msg } => {
                 assert!(step.contains("da_load"), "实际: {}", step);
-                assert!(msg.contains("超时"), "实际: {}", msg);
+                // flaky 画像用 `fault=silent` 注入；静默 = 掉线，按"断开"上报
+                // （不可重试、立刻失败），不能再当作可重试的瞬时超时。
+                assert!(
+                    msg.contains("断开") || msg.contains("超时"),
+                    "实际: {}",
+                    msg
+                );
             }
             other => panic!("应为步骤错误: {:?}", other),
         }
