@@ -110,6 +110,26 @@ pub struct AppConfig {
     pub max_retries: u32,
 }
 
+/// 在位置参数里查找布尔开关（`--flag`）。
+fn has_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|a| a == flag)
+}
+
+/// 在位置参数里查找 `--flag value` 或 `--flag=value` 的取值。
+fn arg_value(args: &[String], flag: &str) -> Option<String> {
+    let eq = format!("{}=", flag);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == flag {
+            return it.next().cloned();
+        }
+        if let Some(v) = a.strip_prefix(&eq) {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
 impl AppConfig {
     pub fn from_cli(cli: &crate::cmd::cli::Cli) -> Self {
         let log_level = match cli.log_level {
@@ -132,11 +152,21 @@ impl AppConfig {
             cmd_args: cli.args.clone(),
             // `args` 是 `allow_hyphen_values` 的位置参数，写在命令之后的
             // `--yes` 会被它吞掉，这里两种位置都认。
-            assume_yes: cli.yes || cli.args.iter().any(|a| a == "--yes"),
-            sim_state: cli.sim_state.clone(),
-            sim_chaos: cli.sim_chaos,
-            sim_chaos_seed: cli.sim_chaos_seed,
-            max_retries: cli.max_retries,
+            assume_yes: cli.yes || has_flag(&cli.args, "--yes"),
+            // `args` 是 `allow_hyphen_values` 的位置参数：写在命令之后的全局开关
+            // （`--yes` / `--sim-state` / `--sim-chaos` …）会被它吞掉。
+            // 这里两种位置都认，避免"参数静默失效"这种最难排查的坑。
+            sim_state: cli
+                .sim_state
+                .clone()
+                .or_else(|| arg_value(&cli.args, "--sim-state")),
+            sim_chaos: cli.sim_chaos || has_flag(&cli.args, "--sim-chaos"),
+            sim_chaos_seed: cli
+                .sim_chaos_seed
+                .or_else(|| arg_value(&cli.args, "--sim-chaos-seed").and_then(|v| v.parse().ok())),
+            max_retries: arg_value(&cli.args, "--max-retries")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(cli.max_retries),
         }
     }
 }
@@ -269,6 +299,29 @@ impl TargetConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flags_after_command_are_recognised() {
+        // 位置参数会吞掉写在命令之后的全局开关，必须两种位置都认。
+        let args: Vec<String> = ["w", "boot_a", "x.img", "--yes", "--sim-state", "/tmp/s.bin"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(has_flag(&args, "--yes"));
+        assert_eq!(
+            arg_value(&args, "--sim-state").as_deref(),
+            Some("/tmp/s.bin")
+        );
+        assert_eq!(arg_value(&args, "--sim-state=/tmp/t.bin"), None);
+        let eq_args: Vec<String> = ["w", "--sim-state=/tmp/t.bin"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            arg_value(&eq_args, "--sim-state").as_deref(),
+            Some("/tmp/t.bin")
+        );
+    }
 
     #[test]
     fn target_config_zero_has_no_flags() {

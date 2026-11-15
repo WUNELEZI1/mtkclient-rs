@@ -9,6 +9,7 @@
 //!
 //! 注意：新增 op 不需要改 Executor —— 只要它声明能力并实现 `run`。
 
+pub mod avb_guard;
 pub mod checkpoint;
 pub mod erase;
 pub mod fsshell;

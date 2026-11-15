@@ -77,7 +77,7 @@ impl Op for WriteOp {
         let gpt_crc = ctx.session.gpt().map(super::checkpoint::crc32).unwrap_or(0);
         let cp =
             WriteCheckpoint::load_checked(&self.file, &self.part, span.addr, total, Some(gpt_crc))?;
-        let (start, mut tracker) = match cp {
+        let (start, tracker) = match cp {
             Some(c) => {
                 warn!(
                     "断点续传: {} 已写 {}/{} 字节（{:.1}%），从 0x{:X} 继续",
@@ -195,6 +195,10 @@ impl Op for WriteOp {
         }
 
         WriteCheckpoint::clear(&self.file);
+
+        // Phase 1.3：写参与 AVB 的分区后强制体检，验证未关则红字警告（不阻断）。
+        super::avb_guard::warn_after_write(ctx.session, &self.part);
+
         info!(
             "写入完成: {} -> {} ({} 字节{})",
             self.file,

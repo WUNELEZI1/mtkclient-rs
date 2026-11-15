@@ -91,6 +91,31 @@ CRC32，必须无空洞地覆盖 `[0, written)`。续传前先回读设备逐块
 这三类"报错中止"是 **Phase 1.2 的绝对防御底线**：续传一旦不可信，宁可让用户删断点重写，
 也不能把坏数据留在分区里还让用户以为在续传。
 
+### 写入后的 AVB 体检（Phase 1.3）
+
+写 `boot` / `init_boot` / `vendor_boot` / `recovery` / `system` / `vendor` / `product` /
+`dtbo` 等 **参与 AVB 校验**的分区后，会强制检查一次设备验证状态（写 `vbmeta*` 本身不检查，
+因为那往往正是关验证的动作）。
+
+判定顺序（拿得到就用，前者权威）：
+
+| 来源 | 判定为"验证已关闭"的条件 |
+|---|---|
+| 同槽位 `vbmeta_a/_b` → `vbmeta_system_*` → `vbmeta` | `flags & (HASHTREE_DISABLED \| VERIFICATION_DISABLED) != 0` |
+| `seccfg`（读不到合法 vbmeta 时兜底） | `lock_state == 3`（已解锁）且 `dm_verity_state == 0` |
+| 都拿不到 | `Unknown`：只记警告，不阻断 |
+
+验证仍开启时向 **stderr** 打红字警告（不阻断写入）：
+
+```
+警告: 已写入 boot_a，但设备 AVB 验证仍开启（vbmeta_a flags=0x0；vbmeta 未置位 …）
+      未关闭验证时刷入修改过的镜像，开机可能校验失败、无法启动。
+      建议先执行 `mtkclient-rs vbmeta disable-verification`（或解锁 BL）再刷。
+```
+
+> 只警告不阻断是刻意的：用户可能就是要写一个**官方原版**镜像，此时验证开着完全正常。
+> 工具该做的是"把后果说清楚"，而不是替用户决定。
+
 ## 四、seccfg V4 的偏移语义（易错点）
 
 | 偏移 | 字段 | unlock 写 | lock 写 |
