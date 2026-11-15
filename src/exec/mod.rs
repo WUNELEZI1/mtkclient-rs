@@ -86,6 +86,7 @@ impl Executor {
         goal: &'static str,
         session: &mut dyn Session,
         required: CapabilitySet,
+        log_level: u8,
     ) -> Result<Decision, ExecError> {
         let state = session.state();
         let current = session.caps();
@@ -117,8 +118,11 @@ impl Executor {
         log::debug!("[exec] 执行后端: {}", session.label());
         // 人类可读（含 gap / selected / alternatives / reason）
         print!("{}", decision.log.human());
-        // 结构化日志：始终输出，不受 --log 级别影响
-        println!("{}", decision.log.json());
+        // 结构化决策日志：--log 2 起输出（默认只保留人类可读的 selected/reason，
+        // 避免正常刷机输出里夹一整行 JSON）。`plan` 命令仍始终输出 JSON。
+        if log_level >= 2 {
+            println!("{}", decision.log.json());
+        }
         if let Some(alt) = decision.alternatives.first() {
             trace!(
                 "[exec] 次优路径 (cost={}): {}",
@@ -138,7 +142,7 @@ impl Executor {
         log_level: u8,
     ) -> Result<ExecReport, ExecError> {
         let required = op.required_caps();
-        let decision = self.announce(op.name(), session, required)?;
+        let decision = self.announce(op.name(), session, required, log_level)?;
         let log = decision.log.clone();
         // 决策即执行计划：不重新规划，避免"日志说的"与"实际跑的"不一致
         let steps = decision.selected.steps.clone();

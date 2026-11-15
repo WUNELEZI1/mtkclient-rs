@@ -40,7 +40,12 @@ mtkclient-rs --sim v5-clean --log 3 printgpt
 [plan] selected (cost=690): da_load(V5(XFlash)) -> param_adjust(open_storage) -> param_adjust(parse_gpt)
 [plan] reason: 成本最低（690 vs 840，步数 3 vs 4）；无安全标志，直接加载 DA 最省步骤
 [plan] alternative #2 (cost=840): exploit(kamakiri2) -> da_load(...) -> ... -> param_adjust(parse_gpt)
-{"event":"decision","goal":"printgpt",...}
+```
+
+`--log 2` 起额外输出一行结构化决策日志（单行 JSON，键顺序固定，便于上报/解析）：
+
+```json
+{"event":"decision","goal":"printgpt","mode":"auto","device":"...","required":["storage_read","gpt_parsed"],"current":[],"gap":["storage_read","gpt_parsed"],"da_source":"sim-injected","selected":{"steps":["da_load(V5(XFlash))","param_adjust(open_storage)","param_adjust(parse_gpt)"],"cost":690,"reason":"..."},"alternatives":[{"steps":[...],"cost":840}]}
 ```
 
 `--log 3` 额外给出：
