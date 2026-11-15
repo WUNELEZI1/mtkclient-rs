@@ -178,7 +178,9 @@ mod cancel;
 #[path = "cmd/mod.rs"]
 mod cmd;
 mod color;
-#[path = "connection/mod.rs"]
+// 注意：这里曾误写成 `#[path = "connection/mod.rs"] mod confirm;`，
+// 导致 `crate::confirm` 实际指向 connection 模块、src/confirm/mod.rs 从未参与编译
+// （危险操作确认器因此形同虚设）。两模块必须各自独立声明。
 mod confirm;
 mod connection;
 
