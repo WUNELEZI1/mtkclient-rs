@@ -364,6 +364,11 @@ fn real_device_state(da: &DAXFlash) -> crate::core::device::DeviceState {
         preloader_patched: false,
         da_signature_failed: false,
         current_slot: da.active_slot,
+        // 真机无法凭空判定 CVE-2022-20069（需要 preloader 版本/构建指纹比对），
+        // 默认按"不受影响"处理：宁可少规划一条路径，也不要凭猜测去打 exploit。
+        // 确知设备受影响时用 `--exploit cve-20069` 显式指定（走 apply_key 路径）。
+        cve_20069_affected: false,
+        cve_20069_patched: false,
     }
 }
 

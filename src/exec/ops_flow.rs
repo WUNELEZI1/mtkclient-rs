@@ -135,6 +135,39 @@ fn write_rejects_image_larger_than_partition() {
     assert!(err.contains("拒绝写入"), "实际: {}", err);
 }
 
+/// CVE-2022-20069 场景：受影响且未修补时必须选中该路径；已修补时不得规划。
+#[test]
+fn cve_20069_selected_only_when_unpatched() {
+    // 受影响且未修补：BROM 不可达（无 kamakiri2），唯一可行路径是 Preloader OOB
+    let dev = VirtualDevice::from_preset("cve-20069-vulnerable").unwrap();
+    let mut da = vec![0u8; 4096];
+    da[..9].copy_from_slice(b"MTK_DA_v5");
+    let mut s = SimSession::new(dev).with_da(da);
+    let r = Executor::new(Mode::Auto)
+        .execute(&PrintGptOp, &mut s, false, 0)
+        .unwrap();
+    assert!(
+        r.executed.iter().any(|x| x.contains("cve-20069")),
+        "未修补设备必须走 CVE-2022-20069 路径: {:?}",
+        r.executed
+    );
+
+    // 已修补：probe 判不可用，整体无可行计划（且错误里点名 cve-20069）。
+    // DA1 同时带 Carbonara 加固特征，确保 carbonara 也不被规划——否则它会
+    // 成为另一条"看起来可行、执行时才被 SLA 拒"的路径，掩盖真正的结论。
+    let dev = VirtualDevice::from_preset("cve-20069-patched").unwrap();
+    let mut da = vec![0u8; 4096];
+    da[..9].copy_from_slice(b"MTK_DA_v5");
+    da[0x100..0x104].copy_from_slice(&0x4000_0000u32.to_le_bytes());
+    let mut s = SimSession::new(dev).with_da(da);
+    let err = Executor::new(Mode::Auto)
+        .execute(&PrintGptOp, &mut s, false, 0)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("cve-20069"), "实际: {}", err);
+    assert!(err.contains("not-vulnerable"), "实际: {}", err);
+}
+
 /// carbonara-hardened 场景：DA1 已含补丁特征 → probe 返回 NotVulnerable，
 /// Planner 不得把 carbonara 放进任何路径（哪怕设备开了 SLA 需要 bypass）。
 #[test]

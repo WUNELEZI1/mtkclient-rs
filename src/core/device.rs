@@ -78,6 +78,15 @@ pub struct DeviceState {
     pub da_signature_failed: bool,
     /// 当前活动槽（A/B）
     pub current_slot: Option<char>,
+    /// 是否受 **CVE-2022-20069** 影响（Preloader USB 整数溢出导致 OOB write，
+    /// 物理接触即可提权，可绕过 SLA/DAA）。
+    ///
+    /// 兼容别名：早期资料把它误记为 `CVE-2022-20435`（那个实际是 Android
+    /// 系统服务的未授权/EoP，与 download-mode 无关）。为兼容既有调用方，
+    /// 保留 `cve_20435_*` 的语义别名（见 `DeviceProfile` 的文本解析）。
+    pub cve_20069_affected: bool,
+    /// CVE-2022-20069 是否已被厂商补丁修复。
+    pub cve_20069_patched: bool,
 }
 
 impl Default for DeviceState {
@@ -92,6 +101,8 @@ impl Default for DeviceState {
             preloader_patched: false,
             da_signature_failed: false,
             current_slot: None,
+            cve_20069_affected: false,
+            cve_20069_patched: false,
         }
     }
 }

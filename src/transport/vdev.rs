@@ -200,6 +200,11 @@ pub struct DeviceProfile {
     pub seccfg_dm_verity: u32,
     /// DA1 是否已应用 Carbonara 加固（强制 DA2 加载地址为 0x40000000）
     pub da1_hardened: bool,
+    /// 是否受 CVE-2022-20069 影响（Preloader USB OOB write）。
+    /// 别名：CVE-2022-20435（误记，实为 Android 系统服务漏洞）。
+    pub cve_20069_affected: bool,
+    /// CVE-2022-20069 是否已修补。
+    pub cve_20069_patched: bool,
 }
 
 impl Default for DeviceProfile {
@@ -227,6 +232,8 @@ impl Default for DeviceProfile {
             seccfg_lock_state: 1,
             seccfg_dm_verity: 0,
             da1_hardened: false,
+            cve_20069_affected: false,
+            cve_20069_patched: false,
         }
     }
 }
@@ -267,6 +274,8 @@ impl DeviceProfile {
             preloader_patched: self.preloader_patched,
             da_signature_failed: self.da_sig_failed,
             current_slot: self.slot,
+            cve_20069_affected: self.cve_20069_affected,
+            cve_20069_patched: self.cve_20069_patched,
         }
     }
 
@@ -350,6 +359,9 @@ impl DeviceProfile {
                 "seccfg.lock_state" => p.seccfg_lock_state = num(v)?.as_num::<u32>(k)?,
                 "seccfg.dm_verity" => p.seccfg_dm_verity = num(v)?.as_num::<u32>(k)?,
                 "da1_hardened" => p.da1_hardened = truthy(v),
+                // CVE-2022-20069；`cve_20435.*` 为历史误记编号的兼容别名。
+                "cve_20069.affected" | "cve_20435.affected" => p.cve_20069_affected = truthy(v),
+                "cve_20069.patched" | "cve_20435.patched" => p.cve_20069_patched = truthy(v),
                 other => return Err(format!("未知配置项: {}", other)),
             }
         }
@@ -385,6 +397,30 @@ impl DeviceProfile {
                 p.sla_required = true;
                 p.da1_hardened = true;
                 p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
+            }
+            // CVE-2022-20069（Preloader USB OOB write）：受影响且未修补 → 可绕过认证
+            "cve-20069-vulnerable" => {
+                p.name = "MT6768 (CVE-2022-20069 affected)".into();
+                p.safety = 0x2;
+                p.sla_required = true;
+                // BROM 需认证且无 kamakiri2 可用 → 唯一可行路径是 Preloader OOB
+                p.brom_auth = true;
+                p.cve_20069_affected = true;
+                // 只接受该 CVE 的利用路径，用来验证 Planner 真的把它选中（而不是被
+                // 成本相同、排在前面的 kamakiri2 抢走）。
+                p.exploits = vec!["cve-20069".into()];
+            }
+            // 同一颗芯片但 OEM 已打补丁 → probe 必须判不可用
+            "cve-20069-patched" => {
+                p.name = "MT6768 (CVE-2022-20069 patched)".into();
+                p.safety = 0x2;
+                p.sla_required = true;
+                p.brom_auth = true;
+                // 顺带封死 Carbonara，确保"无可用 bypass"是唯一结论
+                p.da1_hardened = true;
+                p.cve_20069_affected = true;
+                p.cve_20069_patched = true;
+                p.exploits = vec!["cve-20069".into()];
             }
             // DAA + SBC 双开：只有 DA 层 patch 能过
             "v5-daa" => {
@@ -567,7 +603,14 @@ enum State {
 }
 
 /// 仿真设备认识的 exploit 名称（id 即下标）。
-pub const SIM_EXPLOITS: [&str; 4] = ["kamakiri2", "carbonara", "heapbait", "hashimoto"];
+pub const SIM_EXPLOITS: [&str; 5] = [
+    "kamakiri2",
+    "carbonara",
+    "heapbait",
+    "hashimoto",
+    // CVE-2022-20069（Preloader OOB）；别名 CVE-2022-20435 为历史误记。
+    "cve-20069",
+];
 
 /// exploit 名称 → id（未登记的名字返回 None）。
 pub fn exploit_id(name: &str) -> Option<u8> {
@@ -1864,6 +1907,18 @@ mod tests {
         // 幂等：再擦一次，结果相同
         dev.erase_range(0, 64 * 1024 * 1024);
         assert!(dev.read_window(0, 512).iter().all(|b| *b == 0xFF));
+    }
+
+    #[test]
+    fn cve_20435_alias_maps_to_cve_20069_fields() {
+        // 历史误记编号作为兼容别名：解析结果必须落到 cve_20069_* 字段上。
+        let p =
+            DeviceProfile::from_text("cve_20435.affected=true\ncve_20435.patched=false\n").unwrap();
+        assert!(p.cve_20069_affected);
+        assert!(!p.cve_20069_patched);
+
+        let p2 = DeviceProfile::from_text("cve_20069.patched=true\n").unwrap();
+        assert!(p2.cve_20069_patched);
     }
 
     #[test]
