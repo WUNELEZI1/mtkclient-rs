@@ -60,6 +60,106 @@ pub enum DeviceFault {
     WriteSilent(u64),
 }
 
+/// 混沌故障注入配置（`--sim-chaos`）。
+///
+/// 概率一律用**千分比**表达；`0` 表示关闭该项。默认全 0（最稳，行为与普通仿真完全一致）。
+/// 用**固定种子**驱动确定性 PRNG，同一种子可完整复现同一条故障序列——这是让混沌
+/// 既能"逼出极限"又能"可复现回归"的前提。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChaosConfig {
+    pub seed: u64,
+    /// 写入落盘时的位翻转概率（‰）：模拟闪存位衰变 / 传输噪声。
+    /// 注意：翻转发生在**校验和已通过之后**，因此只能靠回读校验/CRC 抓到——
+    /// 正是"静默损坏绝不能被当成成功"的防线。
+    pub bitflip_permille: u32,
+    /// 读回数据时截断本次返回的概率（‰）：模拟劣质线材丢字节（短包）。
+    pub drop_permille: u32,
+    /// 设备静默概率（‰）：触发后读超时，**直到重连才恢复**（模拟线缆脱落）。
+    pub silence_permille: u32,
+    /// 瞬时超时概率（‰）：单次读超时后自动恢复（模拟延迟毛刺 / 接触不良抖动）。
+    pub glitch_permille: u32,
+}
+
+impl Default for ChaosConfig {
+    fn default() -> Self {
+        Self {
+            seed: 0x0C0F_FEE0,
+            bitflip_permille: 0,
+            drop_permille: 0,
+            silence_permille: 0,
+            glitch_permille: 0,
+        }
+    }
+}
+
+impl ChaosConfig {
+    /// `--sim-chaos` 的推荐档位：不激进，但足以逼出续传/校验缺陷。
+    pub fn typical(seed: Option<u64>) -> Self {
+        Self {
+            seed: seed.unwrap_or(0x5EED_1234),
+            bitflip_permille: 8,
+            drop_permille: 8,
+            silence_permille: 1,
+            glitch_permille: 8,
+        }
+    }
+
+    /// 是否等价于"不注入任何故障"。
+    pub fn is_noop(&self) -> bool {
+        self.bitflip_permille == 0
+            && self.drop_permille == 0
+            && self.silence_permille == 0
+            && self.glitch_permille == 0
+    }
+}
+
+/// SplitMix64：确定性 PRNG（零依赖，跨平台一致）。
+#[derive(Debug, Clone)]
+struct ChaosRng(u64);
+
+impl ChaosRng {
+    fn new(seed: u64) -> Self {
+        Self(seed)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// 命中概率 `p`（千分比）。
+    fn hit(&mut self, p: u32) -> bool {
+        p > 0 && (self.next_u64() % 1000) < p as u64
+    }
+}
+
+/// 混沌运行态（配置 + PRNG + 计数）。
+#[derive(Debug, Clone)]
+struct ChaosState {
+    cfg: ChaosConfig,
+    rng: ChaosRng,
+    bitflips: u64,
+    drops: u64,
+    silences: u64,
+    glitches: u64,
+}
+
+impl ChaosState {
+    /// 位翻转判定：命中则返回 (payload 内字节下标, 位号)。
+    fn dirty(&mut self, len: usize) -> Option<(usize, u8)> {
+        if len == 0 || !self.rng.hit(self.cfg.bitflip_permille) {
+            return None;
+        }
+        self.bitflips += 1;
+        let idx = (self.rng.next_u64() as usize) % len;
+        let bit = (self.rng.next_u64() & 7) as u8;
+        Some((idx, bit))
+    }
+}
+
 /// 设备画像。
 #[derive(Debug, Clone)]
 pub struct DeviceProfile {
@@ -500,6 +600,8 @@ pub struct VirtualDevice {
     pub events: Vec<String>,
     /// 主机侧写入缓冲区（诊断用）
     pub written: Vec<u8>,
+    /// 混沌注入（`--sim-chaos`）；`None` = 不注入，行为与普通仿真完全一致。
+    chaos: Option<ChaosState>,
 }
 
 /// 镜像窗口大小：足够覆盖 LBA0.. 主 GPT + 分区项（32KB 读取足够，留余量）。
@@ -552,6 +654,7 @@ impl VirtualDevice {
             silent: false,
             events: Vec::new(),
             written: Vec::new(),
+            chaos: None,
         }
     }
 
@@ -559,6 +662,32 @@ impl VirtualDevice {
     #[allow(dead_code)]
     pub fn from_preset(name: &str) -> Option<Self> {
         DeviceProfile::preset(name).map(Self::new)
+    }
+
+    /// 启用混沌注入（`--sim-chaos`）。配置为 noop 时等价于不启用。
+    pub fn with_chaos(mut self, cfg: ChaosConfig) -> Self {
+        self.chaos = if cfg.is_noop() {
+            None
+        } else {
+            Some(ChaosState {
+                cfg,
+                rng: ChaosRng::new(cfg.seed),
+                bitflips: 0,
+                drops: 0,
+                silences: 0,
+                glitches: 0,
+            })
+        };
+        self
+    }
+
+    /// 混沌计数（位翻转, 丢包, 静默, 瞬时超时）——诊断/测试用。
+    #[allow(dead_code)]
+    pub fn chaos_counts(&self) -> (u64, u64, u64, u64) {
+        match &self.chaos {
+            Some(c) => (c.bitflips, c.drops, c.silences, c.glitches),
+            None => (0, 0, 0, 0),
+        }
     }
 
     /// 由画像文本构建设备（外部工具入口）。
@@ -1276,7 +1405,17 @@ impl VirtualDevice {
                     return Ok(true);
                 }
 
-                self.write_range(ws.addr + ws.written, payload);
+                // 混沌：位翻转。故意放在校验和通过之后——模拟"传输正确、落盘损坏"，
+                // 因此只能靠主机侧回读校验 / CRC 抓到；若工具静默接受即被此注入测出。
+                match self.chaos.as_mut().and_then(|c| c.dirty(payload.len())) {
+                    Some((idx, bit)) => {
+                        let mut dirty = payload.to_vec();
+                        dirty[idx] ^= 1 << bit;
+                        self.ev(format!("chaos: bitflip @写块偏移 {} 位 {}", idx, bit));
+                        self.write_range(ws.addr + ws.written, &dirty);
+                    }
+                    None => self.write_range(ws.addr + ws.written, payload),
+                }
                 ws.written += payload.len() as u64;
                 ws.stage = 0;
                 self.push_status(0);
@@ -1367,17 +1506,45 @@ impl StreamPort for VirtualDevice {
         if self.silent {
             return Err(PortError::Timeout);
         }
+        // 混沌：瞬时超时（不锁存，下一次读自动恢复）/ 静默（锁存到 replug）。
+        let mut go_silent = false;
+        if let Some(c) = self.chaos.as_mut() {
+            if c.rng.hit(c.cfg.glitch_permille) {
+                c.glitches += 1;
+                return Err(PortError::Timeout);
+            }
+            if c.rng.hit(c.cfg.silence_permille) {
+                c.silences += 1;
+                go_silent = true;
+            }
+        }
+        if go_silent {
+            self.silent = true;
+            return Err(PortError::Timeout);
+        }
         if buf.is_empty() {
             return Ok(0);
         }
         if self.out.is_empty() {
             return Err(PortError::Timeout);
         }
-        let n = buf.len().min(self.out.len());
-        for slot in buf.iter_mut().take(n) {
-            *slot = self.out.pop_front().unwrap();
+        let m = buf.len().min(self.out.len());
+        // 混沌：丢包——仍"在线上发出"了 m 字节，但尾部 d 字节丢失，主机只收到 deliver 字节。
+        let mut deliver = m;
+        if let Some(c) = self.chaos.as_mut() {
+            if m > 1 && c.rng.hit(c.cfg.drop_permille) {
+                c.drops += 1;
+                let d = 1 + (c.rng.next_u64() as usize % (m - 1));
+                deliver = m - d;
+            }
         }
-        Ok(n)
+        for i in 0..m {
+            let b = self.out.pop_front().unwrap();
+            if i < deliver {
+                buf[i] = b;
+            }
+        }
+        Ok(deliver)
     }
 
     fn write(&mut self, buf: &[u8]) -> Result<usize, PortError> {
@@ -1763,5 +1930,178 @@ exploit=kamakiri2
         std::fs::write(&bad, &v2[..10]).unwrap();
         assert!(dev.load_state(&bad).unwrap_err().contains("格式不匹配"));
         let _ = std::fs::remove_file(&bad);
+    }
+
+    // ── Phase 1.1 混沌注入 ─────────────────────────────────────────
+
+    fn chaos_state(cfg: ChaosConfig) -> ChaosState {
+        ChaosState {
+            cfg,
+            rng: ChaosRng::new(cfg.seed),
+            bitflips: 0,
+            drops: 0,
+            silences: 0,
+            glitches: 0,
+        }
+    }
+
+    #[test]
+    fn chaos_rng_is_deterministic() {
+        let mut a = ChaosRng::new(12345);
+        let mut b = ChaosRng::new(12345);
+        for _ in 0..16 {
+            assert_eq!(a.next_u64(), b.next_u64(), "同种子必须给出同一序列");
+        }
+        let mut c = ChaosRng::new(54321);
+        assert_ne!(a.next_u64(), c.next_u64(), "不同种子应不同");
+    }
+
+    #[test]
+    fn chaos_default_is_noop() {
+        assert!(ChaosConfig::default().is_noop());
+        let dev = VirtualDevice::from_preset("v5-clean")
+            .unwrap()
+            .with_chaos(ChaosConfig::default());
+        assert!(dev.chaos.is_none(), "noop 配置不应启用混沌");
+    }
+
+    #[test]
+    fn chaos_bitflip_primitive() {
+        // 0‰ 永不翻转
+        let mut nil = chaos_state(ChaosConfig::default());
+        assert_eq!(nil.dirty(64), None);
+
+        // 1000‰ 必然翻转，且下标/位号在范围内
+        let cfg = ChaosConfig {
+            seed: 42,
+            bitflip_permille: 1000,
+            ..ChaosConfig::default()
+        };
+        let mut c = chaos_state(cfg);
+        let (idx, bit) = c.dirty(64).expect("1000‰ 必须命中");
+        assert!(idx < 64 && bit < 8, "翻转位置越界: ({}, {})", idx, bit);
+        assert_eq!(c.bitflips, 1);
+    }
+
+    #[test]
+    fn chaos_silence_latches_read() {
+        let cfg = ChaosConfig {
+            seed: 1,
+            silence_permille: 1000,
+            ..ChaosConfig::default()
+        };
+        let mut dev = VirtualDevice::from_preset("v5-clean")
+            .unwrap()
+            .with_chaos(cfg);
+        dev.out.push_back(0x5A);
+        let mut b = [0u8; 1];
+        assert_eq!(dev.read(&mut b), Err(PortError::Timeout));
+        assert!(dev.silent, "静默必须锁存（直到 replug）");
+        assert_eq!(dev.read(&mut b), Err(PortError::Timeout));
+        // replug 后恢复（并让环境恢复平静，验证 replug 清掉的是锁存标志而非混沌本身）
+        dev.replug();
+        dev.chaos.as_mut().unwrap().cfg.silence_permille = 0;
+        dev.out.push_back(0x5A);
+        let n = dev.read(&mut b).unwrap();
+        assert_eq!((n, b[0]), (1, 0x5A), "重连后应恢复出字节");
+    }
+
+    #[test]
+    fn chaos_glitch_is_transient_not_latched() {
+        let cfg = ChaosConfig {
+            seed: 1,
+            glitch_permille: 1000,
+            ..ChaosConfig::default()
+        };
+        let mut dev = VirtualDevice::from_preset("v5-clean")
+            .unwrap()
+            .with_chaos(cfg);
+        dev.out.push_back(0x5A);
+        let mut b = [0u8; 1];
+        assert_eq!(dev.read(&mut b), Err(PortError::Timeout));
+        assert!(!dev.silent, "瞬时超时不得锁存");
+        assert_eq!(dev.chaos_counts().3, 1);
+    }
+
+    #[test]
+    fn chaos_drop_truncates_read_and_loses_tail() {
+        let cfg = ChaosConfig {
+            seed: 3,
+            drop_permille: 1000,
+            ..ChaosConfig::default()
+        };
+        let mut dev = VirtualDevice::from_preset("v5-clean")
+            .unwrap()
+            .with_chaos(cfg);
+        for i in 0..16u8 {
+            dev.out.push_back(i);
+        }
+        let mut buf = [0u8; 16];
+        let n = dev.read(&mut buf).unwrap();
+        assert!(n >= 1 && n < 16, "丢包应截断返回，实际 {}", n);
+        assert_eq!(dev.out.len(), 0, "尾部被丢的字节应真的丢弃（真丢包）");
+        assert!(buf[..n].iter().enumerate().all(|(i, b)| *b == i as u8));
+    }
+
+    #[test]
+    fn chaos_off_keeps_read_intact() {
+        let mut dev = VirtualDevice::from_preset("v5-clean")
+            .unwrap()
+            .with_chaos(ChaosConfig::default());
+        for i in 0..8u8 {
+            dev.out.push_back(i);
+        }
+        let mut buf = [0u8; 8];
+        let n = dev.read(&mut buf).unwrap();
+        assert_eq!(n, 8);
+        assert_eq!(buf, [0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(dev.chaos_counts(), (0, 0, 0, 0));
+    }
+
+    /// 端到端：位翻转发生在校验和通过之后，落盘数据被改坏，
+    /// 只能靠主机侧回读校验发现——证明"静默损坏不会冒充成功"。
+    #[test]
+    fn chaos_bitflip_corrupts_after_checksum_accepted() {
+        use crate::da::engine::DaEngine;
+        let cfg = ChaosConfig {
+            seed: 9,
+            bitflip_permille: 1000,
+            ..ChaosConfig::default()
+        };
+        let mut dev = VirtualDevice::from_preset("v5-clean")
+            .unwrap()
+            .with_chaos(cfg);
+        let mut e = DaEngine::new();
+        e.connect(&mut dev).unwrap();
+        e.load_da(&mut dev, &[0xAB; 256]).unwrap();
+        e.begin_write(&mut dev, 0x100000, 512, 1, 8).unwrap();
+
+        let data = [0x11u8; 512];
+        let sum = (data.iter().map(|b| *b as u32).sum::<u32>()) & 0xFFFF;
+        let hdr = |len: usize| {
+            let mut h = Vec::new();
+            h.extend_from_slice(&wire::XFLASH_MAGIC.to_le_bytes());
+            h.extend_from_slice(&wire::XFLASH_TYPE_FLOW.to_le_bytes());
+            h.extend_from_slice(&(len as u32).to_le_bytes());
+            h
+        };
+        let mut pkt = Vec::new();
+        pkt.extend(hdr(4));
+        pkt.extend(0u32.to_le_bytes());
+        pkt.extend(hdr(4));
+        pkt.extend(sum.to_le_bytes());
+        pkt.extend(hdr(data.len()));
+        pkt.extend(data);
+        dev.write(&pkt).unwrap();
+
+        // 校验和本身是通过的（设备回 status=0），随后才发生落盘位翻转。
+        let mut st = [0u8; 64];
+        let n = dev.read(&mut st).unwrap();
+        let status = u32::from_le_bytes(st[n - 4..n].try_into().unwrap());
+        assert_eq!(status, 0, "校验和应被接受（翻转在之后）");
+
+        let back = dev.read_window(0x100000, 512);
+        assert_ne!(back, data.to_vec(), "位翻转必须让落盘数据与写入不一致");
+        assert_eq!(dev.chaos_counts().0, 1, "应恰好翻转一次");
     }
 }

@@ -184,3 +184,31 @@ seccfg.dm_verity=0                 # 0x10：0=正常，1=DM_VERITY_GENERAL_ERROR
 | `exec::ops_flow::tests::vbmeta_aborts_without_writing_when_slot_unknown` | 槽位未知 → 报错，不猜 |
 | `transport::vdev::tests::state_roundtrip_preserves_pages_and_erased` | `--sim-state` 读写布局对称（页 + 擦除区间逐字节一致） |
 | `transport::vdev::tests::state_load_rejects_bad_magic_and_version` | 损坏/旧版本状态文件被拒，不静默错乱 |
+
+## 七、混沌仿真（`--sim-chaos`，Phase 1.1）
+
+为了在没有真机的情况下逼出"抗物理干扰"缺陷，虚拟设备支持**确定性混沌注入**。
+默认关闭（默认最稳）；显式加 `--sim-chaos` 才启用，用 `--sim-chaos-seed N` 固定故障序列以便复现。
+
+```text
+mtkclient-rs --sim v5-clean printgpt --sim-chaos --sim-chaos-seed 1
+```
+
+四类注入（概率均为千分比，见 `ChaosConfig`）：
+
+| 注入 | 位置 | 语义 | 对应真机故障 |
+|---|---|---|---|
+| 位翻转 `bitflip` | 写入**校验和通过之后**落盘 | 落盘数据被改坏，只能靠回读校验/CRC 发现 | 闪存位衰变 |
+| 丢包 `drop` | 读回数据返回前 | 尾部若干字节被丢弃（短包），主机拿到更少字节 | 劣质线材 |
+| 静默 `silence` | 读 | 读超时并**锁存**，直到 `replug` 才恢复 | 线缆脱落 |
+| 瞬时超时 `glitch` | 读 | 单次读超时后**自动恢复**（不锁存） | 接触不良抖动 |
+
+确定性：`SplitMix64(seed)`，同一种子 → 同一条故障序列（可复现回归）。
+
+> **已知发现（本步暴露）**：当前 DA 加载路径对"瞬时超时"没有有界重试，因此
+> `--sim-chaos` 可能在 `da_load` 阶段直接报"传输超时"。这正是混沌要暴露的
+> 问题——下一步（Phase 1.1b）加有界重试/续传硬化后，混沌应能稳定跑绿。
+
+新增测试（`transport::vdev::tests::chaos_*`）：PRNG 确定性、位翻转原语、
+静默锁存与重连恢复、瞬时超时不锁存、丢包截断且尾部真丢、关闭时行为完全一致、
+以及"位翻转在 checksum 通过后才发生、回读必不一致"的端到端用例。

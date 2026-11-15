@@ -27,7 +27,7 @@ use crate::ops::vbmeta::VbmetaOp;
 use crate::ops::write::WriteOp;
 use crate::session::SimSession;
 use crate::system::config::AppConfig;
-use crate::transport::vdev::{DeviceProfile, VirtualDevice};
+use crate::transport::vdev::{ChaosConfig, DeviceProfile, VirtualDevice};
 
 /// 仿真入口。
 pub fn run_sim(
@@ -40,6 +40,20 @@ pub fn run_sim(
 
     let profile = load_profile(spec)?;
     let virt = VirtualDevice::new(profile.clone());
+    let virt = if app_config.sim_chaos {
+        let cfg = ChaosConfig::typical(app_config.sim_chaos_seed);
+        println!(
+            "[sim] 混沌注入: seed=0x{:X} bitflip={}‰ drop={}‰ silence={}‰ glitch={}‰",
+            cfg.seed,
+            cfg.bitflip_permille,
+            cfg.drop_permille,
+            cfg.silence_permille,
+            cfg.glitch_permille
+        );
+        virt.with_chaos(cfg)
+    } else {
+        virt
+    };
     println!(
         "{}",
         format!(

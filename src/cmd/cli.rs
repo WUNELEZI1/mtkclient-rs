@@ -178,6 +178,20 @@ pub struct Cli {
     )]
     pub sim_state: Option<String>,
 
+    #[arg(
+        long = "sim-chaos",
+        default_value_t = false,
+        help = "混沌仿真：随机丢包 / 静默 / 瞬时超时 / 位翻转，逼出读写与续传的抗干扰缺陷（默认关闭，默认最稳）"
+    )]
+    pub sim_chaos: bool,
+
+    #[arg(
+        long = "sim-chaos-seed",
+        value_name = "N",
+        help = "混沌仿真的随机种子（固定种子可复现同一次故障序列；缺省用内置固定种子）"
+    )]
+    pub sim_chaos_seed: Option<u64>,
+
     #[arg(allow_hyphen_values = true, help = "命令参数")]
     pub args: Vec<String>,
 }

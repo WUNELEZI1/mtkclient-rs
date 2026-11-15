@@ -102,6 +102,10 @@ pub struct AppConfig {
     pub assume_yes: bool,
     /// 仿真 flash 状态文件（`--sim-state`）
     pub sim_state: Option<String>,
+    /// 混沌仿真（`--sim-chaos`）：随机丢包 / 静默 / 瞬时超时 / 位翻转
+    pub sim_chaos: bool,
+    /// 混沌随机种子（`--sim-chaos-seed`）；固定种子可复现故障序列
+    pub sim_chaos_seed: Option<u64>,
 }
 
 impl AppConfig {
@@ -128,6 +132,8 @@ impl AppConfig {
             // `--yes` 会被它吞掉，这里两种位置都认。
             assume_yes: cli.yes || cli.args.iter().any(|a| a == "--yes"),
             sim_state: cli.sim_state.clone(),
+            sim_chaos: cli.sim_chaos,
+            sim_chaos_seed: cli.sim_chaos_seed,
         }
     }
 }
