@@ -134,6 +134,101 @@ fn write_rejects_image_larger_than_partition() {
     assert!(err.contains("拒绝写入"), "实际: {}", err);
 }
 
+/// Phase 1.2：断点记录的前缀 CRC 与设备实际内容不符时，必须**报错中止**，
+/// 绝不能在坏数据后面继续写（"绝对防御"）。
+#[test]
+fn resume_rejects_corrupted_prefix() {
+    use crate::ops::checkpoint::WriteCheckpoint;
+    let dir = tmpdir("resume-bad");
+    let img = dir.join("big.img");
+    let payload: Vec<u8> = (0..(20 * 1024 * 1024)).map(|i| (i % 253) as u8).collect();
+    std::fs::write(&img, &payload).unwrap();
+    let file = img.to_str().unwrap().to_string();
+
+    let mut s = sim("flaky-write");
+    let _ = exec_yes()
+        .execute(
+            &WriteOp {
+                part: "boot_b".into(),
+                file: file.clone(),
+                verify: false,
+            },
+            &mut s,
+            false,
+            0,
+        )
+        .unwrap_err();
+    assert!(WriteCheckpoint::exists(&file), "应写出 .resume");
+
+    // 重连后篡改已写前缀（模拟"期间被别人刷过 / 换了台机器"）
+    s.replug();
+    s.load_da().unwrap();
+    s.open_storage().unwrap();
+    let span = s.find_partition("boot_b").unwrap();
+    s.write_flash(span.addr, &[0xFFu8; 512]).unwrap();
+
+    let err = exec_yes()
+        .execute(
+            &WriteOp {
+                part: "boot_b".into(),
+                file: file.clone(),
+                verify: true,
+            },
+            &mut s,
+            false,
+            0,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("断点数据已损坏"), "实际: {}", err);
+    assert!(
+        WriteCheckpoint::exists(&file),
+        "断点必须保留，由用户决定删除重写（不能替用户悄悄作废）"
+    );
+    WriteCheckpoint::clear(&file);
+}
+
+/// Phase 1.2：混沌位翻转导致的静默损坏，必须被回读校验抓到，不能冒充成功。
+#[test]
+fn chaos_bitflip_write_is_detected_by_verify() {
+    use crate::transport::vdev::ChaosConfig;
+    let dir = tmpdir("chaos-write");
+    let img = dir.join("boot.img");
+    let payload: Vec<u8> = (0..(4 * 1024 * 1024)).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&img, &payload).unwrap();
+
+    let cfg = ChaosConfig {
+        seed: 5,
+        // bitflip 按"每个写入块"判定一次，20‰ 在 4 块里大概率打不中；
+        // 这里用 500‰ 保证稳态命中，验证的是"能抓到"而不是"偶尔抓到"。
+        bitflip_permille: 500,
+        ..ChaosConfig::default()
+    };
+    let dev = VirtualDevice::from_preset("v5-clean")
+        .unwrap()
+        .with_chaos(cfg);
+    let mut s = SimSession::new(dev).with_da(vec![0xABu8; 4096]);
+
+    let err = exec_yes()
+        .execute(
+            &WriteOp {
+                part: "boot_a".into(),
+                file: img.to_str().unwrap().into(),
+                verify: true,
+            },
+            &mut s,
+            false,
+            0,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("校验失败") || err.contains("断点"),
+        "位翻转必须被回读校验发现，实际: {}",
+        err
+    );
+}
+
 #[test]
 fn flaky_write_resumes_from_checkpoint_after_replug() {
     let dir = tmpdir("resume");

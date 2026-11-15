@@ -8,9 +8,14 @@
 //! 5. 回读校验（默认开），覆盖整个已写范围；
 //! 6. 成功后删除 `.resume`。
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use log::{info, warn};
 
-use super::checkpoint::{PERSIST_INTERVAL, WriteCheckpoint};
+use super::checkpoint::{
+    CRC_CHUNK, ChunkCrc, Crc32, CrcTracker, PERSIST_INTERVAL, WriteCheckpoint,
+};
 use super::{Op, OpCtx, OpOutcome, danger_for_partition, is_critical_partition};
 use crate::core::capability::{Capability, CapabilitySet};
 
@@ -67,9 +72,12 @@ impl Op for WriteOp {
             )?;
         }
 
-        // 续传
-        let cp = WriteCheckpoint::load(&self.file, &self.part, span.addr, total);
-        let start = match &cp {
+        // 续传：GPT 哈希 + 分块 CRC 双重校验（Phase 1.2）
+        // 设备 GPT 变化说明分区布局可能已变，地址不再可信 → 中止而非续写。
+        let gpt_crc = ctx.session.gpt().map(super::checkpoint::crc32).unwrap_or(0);
+        let cp =
+            WriteCheckpoint::load_checked(&self.file, &self.part, span.addr, total, Some(gpt_crc))?;
+        let (start, mut tracker) = match cp {
             Some(c) => {
                 warn!(
                     "断点续传: {} 已写 {}/{} 字节（{:.1}%），从 0x{:X} 继续",
@@ -79,10 +87,22 @@ impl Op for WriteOp {
                     c.written as f64 / total as f64 * 100.0,
                     c.written
                 );
-                c.written
+                // 写之前先证明"已写前缀还在且没坏"。CRC 不符一律中止：
+                // 接着往后写只会把坏数据留在分区里，且用户会误以为在续传。
+                self.verify_prefix(ctx, span.addr, &c.chunks)?;
+                info!(
+                    "续传前置校验通过: {} 个 CRC 分块（共 {} 字节）",
+                    c.chunks.len(),
+                    c.written
+                );
+                (
+                    c.written,
+                    CrcTracker::resume(c.chunk_size, c.chunks.clone()),
+                )
             }
-            None => 0,
+            None => (0, CrcTracker::new(CRC_CHUNK)),
         };
+        let chunk_size = tracker.chunk_size();
         let (sig_size, sig_mtime) =
             crate::ops::checkpoint::file_signature(&self.file).unwrap_or((file_size, 0));
 
@@ -93,6 +113,7 @@ impl Op for WriteOp {
             src.seek(std::io::SeekFrom::Start(start))
                 .map_err(|e| format!("seek 失败: {}", e))?;
         }
+        let tracker = Rc::new(RefCell::new(tracker));
         let mut padded = PaddedReader {
             inner: src,
             remaining: total - start,
@@ -106,6 +127,11 @@ impl Op for WriteOp {
             ctx.session
                 .write_stream(span.addr, &mut padded, total, start, &mut |written| {
                     if written - last_persisted >= PERSIST_INTERVAL {
+                        // 只统计"设备已确认落盘"的字节，避免把预读但未写入的数据算进去。
+                        if let Err(e) = tracker.borrow_mut().sync_from_file(&file, written) {
+                            warn!("计算分块 CRC 失败: {}", e);
+                        }
+                        let chunks = tracker.borrow().snapshot();
                         let c = WriteCheckpoint {
                             part: part.clone(),
                             addr: span.addr,
@@ -113,6 +139,9 @@ impl Op for WriteOp {
                             written,
                             file_size: sig_size,
                             file_mtime: sig_mtime,
+                            gpt_crc,
+                            chunk_size,
+                            chunks,
                         };
                         if let Err(e) = c.save(&file) {
                             warn!("保存续传状态失败: {}", e);
@@ -125,6 +154,7 @@ impl Op for WriteOp {
             // 失败也要落盘（进程可能马上退出）
             let written = last_persisted;
             if written > 0 && written < total {
+                let _ = tracker.borrow_mut().sync_from_file(&self.file, written);
                 let c = WriteCheckpoint {
                     part: self.part.clone(),
                     addr: span.addr,
@@ -132,6 +162,9 @@ impl Op for WriteOp {
                     written,
                     file_size: sig_size,
                     file_mtime: sig_mtime,
+                    gpt_crc,
+                    chunk_size,
+                    chunks: tracker.borrow().snapshot(),
                 };
                 let _ = c.save(&self.file);
             }
@@ -189,6 +222,49 @@ impl Op for WriteOp {
 }
 
 impl WriteOp {
+    /// 续传前校验设备上已写前缀的 CRC（每 64 MiB 一块）。
+    ///
+    /// 不通过就报错中止：这是"绝对防御"——宁可让用户删掉断点重写，
+    /// 也不能把坏数据当good继续往后写。
+    fn verify_prefix(
+        &self,
+        ctx: &mut OpCtx<'_>,
+        addr: u64,
+        chunks: &[ChunkCrc],
+    ) -> Result<(), String> {
+        for c in chunks {
+            let mut hasher = Crc32::new();
+            let mut off = 0u64;
+            while off < c.len {
+                let take = (c.len - off).min(VERIFY_CHUNK);
+                let dev = ctx.session.read_flash(addr + c.offset + off, take)?;
+                if dev.len() as u64 != take {
+                    return Err(format!(
+                        "断点校验读回长度不符 @0x{:X}（期望 {} 实际 {}）",
+                        c.offset + off,
+                        take,
+                        dev.len()
+                    ));
+                }
+                hasher.update(&dev);
+                off += take;
+            }
+            let got = hasher.finalize();
+            if got != c.crc {
+                return Err(format!(
+                    "断点数据已损坏 @0x{:X}（块 CRC 期望 0x{:08X} 实际 0x{:08X}）。\
+                     设备里的已写前缀与断点记录不符，继续写会留下坏数据；\
+                     请删除 {} 后从头写入",
+                    c.offset,
+                    c.crc,
+                    got,
+                    WriteCheckpoint::path_for(&self.file).display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// 逐块回读比对（覆盖 `[addr, addr+total)`）。
     fn verify_range(&self, ctx: &mut OpCtx<'_>, addr: u64, total: u64) -> Result<(), String> {
         let mut src =
@@ -253,17 +329,23 @@ impl std::io::Read for PaddedReader {
         if self.remaining == 0 {
             return Ok(0);
         }
+        // 永远读满 `want`（`want` 必为 512 的倍数：total 已对齐、buf 为 1 MiB），
+        // 文件提前结束就补零。这样"实际写入设备的字节"与喂给 CRC 追踪器的字节
+        // 严格一一对应，续传时不会因为补零差异导致 CRC 覆盖长度对不上。
         let want = (buf.len() as u64).min(self.remaining) as usize;
-        let n = self.inner.read(&mut buf[..want])?;
-        if n == 0 {
-            // 文件已读完，用零补到对齐长度
-            let fill = want;
-            buf[..fill].fill(0);
-            self.remaining -= fill as u64;
-            self.short += fill;
-            return Ok(fill);
+        let mut n = 0usize;
+        while n < want {
+            let r = self.inner.read(&mut buf[n..want])?;
+            if r == 0 {
+                break;
+            }
+            n += r;
         }
-        self.remaining -= n as u64;
-        Ok(n)
+        if n < want {
+            buf[n..want].fill(0);
+            self.short += want - n;
+        }
+        self.remaining -= want as u64;
+        Ok(want)
     }
 }

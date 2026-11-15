@@ -62,17 +62,34 @@ pub trait Op {
 ### checkpoint 文件格式（`<镜像路径>.resume`，纯文本 `key=value`）
 
 ```
-version=1
+version=2
 part=boot_b
 addr=0x2400000
 total=20971520
 written=8388608
 file_size=20971520
 file_mtime=1794719823
+gpt_crc=0x1A2B3C4D
+chunk_size=67108864
+crc=0:8388608:0x9E3779B9
 ```
 
-四项指纹（`part` / `addr` / `total` / `file_size`+`file_mtime`）任一不符就丢弃断点。
+五项指纹（`part` / `addr` / `total` / `file_size`+`file_mtime` / `gpt_crc`）任一不符就不续传。
 写入用"临时文件 + 原子 rename"，避免断电留下半个 checkpoint；**成功后删除**。
+
+**分块 CRC（每 64 MiB 一块）**：`crc=offset:len:crc32` 逐块记录源数据（含尾部补零）的
+CRC32，必须无空洞地覆盖 `[0, written)`。续传前先回读设备逐块比对：
+
+| 情况 | 行为 |
+|---|---|
+| 无 `.resume` | 从头写 |
+| 指纹不符（换了文件/分区） | 视为别的任务的断点，从头写 |
+| 文件损坏 / CRC 清单有空洞 | **报错中止**，提示删除断点后重写（不静默当成无断点） |
+| `gpt_crc` 不符（分区表变了） | **报错中止**，地址可能已失效 |
+| 前缀块 CRC 不符（设备数据坏了） | **报错中止**，绝不在坏数据后继续写 |
+
+这三类"报错中止"是 **Phase 1.2 的绝对防御底线**：续传一旦不可信，宁可让用户删断点重写，
+也不能把坏数据留在分区里还让用户以为在续传。
 
 ## 四、seccfg V4 的偏移语义（易错点）
 
