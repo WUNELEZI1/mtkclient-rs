@@ -71,7 +71,7 @@ pub fn run_sim(
         Some(path) => std::fs::read(path).map_err(|e| format!("读取 DA '{}' 失败: {}", path, e))?,
         None => {
             info!("[sim] 未提供 --da，使用内置合成 DA（仅用于仿真流程）");
-            synthetic_da(profile.da_code, profile.v6)
+            synthetic_da(profile.da_code, profile.v6, profile.da1_hardened)
         }
     };
 
@@ -295,12 +295,19 @@ fn load_profile(spec: &str) -> Result<DeviceProfile, Box<dyn std::error::Error>>
 ///
 /// 仿真设备不校验签名，但协议版本判定（`ProtocolVersion::from_da_header`）
 /// 与 `da_code` 解析都会真实执行，因此合成 DA 必须带上这些字段。
-fn synthetic_da(da_code: u16, v6: bool) -> Vec<u8> {
+fn synthetic_da(da_code: u16, v6: bool, hardened: bool) -> Vec<u8> {
     let mut da = vec![0u8; 4096];
     let tag = if v6 { b"MTK_DA_v6" } else { b"MTK_DA_v5" };
     da[..9].copy_from_slice(tag);
     // load table 首项：base 0x6C，entry 内 [2..4] 为 da_code
     da[0x6C + 2..0x6C + 4].copy_from_slice(&da_code.to_le_bytes());
+    if hardened {
+        // 模拟"已应用 mitigation 的 DA1"：写入 Carbonara V5 补丁特征，
+        // 以及强制 DA2 加载地址 0x40000000 的常量。
+        let pat = b"\x06\x9B\x4F\xF0\x80\x40\x02\xA9";
+        da[0x800..0x800 + pat.len()].copy_from_slice(pat);
+        da[0x820..0x824].copy_from_slice(&0x4000_0000u32.to_le_bytes());
+    }
     da
 }
 
@@ -311,9 +318,9 @@ mod tests {
     #[test]
     fn synthetic_da_has_protocol_tag() {
         use crate::core::device::ProtocolVersion;
-        let v5 = synthetic_da(0x6768, false);
+        let v5 = synthetic_da(0x6768, false, false);
         assert_eq!(ProtocolVersion::from_da_header(&v5), ProtocolVersion::V5);
-        let v6 = synthetic_da(0x6983, true);
+        let v6 = synthetic_da(0x6983, true, false);
         assert_eq!(ProtocolVersion::from_da_header(&v6), ProtocolVersion::V6);
     }
 

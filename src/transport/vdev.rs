@@ -198,6 +198,8 @@ pub struct DeviceProfile {
     pub seccfg_lock_state: u32,
     /// seccfg 的 dm_verity_state（0x10 偏移）
     pub seccfg_dm_verity: u32,
+    /// DA1 是否已应用 Carbonara 加固（强制 DA2 加载地址为 0x40000000）
+    pub da1_hardened: bool,
 }
 
 impl Default for DeviceProfile {
@@ -224,6 +226,7 @@ impl Default for DeviceProfile {
             bootctrl: true,
             seccfg_lock_state: 1,
             seccfg_dm_verity: 0,
+            da1_hardened: false,
         }
     }
 }
@@ -346,6 +349,7 @@ impl DeviceProfile {
                 "bootctrl" => p.bootctrl = truthy(v),
                 "seccfg.lock_state" => p.seccfg_lock_state = num(v)?.as_num::<u32>(k)?,
                 "seccfg.dm_verity" => p.seccfg_dm_verity = num(v)?.as_num::<u32>(k)?,
+                "da1_hardened" => p.da1_hardened = truthy(v),
                 other => return Err(format!("未知配置项: {}", other)),
             }
         }
@@ -371,6 +375,15 @@ impl DeviceProfile {
                 p.name = "MT6768 (SLA enabled)".into();
                 p.safety = 0x2; // SLA
                 p.sla_required = true;
+                p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
+            }
+            // Carbonara 加固机：SLA 打开，但 DA1 已含补丁特征 → carbonara 不可用。
+            // 用于验证"probe 返回 NotVulnerable 时 Planner 不规划 Carbonara 路径"。
+            "carbonara-hardened" => {
+                p.name = "MT6768 (Carbonara hardened)".into();
+                p.safety = 0x2;
+                p.sla_required = true;
+                p.da1_hardened = true;
                 p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
             }
             // DAA + SBC 双开：只有 DA 层 patch 能过

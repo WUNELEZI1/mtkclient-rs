@@ -59,3 +59,44 @@ fn is_vulnerable(&self, da1: &[u8]) -> bool {
 ## 未覆盖
 
 - “目标 DA1 是否接受 host 提供的 DA2 load address”：源码显示地址来自 loader 自身解析，未发现硬编码；不同 DA 包是否一致仍需真机验证。此项保留为待验证，不写死结论。
+
+## 实现现状（Phase 1 专项：carbonara-hardened）
+
+### 1. 两处 pattern 漂移已消除
+
+`da/loader/header.rs::detect_carbonara_patch` 此前只有 3 条，漏了
+`2nd DA address is invalid` 与 V6 penumbra 变体；`exploit/registry.rs` 有完整 5 条。
+现在 header 直接引用 `CARBONARA_PATTERNS`（单一事实来源），并配套
+`CARBONARA_PATTERN_LABELS` 给出可读标签。
+
+### 2. 新增"强制 DA2 加载地址"启发式（只降级为 Low）
+
+> **与最初假设的差异**：有说法称加固 DA1 会把 DA2 加载地址硬编码为 `0x40000000`。
+> 但本文档前半部分的实测核对结论是 **`da2address` 取自 loader `region[2].m_start_addr`，
+> 并非硬编码 0x40000000**，patched DA2 失败还会回退 stock DA2。
+>
+> 因此本仓库**不把 `0x40000000` 当作"已修补"的证据**，而是当作"可疑加固"的启发式：
+> 命中后 probe 返回 `Confidence::Low`（不进自动规划，但允许 `--exploit carbonara` 显式尝试）；
+> 只有 5 条编译特征命中才返回 `NotVulnerable`。
+
+检测两种形态（`da1_forces_da2_addr`）：
+
+| 形态 | 字节 | 说明 |
+|---|---|---|
+| 常量池（小端） | `00 00 00 40` | ldr 常量 |
+| 常量池（大端） | `40 00 00 00` | 少见，但可能 |
+| ARM `MOVT rX, #0x4000` | `00 00 40 E3` | 立即数高位装载 |
+
+误报代价可控：`Low` 仍可由用户显式指定 exploit，不会把可用设备卡死；
+漏报代价是"以为可用、实际 patch 失败"——由 carbonara 执行前的自检再兜一层。
+
+### 3. 仿真画像 `carbonara-hardened`
+
+```text
+mtkclient-rs --sim carbonara-hardened printgpt
+```
+
+- 设备：SLA 打开（强制走 bypass 路径），DA1 标记为已加固；
+- `synthetic_da(..., hardened=true)` 会写入 V5 补丁特征 + `0x40000000` 常量；
+- 预期：`selected = exploit(kamakiri2) -> da_load -> open_storage -> parse_gpt`，
+  **任何路径都不出现 carbonara**（有测试 `carbonara_hardened_plan_never_selects_carbonara` 钉死）。

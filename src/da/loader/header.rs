@@ -230,27 +230,47 @@ pub(crate) fn parse_da_header(
 ///
 /// 返回 true 表示 DA 已打补丁（不易受 Carbonara 攻击）
 pub fn detect_carbonara_patch(da1_data: &[u8]) -> (bool, &'static str) {
-    // V6 patched patterns
-    if da1_data
-        .windows(8)
-        .any(|w| w == b"\x01\x01\x54\xE3\x01\x14\xA0\xE3")
+    // 复用 exploit 注册表的 5 条 pattern，避免两处实现漂移
+    // （此前本函数只有 3 条，漏了 "2nd DA address is invalid" 与 V6 penumbra 变体）。
+    for (i, p) in crate::exploit::registry::CARBONARA_PATTERNS
+        .iter()
+        .enumerate()
     {
-        return (true, "V6 Carbonara patched (pattern 1)");
+        if da1_data.windows(p.len()).any(|w| w == *p) {
+            return (true, CARBONARA_PATTERN_LABELS[i]);
+        }
     }
-    if da1_data
-        .windows(8)
-        .any(|w| w == b"\x08\x00\xa8\x52\xff\x02\x08\xeb")
-    {
-        return (true, "V6 Carbonara patched (pattern 2)");
-    }
-    // V5 patched pattern
-    if da1_data
-        .windows(8)
-        .any(|w| w == b"\x06\x9B\x4F\xF0\x80\x40\x02\xA9")
-    {
-        return (true, "V5 Carbonara patched");
+    if da1_forces_da2_addr(da1_data) {
+        return (true, "DA1 硬编码 DA2 加载地址 0x40000000（疑似加固）");
     }
     (false, "Carbonara vulnerable")
+}
+
+/// 5 条 pattern 对应的可读标签（与 `CARBONARA_PATTERNS` 顺序一致）。
+pub const CARBONARA_PATTERN_LABELS: [&str; 5] = [
+    "V6 Carbonara patched (pattern 1)",
+    "V6 Carbonara patched (pattern 2)",
+    "V6 Carbonara patched (pattern 3, penumbra)",
+    "V6 Carbonara patched (2nd DA address is invalid)",
+    "V5 Carbonara patched",
+];
+
+/// Carbonara 加固后的 DA1 会把 DA2 加载地址硬编码为 `0x40000000`，忽略主机传入值。
+pub const CARBONARA_FORCED_ADDR: u32 = 0x4000_0000;
+
+/// DA1 里是否有"强制 DA2 加载地址为 0x40000000"的痕迹。
+///
+/// 两种形态：
+/// - 常量池里的字面量（小端 `00 00 00 40` / 大端 `40 00 00 00`）；
+/// - ARM `MOVT rX, #0x4000` 指令编码（小端 `00 00 40 E3`）。
+///
+/// 这只是**启发式**：0x40000000 也可能只是普通内存基址常量，所以调用方
+/// 只应把它降级为"可疑"（`Confidence::Low`），不能据此判定"已修补"。
+pub fn da1_forces_da2_addr(da1: &[u8]) -> bool {
+    let le = CARBONARA_FORCED_ADDR.to_le_bytes();
+    let be = CARBONARA_FORCED_ADDR.to_be_bytes();
+    da1.windows(4).any(|w| w == le || w == be)
+        || da1.windows(4).any(|w| w[2] == 0x40 && w[3] == 0xE3)
 }
 
 /// Hash check 检测（DA 是否包含 hash 校验逻辑）
@@ -283,4 +303,38 @@ pub fn detect_hash_check(da1_data: &[u8]) -> (bool, &'static str) {
         return (true, "Hash check v5 (V6) found");
     }
     (false, "No hash check detected")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exploit::registry::CARBONARA_PATTERNS;
+
+    #[test]
+    fn detect_carbonara_covers_all_five_patterns() {
+        for (i, p) in CARBONARA_PATTERNS.iter().enumerate() {
+            let mut da1 = vec![0u8; 32];
+            da1.extend_from_slice(p);
+            let (patched, label) = detect_carbonara_patch(&da1);
+            assert!(patched, "pattern {} 未命中: {:?}", i, label);
+            assert_eq!(label, CARBONARA_PATTERN_LABELS[i]);
+        }
+    }
+
+    #[test]
+    fn detect_forced_da2_address_as_heuristic() {
+        let mut da1 = vec![0u8; 16];
+        da1.extend_from_slice(&CARBONARA_FORCED_ADDR.to_le_bytes());
+        assert!(da1_forces_da2_addr(&da1));
+        assert!(detect_carbonara_patch(&da1).0);
+    }
+
+    #[test]
+    fn clean_da1_reports_vulnerable() {
+        let da1 = vec![0x11u8; 128];
+        let (patched, label) = detect_carbonara_patch(&da1);
+        assert!(!patched);
+        assert_eq!(label, "Carbonara vulnerable");
+        assert!(!da1_forces_da2_addr(&da1));
+    }
 }

@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::ops::erase::EraseOp;
+use crate::ops::printgpt::PrintGptOp;
 use crate::ops::read::ReadOp;
 use crate::ops::seccfg::{SeccfgAction, SeccfgOp};
 use crate::ops::unlock::UnlockOp;
@@ -132,6 +133,31 @@ fn write_rejects_image_larger_than_partition() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("拒绝写入"), "实际: {}", err);
+}
+
+/// carbonara-hardened 场景：DA1 已含补丁特征 → probe 返回 NotVulnerable，
+/// Planner 不得把 carbonara 放进任何路径（哪怕设备开了 SLA 需要 bypass）。
+#[test]
+fn carbonara_hardened_plan_never_selects_carbonara() {
+    let dev = VirtualDevice::from_preset("carbonara-hardened").expect("预设存在");
+    // 模拟加固 DA1：带上 Carbonara V5 补丁特征
+    let mut da = vec![0xABu8; 4096];
+    da[0x800..0x808].copy_from_slice(b"\x06\x9B\x4F\xF0\x80\x40\x02\xA9");
+    let mut s = SimSession::new(dev).with_da(da);
+
+    let r = Executor::new(Mode::Auto)
+        .execute(&PrintGptOp, &mut s, false, 0)
+        .unwrap();
+    assert!(
+        !r.executed.iter().any(|x| x.contains("carbonara")),
+        "加固 DA1 下不得规划 carbonara: {:?}",
+        r.executed
+    );
+    assert!(
+        r.executed.iter().any(|x| x.contains("kamakiri2")),
+        "SLA 设备仍应走 kamakiri2 bypass: {:?}",
+        r.executed
+    );
 }
 
 /// Phase 1.2：断点记录的前缀 CRC 与设备实际内容不符时，必须**报错中止**，
