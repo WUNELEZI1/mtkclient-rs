@@ -15,7 +15,7 @@
 | `exploit/orchestrator` | ✅ 新建（决策 + JSON 行日志） | `src/exploit/orchestrator.rs` |
 | `da/fixture` | ✅ 新建（六段粒度 + JSONL + mock 回放） | `src/da/fixture.rs` |
 | `confirm/` | ✅ 新建（token / 会话级 / `--yes` 仍警告） | `src/confirm/mod.rs` |
-| `ops/` | ✅ **printgpt 已迁**（能力声明 + 执行分离）；其余命令仍在 `cmd/` | `src/ops/{mod,printgpt}.rs` |
+| `ops/` | ✅ **全部迁完**：`printgpt` / `read` / `write` / `erase` / `seccfg` / `vbmeta` / `unlock` / `fs_shell`，每个只声明能力 + 实现 `run` | `src/ops/*.rs`（契约见 [`ops.md`](ops.md)） |
 | `exec/`（唯一执行入口） | ✅ 新建：决策 → 逐步执行 → **每步校验能力真实增长** | `src/exec/mod.rs` |
 | `session/`（执行后端抽象） | ✅ 新建：`RealSession`（DAXFlash）/ `SimSession`（虚拟设备） | `src/session/{mod,real}.rs` |
 | `da/engine`（StreamPort 协议引擎） | ✅ 新建：握手 → DA 上传 → 开存储 → 读 flash，全走 `&mut dyn StreamPort` | `src/da/engine.rs` |
@@ -44,7 +44,43 @@ mtkclient-rs --sim v5-clean printgpt
 真机路径同样接到 Executor：`dispatch_cmd("printgpt")` → `RealSession`（DA 已被 Phase1 上传，
 故声明 `DaLoaded`，规划只剩"开存储 → 解析 GPT"）。详细说明见 [`simulation.md`](simulation.md)。
 
-## 三、这轮新增的对外能力
+## 三、本轮：读/写/擦/高危操作全部收口到 Executor
+
+前面几轮只把 `printgpt` 接进了能力闭环；这一轮把**真正会动 flash 的操作**也接了进来，
+并且全部在仿真下跑通（无真机）。新增/改造：
+
+| 能力 | 落点 | 关键实现 |
+|---|---|---|
+| 读 | `ops/read.rs` | 1 MiB 分块；先写 `<out>.part` 再 rename，中途断不产生半个"成功"文件 |
+| 写 | `ops/write.rs` | 大小校验**不截断** / 重点分区确认 / checkpoint / 回读校验 |
+| 断点续传 | `ops/checkpoint.rs` | 8 MiB 周期落盘、四项指纹、原子 rename、成功后删除 |
+| 擦 | `ops/erase.rs` | `FORMAT` 三段 + 擦后抽样断言 0xFF/0x00；幂等 |
+| seccfg | `ops/seccfg.rs` | V4 头构造 + 回读断言 `0x0C=3` / `0x10=0` |
+| vbmeta | `ops/vbmeta.rs` | 先定槽位（bootctrl → GPT → 报错），只改活动槽，`[SKIP]` 记原因 |
+| 一键解锁 | `ops/unlock.rs` | seccfg unlock → vbmeta(flags=3)；vbmeta 失败降级为警告，不掩盖解锁成功 |
+| fs_shell | `ops/fsshell.rs` | 只读 `StorageRead`；作为"新增 op 不改 Executor"的扩展性验证 |
+
+支撑改动：
+
+- `da/engine.rs` 补 `begin_write / write_chunk / end_write / format`（写路径也走 `StreamPort`，
+  真机与仿真共用同一份协议代码）；
+- `session::{Session, SimSession, RealSession}` 新增 `find_partition / read_flash / write_flash /
+  write_stream / erase_partition / active_slot / seccfg_sign / serial`；
+- `transport/vdev.rs` 增加设备侧写/擦状态机、稀疏页存储、故障注入（`WriteDead`/`WriteSilent`）、
+  `save_state/load_state`（跨进程"重连"）；
+- `confirm` 增加交互式 y/N + `Irreversible` 输 token；`--yes` 仍出警告。
+
+### 3.1 跨进程断点续传（仿真的"拔插重连"）
+
+```
+第一跑  --sim flaky-write --sim-state S w boot_b img   → 10 MiB 处断开，.resume 落盘 0x800000
+第二跑  --sim v5-clean    --sim-state S w boot_b img   → 从 0x800000 续写 → 校验通过 → 删 .resume
+```
+
+`--sim-state` 把虚拟设备的稀疏页 + 擦除区间落盘，第二跑载入后**存储内容还在**，
+这正是真机"线上掉线 → 重新插上"的语义等价物。
+
+## 四、这轮新增的对外能力
 
 ```bash
 # 离线查看规划，不需要设备
@@ -57,7 +93,7 @@ mtkclient plan seccfg --da DA.bin --chip 0x6768
 输出 = 人类可读规划 + 一行结构化 JSON（`{"event":"decision",...}`），
 `--log` 级别不影响该 JSON。
 
-## 四、验收元标准对照
+## 五、验收元标准对照
 
 | # | 项 | 状态 | 说明 |
 |---|---|---|---|
@@ -66,44 +102,43 @@ mtkclient plan seccfg --da DA.bin --chip 0x6768
 | 3 | V6 不规划 BROM | ✅ | `DeviceState::brom_reachable()` + planner 测试 |
 | 4 | Carbonara pattern 命中不规划 | ✅ | 5 条 pattern 单测 + 规划无解日志 |
 | 5 | Heapbait SLA 门控 probe → NotVulnerable | ⚠️ 部分 | 已实现 DA2 修补标记检查；`requires_sla` 无法静态验证，改为运行期记录（见 docs/heapbait_sla_gating.md） |
-| 6 | seccfg unlock 后偏移 16 == 0 | ⏳ | 属 ops 阶段，本轮未改 |
-| 7 | `--yes` 时警告仍出 stderr | ✅ 逻辑 | `DangerConfirm` 单测覆盖；CLI 接线随 ops 落地 |
-| 8 | mock 下 DA 协议脱机跑 | ⚠️ 部分 | MockPort + fixture 已通，printgpt 闭环到 GPT 签名；完整协议状态机未接 |
-| 9 | A/B 缓存 set_active 后读 boot 新槽 | ⏳ | 未做 |
-| 10 | 新增日志走 LogKey | ✅ | 本轮无新增中文 log；plan 用户输出走 i18n |
-| 11-15 | vbmeta 槽位/回退/混合布局 | ⏳ | 未做 |
-| 16 | dumpbrom header 自描述 | ⏳ | 现有实现固定 128KB |
+| 6 | seccfg unlock 后偏移 16 == 0 | ✅ | `ops::seccfg` 写后回读断言；`seccfg_unlock_writes_dm_verity_zero` |
+| 7 | `--yes` 时警告仍出 stderr | ✅ | `DangerConfirm` 已接进 `OpCtx::confirm_action`，`--yes` 仍打警告 + `[audit]` 行 |
+| 8 | mock 下 DA 协议脱机跑 | ✅ | `DaEngine` + `VirtualDevice` 跑完整 BROM→DA→读写擦状态机（读/写/擦/FORMAT/CC_OPTIONAL_DOWNLOAD_ACT 全覆盖） |
+| 9 | A/B 缓存 set_active 后读 boot 新槽 | ✅ | `slot a\|b` 写 misc 后同步 `da.active_slot` |
+| 10 | 新增日志走 LogKey | ✅ | help 六语言补齐 `unlock` / `fs_shell`；日志走统一 logger |
+| 11-15 | vbmeta 槽位/回退/混合布局 | ✅ | `decide_action` 纯函数 + 三级降级；混合布局与 bootctrl 失败均有测试（`ab-unknown-slot` 画像） |
+| 16 | dumpbrom header 自描述 | ⚠️ | 保持"不解析头部长度"（无可靠公开出处）；改为可指定长度 + 2 MiB 默认 + 尾部 0xFF 裁剪告警 |
 | 17 | `--mode` 约束 Planner | ✅ | `Mode::allows` + 单测 |
 | 18 | `--log 1/2/3` 不影响决策日志 | ✅ 设计 | JSON 独立于 logger |
-| 19 | `--log 3` hex dump + 搜索树 | ⏳ | 未做 |
+| 19 | `--log 3` hex dump + 搜索树 | ✅ | USB / 串口 / DA 引擎全带时间戳 hex dump；Planner 输出 BFS 展开节点 + 每条排除分支原因 |
 | 20 | 每个 CVE 有结论 | ✅ | `docs/preloader_cve_status.md` |
 | 21 | Preloader 只搜 Adapted | ✅ | 注册表无 Adapted → 规划报“无可用 Preloader exploit” |
-| 22 | 主/兜底路径文档分开 | ⚠️ | preloader 文档已分开，BROM 文档待补 |
+| 22 | 主/兜底路径文档分开 | ⚠️ | preloader / BROM 的主路径与兜底已在 `docs/preloader_cve_status.md` 分开；`dumpbrom` 兜底路径仍待补文档 |
 | 23 | adb-rs 回归 | — | 不在本仓库 |
 | 24 | f2fs 生成器在 fs/ | ⏳ | 仍在 `system/fsimg/` |
 | 25 | RPMB HACC/SSR 缺口明确 | ✅ | 实测为 SEJ，见 `docs/rpmb_sectors.md` |
 | 26 | 芯片表含 V6 / Heapbait 缺口 | ✅ 部分 | `KNOWN_V6_DA_CODES` + docs |
 | 27 | Cost 定义写进注释 | ✅ | `core/plan.rs` 模块注释 |
 
-## 五、下一步（按依赖顺序）
+## 六、下一步（按依赖顺序）
 
-1. ~~ops 迁移（printgpt 走 Orchestrator）~~ ✅ 已完成；其余 op（`r` / `w` / `e` / `seccfg` / `rpmb`）
-   按同一模式逐个接入（每个只需声明 `required_caps` + 实现 `run`）。
-2. ~~seccfg 偏移 16 修复~~ ✅ 代码此前已按 `dm_verity_state` 实现（unlock/lock 均写 0），
-   本轮补 4 个断言测试，防止回退。
-3. ~~vbmeta 槽位化~~ ✅ 只处理活动槽，非活动槽 `[SKIP]` 并记录原因；共享 `vbmeta` 与
-   分槽 `vbmeta_system_*` 分别处理；**槽位无法确定时直接报错不猜**（bootctrl 失败 →
-   GPT 元数据 → 报错）。纯函数 `decide_action` 有 5 个测试。
-4. ~~A/B 缓存失效~~ ✅ `slot a|b` 写入 misc 后同步 `da.active_slot`，避免同会话内后续
-   vbmeta / 分区名解析仍用旧槽位。（当前不存在"按槽位分键的 GPT 缓存"，故无哈希键可加：
-   `da.active_slot` 是唯一的槽位缓存点。）
-5. **dumpbrom header 自描述**：⏸ 暂缓。MTK BROM 头部长度字段无可靠公开出处，
-   在无真机/固件对拍的情况下写死偏移属于"猜协议"，风险高于收益；保持 128KB 固定读取并
-   在文档中标注为已知限制。
-6. **写入路径收口 StreamPort**：`engine` 目前只有读路径；写/擦/RPMB 仍在 `DAXFlash`。
-7. **目录收口**：`system/fsimg → fs/`、`cmd/ops` 拆分、`slot/` 独立。
+1. ~~ops 迁移~~ ✅ `printgpt` / `r` / `w` / `e` / `seccfg` / `vbmeta` / `unlock` / `fs_shell`
+   全部走 `Executor`，每个只声明 `required_caps` + 实现 `run`。
+2. ~~seccfg 偏移 16~~ ✅ unlock/lock 均写 0 并有回读断言。
+3. ~~vbmeta 槽位化~~ ✅ 只改活动槽，`[SKIP]` 记原因，槽位不可判定直接报错。
+4. ~~A/B 缓存失效~~ ✅ 写 misc 后同步 `da.active_slot`。
+5. ~~写入路径收口 StreamPort~~ ✅ `DaEngine::begin_write/write_chunk/end_write/format`
+   让真机与仿真共用一份写/擦协议代码；`RealSession` 仍是 `DAXFlash` 的薄封装。
+6. ~~断点续传~~ ✅ checkpoint + `--sim-state` 跨进程续写，均有测试。
+7. **dumpbrom header 自描述**：⏸ 仍不做。MTK BROM 头部长度字段无可靠公开出处，
+   在无真机/固件对拍的情况下写死偏移属于"猜协议"；保持"以 DA 自报/显式长度为准"。
+8. **目录收口**：`system/fsimg → fs/`、`slot/` 独立、`cmd/ops` 进一步拆分。
+9. **RPMB 与 V6(XML)**：仿真侧未覆盖（RPMB 实测为 SEJ，见 `docs/rpmb_sectors.md`）。
+10. **真机回归**：以上全部为离线仿真验证，真实设备上仍需按 `docs/simulation.md`
+    的同一组命令跑一遍对拍（尤其是写包长与 FORMAT 三段握手）。
 
-## 六、禁区遵守情况
+## 七、禁区遵守情况
 
 - 未新增 exploit 解决“链少”；`heapbait`/`kamakiripl` 保持 `InProgress`，不进自动规划。
 - `chain` 保留为调试视图，未作为必需命令。
