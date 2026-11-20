@@ -4,6 +4,8 @@
 //! - `gpt`     — `PartitionEntry` / `GptInfo` 数据结构与解析
 //! - `io`      — `DAXFlash` 上的分区读写擦操作（read_gpt / write_partition / erase_partition）
 //! - `scatter` — 从 GPT 数据生成 scatter 文件（MTK SP Flash / 刷机匣 YAML）
+//!
+//! A/B 槽位逻辑已独立为顶层 [`crate::slot`] 模块；本模块仅提供其解析所需的 `GptInfo`。
 
 #[path = "cow.rs"]
 pub(crate) mod cow;
@@ -16,7 +18,6 @@ pub mod io;
 pub mod lp;
 #[path = "partition_table.rs"]
 pub mod partition_table;
-pub mod slot;
 pub(crate) mod write;
 
 pub use gpt::GptInfo;

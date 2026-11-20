@@ -210,7 +210,7 @@ impl<'a> DAXFlash<'a> {
         }
 
         // 2.5 A/B 槽位自动解析：裸名未命中但 name_a / name_b 存在时补后缀重查
-        if let Some(slotted) = crate::partition::slot::resolve_slot_partition(self, partition) {
+        if let Some(slotted) = crate::slot::resolve_slot_partition(self, partition) {
             let gpt_data = self
                 .last_gpt_data
                 .as_ref()

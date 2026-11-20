@@ -152,7 +152,7 @@ pub fn vbmeta_disable(da: &mut DAXFlash, mode: u32) -> Result<(), String> {
 /// bootctrl，说明这台设备是 A/B 但状态未知 → 直接报错，避免一次 `zyb vbmeta`
 /// 把两个槽都改了（用户会丢掉回滚能力）。
 pub(crate) fn resolve_slot(da: &mut DAXFlash) -> Result<SlotState, String> {
-    if let Ok(Some(c)) = crate::partition::slot::detect_active_slot(da) {
+    if let Ok(Some(c)) = crate::slot::detect_active_slot(da) {
         return Ok(SlotState::Known(c));
     }
 

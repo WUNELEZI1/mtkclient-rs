@@ -60,7 +60,7 @@ pub struct DAXFlash<'a> {
     pub(crate) optional_query_failures: Vec<String>,
     /// 动态分区 (super) 元数据缓存
     pub(crate) super_metadata: Option<crate::partition::lp::SuperMetadata>,
-    /// 已缓存的活跃 A/B 槽位（'a' / 'b'），由 partition::slot::detect_active_slot 填充
+    /// 已缓存的活跃 A/B 槽位（'a' / 'b'），由 slot::detect_active_slot 填充
     pub(crate) active_slot: Option<char>,
 }
 

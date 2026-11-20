@@ -204,6 +204,7 @@ mod resume;
 mod security;
 mod session;
 mod sha;
+mod slot;
 mod system;
 mod transport;
 #[path = "usb/mod.rs"]

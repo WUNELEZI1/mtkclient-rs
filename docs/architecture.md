@@ -21,7 +21,8 @@
 | `da/engine`（StreamPort 协议引擎） | ✅ 新建：握手 → DA 上传 → 开存储 → 读 flash，全走 `&mut dyn StreamPort` | `src/da/engine.rs` |
 | `transport/vdev`（虚拟设备） | ✅ 新建：BROM + XFlash 设备侧状态机，画像驱动，含故障注入 | `src/transport/{vdev,wire}.rs` |
 | `fs/` | ✅ 已从 `system/fsimg/` 迁出并拆为 `fs/f2fs/{mod,layout}.rs`、`fs/ext4/{mod,tests}.rs`，全部 ≤500 行（2026-11-20） | `src/fs/` |
-| `slot/` `logging/` `cli/` | ⏳ 复用现有 `partition` / `progress`+`i18n` / `cmd::cli` | — |
+| `slot/` | ✅ 2026-11-20 从 `partition/slot.rs` 提升为顶层 `slot/mod.rs`；命令层 `cmd/io/slot.rs` 保留 | `src/slot/mod.rs` |
+| `logging/` `cli/` | ⏳ 复用现有 `progress`+`i18n` / `cmd::cli` | — |
 
 依赖方向：`core ← transport ← da ← exploit ← cmd`，`core` 不引用任何内部模块（`Stage` 定义在 core，避免反向依赖）。
 
@@ -133,7 +134,7 @@ mtkclient plan seccfg --da DA.bin --chip 0x6768
 6. ~~断点续传~~ ✅ checkpoint + `--sim-state` 跨进程续写，均有测试。
 7. **dumpbrom header 自描述**：⏸ 仍不做。MTK BROM 头部长度字段无可靠公开出处，
    在无真机/固件对拍的情况下写死偏移属于"猜协议"；保持"以 DA 自报/显式长度为准"。
-8. **目录收口**：`system/fsimg → fs/` ✅（2026-11-20）；`slot/` 独立、`cmd/ops` 进一步拆分待办。
+8. **目录收口**：`system/fsimg → fs/` ✅、`slot/` 独立 ✅（均 2026-11-20）；`cmd/ops` 进一步拆分待办。
 9. **RPMB 与 V6(XML)**：仿真侧未覆盖（RPMB 实测为 SEJ，见 `docs/rpmb_sectors.md`）。
 10. **真机回归**：以上全部为离线仿真验证，真实设备上仍需按 `docs/simulation.md`
     的同一组命令跑一遍对拍（尤其是写包长与 FORMAT 三段握手）。
