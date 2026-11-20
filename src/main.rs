@@ -189,6 +189,7 @@ mod core;
 mod da;
 mod error;
 mod exec;
+mod fs;
 #[path = "exploit/mod.rs"]
 mod exploit;
 mod i18n;

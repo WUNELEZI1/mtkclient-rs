@@ -56,7 +56,7 @@ pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error
                 .find_partition_addr(part)
                 .map_err(|e| format!("查找 {} 失败: {}", part, e))
                 .and_then(|(addr, size)| {
-                    crate::system::fsimg::format_image_for(part, size)
+                    crate::fs::format_image_for(part, size)
                         .map(|img| (addr, img))
                         .ok_or_else(|| "不支持该分区的格式化".to_string())
                 });

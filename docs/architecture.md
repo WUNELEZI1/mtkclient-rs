@@ -20,7 +20,7 @@
 | `session/`（执行后端抽象） | ✅ 新建：`RealSession`（DAXFlash）/ `SimSession`（虚拟设备） | `src/session/{mod,real}.rs` |
 | `da/engine`（StreamPort 协议引擎） | ✅ 新建：握手 → DA 上传 → 开存储 → 读 flash，全走 `&mut dyn StreamPort` | `src/da/engine.rs` |
 | `transport/vdev`（虚拟设备） | ✅ 新建：BROM + XFlash 设备侧状态机，画像驱动，含故障注入 | `src/transport/{vdev,wire}.rs` |
-| `fs/` | ⏳ 仍在 `system/fsimg/`（f2fs 生成器尚未迁到 `fs/`，验收项 24 未完成） | `src/system/fsimg/` |
+| `fs/` | ✅ 已从 `system/fsimg/` 迁出（2026-11-20）；f2fs/ext4 单文件仍超 500 行，拆分在 Phase 1.4 后续完成 | `src/fs/` |
 | `slot/` `logging/` `cli/` | ⏳ 复用现有 `partition` / `progress`+`i18n` / `cmd::cli` | — |
 
 依赖方向：`core ← transport ← da ← exploit ← cmd`，`core` 不引用任何内部模块（`Stage` 定义在 core，避免反向依赖）。
@@ -116,7 +116,7 @@ mtkclient plan seccfg --da DA.bin --chip 0x6768
 | 21 | Preloader 只搜 Adapted | ✅ | 注册表无 Adapted → 规划报“无可用 Preloader exploit” |
 | 22 | 主/兜底路径文档分开 | ⚠️ | preloader / BROM 的主路径与兜底已在 `docs/preloader_cve_status.md` 分开；`dumpbrom` 兜底路径仍待补文档 |
 | 23 | adb-rs 回归 | — | 不在本仓库 |
-| 24 | f2fs 生成器在 fs/ | ⏳ | 仍在 `system/fsimg/` |
+| 24 | f2fs 生成器在 fs/ | ✅ | 2026-11-20 已迁至 `src/fs/`，`format_image_for` 引用同步更新 |
 | 25 | RPMB HACC/SSR 缺口明确 | ✅ | 实测为 SEJ，见 `docs/rpmb_sectors.md` |
 | 26 | 芯片表含 V6 / Heapbait 缺口 | ✅ 部分 | `KNOWN_V6_DA_CODES` + docs |
 | 27 | Cost 定义写进注释 | ✅ | `core/plan.rs` 模块注释 |
@@ -133,7 +133,7 @@ mtkclient plan seccfg --da DA.bin --chip 0x6768
 6. ~~断点续传~~ ✅ checkpoint + `--sim-state` 跨进程续写，均有测试。
 7. **dumpbrom header 自描述**：⏸ 仍不做。MTK BROM 头部长度字段无可靠公开出处，
    在无真机/固件对拍的情况下写死偏移属于"猜协议"；保持"以 DA 自报/显式长度为准"。
-8. **目录收口**：`system/fsimg → fs/`、`slot/` 独立、`cmd/ops` 进一步拆分。
+8. **目录收口**：`system/fsimg → fs/` ✅（2026-11-20）；`slot/` 独立、`cmd/ops` 进一步拆分待办。
 9. **RPMB 与 V6(XML)**：仿真侧未覆盖（RPMB 实测为 SEJ，见 `docs/rpmb_sectors.md`）。
 10. **真机回归**：以上全部为离线仿真验证，真实设备上仍需按 `docs/simulation.md`
     的同一组命令跑一遍对拍（尤其是写包长与 FORMAT 三段握手）。
