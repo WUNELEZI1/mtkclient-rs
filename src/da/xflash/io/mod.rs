@@ -337,6 +337,8 @@ mod tests {
 
     #[test]
     fn set_packet_length_16_byte_response_is_not_a_length() {
+        // 0x040008 = GET_RANDOM_ID：DA 会回 16 字节随机数（真机 printgpt 日志中
+        // 曾被误当作 "SET_PKT_LEN 的 flow payload"）。它绝不是包长度，不可解析为长度。
         let mut response = Vec::new();
         response.extend_from_slice(&0u32.to_le_bytes());
         response.extend_from_slice(&0u32.to_le_bytes());
@@ -344,6 +346,15 @@ mod tests {
         response.extend_from_slice(&0u32.to_le_bytes());
 
         assert_eq!(parse_packet_length(&response), None);
+    }
+
+    #[test]
+    fn get_packet_length_uses_da_reported_read_length() {
+        // 真机 GET_PKT_LEN (0x040007) 响应：[写包长度=2MiB][读包长度=64KiB]。
+        // 读路径必须取第 2 个 u32（读包长度），而不是把写包长度当成读包长度。
+        // 读路径只 GET 不 SET；0x040008(GET_RANDOM_ID) 不可作为 SET_PKT_LEN 发送。
+        let response = [0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x01, 0x00];
+        assert_eq!(parse_packet_length(&response), Some(0x1_0000));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use log::{info, trace, warn};
 use std::time::Duration;
 
 use crate::da::xflash::DAXFlash;
-use crate::da::xflash::protocol::{CMD_MAGIC, CMD_READ_DATA, GET_PKT_LEN, SET_PKT_LEN, pack3};
+use crate::da::xflash::protocol::{CMD_MAGIC, CMD_READ_DATA, GET_PKT_LEN, pack3};
 
 use super::{
     DA_READ_PER_CHUNK_TRAILER, READFLASH_READ_TIMEOUT_MS, acquire_dump_buffer,
@@ -20,59 +20,6 @@ impl<'a> DAXFlash<'a> {
     /// 读取 flash 数据，返回原始字节（默认 USER 分区类型）
     pub(crate) fn readflash_data(&mut self, addr: u64, size: u64) -> Result<Vec<u8>, String> {
         self.readflash_data_ex(addr, size, 8)
-    }
-
-    /// Read-path SET_PKT_LEN handshake.
-    ///
-    /// MT6768/MT6769 DA returns a flow payload after the 4-byte SET_PKT_LEN parameter, then a
-    /// final status. The generic param-mode send_devctrl() treats that payload as a status and
-    /// leaves the final status to be consumed by the following READ_DATA command.
-    pub(crate) fn set_read_packet_length(&mut self, target: usize) -> Result<(), String> {
-        const STATUS_UNSUPPORTED_COMMAND: u32 = 0xC001_0003;
-
-        let value = target as u32;
-        trace!(
-            "[SET_PKT_LEN] request read packet length={} (0x{:08X})",
-            target, value
-        );
-
-        let pkt = pack3(CMD_MAGIC, 0x01, 4);
-        self.preloader.device.write(&pkt)?;
-        self.preloader.device.write(&0x010009u32.to_le_bytes())?;
-        let st1 = self.status()?;
-        if st1 != 0 {
-            return Err(format!("SET_PKT_LEN DEVICE_CTRL status=0x{:08X}", st1));
-        }
-
-        let pkt2 = pack3(CMD_MAGIC, 0x01, 4);
-        self.preloader.device.write(&pkt2)?;
-        self.preloader.device.write(&SET_PKT_LEN.to_le_bytes())?;
-        let st2 = self.status()?;
-        if st2 != 0 {
-            return Err(format!("SET_PKT_LEN command status=0x{:08X}", st2));
-        }
-
-        let param = value.to_le_bytes();
-        let pkt3 = pack3(CMD_MAGIC, 0x01, param.len() as u32);
-        self.preloader.device.write(&pkt3)?;
-        self.preloader.device.write(&param)?;
-
-        let response = self.xread_data()?;
-        trace!(
-            "[SET_PKT_LEN] response len={} hex={}",
-            response.len(),
-            crate::util::hex_str(&response)
-        );
-
-        let final_status = self.status()?;
-        trace!("[SET_PKT_LEN] final status=0x{:08X}", final_status);
-        if final_status == 0 {
-            return Ok(());
-        }
-        if final_status == STATUS_UNSUPPORTED_COMMAND {
-            return Err(format!("SET_PKT_LEN unsupported: 0x{:08X}", final_status));
-        }
-        Err(format!("SET_PKT_LEN final status=0x{:08X}", final_status))
     }
 
     /// 发送 READ_DATA 命令及 56B 参数（提取公共逻辑，消除重复）
@@ -182,10 +129,13 @@ impl<'a> DAXFlash<'a> {
                     return Err("活跃读取流续接 ACK 全部失败".to_string());
                 }
             } else {
-                // 对齐 Python readflash：在 cmd_read_data 之前先查询 get_packet_length
-                // send_devctrl 内部已包含完整的 xread + status 握手
-                // 性能关键：刷机匣实测把工作传输单元设到 2MB（0x200000）批量传输，故这里
-                // 主动 SET_PKT_LEN 抬升。DA 不支持时 send_devctrl 回空/报错，忽略即可（无回归）。
+                // 对齐 Python readflash：在 cmd_read_data 之前先查询 get_packet_length，
+                // 且**只 GET 不 SET**（send_devctrl 内部已含完整 xread + status 握手）。
+                // ★ 0x040008 在 mtkclient Cmd 表中是 GET_RANDOM_ID，不是 SET_PKT_LEN；
+                //   旧实现带参数发送它，会让 DA 状态机错位，紧接着的 READ_DATA 返回
+                //   0xC0010003 (Unsupported command)——真机 printgpt 失败即由此引起。
+                //   读包长度以 DA 自报值为准（断电/异常回报时回退 1 MiB），仅作续传元数据；
+                //   实际接收始终按每个数据包 header 的 slength 分块。
                 let reported = match da.send_devctrl(GET_PKT_LEN, None) {
                     Ok(data) => parse_packet_length(&data),
                     Err(e) => {
@@ -194,26 +144,14 @@ impl<'a> DAXFlash<'a> {
                     }
                 };
                 let target = match reported {
-                    Some(v) if v >= 0x200000 => v.min(0x400000),
-                    _ => 0x200000,
+                    Some(v) if v > 0 => v.min(0x400000),
+                    _ => 0x100000,
                 };
-                // 主动 SET_PKT_LEN 抬升。MT6768/MT6769 的 DA 在 SET 后再次 GET_PKT_LEN 会返回
-                // 0xC0010003，并污染后续 READ_DATA 的 final status；SET 响应已由 send_devctrl 消费，
-                // 流式读按 DA 实际返回的包头长度接收，不需要再发确认 GET。
-                match da.set_read_packet_length(target) {
-                    Ok(()) => trace!(
-                        "DA 读包长度已确认设置为 {} 字节 ({:.2} MiB)",
-                        target,
-                        target as f64 / 1024.0 / 1024.0
-                    ),
-                    Err(e) if e.contains("0xC0010003") => {
-                        trace!(
-                            "SET_PKT_LEN 不受支持，回退到 GET_PKT_LEN/DA 默认读包长度继续读取: {}",
-                            e
-                        );
-                    }
-                    Err(e) => return Err(e),
-                }
+                trace!(
+                    "DA 读包长度 {} 字节 ({:.2} MiB)，按 DA 自报值读取",
+                    target,
+                    target as f64 / 1024.0 / 1024.0
+                );
                 packet_len = Some(target);
 
                 // 发送 READ_DATA 命令及参数

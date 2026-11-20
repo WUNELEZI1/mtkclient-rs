@@ -52,7 +52,11 @@ pub const SET_META_BOOT_MODE: u32 = 0x020006; // ★ 设置 Meta Boot Mode
 
 // --- 信息获取子命令 (0x04xxxx) ---
 pub const GET_PKT_LEN: u32 = 0x040007; // 获取包长度
-pub const SET_PKT_LEN: u32 = 0x040008; // 设置包长度（抬升批量传输单元，对齐 GeekFlashTool 2MB 块）
+/// 注意：0x040008 在 mtkclient 的 Cmd 表中实为 **GET_RANDOM_ID**，并不是"设置包长度"。
+/// 保留此名仅为兼容历史事件器与写路径中显式的实验性 `MTK_FORCE_PKT_LEN` 开关
+/// （见 `partition/write/cmd.rs`）；常规读/写路径**禁止**发送，否则等于"给一条 GET 带参数"，
+/// 会令 DA 状态机错位，紧随其后的 READ_DATA 返回 0xC0010003 (Unsupported command)。
+pub const SET_PKT_LEN: u32 = 0x040008;
 
 // --- 其他命令 ---
 pub const GET_DA_VER_CMD: u32 = 0x010106; // 获取 DA 版本/芯片信息

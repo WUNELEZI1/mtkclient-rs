@@ -2,7 +2,7 @@
 //!
 //! 见 [`crate::da::xflash::io`] 模块文档。
 
-use log::{trace, warn};
+use log::trace;
 
 use crate::da::xflash::DAXFlash;
 use crate::da::xflash::protocol::{CMD_MAGIC, GET_PKT_LEN};
@@ -29,41 +29,17 @@ impl<'a> DAXFlash<'a> {
             ));
         }
 
-        // 1. get_packet_length — send_devctrl 内部已包含完整的 xread + status 握手
-        //    注意：部分设备/DA（尤其 Preloader 模式会话复用）对 GET_PKT_LEN 返回异常
-        //    status，但包长度仅用于优化分块，读取循环按设备实际返回的分包处理，
-        //    故失败时不中断（对齐 readflash_to_file 的容错行为），避免 printgpt 等命令无谓失败。
-        //    性能关键：主动 SET_PKT_LEN 抬升到 2MB（0x200000）批量传输，对齐刷机匣。
-        let reported = match self.send_devctrl(GET_PKT_LEN, None) {
-            Ok(data) => parse_packet_length(&data),
-            Err(e) => {
-                warn!(
-                    "readflash_data_ex: get_packet_length 获取失败（已忽略，继续读取）: {}",
-                    e
-                );
-                None
+        // 1. get_packet_length — send_devctrl 内部已包含完整的 xread + status 握手。
+        //    对齐 Python readflash：**只 GET 不 SET**。
+        //    ★ 0x040008 实为 GET_RANDOM_ID（见 mtkclient Cmd 表），旧实现把它当成
+        //      SET_PKT_LEN 并带参数发送，破坏 DA 状态机，使紧随其后的 READ_DATA 返回
+        //      0xC0010003 (Unsupported command)——真机 printgpt 失败即由此引起。
+        //    部分设备/DA 对 GET_PKT_LEN 返回异常 status，但读取循环按设备实际返回的分包
+        //    处理，故失败时不中断，避免 printgpt 等只读命令无谓失败。
+        if let Ok(data) = self.send_devctrl(GET_PKT_LEN, None) {
+            if let Some(read_plen) = parse_packet_length(&data) {
+                trace!("[readflash_data_ex] DA 读包长度 {} 字节", read_plen);
             }
-        };
-        let target = match reported {
-            Some(v) if v >= 0x200000 => v.min(0x400000),
-            _ => 0x200000,
-        };
-        // SET_PKT_LEN is an optimization. Some MT6768/MT6769 DA builds reject it with
-        // 0xC0010003 after returning a 16-byte response payload; in that case keep the
-        // original GET_PKT_LEN/default framing and continue READ_DATA.
-        match self.set_read_packet_length(target) {
-            Ok(()) => trace!(
-                "DA 读包长度已确认设置为 {} 字节 ({:.2} MiB)",
-                target,
-                target as f64 / 1024.0 / 1024.0
-            ),
-            Err(e) if e.contains("0xC0010003") => {
-                trace!(
-                    "SET_PKT_LEN 不受支持，回退到 GET_PKT_LEN/DA 默认读包长度继续读取: {}",
-                    e
-                );
-            }
-            Err(e) => return Err(e),
         }
 
         // 2. 发送 READ_DATA 命令及参数
