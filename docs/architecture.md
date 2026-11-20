@@ -20,7 +20,7 @@
 | `session/`（执行后端抽象） | ✅ 新建：`RealSession`（DAXFlash）/ `SimSession`（虚拟设备） | `src/session/{mod,real}.rs` |
 | `da/engine`（StreamPort 协议引擎） | ✅ 新建：握手 → DA 上传 → 开存储 → 读 flash，全走 `&mut dyn StreamPort` | `src/da/engine.rs` |
 | `transport/vdev`（虚拟设备） | ✅ 新建：BROM + XFlash 设备侧状态机，画像驱动，含故障注入 | `src/transport/{vdev,wire}.rs` |
-| `fs/` | ✅ 已从 `system/fsimg/` 迁出（2026-11-20）；f2fs/ext4 单文件仍超 500 行，拆分在 Phase 1.4 后续完成 | `src/fs/` |
+| `fs/` | ✅ 已从 `system/fsimg/` 迁出并拆为 `fs/f2fs/{mod,layout}.rs`、`fs/ext4/{mod,tests}.rs`，全部 ≤500 行（2026-11-20） | `src/fs/` |
 | `slot/` `logging/` `cli/` | ⏳ 复用现有 `partition` / `progress`+`i18n` / `cmd::cli` | — |
 
 依赖方向：`core ← transport ← da ← exploit ← cmd`，`core` 不引用任何内部模块（`Stage` 定义在 core，避免反向依赖）。
