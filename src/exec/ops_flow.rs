@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::ops::erase::EraseOp;
+use crate::ops::format::FormatOp;
 use crate::ops::printgpt::PrintGptOp;
 use crate::ops::read::ReadOp;
 use crate::ops::seccfg::{SeccfgAction, SeccfgOp};
@@ -416,6 +417,40 @@ fn seccfg_unlock_writes_dm_verity_zero() {
         )
         .unwrap();
     assert!(again.outcome.summary.contains("无需修改"));
+}
+
+#[test]
+fn format_partition_writes_ext4_and_f2fs_magic() {
+    // format op 必须先在仿真闭环跑通（写 + 回读 magic），才允许接真机。
+    for (fs, magic_off, magic_bytes) in [
+        ("ext4", 0x438usize, vec![0x53, 0xEF]),
+        ("f2fs", 0x400usize, vec![0x10, 0x20, 0xF5, 0xF2]),
+    ] {
+        let mut s = sim("v5-clean");
+        let r = exec_yes()
+            .execute(
+                &FormatOp {
+                    part: "userdata".into(),
+                    fs: fs.into(),
+                },
+                &mut s,
+                false,
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            r.outcome.facts.iter().find(|(k, _)| k == "fs").map(|(_, v)| v.as_str()),
+            Some(fs)
+        );
+        let span = s.find_partition("userdata").unwrap();
+        let back = s.read_flash(span.addr, 0x43A).unwrap();
+        assert_eq!(
+            &back[magic_off..magic_off + magic_bytes.len()],
+            magic_bytes.as_slice(),
+            "{} magic 应正确落盘",
+            fs
+        );
+    }
 }
 
 #[test]

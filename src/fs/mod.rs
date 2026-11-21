@@ -9,14 +9,26 @@
 pub mod ext4;
 pub mod f2fs;
 
-/// 按分区名选择文件系统并生成最小镜像。
+/// 显式指定文件系统类型生成最小镜像。
 ///
-/// userdata 现代设备多用 f2fs；其余（metadata 等）不做格式化。
-/// `partition_size` 为分区字节大小，生成镜像会被裁剪/填充到该大小。
-pub fn format_image_for(partition: &str, partition_size: u64) -> Option<Vec<u8>> {
+/// - `f2fs`：现代 userdata 主流；
+/// - `ext4`：metadata / cache 等传统分区。生成器已由 e2fsck 1.47 验证可挂载
+///   （5 阶段全过），字节布局见 `fs/ext4/mod.rs` 注释。
+pub fn format_image_as(fs: &str, partition_size: u64) -> Result<Vec<u8>, String> {
     let size = partition_size.clamp(1024 * 1024, 64 * 1024 * 1024 * 1024);
+    match fs.to_ascii_lowercase().as_str() {
+        "f2fs" => Ok(f2fs::create_minimal_f2fs(size)),
+        "ext4" => Ok(ext4::create_minimal_ext4(size)),
+        other => Err(format!("不支持的文件系统: {}（仅 f2fs / ext4）", other)),
+    }
+}
+
+/// 按分区名自动选择文件系统（erase_data 的既有策略，行为保持不变）。
+pub fn format_image_for(partition: &str, partition_size: u64) -> Option<Vec<u8>> {
     match partition {
-        "userdata" | "user" => Some(f2fs::create_minimal_f2fs(size)),
+        "userdata" | "user" => Some(f2fs::create_minimal_f2fs(
+            partition_size.clamp(1024 * 1024, 64 * 1024 * 1024 * 1024),
+        )),
         _ => None,
     }
 }

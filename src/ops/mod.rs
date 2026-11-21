@@ -12,6 +12,7 @@
 pub mod avb_guard;
 pub mod checkpoint;
 pub mod erase;
+pub mod format;
 pub mod fsshell;
 pub mod printgpt;
 pub mod read;

@@ -73,6 +73,20 @@ pub(crate) fn handle_zyb_command(
                 _ => return Err("用法: mtkclient zyb seccfg unlock|lock|info [文件]".into()),
             }
         }
+        "format" => {
+            // 显式格式化指定分区为 f2fs / ext4（能力驱动，需危险确认）
+            if sub_args.len() < 2 {
+                return Err("用法: mtkclient zyb format <partition> <f2fs|ext4>".into());
+            }
+            let part = sub_args[0].clone();
+            let fs = sub_args[1].clone();
+            super::dispatch::run_op(
+                da,
+                &crate::ops::format::FormatOp { part, fs },
+                app_config,
+                log_level,
+            )?;
+        }
         "oem" => {
             if sub_args.is_empty() {
                 return Err("用法: mtkclient zyb oem unlock/lock".into());
