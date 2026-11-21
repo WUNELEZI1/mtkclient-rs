@@ -170,7 +170,8 @@ pub(crate) fn parse_da_header(
             let hw_code = u16::from_le_bytes([da_header[2], da_header[3]]);
 
             if hw_code != 0 {
-                let region_start = da_offset + 16;
+                // region_start is relative to da_header, not an absolute file offset.
+                let region_start = 16;
                 let entry_region_count = if offset >= 16 {
                     u16::from_le_bytes([da_header[14], da_header[15]])
                 } else {
