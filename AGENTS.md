@@ -10,7 +10,7 @@
 
 - **项目**：`mtkclient-rs`（工作目录 `D:\test\ZybClient`）——Rust 单 exe 的联发科（MTK）芯片刷机 / 取证工具。WinUSB 自动装驱动，`data/sdata.json` 动态加载芯片与 payload，支持读 / 写 / 擦分区、seccfg、AVB、fs_shell、断点续传、离线仿真。
 - **平台**：x86_64（64 位），必须兼容 Win10 64 位。
-- **当前分支 / HEAD**：`windows` 分支，HEAD = `c2f7673`（2026-11-21，Phase 1.5 dead code 清零；已 push `origin/windows`）。备份分支 `backup/pre-handoff-merge-20261120` 指向合并前的 `af52616`。
+- **当前分支 / HEAD**：`windows` 分支，HEAD = `42e6190`（2026-11-21，模块化拆分 + 注释英文化 + CI/CD + 发布加固；已 push `origin/windows`）。备份分支 `backup/pre-handoff-merge-20261120` 指向合并前的 `af52616`。
 - **架构演进**：已从早期"能跑的工具"演进为 `core ← transport ← da ← exec/ops ← cmd` 的能力驱动架构（规划器 / 执行器 / 能力校验、全离线仿真、混沌故障注入、GPT CRC + 分块断点续传、写后 AVB 体检、carbonara-hardened、CVE-2022-20069 场景）。12 篇设计文档在 `docs/`。
 - **阶段进度**：Phase 1 全部收口（1.1 混沌注入 / 1.2 CRC 断点续传 / 1.3 AVB 体检 + carbonara-hardened + CVE-2022-20069）；Phase 1.4 目录收口完成（`fs/`、`slot/`）；Phase 1.5 已完成 seccfg V3/V4 全版本解锁、ext4/f2fs 格式化接入、dead code 清零（`check`/`clippy --all-targets` 0 warning）。**剩余 Phase 1.5 候选**：设备透视 / 闪存健康 / 断点自愈（无细化规格）；之后才是 Phase 2 动态分区。
 - **测试规模**：324 个单测 + 4 个黑盒集成测试全绿（仓库锁定 nightly，见 `rust-toolchain.toml`；最终二进制链接仍需用户本机）。
