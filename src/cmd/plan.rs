@@ -38,7 +38,7 @@ pub fn cmd_plan(args: &[String], da_path: Option<&str>, cli_mode: &str) -> Resul
     let mut state = DeviceState {
         da_code,
         protocol: da_ref
-            .map(|d| ProtocolVersion::from_da_header(d))
+            .map(ProtocolVersion::from_da_header)
             .unwrap_or(ProtocolVersion::Unknown),
         ..Default::default()
     };

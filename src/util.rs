@@ -2,6 +2,19 @@
 //!
 //! 统一存放项目中重复使用的工具函数，避免各模块各自定义。
 
+/// 按十六进制解析 u64，接受可选 `0x`/`0X` 前缀与前后空白。
+///
+/// MediaTek LK 的 `partition-size:<part>` 变量常返回无 `0x` 前缀的十六进制
+/// （如 `1a638f8000`）；`u64::from_str_radix(s, 16)` 对纯数字串同样给出正确的
+/// hex 值，因此这里不做十进制回退——含非 hex 字符的串本来就该报错。
+pub fn parse_u64_hex(s: &str) -> Result<u64, std::num::ParseIntError> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        return u64::from_str_radix(hex, 16);
+    }
+    u64::from_str_radix(s, 16)
+}
+
 /// 将字节数组格式化为大写 HEX 字符串，字节间用空格分隔
 ///
 /// 示例: `[0xAB, 0xCD]` → `"AB CD"`

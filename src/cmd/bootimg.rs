@@ -70,7 +70,7 @@ fn cstr(b: &[u8]) -> String {
 fn align_up(x: u64, a: u64) -> u64 {
     (x + a - 1) & !(a - 1)
 }
-fn slice<'a>(buf: &'a [u8], off: u64, size: u32) -> Result<&'a [u8], String> {
+fn slice(buf: &[u8], off: u64, size: u32) -> Result<&[u8], String> {
     let end = off + size as u64;
     if end > buf.len() as u64 {
         return Err(format!(
@@ -424,19 +424,28 @@ pub fn cmd_boot(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let file = file.ok_or("缺少 boot.img 路径（用法: boot <boot.img> [--extract <dir>]）")?;
 
     let buf = std::fs::read(&file).map_err(|e| format!("读取 {} 失败: {}", file, e))?;
-    let bi = parse(&buf).map_err(|e| e)?;
+    let bi = parse(&buf)?;
 
     println!("{}", "==== boot 头部 ====".bold());
     println!("  版本        : {}", bi.version);
     println!("  page_size   : {}", bi.page_size);
     println!(
-        "  kernel      : off={} size={}",
-        bi.kernel_off, bi.kernel_size
+        "  kernel      : off={} size={} load=0x{:08X}",
+        bi.kernel_off, bi.kernel_size, bi.kernel_load
     );
     println!(
-        "  ramdisk     : off={} size={}",
-        bi.ramdisk_off, bi.ramdisk_size
+        "  ramdisk     : off={} size={} load=0x{:08X}",
+        bi.ramdisk_off, bi.ramdisk_size, bi.ramdisk_load
     );
+    if bi.second_size > 0 {
+        println!(
+            "  second      : off={} size={}",
+            bi.second_off, bi.second_size
+        );
+    }
+    if bi.tags_load != 0 {
+        println!("  tags_load   : 0x{:08X}", bi.tags_load);
+    }
     if bi.recovery_dtbo_size > 0 {
         println!(
             "  recovery_dtbo: off={} size={}",
@@ -493,8 +502,10 @@ pub fn cmd_boot(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     println!("  cpio 条目数: {}", entries.len());
     for e in &entries {
         println!(
-            "    {:>5o} {:<24} {} bytes",
+            "    {:>5o} {:>5}:{:<5} {:<24} {} bytes",
             e.mode & 0o7777,
+            e.uid,
+            e.gid,
             e.name,
             e.data.len()
         );

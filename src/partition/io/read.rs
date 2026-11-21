@@ -158,7 +158,7 @@ impl<'a> DAXFlash<'a> {
         bar.finish_with_message(format!("{} 读取完成 ({} 字节)", part_name, total));
         info!(
             "{}",
-            crate::i18n::tr("log_saved_to", &[&out_file.to_string()])
+            crate::i18n::tr("log_saved_to", &[out_file])
         );
         Ok(())
     }

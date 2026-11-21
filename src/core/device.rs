@@ -175,8 +175,10 @@ mod tests {
 
     #[test]
     fn v6_blocks_brom() {
-        let mut s = DeviceState::default();
-        s.da_code = 0x6983;
+        let mut s = DeviceState {
+            da_code: 0x6983,
+            ..Default::default()
+        };
         assert!(s.is_v6());
         assert!(!s.brom_reachable());
 
@@ -187,9 +189,11 @@ mod tests {
 
     #[test]
     fn auth_required_blocks_brom() {
-        let mut s = DeviceState::default();
-        s.protocol = ProtocolVersion::V5;
-        s.brom_auth_required = true;
+        let s = DeviceState {
+            protocol: ProtocolVersion::V5,
+            brom_auth_required: true,
+            ..Default::default()
+        };
         assert!(!s.brom_reachable());
     }
 

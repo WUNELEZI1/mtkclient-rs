@@ -159,8 +159,9 @@ pub fn dispatch_cmd(
         "dumpbrom" => {
             // BROM 本体提取（0xD1 BROM 读取路径，与 dumppreloader 同链路）
             let out = args.first().cloned().unwrap_or_else(|| "brom.bin".into());
-            // 可选第二个参数：显式长度（十六进制或十进制），默认 128 KiB
-            let size = match args.get(1) {
+            // 可选第二个参数：显式长度（十六进制或十进制）；不传则走默认 128 KiB 入口
+            let result = match args.get(1) {
+                None => da.preloader.dump_brom(),
                 Some(v) => {
                     let v = v.trim();
                     let n = if let Some(h) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
@@ -168,11 +169,13 @@ pub fn dispatch_cmd(
                     } else {
                         v.parse::<usize>()
                     };
-                    n.map_err(|_| crate::error::AppError::Protocol(format!("无效长度: {}", v)))?
+                    let size = n.map_err(|_| {
+                        crate::error::AppError::Protocol(format!("无效长度: {}", v))
+                    })?;
+                    da.preloader.dump_brom_with_size(size)
                 }
-                None => crate::exploit::dump::DEFAULT_BROM_SIZE,
             };
-            match da.preloader.dump_brom_with_size(size) {
+            match result {
                 Ok((data, name)) => {
                     let path = if args.is_empty() { name } else { out };
                     std::fs::write(&path, &data)
@@ -235,7 +238,7 @@ pub fn dispatch_cmd(
                 preloader_mode: da.preloader.is_preloader_mode,
             };
             let steps = crate::exploit::chain::plan(goal, &caps);
-            crate::exploit::chain::log_plan(&steps, goal);
+            crate::exploit::chain::log_plan(&steps, goal, &caps);
         }
         "slot" => {
             super::io::cmd_slot(da, args)

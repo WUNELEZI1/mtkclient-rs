@@ -376,20 +376,6 @@ fn superblock_checksum(_sb: &[u8]) -> u32 {
     0
 }
 
-/// 从字符串解析 u64，按**十六进制**语义解析（支持可选 `0x`/`0X` 前缀）。
-///
-/// 设备 `partition-size:<part>` 变量在多数 bootloader（含 MediaTek LK）下返回的是**无 `0x`
-/// 前缀的十六进制**（如 `1a638f8000`）。`u64::from_str_radix(s, 16)` 对纯数字串同样返回正确的
-/// hex 值（如 `"80000"` → `0x80000`），因此无需十进制回退。旧实现里那个 `Err(_) => s.parse()`
-/// 分支是死代码：任何只含 `0-9` 的串都不会触发 `Err`，而含非 hex 字符的串走到这里也必然失败。
-pub fn parse_u64_hex(s: &str) -> Result<u64, std::num::ParseIntError> {
-    let s = s.trim();
-    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        return u64::from_str_radix(hex, 16);
-    }
-    u64::from_str_radix(s, 16)
-}
-
 // ==================== 小端写入辅助函数 ====================
 
 fn write_u8(buf: &mut [u8], offset: usize, val: u8) {

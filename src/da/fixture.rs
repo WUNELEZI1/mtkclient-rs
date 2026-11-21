@@ -232,6 +232,14 @@ mod tests {
     }
 
     #[test]
+    fn get_returns_named_segment() {
+        let mut fx = Fixture::new();
+        fx.push(Segment::SocIdentify, vec![0xAA, 0xBB]);
+        assert_eq!(fx.get(Segment::SocIdentify), Some(&[0xAA, 0xBB][..]));
+        assert_eq!(fx.get(Segment::Readback), None);
+    }
+
+    #[test]
     fn unknown_segment_rejected() {
         let line = "{\"segment\":\"nope\",\"len\":1,\"bytes\":\"00\"}\n";
         assert_eq!(

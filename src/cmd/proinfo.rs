@@ -2,10 +2,11 @@
 //!
 //! 注意：MTK proinfo 没有全局统一格式，不同机型/代际差异很大。
 //! 这里实现两套策略：
-//!   1) 若分区起始存在 ASCII magic "PROINFO"，按 `version(u32) + count(u32)`
-//!      + 若干 `{name[32], offset(u32), length(u32)}` 块表解析；
-//!   2) 否则做启发式扫描：在分区内寻找"32 字节可打印 name + 合理 offset/length"
-//!      的候选块表项。
+//!    1) 若分区起始存在 ASCII magic "PROINFO"，按 `version(u32) + count(u32)`
+//!       + 若干 `{name[32], offset(u32), length(u32)}` 块表解析；
+//!    2) 否则做启发式扫描：在分区内寻找"32 字节可打印 name + 合理 offset/length"
+//!       的候选块表项。
+//!
 //! 真实设备上若 magic/布局不同，需要按机型校准。
 //!
 //! 本模块为离线命令，不需要连接设备。

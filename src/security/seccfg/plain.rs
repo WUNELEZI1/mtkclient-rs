@@ -40,15 +40,6 @@ pub(crate) const ALT_MARKER_OFFSET: usize = 0x850;
 pub(crate) const STATUS_COMPLETE: u32 = 0x4343_4343; // "CCCC"
 pub(crate) const STATUS_INCOMPLETE: u32 = 0x4949_4949; // "IIII"
 
-#[cfg(test)]
-pub(crate) fn status_label(status: u32) -> &'static str {
-    match status {
-        STATUS_COMPLETE => "完整(CCCC)",
-        STATUS_INCOMPLETE => "不完整(IIII)",
-        _ => "非法",
-    }
-}
-
 /// 明文首 4 字节标记类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlainMarker {

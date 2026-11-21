@@ -74,12 +74,10 @@ impl DescriptorTag {
     }
 }
 
-/// 解析后的 descriptor（保留原始字节 + 摘要信息）。
+/// 解析后的 descriptor（摘要信息）。
 #[derive(Debug, Clone)]
 pub struct Descriptor {
     pub tag: DescriptorTag,
-    /// 原始 descriptor 字节（含 tag + length 头），供改写时回写。
-    pub raw: Vec<u8>,
     /// 便捷字段：Property/ChainPartition/KernelCmdline 关联的分区名（若有）。
     pub partition_name: Option<String>,
 }
@@ -207,7 +205,6 @@ impl VbmetaImage {
             descriptors.push(Descriptor {
                 tag,
                 partition_name: parse_partition_name(&tag, &raw),
-                raw,
             });
             p += 16 + len;
         }

@@ -1,6 +1,7 @@
 //! ext4 单元测试（从 ext4.rs 机械拆分）
 
 use super::*;
+use crate::util::parse_u64_hex;
 
 
 #[test]
@@ -94,9 +95,9 @@ fn test_create_minimal_ext4_128mb() {
 #[test]
 fn test_parse_u64_hex_variants() {
     // 带 0x 前缀
-    assert_eq!(parse_u64_hex("0x1A638F8000").unwrap(), 0x1A63_8F80_00);
+    assert_eq!(parse_u64_hex("0x1A638F8000").unwrap(), 0x001A_638F_8000);
     // 无前缀的十六进制（MediaTek LK 的 partition-size 变量格式）
-    assert_eq!(parse_u64_hex("1a638f8000").unwrap(), 0x1A63_8F80_00);
+    assert_eq!(parse_u64_hex("1a638f8000").unwrap(), 0x001A_638F_8000);
     assert_eq!(parse_u64_hex("80000").unwrap(), 0x80000);
     // 带空格
     assert_eq!(parse_u64_hex(" 0x280000000 ").unwrap(), 0x2_8000_0000);

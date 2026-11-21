@@ -30,6 +30,10 @@ pub struct DeviceInfo {
     pub user: u64,
     pub block: u32,
     pub emmc_type: String,
+    /// CID 寄存器（eMMC 查询成功时非空），用于审计与换件核对。
+    pub cid: Vec<u8>,
+    /// 当前活动槽（A/B），由 GPT 槽位探测填充。
+    pub slot: Option<char>,
 }
 
 /// 分区定位结果（能力驱动路径统一用字节地址，不暴露 GPT 细节）。
@@ -315,6 +319,8 @@ impl Session for SimSession {
             user: storage.user,
             block: storage.block,
             emmc_type: storage.type_name().to_string(),
+            cid: Vec::new(),
+            slot: self.state.current_slot,
         });
         Ok(())
     }

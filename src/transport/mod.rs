@@ -17,6 +17,7 @@ use std::time::Duration;
 
 /// 端口类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub enum PortKind {
     /// BROM over WinUSB（VID 0x0E8D / PID 0x0003）
     BromUsb,
@@ -28,6 +29,7 @@ pub enum PortKind {
     Mock,
 }
 
+#[cfg(test)]
 impl PortKind {
     pub const fn is_brom(self) -> bool {
         matches!(self, PortKind::BromUsb)
@@ -36,6 +38,7 @@ impl PortKind {
 
 /// 传输方向。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub enum Direction {
     /// 设备 → 主机
     In,
@@ -45,10 +48,12 @@ pub enum Direction {
 
 /// 端点号（不含方向位）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub struct Endpoint(pub u8);
 
 /// 控制传输请求（对应 USB setup packet 的前四项）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub struct ControlRequest {
     /// bmRequestType
     pub request_type: u8,
@@ -60,6 +65,7 @@ pub struct ControlRequest {
     pub index: u16,
 }
 
+#[cfg(test)]
 impl ControlRequest {
     pub const fn new(request_type: u8, request: u8, value: u16, index: u16) -> Self {
         Self {
@@ -78,8 +84,10 @@ pub enum PortError {
     Timeout,
     /// 设备断开，需用户重插
     Disconnected,
+    #[cfg(test)]
     /// 后端不支持该操作
     NotSupported(&'static str),
+    #[cfg(test)]
     /// IO / 驱动错误
     Io(String),
 }
@@ -102,7 +110,9 @@ impl fmt::Display for PortError {
         match self {
             PortError::Timeout => write!(f, "传输超时"),
             PortError::Disconnected => write!(f, "设备已断开"),
+            #[cfg(test)]
             PortError::NotSupported(op) => write!(f, "后端不支持: {}", op),
+            #[cfg(test)]
             PortError::Io(e) => write!(f, "IO 错误: {}", e),
         }
     }
@@ -140,6 +150,7 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
+    #[cfg(test)]
     /// 完全关闭重试（用于严格模式 / 回归对照）。
     pub const fn none() -> Self {
         Self {
@@ -187,6 +198,7 @@ impl<'a> RetryingPort<'a> {
         }
     }
 
+    #[cfg(test)]
     /// 本端口上累计发生的重试次数（诊断 / 测试断言用）。
     pub fn retries(&self) -> u32 {
         self.retries
@@ -206,9 +218,6 @@ impl StreamPort for RetryingPort<'_> {
         self.inner.flush()
     }
 
-    fn kind(&self) -> PortKind {
-        self.inner.kind()
-    }
 
     fn drain(&mut self) -> Result<(), PortError> {
         self.inner.drain()
@@ -264,7 +273,6 @@ pub trait StreamPort: Send {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, PortError>;
     fn write(&mut self, buf: &[u8]) -> Result<usize, PortError>;
     fn flush(&mut self) -> Result<(), PortError>;
-    fn kind(&self) -> PortKind;
 
     /// 丢弃输入方向上尚未消费的字节（重新同步用）。
     ///
@@ -301,6 +309,7 @@ pub trait StreamPort: Send {
     }
 }
 
+#[cfg(test)]
 /// BROM 端口：在字节流之上暴露控制传输 / 批量传输。
 ///
 /// Kamakiri2 依赖 `control_transfer(0xA1, 0x25/0x21, ...)` 与 `(0x21, 0x20, ...)`，
@@ -322,6 +331,7 @@ pub trait BromPort: StreamPort {
 
 /// 枚举诊断：把“为什么连不上”讲清楚，而不是只说 NotFound。
 #[derive(Debug, Clone, Default)]
+#[cfg(test)]
 pub struct EnumerateDiagnostics {
     /// 驱动层状态（设备管理器视角，Windows 有效）
     pub driver_state: Option<String>,
@@ -334,6 +344,7 @@ pub struct EnumerateDiagnostics {
     pub actual: Option<String>,
 }
 
+#[cfg(test)]
 impl EnumerateDiagnostics {
     pub fn push_attempt(&mut self, msg: impl Into<String>) {
         self.attempts.push(msg.into());
@@ -372,6 +383,14 @@ impl EnumerateDiagnostics {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+
+    #[test]
+    fn port_kind_classification() {
+        assert!(PortKind::BromUsb.is_brom());
+        assert!(!PortKind::PreloaderSerial.is_brom());
+        assert!(!PortKind::PreloaderUsb.is_brom());
+        assert!(!PortKind::Mock.is_brom());
+    }
 
     #[test]
     fn error_classification() {
@@ -441,9 +460,6 @@ mod tests {
             Ok(())
         }
 
-        fn kind(&self) -> PortKind {
-            PortKind::Mock
-        }
     }
 
     #[test]
@@ -498,9 +514,6 @@ mod tests {
             fn flush(&mut self) -> Result<(), PortError> {
                 Ok(())
             }
-            fn kind(&self) -> PortKind {
-                PortKind::Mock
-            }
         }
         let mut port = HalfPort { step: 0 };
         let mut rp = RetryingPort::new(&mut port, RetryPolicy::with_max_retries(3));
@@ -530,9 +543,6 @@ mod tests {
             }
             fn flush(&mut self) -> Result<(), PortError> {
                 Ok(())
-            }
-            fn kind(&self) -> PortKind {
-                PortKind::Mock
             }
         }
         let mut port = StuckPort { first: true };
@@ -587,8 +597,10 @@ mod tests {
 
     #[test]
     fn diagnostics_report() {
-        let mut d = EnumerateDiagnostics::default();
-        d.driver_state = Some("WinUSB 已安装".into());
+        let mut d = EnumerateDiagnostics {
+            driver_state: Some("WinUSB 已安装".into()),
+            ..Default::default()
+        };
         d.found
             .push((0x0E8D, 0x0003, "SN1234".into(), PortKind::BromUsb));
         d.expected = Some("BROM".into());

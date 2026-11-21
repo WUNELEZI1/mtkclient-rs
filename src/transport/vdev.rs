@@ -16,7 +16,7 @@
 use std::collections::VecDeque;
 
 use super::wire;
-use super::{PortError, PortKind, StreamPort};
+use super::{PortError, StreamPort};
 
 // =============================================================================
 // 设备画像
@@ -378,8 +378,10 @@ impl DeviceProfile {
 
     /// 内置预设（`--port mock://<预设名>`）。
     pub fn preset(name: &str) -> Option<Self> {
-        let mut p = DeviceProfile::default();
-        p.partitions = default_partitions();
+        let mut p = DeviceProfile {
+            partitions: default_partitions(),
+            ..Default::default()
+        };
         match name {
             // 干净的 V5 机器：无安全标志，直接 DA 加载即可读表（cost=690 路径）
             "v5-clean" => {
@@ -1385,7 +1387,7 @@ impl VirtualDevice {
     /// 这样擦 1 GiB 也只占几条记录，而不是 26 万个 4 KiB 页。
     fn erase_range(&mut self, addr: u64, size: u64) {
         let end = addr + size;
-        let (p0, p1) = (addr / PAGE, (end + PAGE - 1) / PAGE);
+        let (p0, p1) = (addr / PAGE, end.div_ceil(PAGE));
         self.pages.retain(|p, _| *p < p0 || *p >= p1);
         self.erased.push((addr, end));
         // 合并相邻/重叠区间
@@ -1613,8 +1615,7 @@ impl StreamPort for VirtualDevice {
                 deliver = m - d;
             }
         }
-        for i in 0..m {
-            let b = self.out.pop_front().unwrap();
+        for (i, b) in self.out.drain(..m).enumerate() {
             if i < deliver {
                 buf[i] = b;
             }
@@ -1636,9 +1637,6 @@ impl StreamPort for VirtualDevice {
         Ok(())
     }
 
-    fn kind(&self) -> PortKind {
-        PortKind::Mock
-    }
 
     /// 清空未消费的输入字节（帧错位后重新同步）。
     fn drain(&mut self) -> Result<(), PortError> {
@@ -1717,7 +1715,7 @@ fn build_pages(profile: &DeviceProfile) -> std::collections::HashMap<u64, Vec<u8
                     hdr[16..20].copy_from_slice(&profile.seccfg_dm_verity.to_le_bytes());
                     hdr[20..24].copy_from_slice(&0u32.to_le_bytes()); // sboot_runtime
                     hdr[24..28].copy_from_slice(&0x4545_4545u32.to_le_bytes());
-                    let digest = crate::sha::Sha256::digest(&hdr);
+                    let digest = crate::sha::Sha256::digest(hdr);
                     let mut img = hdr.to_vec();
                     img.extend_from_slice(&digest);
                     put(addr, &img);

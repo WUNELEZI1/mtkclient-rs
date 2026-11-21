@@ -57,8 +57,8 @@ pub(crate) fn check_write_resume(input_file: &str, addr: u64, total: u64) -> Opt
 
     let resume_addr = content
         .lines()
-        .find_map(|line| line.strip_prefix("addr=0x"))
-        .and_then(|v| u64::from_str_radix(v, 16).ok());
+        .find_map(|line| line.strip_prefix("addr="))
+        .and_then(|v| crate::util::parse_u64_hex(v).ok());
     let resume_total = content
         .lines()
         .find_map(|line| line.strip_prefix("total="))

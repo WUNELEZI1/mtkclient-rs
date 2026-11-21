@@ -29,10 +29,6 @@ impl SafetyFlags {
         SafetyFlags(raw)
     }
 
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
-
     pub const fn has(self, bit: u32) -> bool {
         self.0 & bit != 0
     }
@@ -56,6 +52,7 @@ impl SafetyFlags {
         self.has(Self::MEMWRITE)
     }
 
+    #[cfg(test)]
     pub const fn is_zero(self) -> bool {
         self.0 == 0
     }

@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 
-use super::{BromPort, ControlRequest, Direction, Endpoint, PortError, PortKind, StreamPort};
+use super::{BromPort, ControlRequest, Direction, Endpoint, PortError, StreamPort};
 
 /// 故障类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,9 +122,6 @@ impl StreamPort for MockPort {
         Ok(())
     }
 
-    fn kind(&self) -> PortKind {
-        PortKind::Mock
-    }
 }
 
 impl BromPort for MockPort {
@@ -196,6 +193,34 @@ mod tests {
         assert!(p.read(&mut b).is_ok());
         let mut b2 = [0u8; 4];
         assert_eq!(p.read(&mut b2), Err(PortError::Timeout));
+    }
+
+    #[test]
+    fn bulk_transfer_logs_endpoint_and_direction() {
+        let mut p = MockPort::new(b"in".to_vec());
+        let ep = Endpoint(0x81);
+        let mut b = [0u8; 2];
+        assert_eq!(p.bulk_transfer(ep, &mut b, Direction::In).unwrap(), 2);
+        assert_eq!(&b, b"in");
+        let mut out = *b"out";
+        assert_eq!(
+            p.bulk_transfer(Endpoint(0x01), &mut out, Direction::Out)
+                .unwrap(),
+            3
+        );
+        assert_eq!(p.tx(), b"out");
+        let log = p.bulk_log();
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[0].0, ep);
+        assert_eq!(log[0].1, Direction::In);
+        assert_eq!(log[1].1, Direction::Out);
+    }
+
+    #[test]
+    fn injected_disconnect_maps_to_port_error() {
+        let mut p = MockPort::new(vec![0u8; 16]).with_fault(0, FaultKind::Disconnect);
+        let mut b = [0u8; 4];
+        assert_eq!(p.read(&mut b), Err(PortError::Disconnected));
     }
 
     #[test]

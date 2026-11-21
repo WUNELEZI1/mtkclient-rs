@@ -125,6 +125,8 @@ impl Session for RealSession<'_, '_> {
             user: info.user_size,
             block: info.block_size,
             emmc_type: info.emmc_type,
+            cid: info.cid,
+            slot: self.state.current_slot,
         })
     }
 

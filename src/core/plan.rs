@@ -69,16 +69,13 @@ impl Mode {
 /// 计划中的一步。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanStep {
-    /// 切换工作模式（需要重插 / 重启）
+    /// 切换工作模式（需要重插 / 重启）；当前仅用于成本权重测试
+    #[cfg(test)]
     ModeSwitch(Mode),
     /// 施加一个 exploit（名字取自注册表）
     Exploit(&'static str),
     /// 加载 DA
     DaLoad(super::device::ProtocolVersion),
-    /// patch DA（Carbonara / Heapbait）
-    DaPatch(&'static str),
-    /// 重试（例如握手失败后第 N 次）
-    Retry(u8),
     /// 参数调整（例如降低 DA 波特率）
     ParamAdjust(&'static str),
 }
@@ -86,11 +83,10 @@ pub enum PlanStep {
 impl PlanStep {
     pub fn label(&self) -> String {
         match self {
+            #[cfg(test)]
             PlanStep::ModeSwitch(m) => format!("mode_switch({})", m.label()),
             PlanStep::Exploit(n) => format!("exploit({})", n),
             PlanStep::DaLoad(p) => format!("da_load({})", p.label()),
-            PlanStep::DaPatch(n) => format!("da_patch({})", n),
-            PlanStep::Retry(n) => format!("retry({})", n),
             PlanStep::ParamAdjust(n) => format!("param_adjust({})", n),
         }
     }
@@ -121,6 +117,7 @@ impl Cost {
     pub fn add_step(&mut self, step: &PlanStep) {
         self.steps += 1;
         match step {
+            #[cfg(test)]
             PlanStep::ModeSwitch(_) => {
                 self.mode_switches += 1;
                 self.est_ms += 3000;
@@ -129,9 +126,7 @@ impl Cost {
                 self.da_loads += 1;
                 self.est_ms += 1500;
             }
-            PlanStep::DaPatch(_) => self.est_ms += 800,
             PlanStep::Exploit(_) => self.est_ms += 500,
-            PlanStep::Retry(_) => self.est_ms += 1000,
             PlanStep::ParamAdjust(_) => self.est_ms += 200,
         }
     }

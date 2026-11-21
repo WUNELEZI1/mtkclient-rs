@@ -87,7 +87,8 @@ impl DangerConfirm {
         }
     }
 
-    /// 打开交互式确认（仅在 stdin 是终端时由 CLI 调用）。
+    /// 打开交互式确认（单元测试直接构造；CLI 走 `set_interactive`）。
+    #[cfg(test)]
     pub fn interactive(mut self, on: bool) -> Self {
         self.interactive = on;
         self
@@ -103,10 +104,6 @@ impl DangerConfirm {
     pub fn with_reader(mut self, r: impl BufRead + 'static) -> Self {
         self.injected = Some(Box::new(r));
         self
-    }
-
-    pub fn assume_yes(&self) -> bool {
-        self.assume_yes
     }
 
     /// 请求确认。

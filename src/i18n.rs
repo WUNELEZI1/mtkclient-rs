@@ -1224,10 +1224,7 @@ mod tests {
         set(Lang::Fr);
         assert_eq!(t("log_da_loaded"), "DA chargé");
         set(Lang::En);
-        assert_eq!(
-            tr("log_write_done", &["1024", "boot"]).contains("boot"),
-            true
-        );
+        assert!(tr("log_write_done", &["1024", "boot"]).contains("boot"));
     }
 
     #[test]
@@ -1240,6 +1237,7 @@ mod tests {
         set(Lang::En);
     }
 
+    #[test]
     fn help_mentions_language_in_all_langs() {
         for l in [Lang::En, Lang::ZhCn, Lang::Fr, Lang::Ru, Lang::Es, Lang::Ar] {
             set(l);

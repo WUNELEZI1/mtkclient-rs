@@ -193,7 +193,7 @@ impl Op for SeccfgOp {
         // 构造新头 + 签名（真机走 HACC/SEJ；仿真返回明文摘要）
         let (header, new_lock, new_dm, _) =
             crate::security::seccfg::build::build_v4_header(&v4, self.action.flag())?;
-        let digest = crate::sha::Sha256::digest(&header);
+        let digest = crate::sha::Sha256::digest(header);
         let enc = ctx.session.seccfg_sign(&digest, &v4.hwtype)?;
         let image =
             crate::security::seccfg::build::pad_seccfg_image(&header, &enc, span.size as usize);

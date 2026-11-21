@@ -45,6 +45,13 @@ impl Op for PrintGptOp {
             info.protocol,
             format!("  ({})", info.emmc_type)
         );
+        if let Some(slot) = info.slot {
+            println!("  活动槽   : {}", slot);
+        }
+        if !info.cid.is_empty() {
+            let cid: String = info.cid.iter().map(|b| format!("{:02X}", b)).collect();
+            println!("  CID      : {}", cid);
+        }
         println!(
             "  Boot1: 0x{:08X} ({:.2} MB)   Boot2: 0x{:08X} ({:.2} MB)",
             info.boot1,

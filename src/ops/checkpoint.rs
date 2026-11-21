@@ -10,7 +10,9 @@
 //! - **完成后删除**：成功后删除 `.resume`，避免下次误续传。
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 /// checkpoint 版本（格式变更时递增，旧文件自动失效）。
 ///
@@ -570,6 +572,7 @@ mod tests {
         let mut t = CrcTracker::new(1024);
         t.feed(&data[..1500]);
         t.feed(&data[1500..]);
+        assert_eq!(t.completed_chunks(), 2, "末块未满，不应计入已完成块");
         let snap = t.snapshot();
         assert_eq!(snap.len(), 3);
         assert_eq!(snap[0].len, 1024);
