@@ -126,8 +126,13 @@ impl VbmetaImage {
         };
 
         // The auth block follows the header, and the aux block follows the auth block.
-        let auth_end = AVB_HEADER_SIZE + header.authentication_data_block_size as usize;
-        let aux_end = auth_end + header.auxiliary_data_block_size as usize;
+        // Use checked arithmetic so hostile size fields cannot wrap past the bounds check.
+        let auth_end = AVB_HEADER_SIZE
+            .checked_add(header.authentication_data_block_size as usize)
+            .ok_or(AvbError::BadDescriptor)?;
+        let aux_end = auth_end
+            .checked_add(header.auxiliary_data_block_size as usize)
+            .ok_or(AvbError::BadDescriptor)?;
         if auth_end > data.len() || aux_end > data.len() {
             return Err(AvbError::BadDescriptor);
         }
@@ -137,7 +142,9 @@ impl VbmetaImage {
         // Descriptors live in the aux block (descriptors_offset is relative to the aux block start).
         let mut descriptors = Vec::new();
         let d_start = header.descriptors_offset as usize;
-        let d_end = d_start + header.descriptors_size as usize;
+        let d_end = d_start
+            .checked_add(header.descriptors_size as usize)
+            .ok_or(AvbError::BadDescriptor)?;
         if d_end > aux_block.len() {
             return Err(AvbError::BadDescriptor);
         }
@@ -145,15 +152,19 @@ impl VbmetaImage {
         while p + 16 <= d_end {
             let tag = DescriptorTag::from(rd_u64(&aux_block, p));
             let len = rd_u64(&aux_block, p + 8) as usize;
-            if p + 16 + len > d_end {
+            let entry_end = p
+                .checked_add(16)
+                .and_then(|v| v.checked_add(len))
+                .ok_or(AvbError::BadDescriptor)?;
+            if entry_end > d_end {
                 return Err(AvbError::BadDescriptor);
             }
-            let raw = aux_block[p..p + 16 + len].to_vec();
+            let raw = aux_block[p..entry_end].to_vec();
             descriptors.push(Descriptor {
                 tag,
                 partition_name: parse_partition_name(&tag, &raw),
             });
-            p += 16 + len;
+            p = entry_end;
         }
 
         Ok(Self {
