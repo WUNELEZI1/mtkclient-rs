@@ -48,6 +48,10 @@ impl<'a> GptInfo<'a> {
             .windows(8)
             .position(|w| w == b"EFI PART")
             .ok_or_else(|| "GPT 数据无效".to_string())?;
+        // The header fields read below extend to base_offset + 92.
+        if base_offset + 92 > data.len() {
+            return Err("GPT 数据无效".to_string());
+        }
 
         let header_size =
             u32::from_le_bytes(data[base_offset + 12..base_offset + 16].try_into().unwrap());
