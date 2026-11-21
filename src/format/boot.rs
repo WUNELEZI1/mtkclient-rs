@@ -367,18 +367,27 @@ pub fn parse_cpio(buf: &[u8]) -> Result<Vec<CpioEntry>, String> {
         let filesize = hx(54) as usize;
         let namesize = hx(94) as usize;
         let name_pos = pos + 110;
-        let name = String::from_utf8_lossy(&buf[name_pos..name_pos + namesize.saturating_sub(1)])
-            .into_owned();
+        let name_end = name_pos
+            .checked_add(namesize.saturating_sub(1))
+            .filter(|&end| end <= buf.len())
+            .ok_or_else(|| format!("cpio 名称越界 @{}: namesize={}", pos, namesize))?;
+        let name = String::from_utf8_lossy(&buf[name_pos..name_end]).into_owned();
         // newc alignment rules (same as the Linux initramfs parser):
         // the name field is aligned to (namesize+3)&!3, the data field to (filesize+3)&!3
-        let namefield_len = (namesize + 3) & !3;
-        let data_pos = pos + 110 + namefield_len;
-        let data_end = data_pos + ((filesize + 3) & !3);
+        let namefield_len = namesize.checked_add(3).ok_or("cpio namesize 溢出")? & !3;
+        let data_pos = pos
+            .checked_add(110)
+            .and_then(|v| v.checked_add(namefield_len))
+            .ok_or("cpio 数据偏移溢出")?;
+        let data_end = data_pos
+            .checked_add(filesize.checked_add(3).ok_or("cpio filesize 溢出")? & !3)
+            .ok_or("cpio 数据偏移溢出")?;
         if name == "TRAILER!!!" {
             break;
         }
-        let data = if filesize > 0 && data_pos + filesize <= buf.len() {
-            buf[data_pos..data_pos + filesize].to_vec()
+        let data_limit = data_pos.checked_add(filesize).ok_or("cpio 数据偏移溢出")?;
+        let data = if filesize > 0 && data_limit <= buf.len() {
+            buf[data_pos..data_limit].to_vec()
         } else {
             Vec::new()
         };
@@ -389,6 +398,10 @@ pub fn parse_cpio(buf: &[u8]) -> Result<Vec<CpioEntry>, String> {
             gid,
             data,
         });
+        // A malformed entry must still advance the cursor to avoid an infinite loop.
+        if data_end <= pos {
+            return Err(format!("cpio 条目未前进 @{}", pos));
+        }
         pos = data_end;
     }
     Ok(entries)
