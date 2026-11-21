@@ -108,6 +108,10 @@ impl<'a> GptInfo<'a> {
     }
 
     fn parse_entry(&self, entry_offset: usize) -> Result<PartitionEntry, String> {
+        // Fixed layout reads through byte 128; undersized entries must be rejected.
+        if self.part_entry_size < 128 {
+            return Err("分区条目数据超出范围".to_string());
+        }
         if entry_offset + self.part_entry_size as usize > self.data.len() {
             return Err("分区条目数据超出范围".to_string());
         }
