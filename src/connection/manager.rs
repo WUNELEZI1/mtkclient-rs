@@ -19,6 +19,10 @@ use crate::usb::{UsbContext, UsbStage};
 use log::{error, info, trace, warn};
 use std::time::Duration;
 
+#[path = "manager/decision.rs"]
+mod decision;
+use decision::{ConnectedState, SmartInitDecision};
+
 pub(crate) const RECONNECT_INTERVAL_MS: u64 = 200;
 pub(crate) const RECONNECT_LOG_INTERVAL: u32 = 25;
 // Serial handshake retry settings are used only by the `UsbBusDetectionResult::SerialPort`
@@ -97,9 +101,8 @@ impl ConnectionManager {
                             match self.serial_handshake_and_switch(port_name, context) {
                                 Ok(preloader) => {
                                     info!("{}", crate::i18n::t("log_brom_com_ok").green().bold());
-                                    self.mode = DeviceMode::Brom;
-                                    self.stage = UsbStage::Brom;
-                                    self.port_name = Some(port_name.clone());
+                                    ConnectedState::new(DeviceMode::Brom, Some(port_name.clone()))
+                                        .apply(self);
                                     return Ok((preloader, DeviceMode::Brom));
                                 }
                                 Err(e) => {
@@ -154,9 +157,11 @@ impl ConnectionManager {
                             );
                             match self.preloader_serial_handshake(&p.port_name) {
                                 Ok(preloader) => {
-                                    self.mode = DeviceMode::Preloader;
-                                    self.stage = UsbStage::Preloader;
-                                    self.port_name = Some(p.port_name.clone());
+                                    ConnectedState::new(
+                                        DeviceMode::Preloader,
+                                        Some(p.port_name.clone()),
+                                    )
+                                    .apply(self);
                                     return Ok((preloader, DeviceMode::Preloader));
                                 }
                                 Err(e) => {
@@ -167,7 +172,7 @@ impl ConnectionManager {
                     }
                 }
 
-                std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
+                std::thread::sleep(SmartInitDecision::ReconnectInterval.sleep_duration());
             }
         }
 
@@ -227,7 +232,9 @@ impl ConnectionManager {
                             warn!(
                                 "[COM] 系统中没有任何 COM 口；当前仍是串口驱动，继续等待串口设备"
                             );
-                            std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
+                            std::thread::sleep(
+                                SmartInitDecision::ReconnectInterval.sleep_duration(),
+                            );
                             continue;
                         }
 
@@ -247,9 +254,8 @@ impl ConnectionManager {
                                             .green()
                                             .bold()
                                     );
-                                    self.mode = DeviceMode::Brom;
-                                    self.stage = UsbStage::Brom;
-                                    self.port_name = Some(port.clone());
+                                    ConnectedState::new(DeviceMode::Brom, Some(port.clone()))
+                                        .apply(self);
                                     return Ok((preloader, DeviceMode::Brom));
                                 }
                                 Err(e) => {
@@ -262,7 +268,7 @@ impl ConnectionManager {
                             "[COM] 所有 COM 口均握手失败；当前仍是串口驱动，不进入 WinUSB 直连，继续等待"
                         );
                         consecutive_handshake_failures += all_ports.len() as u32;
-                        std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
+                        std::thread::sleep(SmartInitDecision::ReconnectInterval.sleep_duration());
                         continue;
                     }
 
@@ -276,9 +282,7 @@ impl ConnectionManager {
                         match self.serial_handshake_and_switch(&port_name, context) {
                             Ok(preloader) => {
                                 info!("{}", "COM 口前置握手成功，已切换到 WinUSB".green().bold());
-                                self.mode = DeviceMode::Brom;
-                                self.stage = UsbStage::Brom;
-                                self.port_name = Some(port_name);
+                                ConnectedState::new(DeviceMode::Brom, Some(port_name)).apply(self);
                                 return Ok((preloader, DeviceMode::Brom));
                             }
                             Err(e) => {
@@ -291,9 +295,9 @@ impl ConnectionManager {
                                         "[COM] 等待 {} 秒后重试...",
                                         SERIAL_HANDSHAKE_RETRY_DELAY_SECS
                                     );
-                                    std::thread::sleep(Duration::from_secs(
-                                        SERIAL_HANDSHAKE_RETRY_DELAY_SECS,
-                                    ));
+                                    std::thread::sleep(
+                                        SmartInitDecision::SerialRetryDelay.sleep_duration(),
+                                    );
                                 }
                             }
                         }
@@ -304,7 +308,7 @@ impl ConnectionManager {
                         SERIAL_HANDSHAKE_RETRY
                     );
                     consecutive_handshake_failures += SERIAL_HANDSHAKE_RETRY;
-                    std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
+                    std::thread::sleep(SmartInitDecision::ReconnectInterval.sleep_duration());
                     continue;
                 }
                 // The `Unknown` variant likewise comes only from Windows SetupAPI; gate it as well.
@@ -344,9 +348,8 @@ impl ConnectionManager {
                                             .green()
                                             .bold()
                                     );
-                                    self.mode = DeviceMode::Brom;
-                                    self.stage = UsbStage::Brom;
-                                    self.port_name = Some(port.clone());
+                                    ConnectedState::new(DeviceMode::Brom, Some(port.clone()))
+                                        .apply(self);
                                     return Ok((preloader, DeviceMode::Brom));
                                 }
                                 Err(e) => {
@@ -358,7 +361,7 @@ impl ConnectionManager {
                         warn!("[COM] 所有 COM 口均握手失败，继续等待设备...");
                     }
 
-                    std::thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
+                    std::thread::sleep(SmartInitDecision::ReconnectInterval.sleep_duration());
                 }
             }
         }
@@ -471,3 +474,7 @@ impl ConnectionManager {
         Ok(preloader)
     }
 }
+
+#[cfg(test)]
+#[path = "manager/tests.rs"]
+mod tests;

@@ -1,3 +1,9 @@
+// Preserve the historical path; the shared table builder now lives in `crate::util`.
+use crate::util::CRC_TABLE;
+pub use crate::util::crc32;
+#[allow(unused_imports)]
+pub(crate) use crate::util::make_crc_table;
+
 /// Incremental CRC32 (IEEE 802.3, matching the GPT checksum).
 ///
 /// Uses a lookup table: a bitwise implementation would need about 500 million iterations for 64 MiB, too slow.
@@ -5,28 +11,6 @@
 pub struct Crc32 {
     state: u32,
 }
-
-const fn make_crc_table() -> [u32; 256] {
-    let mut table = [0u32; 256];
-    let mut i = 0usize;
-    while i < 256 {
-        let mut crc = i as u32;
-        let mut j = 0;
-        while j < 8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ 0xEDB8_8320
-            } else {
-                crc >> 1
-            };
-            j += 1;
-        }
-        table[i] = crc;
-        i += 1;
-    }
-    table
-}
-
-static CRC_TABLE: [u32; 256] = make_crc_table();
 
 impl Default for Crc32 {
     fn default() -> Self {
@@ -56,13 +40,6 @@ impl Crc32 {
     pub fn finalize(&self) -> u32 {
         !self.state
     }
-}
-
-/// One-shot CRC32 calculation.
-pub fn crc32(data: &[u8]) -> u32 {
-    let mut c = Crc32::new();
-    c.update(data);
-    c.finalize()
 }
 
 /// Source file "fingerprint": size + mtime in seconds.

@@ -14,21 +14,6 @@ const TYPE_GUID: [u8; 16] = [
     0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4,
 ];
 
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFFu32;
-    for &b in data {
-        crc ^= b as u32;
-        for _ in 0..8 {
-            if crc & 1 != 0 {
-                crc = (crc >> 1) ^ 0xEDB8_8320;
-            } else {
-                crc >>= 1;
-            }
-        }
-    }
-    !crc
-}
-
 /// Generate initial content for each partition (stored sparsely by 4 KiB page).
 ///
 /// Only partitions "with content" occupy pages: the blank area outside the GPT reads back as 0x00 and does not waste memory.
@@ -143,7 +128,7 @@ pub(super) fn build_image(profile: &DeviceProfile) -> Vec<u8> {
         }
     }
     let entries_len = (GPT_ENTRIES * GPT_ENTRY_SIZE) as usize;
-    let entries_crc = crc32(&img[entries_off..entries_off + entries_len]);
+    let entries_crc = crate::util::crc32(&img[entries_off..entries_off + entries_len]);
 
     // LBA1: primary GPT header
     let h = 512usize;
@@ -162,7 +147,7 @@ pub(super) fn build_image(profile: &DeviceProfile) -> Vec<u8> {
     let hdr_crc = {
         let mut tmp = img[h..h + 92].to_vec();
         tmp[16..20].fill(0);
-        crc32(&tmp)
+        crate::util::crc32(&tmp)
     };
     img[h + 16..h + 20].copy_from_slice(&hdr_crc.to_le_bytes());
     img

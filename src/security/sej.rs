@@ -474,3 +474,7 @@ pub fn sej_hacc_sign(data: &[u8], hw_code: u16, legacy: bool) -> Result<Vec<u8>,
         }
     }
 }
+
+#[cfg(test)]
+#[path = "sej/tests.rs"]
+mod tests;

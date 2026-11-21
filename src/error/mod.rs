@@ -120,3 +120,19 @@ impl From<XmlError> for AppError {
         AppError::Protocol(err.to_string())
     }
 }
+
+// Legacy command handlers return boxed errors; keep them at the protocol layer, matching the
+// previous explicit `.map_err(|e| AppError::Protocol(e.to_string()))` behaviour.
+impl From<Box<dyn std::error::Error>> for AppError {
+    fn from(err: Box<dyn std::error::Error>) -> Self {
+        AppError::Protocol(err.to_string())
+    }
+}
+
+// Executor failures are protocol-layer interaction failures; preserve the previous explicit
+// `.map_err(|e| AppError::Protocol(e.to_string()))` behaviour so `?` can be used at call sites.
+impl From<crate::exec::ExecError> for AppError {
+    fn from(err: crate::exec::ExecError) -> Self {
+        AppError::Protocol(err.to_string())
+    }
+}

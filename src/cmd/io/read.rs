@@ -128,7 +128,8 @@ pub fn cmd_poke(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
 /// Parse an address argument (hex with a 0x prefix, or decimal)
 pub fn parse_addr(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
     let s = s.trim();
-    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+    let hex = crate::util::strip_hex_prefix(s);
+    if hex.len() < s.len() {
         u64::from_str_radix(hex, 16)
             .map_err(|e| format!("无效的十六进制地址 '{}': {}", s, e).into())
     } else {
@@ -140,7 +141,8 @@ pub fn parse_addr(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
 /// Parse a size argument (hex with a 0x prefix, or decimal)
 pub fn parse_size(s: &str) -> Result<u32, Box<dyn std::error::Error>> {
     let s = s.trim();
-    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+    let hex = crate::util::strip_hex_prefix(s);
+    if hex.len() < s.len() {
         u32::from_str_radix(hex, 16)
             .map_err(|e| format!("无效的十六进制 size '{}': {}", s, e).into())
     } else {

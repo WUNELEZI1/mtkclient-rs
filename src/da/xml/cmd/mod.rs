@@ -116,7 +116,15 @@ mod handlers;
 // Public re-exports (keeps crate::da::xml::cmd::* reachable)
 // =============================================================================
 
-pub use handlers::*;
+// Explicitly re-export every public handler builder that `pub use handlers::*;`
+// previously exposed, so `crate::da::xml::cmd::*` keeps the exact same public surface.
+#[allow(unused_imports)]
+pub use handlers::{
+    boot_to, create_cmd, erase_flash, erase_partition, flash_update, get_hw_info, get_sys_property,
+    host_supported_commands, notify_init_hw, read_efuse, read_flash, read_partition, reboot,
+    security_get_dev_fw_info, security_set_allinone_signature, security_set_flash_policy,
+    set_boot_mode, set_host_info, set_runtime_parameter, write_efuse, write_flash, write_partition,
+};
 
 #[cfg(test)]
 mod tests;

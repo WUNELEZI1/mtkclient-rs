@@ -198,27 +198,32 @@ impl<'a> DAXFlash<'a> {
         if self.last_gpt_data.is_none() && !self.try_load_cached_gpt() {
             self.read_gpt()?;
         }
+        // Parse once into an owned buffer: the A/B slot probe below needs `&mut self`, so the
+        // parsed table must not keep borrowing `self.last_gpt_data`.
         let gpt_data = self
             .last_gpt_data
-            .as_ref()
+            .clone()
             .ok_or_else(|| "无 GPT 数据，请先运行 printgpt".to_string())?;
 
-        let gpt_info = GptInfo::parse(gpt_data)?;
+        let gpt_info = GptInfo::parse(&gpt_data)?;
 
         if let Some(entry) = gpt_info.find_partition(partition) {
             return Ok((entry.start_addr, entry.size));
         }
 
         // 2.5 A/B slot auto-resolution: if the bare name misses but name_a / name_b exists, append the suffix and retry
-        if let Some(slotted) = crate::slot::resolve_slot_partition(self, partition) {
-            let gpt_data = self
-                .last_gpt_data
-                .as_ref()
-                .ok_or_else(|| "无 GPT 数据，请先运行 printgpt".to_string())?;
-            let gpt_info = GptInfo::parse(gpt_data)?;
-            if let Some(entry) = gpt_info.find_partition(&slotted) {
-                debug!("A/B 槽位解析: {} -> {}", partition, slotted);
-                return Ok((entry.start_addr, entry.size));
+        // Probe misc only when an A/B variant actually exists, then reuse the parsed table for the decision.
+        if !partition.ends_with("_a") && !partition.ends_with("_b") {
+            let has_ab = gpt_info.find_partition(&format!("{partition}_a")).is_some()
+                || gpt_info.find_partition(&format!("{partition}_b")).is_some();
+            if has_ab {
+                let slot = crate::slot::detect_active_slot(self).ok().flatten();
+                if let Some(slotted) = crate::slot::resolve_slot_name(&gpt_info, partition, slot) {
+                    if let Some(entry) = gpt_info.find_partition(&slotted) {
+                        debug!("A/B 槽位解析: {} -> {}", partition, slotted);
+                        return Ok((entry.start_addr, entry.size));
+                    }
+                }
             }
         }
 

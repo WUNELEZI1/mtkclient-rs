@@ -41,21 +41,6 @@ impl GptCrcReport {
     }
 }
 
-pub(crate) fn crc32_ieee(data: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFFu32;
-    for &byte in data {
-        crc ^= byte as u32;
-        for _ in 0..8 {
-            if crc & 1 != 0 {
-                crc = (crc >> 1) ^ 0xEDB8_8320;
-            } else {
-                crc >>= 1;
-            }
-        }
-    }
-    !crc
-}
-
 impl<'a> GptInfo<'a> {
     /// Parse GPT information from GPT data
     pub fn parse(data: &'a [u8]) -> Result<Self, String> {
@@ -97,7 +82,7 @@ impl<'a> GptInfo<'a> {
 
         let mut header = self.data[self.base_offset..self.base_offset + header_size].to_vec();
         header[16..20].fill(0);
-        let calculated_header_crc32 = crc32_ieee(&header);
+        let calculated_header_crc32 = crate::util::crc32(&header);
 
         let entries_offset = (self.part_entry_start_lba * 512) as usize;
         let entries_len = self
@@ -108,7 +93,7 @@ impl<'a> GptInfo<'a> {
             return Err("GPT 分区条目区域超出数据范围".to_string());
         }
         let calculated_partition_entries_crc32 =
-            crc32_ieee(&self.data[entries_offset..entries_offset + entries_len]);
+            crate::util::crc32(&self.data[entries_offset..entries_offset + entries_len]);
 
         Ok(GptCrcReport {
             stored_header_crc32: self.header_crc32,
@@ -225,19 +210,19 @@ mod tests {
         data[entry + 40..entry + 48].copy_from_slice(&127u64.to_le_bytes());
         data[entry + 56..entry + 58].copy_from_slice(&('x' as u16).to_le_bytes());
 
-        let entries_crc = crc32_ieee(&data[1024..1152]);
+        let entries_crc = crate::util::crc32(&data[1024..1152]);
         data[header + 88..header + 92].copy_from_slice(&entries_crc.to_le_bytes());
 
         let mut header_bytes = data[header..header + 92].to_vec();
         header_bytes[16..20].fill(0);
-        let header_crc = crc32_ieee(&header_bytes);
+        let header_crc = crate::util::crc32(&header_bytes);
         data[header + 16..header + 20].copy_from_slice(&header_crc.to_le_bytes());
         data
     }
 
     #[test]
-    fn crc32_ieee_matches_standard_vector() {
-        assert_eq!(crc32_ieee(b"123456789"), 0xCBF4_3926);
+    fn crc32_matches_standard_vector() {
+        assert_eq!(crate::util::crc32(b"123456789"), 0xCBF4_3926);
     }
 
     #[test]

@@ -44,7 +44,8 @@ fn take_opt<'a>(args: &'a [String], name: &str) -> Option<(&'a str, Vec<String>)
 
 fn parse_u32(v: &str, what: &str) -> Result<u32, String> {
     let s = v.trim();
-    let parsed = if let Some(h) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+    let h = crate::util::strip_hex_prefix(s);
+    let parsed = if h.len() < s.len() {
         u32::from_str_radix(h, 16)
     } else {
         s.parse::<u32>()

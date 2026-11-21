@@ -57,6 +57,7 @@ mod error;
 mod exec;
 #[path = "exploit/mod.rs"]
 mod exploit;
+mod format;
 mod fs;
 mod i18n;
 mod ops;

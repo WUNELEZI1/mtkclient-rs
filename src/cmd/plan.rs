@@ -106,7 +106,8 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
 
 fn parse_u16(s: &str) -> Option<u16> {
     let s = s.trim();
-    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+    let hex = crate::util::strip_hex_prefix(s);
+    if hex.len() < s.len() {
         u16::from_str_radix(hex, 16).ok()
     } else {
         s.parse().ok()
@@ -115,7 +116,8 @@ fn parse_u16(s: &str) -> Option<u16> {
 
 fn parse_u32(s: &str) -> Option<u32> {
     let s = s.trim();
-    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+    let hex = crate::util::strip_hex_prefix(s);
+    if hex.len() < s.len() {
         u32::from_str_radix(hex, 16).ok()
     } else {
         s.parse().ok()

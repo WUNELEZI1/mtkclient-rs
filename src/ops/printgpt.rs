@@ -76,8 +76,8 @@ impl Op for PrintGptOp {
 
         // super dynamic partitions: read metadata on real devices; None on the simulator
         let sup = ctx.session.super_metadata();
-        // Reuse the existing table rendering in the cmd layer so output matches the legacy `printgpt` command
-        crate::cmd::partition_table::print_gpt_table_public(
+        // Render through the partition-layer facade so output matches the legacy `printgpt` command
+        crate::partition::render::print_gpt_table_public(
             &gpt,
             info.boot1,
             info.boot2,

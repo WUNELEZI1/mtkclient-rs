@@ -137,6 +137,68 @@ where
     Ok(())
 }
 
+// Table-driven dispatch for the WRITE-PARTITION command loop: each wire command tag maps
+// to a handler sharing one signature, so new commands can be added without growing a match.
+type PartitionHandler = fn(
+    &mut XmlProtocol<'_>,
+    &str,
+    usize,
+    &mut dyn Read,
+    &mut dyn FnMut(usize, usize),
+) -> Result<(), XmlProtoError>;
+
+static PARTITION_HANDLERS: &[(&str, PartitionHandler)] = &[
+    (cmd::CMD_PROGRESS_REPORT, handle_progress_report),
+    (cmd::CMD_FILE_SYSTEM_OP, handle_file_system_op),
+    (cmd::CMD_DOWNLOAD_FILE, handle_download_file),
+];
+
+/// Handle `CMD:PROGRESS-REPORT` using the loop's no-op pre-erase callback.
+fn handle_progress_report(
+    xml: &mut XmlProtocol<'_>,
+    text: &str,
+    _size: usize,
+    _reader: &mut dyn Read,
+    _progress: &mut dyn FnMut(usize, usize),
+) -> Result<(), XmlProtoError> {
+    let mut noop = |_: usize, _: usize| {};
+    xml.process_progress_report(text, &mut noop)
+}
+
+/// Handle `CMD:FILE-SYS-OPERATION`, falling back to `Exists` when no key is reported.
+fn handle_file_system_op(
+    xml: &mut XmlProtocol<'_>,
+    text: &str,
+    _size: usize,
+    _reader: &mut dyn Read,
+    _progress: &mut dyn FnMut(usize, usize),
+) -> Result<(), XmlProtoError> {
+    let op = get_tag(text, "arg/key")
+        .map(|s| FileSystemOp::from(s.as_str()))
+        .unwrap_or(FileSystemOp::Exists);
+    xml.process_file_sys_op(text, op)
+}
+
+/// Handle `CMD:DOWNLOAD-FILE`, streaming the payload to the provided reader.
+fn handle_download_file(
+    xml: &mut XmlProtocol<'_>,
+    text: &str,
+    size: usize,
+    reader: &mut dyn Read,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<(), XmlProtoError> {
+    let mut reader = reader;
+    let mut progress = progress;
+    xml.process_download_data(
+        text,
+        size,
+        crate::da::xml::protocol::MAX_TIMEOUT,
+        &mut reader,
+        &mut progress,
+    )?;
+    Ok(())
+}
+
 /// `WRITE-PARTITION`: write a whole partition
 ///
 /// `WRITE-PARTITION` is a continuous exchange: the device sends `PROGRESS-REPORT` (pre-erase),
@@ -157,7 +219,6 @@ where
 
     xml.send_cmd(&cmd::write_partition(part_name))?;
 
-    let mut noop = |_: usize, _: usize| {};
     loop {
         let resp = xml.read_data()?;
 
@@ -171,31 +232,18 @@ where
         let text = String::from_utf8_lossy(&resp).into_owned();
         let cmd_name = get_tag(&text, "command").map_err(XmlProtoError::proto)?;
 
-        match cmd_name.as_str() {
-            cmd::CMD_PROGRESS_REPORT => {
-                xml.process_progress_report(&text, &mut noop)?;
-            }
-            cmd::CMD_FILE_SYSTEM_OP => {
-                let op = get_tag(&text, "arg/key")
-                    .map(|s| FileSystemOp::from(s.as_str()))
-                    .unwrap_or(FileSystemOp::Exists);
-                xml.process_file_sys_op(&text, op)?;
-            }
-            cmd::CMD_DOWNLOAD_FILE => {
-                xml.process_download_data(
-                    &text,
-                    size,
-                    crate::da::xml::protocol::MAX_TIMEOUT,
-                    reader,
-                    progress,
-                )?;
-            }
-            other => {
-                warn!("[XML] WRITE-PARTITION 收到未知命令: {}", other);
-                return Err(XmlProtoError::Xml(crate::error::XmlError::from_kind(
-                    crate::error::XmlErrorKind::UnsupportedCmd,
-                )));
-            }
+        // Look up the handler by wire tag; unknown tags keep the original error path.
+        let handler = PARTITION_HANDLERS
+            .iter()
+            .find(|(tag, _)| *tag == cmd_name)
+            .map(|(_, handler)| handler);
+        if let Some(handler) = handler {
+            handler(xml, &text, size, &mut *reader, &mut *progress)?;
+        } else {
+            warn!("[XML] WRITE-PARTITION 收到未知命令: {}", cmd_name);
+            return Err(XmlProtoError::Xml(crate::error::XmlError::from_kind(
+                crate::error::XmlErrorKind::UnsupportedCmd,
+            )));
         }
     }
 

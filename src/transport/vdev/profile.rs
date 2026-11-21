@@ -454,7 +454,8 @@ impl ParsedNum {
 
 fn num(v: &str) -> Result<ParsedNum, String> {
     let s = v.trim();
-    let out = if let Some(h) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+    let h = crate::util::strip_hex_prefix(s);
+    let out = if h.len() < s.len() {
         u64::from_str_radix(&h.replace('_', ""), 16).map_err(|e| format!("{}: {}", s, e))?
     } else {
         s.replace('_', "")

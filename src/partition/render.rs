@@ -1,11 +1,55 @@
-//! GPT partition table formatted output
+//! GPT partition table formatted output (render facade).
 //!
-//! - `print_gpt_table` — prints the partition table in ASCII table style
+//! - `print_gpt_table_public` — entry point reused by the ops layer and the cmd layer
+//! - `print_gpt_table`        — prints the partition table in ASCII table style
+//!
+//! This facade sits below the command layer so `ops::printgpt` no longer imports
+//! `cmd`. Output formatting (including every Chinese label) is unchanged.
 
 use crate::color::Colorize;
 
-use super::emmc;
 use crate::partition::GptInfo;
+
+/// Table rendering reused by the ops layer (keeps output consistent with the legacy `printgpt` command).
+pub fn print_gpt_table_public(
+    data: &[u8],
+    boot1_size: u64,
+    boot2_size: u64,
+    super_metadata: Option<&crate::partition::lp::SuperMetadata>,
+) {
+    print_gpt_table(data, boot1_size, boot2_size, super_metadata);
+}
+
+// eMMC capacity formatting helpers (reused by GPT table rendering).
+
+/// Format a byte count as a human-readable string (KB/MB/GB, 2 decimals)
+fn format_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * KB;
+    const GB: f64 = 1024.0 * MB;
+    if bytes >= (1024 * 1024 * 1024) {
+        format!("{:.2} GB", bytes as f64 / GB)
+    } else if bytes >= (1024 * 1024) {
+        format!("{:.2} MB", bytes as f64 / MB)
+    } else if bytes >= 1024 {
+        format!("{:.2} KB", bytes as f64 / KB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+/// Format a byte count with thousands separators
+fn format_bytes_comma(bytes: u64) -> String {
+    let s = bytes.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result
+}
 
 /// Print the GPT table to the console (including eMMC_Boot1/Boot2)
 /// Uses ASCII table style: | and - as separators, Chinese column labels
@@ -129,8 +173,8 @@ pub fn print_gpt_table(
             "eMMC_Boot1",
             &format!("0x{:016X}", 0u64),
             &format!("0x{:016X}", boot1_size.saturating_sub(1)),
-            &emmc::format_size(boot1_size),
-            &emmc::format_bytes_comma(boot1_size),
+            &format_size(boot1_size),
+            &format_bytes_comma(boot1_size),
         );
         println!("{}", line.dimmed());
     }
@@ -141,8 +185,8 @@ pub fn print_gpt_table(
             "eMMC_Boot2",
             &format!("0x{:016X}", 0u64),
             &format!("0x{:016X}", boot2_size.saturating_sub(1)),
-            &emmc::format_size(boot2_size),
-            &emmc::format_bytes_comma(boot2_size),
+            &format_size(boot2_size),
+            &format_bytes_comma(boot2_size),
         );
         println!("{}", line.dimmed());
     }
@@ -157,8 +201,8 @@ pub fn print_gpt_table(
             &entry.name,
             &format!("0x{:016X}", start_addr),
             &format!("0x{:016X}", end_addr),
-            &emmc::format_size(entry.size),
-            &emmc::format_bytes_comma(entry.size),
+            &format_size(entry.size),
+            &format_bytes_comma(entry.size),
         );
 
         if i % 2 == 0 {
@@ -194,7 +238,7 @@ pub fn print_gpt_table(
                             pad_display_width(&lp.name, 20, false),
                             off,
                             size,
-                            emmc::format_size(size),
+                            format_size(size),
                             ab_tag,
                         );
                         println!("{}", lp_line.dimmed());

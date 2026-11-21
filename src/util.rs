@@ -15,6 +15,17 @@ pub fn parse_u64_hex(s: &str) -> Result<u64, std::num::ParseIntError> {
     u64::from_str_radix(s, 16)
 }
 
+/// Strip a single leading `0x` or `0X` prefix, if present; otherwise return `s` unchanged.
+///
+/// Whitespace and underscore normalization is deliberately left to callers so each parse
+/// site keeps its original trim / validation order. A caller that needs to know whether a
+/// prefix was present can compare the returned length with the input length.
+pub fn strip_hex_prefix(s: &str) -> &str {
+    s.strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s)
+}
+
 /// Format a byte array as an uppercase HEX string separated by spaces
 ///
 /// Example: `[0xAB, 0xCD]` → `"AB CD"`
@@ -200,9 +211,48 @@ pub fn now_iso8601() -> String {
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, m, s)
 }
 
+/// CRC32 (IEEE 802.3, polynomial 0xEDB8320) lookup table, generated at compile time.
+pub(crate) const fn make_crc_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        let mut crc = i as u32;
+        let mut j = 0;
+        while j < 8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+            j += 1;
+        }
+        table[i] = crc;
+        i += 1;
+    }
+    table
+}
+
+/// Shared CRC32 lookup table for both one-shot and incremental hashing.
+pub(crate) static CRC_TABLE: [u32; 256] = make_crc_table();
+
+/// One-shot CRC32 (IEEE 802.3) calculation.
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        let idx = ((crc ^ b as u32) & 0xFF) as usize;
+        crc = (crc >> 8) ^ CRC_TABLE[idx];
+    }
+    !crc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crc32_matches_standard_vector() {
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+    }
 
     #[test]
     fn iso8601_shape() {

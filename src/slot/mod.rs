@@ -1,15 +1,17 @@
 //! A/B slot auto-resolution.
 //!
-//! Unified entry points [`detect_active_slot`] / [`resolve_slot_partition`]:
-//! 1. misc partition bootctrl structure (boot_control_message / AVB slot metadata, offset 0x2000);
-//! 2. GPT heuristic: if `xxx_a`/`xxx_b` exist but the bare name `xxx` is requested,
-//!    append the active slot suffix;
-//! 3. fallback: slot markers in the misc text.
+//! Split into two layers:
+//! - IO layer: [`detect_active_slot`] reads the misc partition and caches the active slot in
+//!   `da.active_slot`;
+//! - decision layer: [`resolve_slot_name`] is a pure function over an already-parsed [`GptInfo`]
+//!   plus the active slot, doing no device IO and no GPT parsing.
 //!
-//! Wiring: `find_partition_addr` calls [`resolve_slot_partition`] automatically after a
-//! direct GPT lookup fails, so commands like `r boot` / `w vbmeta` need no manual `_a/_b`.
+//! Wiring: `find_partition_addr` parses the GPT once, probes the active slot only when the bare
+//! name misses but an `_a`/`_b` variant exists, then calls [`resolve_slot_name`], so commands
+//! like `r boot` / `w vbmeta` need no manual `_a/_b`.
 
 use crate::da::DAXFlash;
+use crate::partition::gpt::GptInfo;
 
 /// bootctrl magic byte string "BOOT" (compared per byte to avoid endianness ambiguity).
 const BOOTCTRL_MAGIC: &[u8; 4] = b"BOOT";
@@ -65,40 +67,33 @@ fn detect_active_slot_uncached(da: &mut DAXFlash) -> Result<Option<char>, String
     }
 }
 
-/// Resolves a bare partition name to the actual GPT name with slot suffix.
+/// Pure A/B slot decision: maps a bare partition name to its suffixed GPT name.
 ///
 /// Rules:
-/// - name already ends with `_a`/`_b` -> returned as is;
-/// - the name exists directly in GPT -> returned as is (non-A/B partition);
-/// - `name_a` or `name_b` exists in GPT -> return according to the active slot
-///   (if slot info is unavailable, return the one that exists).
-pub fn resolve_slot_partition(da: &mut DAXFlash, name: &str) -> Option<String> {
+/// - name already ends with `_a`/`_b` -> `None` (caller uses the name as is);
+/// - the bare name exists in `gpt` -> `None` (non-A/B partition);
+/// - `name_a` / `name_b` exists in `gpt` -> return the variant matching `slot`
+///   (the only existing one when slot info is unavailable; default to `a` when both exist).
+///
+/// `gpt` is the table already parsed by the caller; this function never parses GPT data
+/// and performs no device IO.
+pub fn resolve_slot_name(gpt: &GptInfo, name: &str, slot: Option<char>) -> Option<String> {
     // Already suffixed: nothing to do
     if name.ends_with("_a") || name.ends_with("_b") {
         return None;
     }
 
-    // GPT must be cached (loaded before find_partition_addr is called)
-    let gpt_data = da.last_gpt_data.as_ref()?;
-
-    let has_partition = |n: &str| -> bool {
-        crate::partition::gpt::GptInfo::parse(gpt_data)
-            .map(|g| g.find_partition(n).is_some())
-            .unwrap_or(false)
-    };
-
-    if has_partition(name) {
+    if gpt.find_partition(name).is_some() {
         return None; // bare name exists, not A/B
     }
 
-    let has_a = has_partition(&format!("{name}_a"));
-    let has_b = has_partition(&format!("{name}_b"));
+    let has_a = gpt.find_partition(&format!("{name}_a")).is_some();
+    let has_b = gpt.find_partition(&format!("{name}_b")).is_some();
     if !has_a && !has_b {
         return None;
     }
 
     // Dual slot: follow the active slot; single slot (rare): return the one present
-    let slot = detect_active_slot(da).ok().flatten();
     match (slot, has_a, has_b) {
         (Some('a'), true, _) => Some(format!("{name}_a")),
         (Some('b'), _, true) => Some(format!("{name}_b")),

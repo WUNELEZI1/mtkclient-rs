@@ -182,30 +182,86 @@ pub trait Op {
     fn run(&self, ctx: &mut OpCtx<'_>) -> Result<OpOutcome, String>;
 }
 
+/// Metadata for a single operation.
+///
+/// Both the op name and the `'static` log name are kept here alongside the required
+/// capabilities, so there is only one place to register an op.
+struct OpMeta {
+    /// CLI/op name used by both `plan` and `exec`.
+    name: &'static str,
+    /// `'static` name written to the decision log.
+    static_name: &'static str,
+    /// Capabilities this op requires.
+    caps: &'static [Capability],
+}
+
+/// Single source of truth for op metadata.
+///
+/// Both [`required_caps`] and [`op_static_name`] derive from this table, so the two
+/// views of an op can no longer drift apart.
+const OP_REGISTRY: &[OpMeta] = &[
+    // printgpt is read-only: no write capability needed
+    OpMeta {
+        name: "printgpt",
+        static_name: "printgpt",
+        caps: &[Capability::StorageRead, Capability::GptParsed],
+    },
+    // Name-based read/write requires the GPT first (otherwise names cannot resolve to addresses)
+    OpMeta {
+        name: "read",
+        static_name: "read",
+        caps: &[Capability::StorageRead, Capability::GptParsed],
+    },
+    OpMeta {
+        name: "write",
+        static_name: "write",
+        caps: &[Capability::StorageWrite, Capability::GptParsed],
+    },
+    OpMeta {
+        name: "erase",
+        static_name: "erase",
+        caps: &[Capability::StorageWrite, Capability::GptParsed],
+    },
+    OpMeta {
+        name: "vbmeta",
+        static_name: "vbmeta",
+        caps: &[Capability::StorageWrite, Capability::GptParsed],
+    },
+    OpMeta {
+        name: "seccfg",
+        static_name: "seccfg",
+        caps: &[
+            Capability::StorageRead,
+            Capability::StorageWrite,
+            Capability::GptParsed,
+        ],
+    },
+    OpMeta {
+        name: "unlock",
+        static_name: "unlock",
+        caps: &[
+            Capability::StorageRead,
+            Capability::StorageWrite,
+            Capability::GptParsed,
+        ],
+    },
+    OpMeta {
+        name: "fs_shell",
+        static_name: "fs_shell",
+        caps: &[Capability::StorageRead, Capability::GptParsed],
+    },
+    OpMeta {
+        name: "rpmb",
+        static_name: "rpmb",
+        caps: &[Capability::RpmbAccess],
+    },
+];
+
 /// op name → required capabilities (shared by CLI `plan` and `exec` to avoid drift).
 pub fn required_caps(op: &str) -> Option<CapabilitySet> {
-    let caps: &[Capability] = match op {
-        // printgpt is read-only: no write capability needed
-        "printgpt" => &[Capability::StorageRead, Capability::GptParsed],
-        // Name-based read/write requires the GPT first (otherwise names cannot resolve to addresses)
-        "read" => &[Capability::StorageRead, Capability::GptParsed],
-        "write" | "erase" | "vbmeta" => &[Capability::StorageWrite, Capability::GptParsed],
-        "seccfg" => &[
-            Capability::StorageRead,
-            Capability::StorageWrite,
-            Capability::GptParsed,
-        ],
-        "unlock" => &[
-            Capability::StorageRead,
-            Capability::StorageWrite,
-            Capability::GptParsed,
-        ],
-        "fs_shell" => &[Capability::StorageRead, Capability::GptParsed],
-        "rpmb" => &[Capability::RpmbAccess],
-        _ => return None,
-    };
+    let meta = OP_REGISTRY.iter().find(|m| m.name == op)?;
     let mut set = CapabilitySet::EMPTY;
-    for c in caps {
+    for c in meta.caps {
         set.insert(*c);
     }
     Some(set)
@@ -213,18 +269,11 @@ pub fn required_caps(op: &str) -> Option<CapabilitySet> {
 
 /// op name → `'static` name (needed by the decision log).
 pub fn op_static_name(op: &str) -> &'static str {
-    match op {
-        "printgpt" => "printgpt",
-        "read" => "read",
-        "write" => "write",
-        "erase" => "erase",
-        "seccfg" => "seccfg",
-        "unlock" => "unlock",
-        "vbmeta" => "vbmeta",
-        "fs_shell" => "fs_shell",
-        "rpmb" => "rpmb",
-        _ => "unknown",
-    }
+    OP_REGISTRY
+        .iter()
+        .find(|m| m.name == op)
+        .map(|m| m.static_name)
+        .unwrap_or("unknown")
 }
 
 #[cfg(test)]

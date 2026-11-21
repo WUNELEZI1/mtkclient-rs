@@ -18,7 +18,15 @@ mod emi;
 mod io;
 pub mod protocol;
 
-pub use protocol::*;
+// Explicitly re-export the public protocol primitives that `pub use protocol::*;`
+// previously exposed, so `crate::da::xflash::*` keeps the exact same public surface.
+#[allow(unused_imports)]
+pub use protocol::{
+    AckResult, CMD_BOOT_TO, CMD_FORMAT, CMD_INIT_EXT_RAM, CMD_MAGIC, CMD_READ_DATA,
+    CMD_SETUP_ENVIRONMENT, CMD_SETUP_HW_INIT_PARAMS, CMD_SHUTDOWN, CMD_SYNC_SIGNAL, CMD_WRITE_DATA,
+    DA_EXT_BOOT_ADDR, DATA_TYPE_FLOW, DATA_TYPE_MESSAGE, GET_DA_VER_CMD, GET_PKT_LEN,
+    SET_META_BOOT_MODE, SET_PKT_LEN, SHUTDOWN_BOOTMODE_HOME_SCREEN, chunk_checksum, pack3,
+};
 
 use crate::preloader::Preloader;
 

@@ -5,8 +5,7 @@
 //! - `cmd_read_all`     — read all partitions into a directory
 //! - `cmd_print_scatter`— print scatter to screen and save to file
 //!
-//! Private helpers:
-//! - `print_gpt_table`  — formatted table output
+//! Table rendering now lives in `crate::partition::render` (re-exported below for legacy paths).
 
 use crate::color::Colorize;
 use log::{info, trace, warn};
@@ -14,18 +13,11 @@ use log::{info, trace, warn};
 use crate::da::DAXFlash;
 use crate::system::config::AppConfig;
 
-mod emmc;
-mod table;
-
 /// Table rendering reused by the ops layer (keeps output consistent with the legacy `printgpt` command).
-pub(crate) fn print_gpt_table_public(
-    data: &[u8],
-    boot1_size: u64,
-    boot2_size: u64,
-    super_metadata: Option<&crate::partition::lp::SuperMetadata>,
-) {
-    table::print_gpt_table(data, boot1_size, boot2_size, super_metadata);
-}
+/// The facade lives below the command layer in `crate::partition::render`; re-export it so the
+/// legacy `crate::cmd::partition_table::print_gpt_table_public` path keeps working unchanged.
+#[allow(unused_imports)]
+pub(crate) use crate::partition::render::print_gpt_table_public;
 
 /// Read raw GPT data to the given path
 ///
@@ -56,7 +48,7 @@ pub fn cmd_read_gpt(
     );
 
     if log_level >= 2 {
-        table::print_gpt_table(gpt_data, 0, 0, None);
+        crate::partition::render::print_gpt_table(gpt_data, 0, 0, None);
     }
 
     Ok(())
@@ -118,7 +110,7 @@ fn recompute_gpt_crc(
     let ent_off = (part_entry_start_lba * 512) as usize;
     let ent_len = (num_part_entries * part_entry_size) as usize;
     if ent_off + ent_len <= buf.len() && ent_len > 0 {
-        let crc = crate::partition::gpt::crc32_ieee(&buf[ent_off..ent_off + ent_len]);
+        let crc = crate::util::crc32(&buf[ent_off..ent_off + ent_len]);
         buf[base + 88..base + 92].copy_from_slice(&crc.to_le_bytes());
     }
 
@@ -126,7 +118,7 @@ fn recompute_gpt_crc(
     let hdr_len = header_size as usize;
     if base + hdr_len <= buf.len() && hdr_len >= 20 {
         buf[base + 16..base + 20].copy_from_slice(&0u32.to_le_bytes());
-        let crc = crate::partition::gpt::crc32_ieee(&buf[base..base + hdr_len]);
+        let crc = crate::util::crc32(&buf[base..base + hdr_len]);
         buf[base + 16..base + 20].copy_from_slice(&crc.to_le_bytes());
     }
 }

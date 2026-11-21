@@ -35,7 +35,8 @@ use crate::da::xml::XmlSession;
 /// Parse an address/length (hex with a `0x` prefix, or decimal)
 fn parse_num(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
     let s = s.trim();
-    let v = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+    let hex = crate::util::strip_hex_prefix(s);
+    let v = if hex.len() < s.len() {
         u64::from_str_radix(hex, 16)?
     } else {
         s.parse::<u64>()?

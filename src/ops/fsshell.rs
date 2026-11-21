@@ -14,8 +14,8 @@
 use log::info;
 
 use super::{Op, OpCtx, OpOutcome};
-use crate::cmd::bootimg::{decompress, parse as parse_boot, parse_cpio};
 use crate::core::capability::{Capability, CapabilitySet};
+use crate::format::boot::{decompress, parse as parse_boot, parse_cpio};
 
 /// Browse target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,7 +145,7 @@ impl Op for FsShellOp {
                 if !matches!(self.action, FsAction::Show | FsAction::Info) {
                     return Err("proinfo 目标仅支持 show".to_string());
                 }
-                let pi = crate::cmd::proinfo::parse(&data);
+                let pi = crate::format::proinfo::parse(&data);
                 if let Some(m) = &pi.magic {
                     println!("  magic  : {}", m);
                 }

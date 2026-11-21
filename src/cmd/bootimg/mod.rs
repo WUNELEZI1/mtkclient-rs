@@ -8,15 +8,14 @@
 //! This module is an offline command and does not connect to a device.
 
 use crate::color::Colorize;
-use header::slice;
+use crate::format::boot::slice;
 
-mod header;
-mod ramdisk;
-
+// Parsing helpers live below the command layer in `crate::format::boot`; re-export them
+// so legacy `crate::cmd::bootimg::*` paths keep working unchanged.
 #[allow(unused_imports)]
-pub use header::{BootImage, Version, parse};
-#[allow(unused_imports)]
-pub use ramdisk::{CpioEntry, classify, decompress, lz4_block_decompress, parse_cpio};
+pub use crate::format::boot::{
+    BootImage, CpioEntry, Version, classify, decompress, lz4_block_decompress, parse, parse_cpio,
+};
 
 // ── Command entry ──
 
