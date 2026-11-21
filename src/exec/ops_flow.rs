@@ -1,7 +1,7 @@
-//! 端到端流程测试：read / write（含断点续传）/ erase / seccfg / vbmeta / unlock。
+//! End-to-end flow tests: read / write (including resume) / erase / seccfg / vbmeta / unlock.
 //!
-//! 全部跑在 `--sim` 同款的虚拟设备上，因此验证的是**真机同构的执行路径**
-//! （Executor → Session → da::engine → 设备侧状态机），而不是 mock 返回值。
+//! Everything runs on the same virtual device as `--sim`, so what is validated is the **real-device-isomorphic
+//! execution path** (Executor → Session → da::engine → device-side state machine), not mock return values.
 
 use super::*;
 use crate::ops::erase::EraseOp;
@@ -49,9 +49,9 @@ fn read_partition_to_file() {
         .unwrap();
     assert_eq!(r.outcome.facts[0].1, (32u64 * 1024 * 1024).to_string());
     let data = std::fs::read(&out).unwrap();
-    // vdev 给每个分区写入可辨识的初始内容（seed + 递增），首个字节非零
+    // vdev writes recognizable initial content to each partition (seed + increment); the first byte is non-zero
     assert!(data.iter().take(4096).any(|b| *b != 0), "内容不应全零");
-    // 目标文件不应残留 .part
+    // No .part should remain for the target file
     assert!(!dir.join("boot_a.img.part").exists());
 }
 
@@ -61,7 +61,7 @@ fn write_needs_confirmation_for_critical_partition() {
     let img = dir.join("boot.img");
     std::fs::write(&img, vec![0x5Au8; 4096]).unwrap();
     let mut s = sim("v5-clean");
-    // 默认（非交互、无 --yes）：必须拒绝
+    // Default (non-interactive, no --yes): must reject
     let err = Executor::new(Mode::Auto)
         .execute(
             &WriteOp {
@@ -107,7 +107,7 @@ fn write_then_read_back_matches() {
             .map(|(_, v)| v.as_str()),
         Some("32768")
     );
-    // 直接从设备读回比对（独立于 op 内部的校验）
+    // Read back directly from the device and compare (independent of the op's internal verification)
     let span = s.find_partition("boot_a").unwrap();
     let got = s.read_flash(span.addr, payload.len() as u64).unwrap();
     assert_eq!(got, payload);
@@ -117,7 +117,7 @@ fn write_then_read_back_matches() {
 fn write_rejects_image_larger_than_partition() {
     let dir = tmpdir("toobig");
     let img = dir.join("huge.img");
-    // vbmeta_a 只有 0x8000，写 1MB 必须拒绝
+    // vbmeta_a is only 0x8000; writing 1MB must be rejected
     std::fs::write(&img, vec![0u8; 1024 * 1024]).unwrap();
     let mut s = sim("v5-clean");
     let err = exec_yes()
@@ -136,10 +136,10 @@ fn write_rejects_image_larger_than_partition() {
     assert!(err.contains("拒绝写入"), "实际: {}", err);
 }
 
-/// CVE-2022-20069 场景：受影响且未修补时必须选中该路径；已修补时不得规划。
+/// CVE-2022-20069 scenario: must select this path when affected and unpatched; must not plan it when patched.
 #[test]
 fn cve_20069_selected_only_when_unpatched() {
-    // 受影响且未修补：BROM 不可达（无 kamakiri2），唯一可行路径是 Preloader OOB
+    // Affected and unpatched: BROM unreachable (no kamakiri2), the only viable path is Preloader OOB
     let dev = VirtualDevice::from_preset("cve-20069-vulnerable").unwrap();
     let mut da = vec![0u8; 4096];
     da[..9].copy_from_slice(b"MTK_DA_v5");
@@ -153,9 +153,9 @@ fn cve_20069_selected_only_when_unpatched() {
         r.executed
     );
 
-    // 已修补：probe 判不可用，整体无可行计划（且错误里点名 cve-20069）。
-    // DA1 同时带 Carbonara 加固特征，确保 carbonara 也不被规划——否则它会
-    // 成为另一条"看起来可行、执行时才被 SLA 拒"的路径，掩盖真正的结论。
+    // Patched: probe reports unavailable, no viable plan overall (and the error names cve-20069).
+    // DA1 also carries the Carbonara hardening signature so carbonara is not planned either — otherwise it
+    // would become another path that "looks viable but is SLA-rejected only at execution time", masking the real conclusion.
     let dev = VirtualDevice::from_preset("cve-20069-patched").unwrap();
     let mut da = vec![0u8; 4096];
     da[..9].copy_from_slice(b"MTK_DA_v5");
@@ -169,12 +169,12 @@ fn cve_20069_selected_only_when_unpatched() {
     assert!(err.contains("not-vulnerable"), "实际: {}", err);
 }
 
-/// carbonara-hardened 场景：DA1 已含补丁特征 → probe 返回 NotVulnerable，
-/// Planner 不得把 carbonara 放进任何路径（哪怕设备开了 SLA 需要 bypass）。
+/// carbonara-hardened scenario: DA1 already has the patch signature → probe returns NotVulnerable,
+/// Planner must not put carbonara into any path (even if the device has SLA on and needs a bypass).
 #[test]
 fn carbonara_hardened_plan_never_selects_carbonara() {
     let dev = VirtualDevice::from_preset("carbonara-hardened").expect("预设存在");
-    // 模拟加固 DA1：带上 Carbonara V5 补丁特征
+    // Simulate a hardened DA1: carry the Carbonara V5 patch signature
     let mut da = vec![0xABu8; 4096];
     da[0x800..0x808].copy_from_slice(b"\x06\x9B\x4F\xF0\x80\x40\x02\xA9");
     let mut s = SimSession::new(dev).with_da(da);
@@ -194,8 +194,8 @@ fn carbonara_hardened_plan_never_selects_carbonara() {
     );
 }
 
-/// Phase 1.2：断点记录的前缀 CRC 与设备实际内容不符时，必须**报错中止**，
-/// 绝不能在坏数据后面继续写（"绝对防御"）。
+/// Phase 1.2: when the checkpoint prefix CRC does not match the device's actual content, it must **abort with an error**,
+/// never continuing to write after bad data ("absolute defense").
 #[test]
 fn resume_rejects_corrupted_prefix() {
     use crate::ops::checkpoint::WriteCheckpoint;
@@ -220,7 +220,7 @@ fn resume_rejects_corrupted_prefix() {
         .unwrap_err();
     assert!(WriteCheckpoint::exists(&file), "应写出 .resume");
 
-    // 重连后篡改已写前缀（模拟"期间被别人刷过 / 换了台机器"）
+    // After reconnect, tamper with the already-written prefix (simulating "flashed by someone else / switched machines in between")
     s.replug();
     s.load_da().unwrap();
     s.open_storage().unwrap();
@@ -248,7 +248,7 @@ fn resume_rejects_corrupted_prefix() {
     WriteCheckpoint::clear(&file);
 }
 
-/// Phase 1.2：混沌位翻转导致的静默损坏，必须被回读校验抓到，不能冒充成功。
+/// Phase 1.2: silent corruption caused by chaos bit flips must be caught by read-back verification, not passed off as success.
 #[test]
 fn chaos_bitflip_write_is_detected_by_verify() {
     use crate::transport::vdev::ChaosConfig;
@@ -259,8 +259,8 @@ fn chaos_bitflip_write_is_detected_by_verify() {
 
     let cfg = ChaosConfig {
         seed: 5,
-        // bitflip 按"每个写入块"判定一次，20‰ 在 4 块里大概率打不中；
-        // 这里用 500‰ 保证稳态命中，验证的是"能抓到"而不是"偶尔抓到"。
+        // bitflip is decided once per "write block"; 20‰ is unlikely to hit within 4 blocks.
+        // Use 500‰ here to guarantee a steady hit; this validates "can catch it", not "catches it occasionally".
         bitflip_permille: 500,
         ..ChaosConfig::default()
     };
@@ -293,7 +293,7 @@ fn chaos_bitflip_write_is_detected_by_verify() {
 fn flaky_write_resumes_from_checkpoint_after_replug() {
     let dir = tmpdir("resume");
     let img = dir.join("big.img");
-    // 20 MiB：超过 flaky-write 的 10 MiB 断点
+    // 20 MiB: exceeds flaky-write's 10 MiB checkpoint
     let payload: Vec<u8> = (0..(20 * 1024 * 1024)).map(|i| (i % 253) as u8).collect();
     std::fs::write(&img, &payload).unwrap();
 
@@ -314,13 +314,13 @@ fn flaky_write_resumes_from_checkpoint_after_replug() {
         "应报告断点/断开: {}",
         err
     );
-    // checkpoint 已落盘
+    // checkpoint has been persisted
     assert!(
         crate::ops::checkpoint::WriteCheckpoint::exists(img.to_str().unwrap()),
         "应写出 .resume"
     );
 
-    // 模拟拔插重连：flash 内容保留，故障清除
+    // Simulate unplug/replug reconnect: flash content is retained, fault cleared
     s.replug();
 
     let second = exec_yes()
@@ -344,11 +344,11 @@ fn flaky_write_resumes_from_checkpoint_after_replug() {
         .unwrap();
     assert!(resumed > 0, "第二次必须从断点继续，而不是从头写");
 
-    // 设备内容与源文件完全一致（含第一次已写的 10MB）
+    // Device content exactly matches the source file (including the 10MB written the first time)
     let span = s.find_partition("boot_b").unwrap();
     let got = s.read_flash(span.addr, payload.len() as u64).unwrap();
     assert_eq!(got, payload, "断点续传后内容必须与源文件一致");
-    // 成功后 checkpoint 删除
+    // checkpoint deleted after success
     assert!(!crate::ops::checkpoint::WriteCheckpoint::exists(
         img.to_str().unwrap()
     ));
@@ -405,7 +405,7 @@ fn seccfg_unlock_writes_dm_verity_zero() {
         0,
         "偏移 0x10 必须是 0（否则 dm-verity error）"
     );
-    // 幂等：再解锁一次不报错且不重复写
+    // Idempotent: unlocking again neither errors nor rewrites
     let again = exec_yes()
         .execute(
             &SeccfgOp {
@@ -421,7 +421,7 @@ fn seccfg_unlock_writes_dm_verity_zero() {
 
 #[test]
 fn format_partition_writes_ext4_and_f2fs_magic() {
-    // format op 必须先在仿真闭环跑通（写 + 回读 magic），才允许接真机。
+    // The format op must first pass the simulation closed loop (write + read back magic) before it may touch real devices.
     for (fs, magic_off, magic_bytes) in [
         ("ext4", 0x438usize, vec![0x53, 0xEF]),
         ("f2fs", 0x400usize, vec![0x10, 0x20, 0xF5, 0xF2]),
@@ -439,7 +439,11 @@ fn format_partition_writes_ext4_and_f2fs_magic() {
             )
             .unwrap();
         assert_eq!(
-            r.outcome.facts.iter().find(|(k, _)| k == "fs").map(|(_, v)| v.as_str()),
+            r.outcome
+                .facts
+                .iter()
+                .find(|(k, _)| k == "fs")
+                .map(|(_, v)| v.as_str()),
             Some(fs)
         );
         let span = s.find_partition("userdata").unwrap();
@@ -455,7 +459,7 @@ fn format_partition_writes_ext4_and_f2fs_magic() {
 
 #[test]
 fn seccfg_v3_unlock_and_lock_roundtrip() {
-    // V3 seccfg 走软件 SEJ（与 V4 的 HACC 路径不同），必须端到端验证全版本支持。
+    // V3 seccfg uses software SEJ (different from V4's HACC path); full-version support must be verified end to end.
     let mut s = sim("v5-seccfg-v3");
     let r = exec_yes()
         .execute(
@@ -475,13 +479,16 @@ fn seccfg_v3_unlock_and_lock_roundtrip() {
             .map(|(_, v)| v.as_str()),
         Some("V3")
     );
-    // 读回镜像，确认 V3 结构仍可解析且 attr 已切到 UNLOCK
+    // Read back the image to confirm the V3 structure still parses and attr has switched to UNLOCK
     let span = s.find_partition("seccfg").unwrap();
     let data = s.read_flash(span.addr, span.size.min(0x4000)).unwrap();
     let v3 = crate::security::seccfg::v3::SecCfgV3::parse(&data).unwrap();
-    assert_eq!(v3.seccfg_attr, crate::security::seccfg::v3::SecCfgV3::ATTR_UNLOCK);
+    assert_eq!(
+        v3.seccfg_attr,
+        crate::security::seccfg::v3::SecCfgV3::ATTR_UNLOCK
+    );
 
-    // 幂等：再解锁一次不重复写
+    // Idempotent: unlocking again does not rewrite
     let again = exec_yes()
         .execute(
             &SeccfgOp {
@@ -494,7 +501,7 @@ fn seccfg_v3_unlock_and_lock_roundtrip() {
         .unwrap();
     assert!(again.outcome.summary.contains("无需修改"));
 
-    // 再上锁，回到 ATTR_DEFAULT
+    // Lock again to return to ATTR_DEFAULT
     exec_yes()
         .execute(
             &SeccfgOp {
@@ -507,7 +514,10 @@ fn seccfg_v3_unlock_and_lock_roundtrip() {
         .unwrap();
     let data = s.read_flash(span.addr, span.size.min(0x4000)).unwrap();
     let v3 = crate::security::seccfg::v3::SecCfgV3::parse(&data).unwrap();
-    assert_eq!(v3.seccfg_attr, crate::security::seccfg::v3::SecCfgV3::ATTR_DEFAULT);
+    assert_eq!(
+        v3.seccfg_attr,
+        crate::security::seccfg::v3::SecCfgV3::ATTR_DEFAULT
+    );
 }
 
 #[test]
@@ -539,7 +549,7 @@ fn vbmeta_patches_only_active_slot() {
         skipped
     );
 
-    // 活动槽 A 的 flags 已改为 3，B 槽仍是 0
+    // Active slot A's flags have been changed to 3, slot B is still 0
     let a = s.find_partition("vbmeta_a").unwrap();
     let da = s.read_flash(a.addr, 0x100).unwrap();
     assert_eq!(u32::from_be_bytes(da[0x78..0x7C].try_into().unwrap()), 3);
@@ -556,7 +566,7 @@ fn vbmeta_aborts_without_writing_when_slot_unknown() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("无法确定活动 A/B 槽位"), "实际: {}", err);
-    // 未写入任何分区
+    // No partition was written
     let a = s.find_partition("vbmeta_a").unwrap();
     let data = s.read_flash(a.addr, 0x100).unwrap();
     assert_eq!(
@@ -575,16 +585,16 @@ fn unlock_chain_does_seccfg_then_vbmeta() {
         "实际: {}",
         r.outcome.summary
     );
-    // seccfg 已解锁
+    // seccfg unlocked
     let span = s.find_partition("seccfg").unwrap();
     let data = s.read_flash(span.addr, 0x40).unwrap();
     assert_eq!(u32::from_le_bytes(data[0x0C..0x10].try_into().unwrap()), 3);
     assert_eq!(u32::from_le_bytes(data[0x10..0x14].try_into().unwrap()), 0);
-    // vbmeta_a 已被关校验
+    // vbmeta_a verification disabled
     let a = s.find_partition("vbmeta_a").unwrap();
     let va = s.read_flash(a.addr, 0x100).unwrap();
     assert_eq!(u32::from_be_bytes(va[0x78..0x7C].try_into().unwrap()), 3);
-    // vbmeta_b 未动（非活动槽 SKIP）
+    // vbmeta_b untouched (SKIP for non-active slot)
     let b = s.find_partition("vbmeta_b").unwrap();
     let vb = s.read_flash(b.addr, 0x100).unwrap();
     assert_eq!(u32::from_be_bytes(vb[0x78..0x7C].try_into().unwrap()), 0);
@@ -607,8 +617,8 @@ fn operations_declare_the_capabilities_they_use() {
     }
     .required_caps();
     assert!(write.contains(Capability::StorageWrite));
-    // StorageWrite 在能力偏序里蕴含 StorageRead（写得进去必然读得出来），
-    // 因此这里只能断言"没多要跟写无关的能力"。
+    // StorageWrite implies StorageRead in the capability partial order (if you can write, you can read),
+    // so here we can only assert "no extra capabilities unrelated to writing were requested".
     assert!(!write.contains(Capability::RpmbAccess));
     assert!(!write.contains(Capability::DaXml));
 }

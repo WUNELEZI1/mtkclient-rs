@@ -1,6 +1,6 @@
-//! 内存读取变体（readflash_data_ex，全量读入内存）
+//! In-memory read variant (readflash_data_ex, reads everything into memory).
 //!
-//! 见 [`crate::da::xflash::io`] 模块文档。
+//! See the [`crate::da::xflash::io`] module docs.
 
 use log::trace;
 
@@ -12,15 +12,15 @@ use super::{
 };
 
 impl<'a> DAXFlash<'a> {
-    /// 读取 flash 数据（全量到内存），用于小分区或需要内存操作的场景
+    /// Read flash data fully into memory; for small partitions or in-memory processing.
     pub(crate) fn readflash_data_ex(
         &mut self,
         addr: u64,
         size: u64,
         parttype: u32,
     ) -> Result<Vec<u8>, String> {
-        // 防御：禁止把超大分区整块读入内存（避免 OOM 崩溃）。
-        // 大分区请走流式读取（readflash_to_file / r <分区> <文件> / rl <目录>）。
+        // Guard: never read a huge partition entirely into memory (avoids OOM crashes).
+        // Use streaming reads for large partitions (readflash_to_file / r `<part>` `<file>` / rl `<dir>`).
         const MAX_IN_MEMORY_READ: u64 = 256 * 1024 * 1024; // 256 MiB
         if size > MAX_IN_MEMORY_READ {
             return Err(format!(
@@ -29,24 +29,26 @@ impl<'a> DAXFlash<'a> {
             ));
         }
 
-        // 1. get_packet_length — send_devctrl 内部已包含完整的 xread + status 握手。
-        //    对齐 Python readflash：**只 GET 不 SET**。
-        //    ★ 0x040008 实为 GET_RANDOM_ID（见 mtkclient Cmd 表），旧实现把它当成
-        //      SET_PKT_LEN 并带参数发送，破坏 DA 状态机，使紧随其后的 READ_DATA 返回
-        //      0xC0010003 (Unsupported command)——真机 printgpt 失败即由此引起。
-        //    部分设备/DA 对 GET_PKT_LEN 返回异常 status，但读取循环按设备实际返回的分包
-        //    处理，故失败时不中断，避免 printgpt 等只读命令无谓失败。
+        // 1. get_packet_length — send_devctrl already performs the full xread + status handshake.
+        //    Matches Python readflash: **GET only, never SET**.
+        //    * 0x040008 is actually GET_RANDOM_ID (see the mtkclient Cmd table); an older
+        //      implementation treated it as SET_PKT_LEN and sent it with arguments, corrupting
+        //      the DA state machine so the following READ_DATA returned 0xC0010003 (Unsupported
+        //      command) — this is what made printgpt fail on real devices.
+        //    Some devices/DA return an unexpected status for GET_PKT_LEN, but the read loop
+        //    follows the actual packet split returned by the device, so do not abort on failure;
+        //    this avoids needless failures of read-only commands such as printgpt.
         if let Ok(data) = self.send_devctrl(GET_PKT_LEN, None) {
             if let Some(read_plen) = parse_packet_length(&data) {
                 trace!("[readflash_data_ex] DA 读包长度 {} 字节", read_plen);
             }
         }
 
-        // 2. 发送 READ_DATA 命令及参数
+        // 2. Send the READ_DATA command and its parameters
         self.send_read_data_cmd(addr, size, parttype)?;
 
-        // 3. 数据读取循环（全量到内存）
-        // 用较长读超时包裹整个读取逻辑（串口默认仅 1s，流式读取会超时失败）。
+        // 3. Data read loop (into memory).
+        // Wrap the whole read with a longer timeout (the serial default is only 1s; streaming would time out).
         with_read_timeout(self, READFLASH_READ_TIMEOUT_MS, |da| {
             let mut buffer = Vec::with_capacity(size as usize);
             let mut remaining = size as usize;
@@ -78,7 +80,7 @@ impl<'a> DAXFlash<'a> {
                 }
 
                 if slength == 4 {
-                    // 4 字节小包/心跳：栈上临时缓冲，避免逐包堆分配；全零心跳直接跳过不计入 buffer
+                    // 4-byte small packet/heartbeat: stack buffer to avoid per-packet heap allocation; all-zero heartbeats are skipped and not counted
                     let mut tiny = [0u8; 4];
                     if let Err(e) = da.preloader.device.read_exact(&mut tiny) {
                         trace!("[readflash_data] read data(small) error: {}", e);
@@ -91,18 +93,19 @@ impl<'a> DAXFlash<'a> {
                     buffer.extend_from_slice(&tiny);
                     remaining = remaining.saturating_sub(4);
                 } else if slength == 0 {
-                    // 零长数据/终止包：mtkclient 在 length==0 时即结束读取，这里同样终止，
-                    // 避免 remaining 不推进导致死循环。
+                    // Zero-length data/terminator packet: mtkclient ends the read when length==0; do the
+                    // same here so a non-advancing `remaining` cannot loop forever.
                     trace!("[readflash_data] 零长数据包，结束读取");
                     break;
                 } else {
-                    // 正常数据：直接读入 buffer 尾部增长区，消除逐包 vec! 堆分配
+                    // Normal data: read straight into the buffer tail, eliminating a per-packet vec! allocation
                     let slen = slength as usize;
-                    // DA 对每个数据块末尾附加固定长度尾帧（DA_READ_PER_CHUNK_TRAILER 字节状态/校验）。
-                    // ★ 必须按"真实数据长度 = slen - 尾帧"截取并丢弃尾帧，且对【每一块】
-                    // （不论是否最后一块）都如此处理：中间块的尾帧若被当数据写入，整段数据会按
-                    // 8 字节/块错位，导致 GPT 分区条目 CRC 失败、printgpt 读空。
-                    // commit 03071dd 仅修正了"slen > remaining"的最后一块，多块传输仍错位，本次补全。
+                    // The DA appends a fixed-length trailer to every data chunk (DA_READ_PER_CHUNK_TRAILER bytes of status/checksum).
+                    // * Truncate by "real data length = slen - trailer" and drop the trailer for EVERY chunk
+                    //   (last or not): if an intermediate chunk's trailer is written as data, the whole stream
+                    //   shifts by 8 bytes per chunk, breaking GPT entry CRC and making printgpt read empty data.
+                    // Commit 03071dd only fixed the last chunk ("slen > remaining"); multi-chunk transfers stayed
+                    // misaligned and are corrected here.
                     let data_len = slen.saturating_sub(DA_READ_PER_CHUNK_TRAILER);
                     let take = data_len.min(remaining);
                     let discard = slen - take;
@@ -135,11 +138,13 @@ impl<'a> DAXFlash<'a> {
                 }
             }
 
-            // 完整性校验：① 设备可能提前结束（ZLP / 读错误 / 坏 magic / ACK 失败）；
-            // ② 心跳包(slength==4 全零)与零长包被 continue 跳过，不计入 buffer。
-            // 若实际收到的真实数据字节数 < size，静默返回会让上层（GPT 解析、
-            // preloader 提取、分区校验等）拿到不完整的“假成功”结果，故显式报错。
-            // 若 > size（DA 尾帧未被完全丢弃的极端情况）则截断到 size，避免脏数据。
+            // Integrity check: (1) the device may end early (ZLP / read error / bad magic / ACK failure);
+            // (2) heartbeat packets (slength==4, all zero) and zero-length packets are skipped via
+            // continue and never counted into the buffer.
+            // If the real byte count received is < size, returning silently would hand upper layers
+            // (GPT parsing, preloader extraction, partition verification, ...) an incomplete
+            // "false success", hence the explicit error. If > size (trailer not fully dropped in an
+            // extreme case), truncate to size to avoid dirty data.
             if buffer.len() < size as usize {
                 return Err(format!(
                     "读取数据不完整: 期望 {} 字节，实际仅收到 {} 字节（设备提前结束数据传输）",

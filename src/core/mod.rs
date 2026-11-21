@@ -1,9 +1,10 @@
-//! 核心抽象层：能力格、安全标志、设备状态、规划模型。
+//! Core abstraction layer: capability lattice, safety flags, device state, plan model.
 //!
-//! 本层**零 IO**：不碰 USB / 文件 / 日志，只做纯数据与纯函数，
-//! 这样 Planner 和注册表可以在 mock / 单测里完全脱机验证。
+//! This layer is **zero-IO**: it touches no USB / files / logging and holds only pure
+//! data and pure functions, so the Planner and registry can be fully validated offline
+//! in mocks / unit tests.
 //!
-//! 依赖方向：`core` 不依赖任何其它内部模块（可被 transport / da / exploit / ops 引用）。
+//! Dependency direction: `core` depends on no other internal module (it may be used by transport / da / exploit / ops).
 
 pub mod capability;
 pub mod device;

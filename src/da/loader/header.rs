@@ -1,21 +1,21 @@
-//! MTK AllInOne DA 文件头解析（纯数据处理，无 USB 通信）
+//! MTK AllInOne DA header parsing (pure data processing, no USB traffic)
 //!
-//! - `DaRegion`         — DA 文件中单个 region 的元数据
-//! - `parse_da_regions` — 从 DA header 区域解析 region 列表
-//! - `parse_da_header`  — 解析整个 AllInOne DA 文件
+//! - `DaRegion`         — metadata for a single region in the DA file
+//! - `parse_da_regions` — parse the region list from the DA header area
+//! - `parse_da_header`  — parse an entire AllInOne DA file
 
 use log::{info, warn};
 
-/// DA 文件 region 结构
+/// DA file region structure
 #[derive(Debug, Clone)]
 pub struct DaRegion {
-    pub(crate) buf_offset: u32, // 在文件中的偏移
-    pub(crate) len: u32,        // 大小
-    pub(crate) start_addr: u32, // 加载地址
-    pub(crate) sig_len: u32,    // 签名长度
+    pub(crate) buf_offset: u32, // offset within the file
+    pub(crate) len: u32,        // size
+    pub(crate) start_addr: u32, // load address
+    pub(crate) sig_len: u32,    // signature length
 }
 
-/// 从 DA header 数据中解析 region 信息
+/// Parse region information from the DA header data
 pub(crate) fn parse_da_regions(
     header: &[u8],
     region_start: usize,
@@ -65,7 +65,7 @@ pub(crate) fn parse_da_regions(
     regions
 }
 
-// 解析 MTK AllInOne DA 文件
+// Parse an MTK AllInOne DA file
 pub(crate) fn parse_da_header(
     da_data: &[u8],
     target_hw_code: u16,
@@ -74,19 +74,19 @@ pub(crate) fn parse_da_header(
         return Err("DA 文件太小，无法解析头".to_string());
     }
 
-    // 检查是否是 MTK AllInOne DA 格式
+    // Check whether this is the MTK AllInOne DA format
     let header = &da_data[0..0x68];
     let is_allinone = header.contains(&0x4D) && header.contains(&0x54) && header.contains(&0x4B);
 
     if is_allinone {
-        // 读取 DA 数量
+        // Read the DA count
         let count_da =
             u32::from_le_bytes([da_data[0x68], da_data[0x69], da_data[0x6A], da_data[0x6B]]);
 
-        // 检查是否是 v6 格式
+        // Check whether this is the v6 format
         let is_v6 = header.windows(8).any(|window| window == b"MTK_DA_v6");
 
-        // 检查是否是旧版加载器
+        // Check whether this is an old loader
         let old_ldr: bool;
         let offset: usize;
 
@@ -104,7 +104,7 @@ pub(crate) fn parse_da_header(
             old_ldr = false;
         }
 
-        // 查找适合目标 HW Code 的 DA
+        // Find the DA matching the target HW Code
         for i in 0..count_da {
             let da_offset = 0x6C + (i as usize) * offset;
             if da_offset + offset > da_data.len() {
@@ -113,13 +113,13 @@ pub(crate) fn parse_da_header(
 
             let da_header = &da_data[da_offset..da_offset + offset];
 
-            // 读取 DA 信息
+            // Read DA information
             let magic = u16::from_le_bytes([da_header[0], da_header[1]]);
             let hw_code = u16::from_le_bytes([da_header[2], da_header[3]]);
             let _hw_sub_code = u16::from_le_bytes([da_header[4], da_header[5]]);
             let _hw_version = u16::from_le_bytes([da_header[6], da_header[7]]);
 
-            // 新版加载器有 sw_version + reserved1 (4 字节)
+            // Newer loaders carry sw_version + reserved1 (4 bytes)
             let _sw_version: u16;
             let _page_size: u16;
             let _entry_region_index: u16;
@@ -143,7 +143,7 @@ pub(crate) fn parse_da_header(
                 region_start = 20;
             }
 
-            // 跳过不匹配的 DA，静默处理
+            // Skip non-matching DAs silently
             if hw_code != target_hw_code {
                 continue;
             }
@@ -155,7 +155,7 @@ pub(crate) fn parse_da_header(
             return Ok((magic as u32, regions, is_v6));
         }
 
-        // 如果没有找到匹配的 HW Code，返回第一个有效的 DA（hw_code 不为 0）
+        // No DA matched the HW Code: fall back to the first valid DA (hw_code != 0)
         warn!(
             "未找到 HW Code 0x{:04X} 的 DA，尝试使用第一个有效的 DA",
             target_hw_code
@@ -179,17 +179,17 @@ pub(crate) fn parse_da_header(
 
                 let mut regions = parse_da_regions(da_header, region_start, entry_region_count);
 
-                // 如果没有读取到 regions，使用默认的 Stage1 和 Stage2 region
+                // No regions parsed: use the default Stage1 and Stage2 regions
                 if regions.is_empty() {
                     warn!("备选 DA 没有 region 信息，使用默认值");
-                    // 默认 Stage1 region
+                    // Default Stage1 region
                     regions.push(DaRegion {
                         buf_offset: 0x376C,
                         len: 0x270,
                         start_addr: 0x200000,
                         sig_len: 0x0,
                     });
-                    // 默认 Stage2 region
+                    // Default Stage2 region
                     regions.push(DaRegion {
                         buf_offset: 0x39E4,
                         len: 0xE660,
@@ -205,7 +205,7 @@ pub(crate) fn parse_da_header(
 
         Err("在 AllInOne DA 中未找到有效的 DA 配置".to_string())
     } else {
-        // 传统 DA 格式解析
+        // Legacy DA format parsing
         let magic = u32::from_le_bytes([da_data[0], da_data[1], da_data[2], da_data[3]]);
         let hw_code = u16::from_le_bytes([da_data[4], da_data[5]]);
         let entry_region_count = u16::from_le_bytes([da_data[16], da_data[17]]);
@@ -225,13 +225,13 @@ pub(crate) fn parse_da_header(
     }
 }
 
-/// Carbonara 漏洞 patch 检测
-/// 对齐 mtkclient Tools/da_parser.py
+/// Carbonara vulnerability patch detection
+/// Mirrors mtkclient Tools/da_parser.py
 ///
-/// 返回 true 表示 DA 已打补丁（不易受 Carbonara 攻击）
+/// Returns true when the DA is patched (not vulnerable to Carbonara)
 pub fn detect_carbonara_patch(da1_data: &[u8]) -> (bool, &'static str) {
-    // 复用 exploit 注册表的 5 条 pattern，避免两处实现漂移
-    // （此前本函数只有 3 条，漏了 "2nd DA address is invalid" 与 V6 penumbra 变体）。
+    // Reuse the 5 patterns from the exploit registry so the two implementations do not drift
+    // (this function used to check only 3 and missed "2nd DA address is invalid" and the V6 penumbra variant).
     for (i, p) in crate::exploit::registry::CARBONARA_PATTERNS
         .iter()
         .enumerate()
@@ -246,7 +246,7 @@ pub fn detect_carbonara_patch(da1_data: &[u8]) -> (bool, &'static str) {
     (false, "Carbonara vulnerable")
 }
 
-/// 5 条 pattern 对应的可读标签（与 `CARBONARA_PATTERNS` 顺序一致）。
+/// Readable labels for the 5 patterns (same order as `CARBONARA_PATTERNS`).
 pub const CARBONARA_PATTERN_LABELS: [&str; 5] = [
     "V6 Carbonara patched (pattern 1)",
     "V6 Carbonara patched (pattern 2)",
@@ -255,17 +255,17 @@ pub const CARBONARA_PATTERN_LABELS: [&str; 5] = [
     "V5 Carbonara patched",
 ];
 
-/// Carbonara 加固后的 DA1 会把 DA2 加载地址硬编码为 `0x40000000`，忽略主机传入值。
+/// A Carbonara-hardened DA1 hardcodes the DA2 load address to `0x40000000`, ignoring the host value.
 pub const CARBONARA_FORCED_ADDR: u32 = 0x4000_0000;
 
-/// DA1 里是否有"强制 DA2 加载地址为 0x40000000"的痕迹。
+/// Whether DA1 shows signs of forcing the DA2 load address to 0x40000000.
 ///
-/// 两种形态：
-/// - 常量池里的字面量（小端 `00 00 00 40` / 大端 `40 00 00 00`）；
-/// - ARM `MOVT rX, #0x4000` 指令编码（小端 `00 00 40 E3`）。
+/// Two shapes:
+/// - a literal in the constant pool (little-endian `00 00 00 40` / big-endian `40 00 00 00`);
+/// - an ARM `MOVT rX, #0x4000` encoding (little-endian `00 00 40 E3`).
 ///
-/// 这只是**启发式**：0x40000000 也可能只是普通内存基址常量，所以调用方
-/// 只应把它降级为"可疑"（`Confidence::Low`），不能据此判定"已修补"。
+/// This is a **heuristic** only: 0x40000000 may just be an ordinary memory base constant, so
+/// callers should treat it as "suspicious" (`Confidence::Low`), not as proof of a patch.
 pub fn da1_forces_da2_addr(da1: &[u8]) -> bool {
     let le = CARBONARA_FORCED_ADDR.to_le_bytes();
     let be = CARBONARA_FORCED_ADDR.to_be_bytes();
@@ -273,7 +273,7 @@ pub fn da1_forces_da2_addr(da1: &[u8]) -> bool {
         || da1.windows(4).any(|w| w[2] == 0x40 && w[3] == 0xE3)
 }
 
-/// Hash check 检测（DA 是否包含 hash 校验逻辑）
+/// Hash check detection (whether the DA contains hash verification logic)
 pub fn detect_hash_check(da1_data: &[u8]) -> (bool, &'static str) {
     // DA_HASH_MISMATCH error code 0xC0070004
     let hash_bytes = 0xC0070004u32.to_le_bytes();

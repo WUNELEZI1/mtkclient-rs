@@ -1,6 +1,6 @@
-//! eMMC 容量格式化助手（供 GPT 表格渲染复用）。
+//! eMMC capacity formatting helpers (reused by GPT table rendering).
 
-/// 格式化字节数为人类可读字符串 (KB/MB/GB, 保留 2 位小数)
+/// Format a byte count as a human-readable string (KB/MB/GB, 2 decimals)
 pub fn format_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = 1024.0 * KB;
@@ -16,7 +16,7 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-/// 格式化字节数为带千分位的字符串
+/// Format a byte count with thousands separators
 pub fn format_bytes_comma(bytes: u64) -> String {
     let s = bytes.to_string();
     let mut result = String::with_capacity(s.len() + s.len() / 3);

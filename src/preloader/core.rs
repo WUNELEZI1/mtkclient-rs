@@ -1,20 +1,20 @@
-//! Preloader 核心结构体
+//! Preloader core struct
 //!
 //! ```text
 //! pub struct Preloader {
-//!     pub device: Box<dyn BromTransport>, // 设备传输抽象（USB / 串口）
-//!     pub is_preloader_mode: bool,         // 是否已处于 Preloader/DA 模式
-//!     pub chip: Option<ChipConfig>,        // 芯片配置（HW code 匹配后填入）
-//!     pub brom_initialized: bool,          // BROM init 是否成功（握手 + 关看门狗 + sync）
+//!     pub device: Box<dyn BromTransport>, // device transport abstraction (USB / serial)
+//!     pub is_preloader_mode: bool,         // whether already in Preloader/DA mode
+//!     pub chip: Option<ChipConfig>,        // chip config (filled after HW code match)
+//!     pub brom_initialized: bool,          // whether BROM init succeeded (handshake + watchdog off + sync)
 //! }
 //! ```
 //!
-//! 各 impl 方法分散到同目录其他模块：
-//! - `传输.rs`         — BromTransport trait + SerialPortTransport + UsbDevice impl
-//! - `BROM初始化.rs`         — init / sync_brom / echo_* / get_hw_code / rword / flush_input
-//! - `BROM寄存器访问.rs` — brom_register_access
-//! - `BROM输入输出.rs`           — send_da / jump_da / jump_bl / get_me_id / get_soc_id
-//! - `BROM初始化.rs` 中也包含 read32_brom（因与 rword 等基础读取紧密相关）
+//! Impl methods live in sibling modules:
+//! - `transport/`      — BromTransport trait + SerialPortTransport + UsbDevice impl
+//! - `brom_init/`      — init / sync_brom / echo_* / get_hw_code / rword / flush_input
+//! - `brom_reg_access.rs` — brom_register_access
+//! - `brom_io.rs`      — send_da / jump_da / jump_bl / get_me_id / get_soc_id
+//! - `brom_read.rs`    — read32_brom (closely tied to rword and other base reads)
 
 use super::transport::BromTransport;
 use crate::da::loader::header::DaRegion;
@@ -25,11 +25,11 @@ pub struct Preloader {
     pub device: Box<dyn BromTransport>,
     pub is_preloader_mode: bool,
     pub chip: Option<ChipConfig>,
-    /// BROM 初始化是否完成（init 成功后为 true）
+    /// Whether BROM init completed (true after a successful init)
     pub brom_initialized: bool,
-    /// 后台线程预解析的 DA 文件（含 header 解析结果）
+    /// DA file pre-parsed by a background thread (includes header parse results)
     pub da_parsed: Option<Arc<Mutex<Option<(Vec<u8>, Vec<DaRegion>)>>>>,
-    /// 用户指定的 DA 文件路径（--da 参数），为空时使用默认路径
+    /// User-specified DA file path (--da); defaults to the built-in path when empty
     pub da_path: String,
 }
 

@@ -1,12 +1,12 @@
-//! 设备 IO 命令
+//! Device I/O commands.
 //!
-//! - `cmd_read`     — 读取分区数据到文件
-//! - `cmd_write`    — 写入文件到分区（支持 verify）
-//! - `cmd_erase`    — 擦除分区
-//! - `cmd_reboot`   — 重启设备（支持 system/fastboot/recovery/fastbootd）
-//! - `cmd_slot`     — 显示/切换 A/B 槽位
-//! - `cmd_peek`     — 读取设备内存（hex dump 输出）
-//! - `cmd_poke`     — 写入设备内存（hex 数据输入）
+//! - `cmd_read`     — read partition data into a file
+//! - `cmd_write`    — write a file to a partition (optionally verify)
+//! - `cmd_erase`    — erase a partition
+//! - `cmd_reboot`   — reboot the device (system/fastboot/recovery/fastbootd)
+//! - `cmd_slot`     — show/switch A/B slot
+//! - `cmd_peek`     — read device memory (hex dump output)
+//! - `cmd_poke`     — write device memory (hex input)
 
 pub(crate) mod boot_mode;
 pub(crate) mod erase;

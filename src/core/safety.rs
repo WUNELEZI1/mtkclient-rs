@@ -1,17 +1,17 @@
-//! 安全标志位（来自 `GET_TARGET_CONFIG`，0xD8）。
+//! Safety flags (from `GET_TARGET_CONFIG`, 0xD8).
 //!
-//! 位定义与 `docs/` 及 `system::config::TargetConfig` 保持一致：
+//! Bit definitions match `docs/` and `system::config::TargetConfig`:
 //!
-//! | bit | 名称 | 含义 |
+//! | bit | name | meaning |
 //! |---|---|---|
 //! | 0x001 | sbc | Secure Boot Control |
 //! | 0x002 | sla | Serial Link Authentication |
 //! | 0x004 | daa | Download Agent Authentication |
-//! | 0x010 | cert | 需要根证书 |
-//! | 0x020 | memread | 内存读取鉴权 |
-//! | 0x040 | memwrite | 内存写入鉴权 |
+//! | 0x010 | cert | root certificate required |
+//! | 0x020 | memread | memory read authentication |
+//! | 0x040 | memwrite | memory write authentication |
 
-/// 安全标志位集合。
+/// Set of safety flags.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SafetyFlags(u32);
 
@@ -57,15 +57,16 @@ impl SafetyFlags {
         self.0 == 0
     }
 
-    /// 是否需要先获得 `DaPatched` / `SafetyBypassed` 才能加载 DA。
+    /// Whether `DaPatched` / `SafetyBypassed` is required before loading the DA.
     ///
-    /// 依据：SLA / DAA / CERT 任一置位时，未 patch 的 DA 会被拒绝；
-    /// SBC 单独置位通常只影响镜像校验，不阻塞 DA 下载，因此不计入。
+    /// Rationale: if any of SLA / DAA / CERT is set, an unpatched DA is rejected;
+    /// SBC alone usually only affects image verification and does not block DA
+    /// download, so it is excluded.
     pub const fn requires_da_bypass(self) -> bool {
         self.has(Self::SLA) || self.has(Self::DAA) || self.has(Self::CERT)
     }
 
-    /// 人类可读列表（决策日志用）。
+    /// Human-readable list (for decision logs).
     pub fn names(self) -> Vec<&'static str> {
         let mut v = Vec::new();
         if self.sbc() {

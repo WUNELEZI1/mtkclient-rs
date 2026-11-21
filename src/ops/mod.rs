@@ -1,13 +1,13 @@
-//! 业务操作（ops）：以"目标能力"声明，而不是以"执行步骤"声明。
+//! Business operations (ops): declared by target capabilities, not by execution steps.
 //!
-//! 每个 op 只回答两件事：
-//! 1. 我需要哪些能力（[`Op::required_caps`]）；
-//! 2. 能力齐了之后做什么（[`Op::run`]）。
+//! Each op answers only two things:
+//! 1. Which capabilities it needs ([`Op::required_caps`]);
+//! 2. What to do once they are available ([`Op::run`]).
 //!
-//! 中间的"怎么获得这些能力"由 [`crate::exec::Executor`] 交给
-//! Planner / Orchestrator 决定，因此 CLI 不再需要硬编码流程。
+//! How to obtain those capabilities is delegated by [`crate::exec::Executor`] to the
+//! Planner / Orchestrator, so the CLI no longer hardcodes any flow.
 //!
-//! 注意：新增 op 不需要改 Executor —— 只要它声明能力并实现 `run`。
+//! Note: adding an op needs no Executor change — it only declares capabilities and implements `run`.
 
 pub mod avb_guard;
 pub mod checkpoint;
@@ -25,23 +25,23 @@ use crate::confirm::{ConfirmContext, ConfirmError, Danger, DangerConfirm};
 use crate::core::capability::{Capability, CapabilitySet};
 use crate::session::Session;
 
-/// 执行上下文。
+/// Execution context.
 pub struct OpCtx<'a> {
     pub session: &'a mut dyn Session,
-    /// 是否有权写入产物文件（scatter.txt / gpt_debug_*.bin）。
-    /// 单测里置 false，避免污染仓库。
+    /// Whether artifact files may be written (scatter.txt / gpt_debug_*.bin).
+    /// Set to false in unit tests to avoid polluting the repo.
     pub write_artifacts: bool,
     pub log_level: u8,
-    /// 危险操作确认器（`--yes` / 交互式终端）
+    /// Dangerous-operation confirmer (`--yes` / interactive terminal)
     pub confirm: &'a mut DangerConfirm,
 }
 
 impl OpCtx<'_> {
-    /// 危险操作确认。
+    /// Confirm a dangerous operation.
     ///
-    /// - 不加 `--yes`：确认器先打印风险提示，再交互式问 `y/N`；
-    ///   非交互环境直接报错并提示加 `--yes`。
-    /// - 加 `--yes`：确认器静默放行（`--yes` 是给脚本/程序调用的，不打印警告）。
+    /// - Without `--yes`: prints the risk warning first, then asks `y/N` interactively;
+    ///   in a non-interactive environment it errors out and suggests adding `--yes`.
+    /// - With `--yes`: passes silently (`--yes` targets scripts/programs, so no warning is printed).
     pub fn confirm_action(
         &mut self,
         action: &'static str,
@@ -69,10 +69,10 @@ impl OpCtx<'_> {
     }
 }
 
-/// 去掉 A/B 槽后缀（`boot_a` → `boot`）。
+/// Strip the A/B slot suffix (`boot_a` → `boot`).
 ///
-/// 只剥 `_a`/`_b` 或紧邻的单字母槽后缀；**不能无脑 `trim_end_matches('a')`**——
-/// `userdata` / `nvdata` / `para` 的词尾 a 是名字的一部分，剥掉就再也匹配不到重点分区。
+/// Only strips `_a`/`_b` or a directly adjacent single-letter suffix; **never blindly `trim_end_matches('a')`** —
+/// the trailing a in `userdata` / `nvdata` / `para` is part of the name; stripping it breaks critical matches.
 fn strip_slot(name: &str) -> &str {
     if let Some(s) = name.strip_suffix("_a").or_else(|| name.strip_suffix("_b")) {
         return s;
@@ -83,10 +83,10 @@ fn strip_slot(name: &str) -> &str {
     name
 }
 
-/// 重点分区（擦/写需要确认）。
+/// Critical partitions (erase/write requires confirmation).
 ///
-/// 判定原则：写坏之后**设备无法自行恢复**或会丢失回滚/校准数据的分区。
-/// 普通数据分区（如 super 内的子分区、vendor 等）不在列表内。
+/// Rule: partitions that **cannot be recovered by the device** after a bad write, or that hold
+/// rollback/calibration data. Normal data partitions (super sub-partitions, vendor, etc.) are excluded.
 pub fn is_critical_partition(name: &str) -> bool {
     const EXACT: [&str; 25] = [
         "preloader",
@@ -115,7 +115,7 @@ pub fn is_critical_partition(name: &str) -> bool {
         "tee",
         "dtbo",
     ];
-    // 原名与"去掉槽后缀"两种写法都算，避免 `boot_a` 漏判、`userdata` 误剥
+    // Match both the raw name and the slot-stripped name, so `boot_a` is not missed and `userdata` is not mangled
     [name, strip_slot(name)].iter().any(|n| {
         EXACT.contains(n)
             || n.starts_with("vbmeta")
@@ -130,9 +130,9 @@ pub fn is_critical_partition(name: &str) -> bool {
     })
 }
 
-/// 不可恢复分区：写坏/擦掉之后设备**无法自行恢复**（变砖，或丢校准/回滚数据）。
+/// Irreversible partitions: after a bad write/erase the device **cannot recover** (brick, or lost calibration/rollback data).
 ///
-/// 这批分区要求每次操作都重新确认（`Danger::Irreversible`），不接受"本次会话已确认过"。
+/// These require a fresh confirmation on every operation (`Danger::Irreversible`); a session-level confirmation does not count.
 pub fn is_irreversible_partition(name: &str) -> bool {
     const SET: [&str; 11] = [
         "preloader",
@@ -152,7 +152,7 @@ pub fn is_irreversible_partition(name: &str) -> bool {
         .any(|n| SET.contains(n) || n.starts_with("preloader"))
 }
 
-/// 该分区写/擦的危险等级。
+/// Danger level for writing/erasing this partition.
 pub fn danger_for_partition(name: &str) -> Danger {
     if is_irreversible_partition(name) {
         Danger::Irreversible
@@ -161,33 +161,33 @@ pub fn danger_for_partition(name: &str) -> Danger {
     }
 }
 
-/// 执行结果。
+/// Execution result.
 #[derive(Debug, Clone, Default)]
 pub struct OpOutcome {
-    /// 一句话结果（进日志）
+    /// One-line result (goes to the log)
     pub summary: String,
-    /// 产出的文件路径
+    /// Paths of produced files
     pub artifacts: Vec<String>,
-    /// 关键数量（如分区数），便于测试断言
+    /// Key facts (e.g. partition count) for test assertions
     pub facts: Vec<(String, String)>,
 }
 
-/// 一个业务操作。
+/// A business operation.
 pub trait Op {
-    /// 目标名（进决策日志的 `goal` 字段）
+    /// Goal name (goes to the `goal` field of the decision log)
     fn name(&self) -> &'static str;
-    /// 目标能力
+    /// Required capabilities
     fn required_caps(&self) -> CapabilitySet;
-    /// 执行
+    /// Execute
     fn run(&self, ctx: &mut OpCtx<'_>) -> Result<OpOutcome, String>;
 }
 
-/// op 名 → 目标能力（CLI 的 `plan` 与 `exec` 共用同一份定义，避免漂移）。
+/// op name → required capabilities (shared by CLI `plan` and `exec` to avoid drift).
 pub fn required_caps(op: &str) -> Option<CapabilitySet> {
     let caps: &[Capability] = match op {
-        // printgpt 只读：不需要写能力
+        // printgpt is read-only: no write capability needed
         "printgpt" => &[Capability::StorageRead, Capability::GptParsed],
-        // 按分区名读写必须先有 GPT（否则分区名无法解析成地址）
+        // Name-based read/write requires the GPT first (otherwise names cannot resolve to addresses)
         "read" => &[Capability::StorageRead, Capability::GptParsed],
         "write" | "erase" | "vbmeta" => &[Capability::StorageWrite, Capability::GptParsed],
         "seccfg" => &[
@@ -211,7 +211,7 @@ pub fn required_caps(op: &str) -> Option<CapabilitySet> {
     Some(set)
 }
 
-/// op 名 → `'static` 名称（决策日志需要）。
+/// op name → `'static` name (needed by the decision log).
 pub fn op_static_name(op: &str) -> &'static str {
     match op {
         "printgpt" => "printgpt",
@@ -242,11 +242,11 @@ mod tests {
         );
     }
 
-    /// 词尾恰好是 a/b 的分区名不能被当成槽后缀剥掉（曾经 `userdata` → `userdat` 漏判）。
+    /// Partition names that merely end in a/b must not be treated as slot suffixes (e.g. `userdata` → `userdat`).
     #[test]
     fn critical_partition_names_with_trailing_a_or_b() {
         for name in ["userdata", "nvdata", "para", "data", "nvdata_bak"] {
-            let expect = name != "nvdata_bak"; // bak 不在列表内，仅确保不 panic
+            let expect = name != "nvdata_bak"; // bak is not listed; this only ensures no panic
             assert_eq!(
                 is_critical_partition(name),
                 expect,
@@ -254,12 +254,12 @@ mod tests {
                 name
             );
         }
-        // 带槽后缀的照样命中
+        // Slot-suffixed names still match
         assert!(is_critical_partition("boot_a"));
         assert!(is_critical_partition("boot_b"));
         assert!(is_critical_partition("vbmeta_system_b"));
         assert!(is_critical_partition("lk"));
-        // 普通分区不打断
+        // Normal partitions must not trip the check
         assert!(!is_critical_partition("vendor"));
         assert!(!is_critical_partition("system"));
     }
@@ -283,7 +283,7 @@ mod tests {
             assert!(is_irreversible_partition(name), "{} 应不可恢复", name);
             assert_eq!(danger_for_partition(name), Danger::Irreversible);
         }
-        // boot 是重点但可恢复（刷回去就行）
+        // boot is critical but recoverable (just flash it back)
         assert!(is_critical_partition("boot_a"));
         assert!(!is_irreversible_partition("boot_a"));
         assert_eq!(danger_for_partition("boot_a"), Danger::High);
@@ -295,10 +295,10 @@ mod tests {
         assert_eq!(op_static_name("nope"), "unknown");
     }
 
-    /// `required_caps(op)` 表与各 `Op::required_caps()` 必须逐位一致。
+    /// The `required_caps(op)` table must match each `Op::required_caps()` bit for bit.
     ///
-    /// 两处定义一旦漂移，`plan`（读表）和 `exec`（读 trait）就会对同一个操作给出
-    /// 不同的能力缺口，规划出的步骤也会跟着错。
+    /// If the two definitions drift, `plan` (table-driven) and `exec` (trait-driven) report
+    /// different capability gaps for the same operation, and the planned steps go wrong.
     #[test]
     fn capability_table_matches_each_op() {
         let ops: Vec<(&str, CapabilitySet)> = vec![

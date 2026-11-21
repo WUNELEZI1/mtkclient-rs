@@ -1,11 +1,11 @@
-//! Preloader / BROM 协议层
+//! Preloader / BROM protocol layer
 //!
-//! - `核心`     — Preloader 结构体定义
-//! - `传输` — BromTransport trait + SerialPortTransport + UsbDevice impl
-//! - `BROM初始化` — init / sync_brom / echo_* / get_hw_code / rword / flush_input
-//! - `BROM读取`   — read32_brom / read32_brom_batch (0xD1 协议)
-//! - `BROM寄存器访问` — 0xDA 协议通用寄存器访问
-//! - `BROM输入输出`   — send_da / jump_da / jump_bl / get_me_id / get_soc_id
+//! - `core`     — Preloader struct definition
+//! - `transport` — BromTransport trait + SerialPortTransport + UsbDevice impl
+//! - `brom_init` — init / sync_brom / echo_* / get_hw_code / rword / flush_input
+//! - `brom_read`   — read32_brom / read32_brom_batch (0xD1 protocol)
+//! - `brom_reg_access` — generic register access via the 0xDA protocol
+//! - `brom_io`   — send_da / jump_da / jump_bl / get_me_id / get_soc_id
 
 pub(crate) mod brom_init;
 #[path = "brom_io.rs"]
@@ -18,7 +18,7 @@ pub(crate) mod brom_reg_access;
 pub(crate) mod core;
 pub(crate) mod transport;
 
-// 公共 API re-export（与原 preloader.rs 完全兼容）
+// Public API re-exports (fully compatible with the original preloader.rs)
 #[allow(unused_imports)]
 pub use core::Preloader;
 #[allow(unused_imports)]

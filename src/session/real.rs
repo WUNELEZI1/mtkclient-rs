@@ -1,7 +1,7 @@
-//! 真实设备会话：把既有 `DAXFlash` 全流程适配到 [`Session`]。
+//! Real device session: adapts the full existing `DAXFlash` flow to [`crate::session::Session`].
 //!
-//! 这里**不重写**任何协议逻辑，只做"步骤 → 既有方法"的映射，
-//! 因此接入 Orchestrator 不会改变真机行为。
+//! This **does not rewrite** any protocol logic; it only maps "steps → existing methods",
+//! so wiring in the Orchestrator does not change real-device behavior.
 
 use super::{DeviceInfo, PartitionSpan, Session};
 
@@ -9,10 +9,10 @@ use crate::core::capability::{Capability, CapabilitySet};
 use crate::core::device::DeviceState;
 use crate::da::DAXFlash;
 
-/// 真实设备会话。
+/// Real device session.
 pub struct RealSession<'a, 'b> {
     da: &'a mut DAXFlash<'b>,
-    /// 由调用方传入的规划视图（hW/da_code/协议/安全标志已在连接阶段得到）
+    /// Planning view supplied by the caller (hw/da_code/protocol/security flags already obtained during connection)
     state: DeviceState,
     da_loaded: bool,
     storage_open: bool,
@@ -21,8 +21,8 @@ pub struct RealSession<'a, 'b> {
 }
 
 impl<'a, 'b> RealSession<'a, 'b> {
-    /// `da_loaded` 表示调用方已完成 DA 上传（`handle_command` 的 Phase1 会做），
-    /// 此时规划器只会规划"开存储 → 解析 GPT"，不会再要求 `da_load`。
+    /// `da_loaded` means the caller has already uploaded the DA (done by Phase1 of `handle_command`),
+    /// so the planner will only plan "open storage → parse GPT" and will not request `da_load` again.
     pub fn new(da: &'a mut DAXFlash<'b>, state: DeviceState, da_loaded: bool) -> Self {
         Self {
             da,
@@ -35,8 +35,8 @@ impl<'a, 'b> RealSession<'a, 'b> {
     }
 }
 
-/// 真实设备的 exploit 执行：当前只有只读目标会用到 BROM exploit，
-/// 且必须由上层（BROM 会话）执行——DA 会话里已无法回到 BROM。
+/// Real-device exploit execution: currently only read-only targets use the BROM exploit,
+/// and it must be run by the upper layer (BROM session) — a DA session can no longer return to BROM.
 fn unsupported_exploit(name: &str) -> String {
     format!(
         "exploit({}) 需要 BROM 会话，当前已在 DA 会话中；请以 --mode brom 重新连接后由规划器选择 BROM 路径",
@@ -81,15 +81,15 @@ impl Session for RealSession<'_, '_> {
     }
 
     fn load_da(&mut self) -> Result<(), String> {
-        // 既有全流程：DA1 → 可选查询 → EMI → DA2 → reinit → DA extensions
+        // Existing full flow: DA1 → optional query → EMI → DA2 → reinit → DA extensions
         self.da.upload_da()?;
         self.da_loaded = true;
         Ok(())
     }
 
     fn open_storage(&mut self) -> Result<(), String> {
-        // 真机上"打开存储"由 DA2 + CUSTOM_SET_STORAGE 完成，已在 upload_da 尾部做过；
-        // 这里只做一次容量查询，确认存储可访问（失败不阻断，与 cmd_printgpt 一致）。
+        // On real devices "open storage" is done by DA2 + CUSTOM_SET_STORAGE at the end of upload_da;
+        // here we only do one capacity query to confirm storage is accessible (failures are non-fatal, same as cmd_printgpt).
         let _ = self.da.get_emmc_info();
         self.storage_open = true;
         Ok(())
@@ -140,7 +140,7 @@ impl Session for RealSession<'_, '_> {
     }
 
     fn find_partition(&mut self, name: &str) -> Result<PartitionSpan, String> {
-        // 特殊分区（boot1/boot2）走 DAXFlash 的既有解析，parttype 不是 8
+        // Special partitions (boot1/boot2) use DAXFlash's existing resolver; parttype is not 8
         if let Some((parttype, addr, size)) = self.da.resolve_special_partition(name) {
             return Ok(PartitionSpan {
                 addr,
@@ -175,9 +175,9 @@ impl Session for RealSession<'_, '_> {
         start: u64,
         on_progress: &mut dyn FnMut(u64),
     ) -> Result<(), String> {
-        // 复用既有流式写入（含进度条/包长协商）。断点续传由 ops 层的 checkpoint
-        // 负责持久化，因此这里不传 resume_input（空串 = 不写 .wresume）。
-        // `on_progress` 通过包装 Reader 触发：每读满一块即回调。
+        // Reuse the existing streaming write (including progress bar/package length negotiation). Resume is
+        // persisted by the ops-layer checkpoint, so resume_input is not passed here (empty string = no .wresume).
+        // `on_progress` is triggered by wrapping the Reader: callback fired each time a chunk is read.
         struct ProgressReader<'a, 'f> {
             inner: &'a mut dyn std::io::Read,
             done: u64,
@@ -227,7 +227,7 @@ impl Session for RealSession<'_, '_> {
     }
 
     fn serial(&mut self) -> Option<String> {
-        // 优先用 CID（eMMC 唯一），退化到芯片名 + hw_code
+        // Prefer CID (unique eMMC ID), fall back to chip name + hw_code
         if let Some(chip) = self.da.preloader.chip.as_ref() {
             return Some(format!("{}-{:04X}", chip.name, chip.hw_code));
         }

@@ -3,21 +3,21 @@ use log::info;
 use crate::da::DAXFlash;
 use crate::system::paths::get_tmp_path;
 
-/// FRP OEM 解锁：修改 frp 分区中 persistent 数据块的 OEM unlock 标志位
-/// OEM unlock 标志位于 frp 分区的最后一个字节：0=锁定(出厂默认), 1=解锁
-/// 同时清除 FRP 账户锁数据（"FactoryResetProtection" 等关键字附近的数据）
+/// FRP OEM unlock: modify the OEM unlock flag in the persistent data block of the frp partition
+/// The OEM unlock flag is the last byte of the frp partition: 0 = locked (factory default), 1 = unlocked
+/// Also clears FRP account-lock data (bytes around keywords such as "FactoryResetProtection")
 pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
     info!("FRP OEM 解锁（修改标志位方式）...");
 
     let backup_path = get_tmp_path("frp_backup.bin");
     let unlocked_path = get_tmp_path("frp_unlocked.bin");
 
-    // 1. 读取 frp 分区
+    // 1. Read the frp partition
     da.read_partition("frp", &backup_path.to_string_lossy())?;
     let mut frp_data = std::fs::read(&backup_path).map_err(|e| format!("读取备份失败: {}", e))?;
     info!("frp 分区: {} 字节", frp_data.len());
 
-    // 2. 修改 OEM unlock 标志位（分区最后一个字节 → 1 = 解锁）
+    // 2. Set the OEM unlock flag (last byte of the partition → 1 = unlocked)
     if !frp_data.is_empty() {
         let last_idx = frp_data.len() - 1;
         let old_flag = frp_data[last_idx];
@@ -32,10 +32,10 @@ pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
         }
     }
 
-    // 3. 清除 FRP 账户锁数据
+    // 3. Clear FRP account-lock data
     patch_frp_data(&mut frp_data);
 
-    // 4. 写回
+    // 4. Write back
     std::fs::write(&unlocked_path, &frp_data).map_err(|e| format!("写入临时文件失败: {}", e))?;
     da.write_partition("frp", &unlocked_path.to_string_lossy())?;
 
@@ -43,19 +43,19 @@ pub fn frp_unlock(da: &mut DAXFlash) -> Result<(), String> {
     Ok(())
 }
 
-/// FRP OEM 锁定：恢复 frp 分区的 OEM unlock 标志位为锁定状态
+/// FRP OEM lock: restore the OEM unlock flag of the frp partition to the locked state
 pub fn frp_lock(da: &mut DAXFlash) -> Result<(), String> {
     info!("FRP OEM 锁定（修改标志位方式）...");
 
     let backup_path = get_tmp_path("frp_backup.bin");
     let locked_path = get_tmp_path("frp_locked.bin");
 
-    // 1. 读取 frp 分区
+    // 1. Read the frp partition
     da.read_partition("frp", &backup_path.to_string_lossy())?;
     let mut frp_data = std::fs::read(&backup_path).map_err(|e| format!("读取备份失败: {}", e))?;
     info!("frp 分区: {} 字节", frp_data.len());
 
-    // 2. 修改 OEM unlock 标志位（分区最后一个字节 → 0 = 锁定）
+    // 2. Reset the OEM unlock flag (last byte of the partition → 0 = locked)
     if !frp_data.is_empty() {
         let last_idx = frp_data.len() - 1;
         let old_flag = frp_data[last_idx];
@@ -70,7 +70,7 @@ pub fn frp_lock(da: &mut DAXFlash) -> Result<(), String> {
         }
     }
 
-    // 3. 写回
+    // 3. Write back
     std::fs::write(&locked_path, &frp_data).map_err(|e| format!("写入临时文件失败: {}", e))?;
     da.write_partition("frp", &locked_path.to_string_lossy())?;
 
@@ -78,15 +78,15 @@ pub fn frp_lock(da: &mut DAXFlash) -> Result<(), String> {
     Ok(())
 }
 
-/// 清除 FRP 账户锁数据（原地修改）
+/// Clear FRP account-lock data (in place)
 fn patch_frp_data(data: &mut [u8]) {
-    // 方法 1: "FRP\0" 魔数 + offset 0x04 状态标志
+    // Method 1: "FRP\0" magic followed by a status flag at offset 0x04
     if data.len() >= 5 && &data[0..4] == b"FRP\0" && data[4] == 0x01 {
         data[4] = 0x00;
         info!("  清除 FRP 状态标志: 0x01 -> 0x00");
     }
 
-    // 方法 2: 查找 "FactoryResetProtection" 字符串
+    // Method 2: look for the "FactoryResetProtection" string
     if let Some(idx) = data
         .windows(22)
         .position(|w| w == b"FactoryResetProtection")
@@ -98,7 +98,7 @@ fn patch_frp_data(data: &mut [u8]) {
         }
     }
 
-    // 方法 3: 查找 Google 账号相关数据并清除
+    // Method 3: find and clear Google account related data
     let patterns: &[&[u8]] = &[b"google", b"FRP", b"android_id", b"device_policy"];
     for pattern in patterns {
         if let Some(idx) = data.windows(pattern.len()).position(|w| w == *pattern) {

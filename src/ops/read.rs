@@ -1,9 +1,11 @@
-//! `read`：把分区内容读成镜像文件。
+//! `read`: dump partition contents into an image file.
 //!
-//! 只声明 `StorageRead`；不关心"DA 怎么来的""要不要绕过"。
+//! Only declares `StorageRead`; it does not care how the DA was obtained or
+//! whether bypass was needed.
 //!
-//! 落盘策略：先写 `<out>.part`，全部成功后再 rename 成 `<out>`。
-//! 这样中途断连不会留下半个镜像骗到后续的刷机/校验步骤。
+//! On-disk strategy: write `<out>.part` first, then rename to `<out>` only after
+//! everything succeeds, so an interrupted transfer never leaves a half image to
+//! fool later flashing/verification steps.
 
 use std::io::Write;
 
@@ -12,10 +14,10 @@ use log::info;
 use super::{Op, OpCtx, OpOutcome};
 use crate::core::capability::{Capability, CapabilitySet};
 
-/// 分块大小（1 MiB）：与真机 DA 单次 READ_DATA 上限一致。
+/// Chunk size (1 MiB): matches the per-call READ_DATA limit of the on-device DA.
 const CHUNK: u64 = 0x10_0000;
 
-/// 读取分区到文件。
+/// Reads a partition into a file.
 pub struct ReadOp {
     pub part: String,
     pub out: String,

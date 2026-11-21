@@ -1,13 +1,13 @@
-//! zyb 子命令处理（handle_zyb_command）
+//! zyb subcommand handling (handle_zyb_command)
 //!
-//! 处理 `zyb <subcmd>` 下的所有子操作（seccfg / oem / vbmeta / erase_data / get_build_prop）。
+//! Handles all sub-operations under `zyb <subcmd>` (seccfg / oem / vbmeta / erase_data / get_build_prop).
 
 use crate::color::Colorize;
 use log::info;
 
 use crate::da::DAXFlash;
 
-/// 处理 zyb 子命令
+/// Handle the zyb subcommand
 pub(crate) fn handle_zyb_command(
     da: &mut DAXFlash,
     args: &[String],
@@ -27,7 +27,7 @@ pub(crate) fn handle_zyb_command(
                 return Err("用法: mtkclient zyb vbmeta <mode> (0/1/2/3)".into());
             }
             let mode = sub_args[0].parse::<u32>().map_err(|_| "无效模式")?;
-            // 能力驱动路径（槽位感知 + 不可判定即中止），与 `--sim vbmeta` 同一份实现
+            // Capability-driven path (slot-aware; abort when undecidable), same implementation as `--sim vbmeta`
             super::dispatch::run_op(
                 da,
                 &crate::ops::vbmeta::VbmetaOp { mode },
@@ -64,7 +64,7 @@ pub(crate) fn handle_zyb_command(
                 }
                 "info" => {
                     match sub_args.get(1) {
-                        // 提供文件则离线解析，不连接设备
+                        // If a file is given, parse offline without connecting to the device
                         Some(path) => crate::security::seccfg::seccfg_info_file(path)?,
                         None => crate::security::seccfg::seccfg_info(da)
                             .map_err(|e| format!("seccfg 分析失败: {}", e))?,
@@ -74,7 +74,7 @@ pub(crate) fn handle_zyb_command(
             }
         }
         "format" => {
-            // 显式格式化指定分区为 f2fs / ext4（能力驱动，需危险确认）
+            // Explicitly format the given partition as f2fs / ext4 (capability-driven, requires danger confirmation)
             if sub_args.len() < 2 {
                 return Err("用法: mtkclient zyb format <partition> <f2fs|ext4>".into());
             }

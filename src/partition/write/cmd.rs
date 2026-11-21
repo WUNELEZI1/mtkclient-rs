@@ -1,4 +1,4 @@
-//! 写包长度协商（SET_PKT_LEN）与写命令发送
+//! Write packet length negotiation (SET_PKT_LEN) and write command dispatch
 
 use log::{trace, warn};
 
@@ -6,15 +6,18 @@ use crate::da::xflash::protocol::{GET_PKT_LEN, SET_PKT_LEN};
 use crate::da::xflash::{CMD_MAGIC, CMD_WRITE_DATA, DAXFlash, pack3};
 
 impl<'a> DAXFlash<'a> {
-    /// 获取写包长度（对齐 Python get_packet_length），并主动抬升工作传输单元。
+    /// Gets the write packet length (mirrors Python get_packet_length) and actively
+    /// raises the working transfer unit.
     ///
-    /// 性能关键：刷机匣（GeekFlashTool）实测在 preloader/DA 模式下把包长度设到
-    /// 2MB（0x200000）批量传输；而旧实现仅在 `GET_PKT_LEN` 失败时回退到 256KB
-    /// （0x40000），导致写入被切成 8 倍多的 USB 往返，速度远低于刷机匣。
-    /// 这里统一把工作单元抬到 2MB：DA 不支持 `SET_PKT_LEN` 时 `send_devctrl` 回空/
-    /// 报错，此处忽略，不影响既有行为（无回归风险）。
+    /// Performance-critical: GeekFlashTool was measured to use a 2MB (0x200000) packet
+    /// length in preloader/DA mode for bulk transfers, whereas the old implementation
+    /// fell back to 256KB (0x40000) only when `GET_PKT_LEN` failed, splitting the write
+    /// into 8x more USB round trips and running far slower than GeekFlashTool. Here the
+    /// working unit is raised to 2MB uniformly: when the DA does not support
+    /// `SET_PKT_LEN`, `send_devctrl` returns empty/errors, which is ignored here and
+    /// does not change existing behavior (no regression risk).
     pub(crate) fn get_packet_length(&mut self) -> Result<usize, String> {
-        // GET_PACKET_LENGTH (0x040007) — DA 回报当前写包长度；传输级错误照常上抛。
+        // GET_PACKET_LENGTH (0x040007) - the DA reports the current write packet length; transport errors propagate as usual.
         let data = self.send_devctrl(GET_PKT_LEN, None)?;
         let reported = if data.len() >= 8 {
             let plen = u32::from_le_bytes(data[..4].try_into().unwrap());
@@ -33,15 +36,18 @@ impl<'a> DAXFlash<'a> {
         } else {
             None
         };
-        // 工作传输单元：**以 DA 自报值为准**。
+        // Working transfer unit: **trust the value reported by the DA**.
         //
-        // 对齐 mtkclient `get_packet_length`（xflash_lib.py）：只 GET 不 SET，
-        // 之后 `write_packet_size = plen.write_packet_length`。
-        // 早期实现把 0x040008 当成 SET_PACKET_LENGTH（实际是 GET_RANDOM_ID），
-        // 并强行把包长抬到 2 MiB；在真实 DA 上这是"发一条 GET 却带参数"，
-        // 可能让状态机错位，且超过 DA 缓冲会导致截断。因此改为：
-        //   1. 用 DA 回报值；回报 0/失败时回退 256 KiB（老行为的下限）；
-        //   2. 需要主动抬升时，必须用环境变量 MTK_FORCE_PKT_LEN=<bytes> 显式开启。
+        // Mirrors mtkclient `get_packet_length` (xflash_lib.py): GET only, no SET, then
+        // `write_packet_size = plen.write_packet_length`.
+        // An earlier implementation treated 0x040008 as SET_PACKET_LENGTH (it is
+        // actually GET_RANDOM_ID) and forced the packet length up to 2 MiB; on a real DA
+        // that is "sending a GET with an argument", which may desync the state machine
+        // and truncate data when it exceeds the DA buffer. So it was changed to:
+        //   1. use the DA-reported value; fall back to 256 KiB (the old lower bound) when
+        //      it reports 0 or fails;
+        //   2. raise it actively only when explicitly enabled via the environment
+        //      variable MTK_FORCE_PKT_LEN=<bytes>.
         let mut target = match reported {
             Some(v) if v > 0 => v,
             _ => 0x4_0000,
@@ -64,7 +70,7 @@ impl<'a> DAXFlash<'a> {
         Ok(target)
     }
 
-    /// 发送写命令（对齐 Python cmd_write_data）
+    /// Sends the write command (mirrors Python cmd_write_data).
     pub(crate) fn cmd_write_data(
         &mut self,
         addr: u64,
@@ -77,7 +83,7 @@ impl<'a> DAXFlash<'a> {
             addr, size, storage, parttype
         );
 
-        // 对齐 Python：发送 WRITE_DATA，失败时仅 drain + 重试（不发 xflash_sync）
+        // Mirrors Python: send WRITE_DATA, on failure only drain + retry (no xflash_sync)
         for attempt in 0..3 {
             if attempt > 0 {
                 warn!(
@@ -125,7 +131,7 @@ impl<'a> DAXFlash<'a> {
                 param.extend_from_slice(&parttype.to_le_bytes());
                 param.extend_from_slice(&addr.to_le_bytes());
                 param.extend_from_slice(&size.to_le_bytes());
-                param.extend_from_slice(&[0u8; 32]); // NandExtension 全零
+                param.extend_from_slice(&[0u8; 32]); // NandExtension, all zeros
                 self.send_param_list_chunked(&[&param], "cmd_write_data param")?;
                 return Ok(true);
             }

@@ -2,17 +2,17 @@ use crate::color::Colorize;
 use crate::da::DAXFlash;
 use log::{info, warn};
 
-/// 清除用户数据（恢复出厂设置）
+/// Erase user data (factory reset)
 ///
-/// **erase + format**：先擦除 userdata、md_udc、metadata 三个分区，
-/// 再对 userdata 刷入最小 f2fs 镜像（自研生成器，无 mke2fs 依赖），
-/// 确保分区处于可挂载状态（部分 bootloader 不会自动重建文件系统）。
+/// **erase + format**: first erase the userdata, md_udc and metadata partitions,
+/// then flash a minimal f2fs image to userdata (in-house generator, no mke2fs dependency),
+/// so the partition stays mountable (some bootloaders do not rebuild the filesystem automatically).
 ///
-/// 注意：
-///   - metadata 分区存储动态分区元数据，擦除后 super_metadata 缓存被清除。
-///   - 下次需要动态分区读操作时，将从设备重新读取 metadata。
-///   - 设备重启后 bootloader 会自动重建 metadata 分区。
-///   - 顺序：erase userdata → format userdata(f2fs) → erase md_udc → erase metadata。
+/// Notes:
+///   - The metadata partition stores dynamic-partition metadata; erasing it clears the super_metadata cache.
+///   - The next dynamic-partition read will re-read metadata from the device.
+///   - The bootloader rebuilds the metadata partition after reboot.
+///   - Order: erase userdata → format userdata (f2fs) → erase md_udc → erase metadata.
 pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error>> {
     let partitions = ["userdata", "md_udc", "metadata"];
 
@@ -49,7 +49,7 @@ pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error
             .map_err(|e| format!("擦除 {} 失败: {}", part, e))?;
         info!("{}", crate::i18n::tr("log_erased", &[part]).green());
 
-        // format：userdata 在擦除后刷入最小 f2fs（erase + format 双保险）
+        // format: flash a minimal f2fs to userdata after erasing (erase + format belt and braces)
         if part == "userdata" {
             info!("{}", crate::i18n::tr("log_format_start", &[part]));
             let fmt = da
@@ -70,7 +70,7 @@ pub fn cmd_erase_data(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error
         }
     }
 
-    // metadata 擦除后，清除 super_metadata 缓存，下次需要时重新读取
+    // After erasing metadata, drop the super_metadata cache and re-read it on demand
     da.super_metadata = None;
     info!(
         "{}",

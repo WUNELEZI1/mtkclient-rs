@@ -1,11 +1,11 @@
-//! cmd 模块的单元测试
+//! Unit tests for the cmd module
 
 use super::*;
 use crate::error::AppError;
 
 #[test]
 fn transport_error_detection() {
-    // 真实传输层失败 → 应判为需要重置会话
+    // A real transport-layer failure → session reset required
     assert!(
         is_transport_error(&AppError::Usb("device disconnected".into())),
         "AppError::Usb 应判为传输错误"
@@ -19,7 +19,7 @@ fn transport_error_detection() {
         "写入超时(含 超时)应判为传输错误"
     );
 
-    // 业务/命令/参数/文件/解析/安全错误 → 不应重置会话
+    // Business/command/argument/file/parse/security errors → no session reset
     assert!(
         !is_transport_error(&AppError::Protocol(
             "用法: mtkclient slot show|a|b（未知槽位操作: shwo）".into()
@@ -52,7 +52,7 @@ fn active_read_resume_detects_sidecar_file() {
     let output = std::env::temp_dir().join(format!("cmd_active_resume_{}.img", std::process::id()));
     let output = output.to_string_lossy().to_string();
 
-    // written=4096, file=4096 → 精确匹配，应该检测到
+    // written=4096, file=4096 → exact match, should be detected
     std::fs::write(
         format!("{}.resume", output),
         "active_read=true\nwritten=4096\n",
@@ -64,7 +64,7 @@ fn active_read_resume_detects_sidecar_file() {
         output.clone()
     ]));
 
-    // written=8192, file=4096 → BufWriter 未刷完，应该检测到（放宽校验）
+    // written=8192, file=4096 → BufWriter not fully flushed, should be detected (relaxed check)
     std::fs::write(
         format!("{}.resume", output),
         "active_read=true\nwritten=8192\n",
@@ -75,7 +75,7 @@ fn active_read_resume_detects_sidecar_file() {
         output.clone()
     ]));
 
-    // written=200MB, file=0 → 差距 200MB > 128MB 容差，应该不检测
+    // written=200MB, file=0 → gap 200MB > 128MB tolerance, should not be detected
     std::fs::write(
         format!("{}.resume", output),
         format!("active_read=true\nwritten={}\n", 200 * 1024 * 1024),
@@ -96,7 +96,7 @@ fn pending_read_resume_in_dir_detects_active_only() {
     let dir = std::env::temp_dir().join(format!("pending_read_{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
 
-    // 1) active_read=true → 应被检测
+    // 1) active_read=true → should be detected
     let out1 = dir.join("super.img");
     std::fs::write(
         dir.join("super.img.resume"),
@@ -104,7 +104,7 @@ fn pending_read_resume_in_dir_detects_active_only() {
     )
     .unwrap();
 
-    // 2) active_read=false（读取出错）→ 不应被检测
+    // 2) active_read=false (read failed) → should not be detected
     let out2 = dir.join("expdb.img");
     std::fs::write(
         dir.join("expdb.img.resume"),
@@ -112,7 +112,7 @@ fn pending_read_resume_in_dir_detects_active_only() {
     )
     .unwrap();
 
-    // 3) 非 resume 文件 → 忽略
+    // 3) non-resume file → ignored
     std::fs::write(dir.join("note.txt"), "hello").unwrap();
 
     let pending = pending_read_resume_in_dir(dir.to_str().unwrap());
@@ -134,23 +134,23 @@ fn is_transport_error_precise_by_variant() {
     use crate::error::AppError;
     use std::io;
 
-    // 1) Usb 变体：精确命中，必须重置会话
+    // 1) Usb variant: exact match, must reset the session
     assert!(is_transport_error(&AppError::Usb("设备断连".into())));
 
-    // 2) Parse/Security：即便消息含传输关键词也不应重置（回归：旧版按关键词误判）
+    // 2) Parse/Security: must not reset even if the message contains transport keywords (regression: older versions misjudged by keyword)
     assert!(!is_transport_error(&AppError::Parse(
         "读取超时：分区表校验失败".into()
     )));
     assert!(!is_transport_error(&AppError::Security("解锁超时".into())));
 
-    // 3) Protocol/Io：仍走关键词兜底（含超时/端点等，大小写不敏感）
+    // 3) Protocol/Io: still fall back to keyword matching (timeout/endpoint etc., case-insensitive)
     assert!(is_transport_error(&AppError::Protocol(
         "DA 端点错误 timeout".into()
     )));
     let io_err = AppError::Io(io::Error::new(io::ErrorKind::NotFound, "device not found"));
     assert!(is_transport_error(&io_err));
 
-    // 4) 普通 Protocol 业务错误（无传输关键词）→ 不重置
+    // 4) Ordinary Protocol business error (no transport keywords) → no reset
     assert!(!is_transport_error(&AppError::Protocol(
         "未知命令: foo".into()
     )));

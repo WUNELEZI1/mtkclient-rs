@@ -2,15 +2,15 @@ use crate::color::Colorize;
 use crate::da::DAXFlash;
 use log::info;
 
-/// 读取分区数据到文件
+/// Read partition data into a file
 ///
-/// 用法：
-///   mtkclient r <part> <file>                     → 读取物理/逻辑分区
-///   mtkclient r super --dp <logical_part> <file>   → 读取 super 内的动态分区
+/// Usage:
+///   mtkclient r `<part>` `<file>`                     → read a physical/logical partition
+///   mtkclient r super --dp <logical_part> `<file>`   → read a dynamic partition inside super
 ///
-/// --dp 示例：
-///   mtkclient r super --dp system system.img       → 读取 super 内的 system
-///   mtkclient r super --dp vendor vendor.img       → 读取 super 内的 vendor
+/// --dp examples:
+///   mtkclient r super --dp system system.img       → read system inside super
+///   mtkclient r super --dp vendor vendor.img       → read vendor inside super
 pub fn cmd_read(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 2 {
         return Err(
@@ -19,10 +19,10 @@ pub fn cmd_read(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
         );
     }
 
-    // 解析 --dp 参数：r super --dp system output.img
+    // Parse the --dp argument: r super --dp system output.img
     let dp_idx = args.iter().position(|s| s == "--dp");
     if let Some(idx) = dp_idx {
-        // 动态分区模式
+        // Dynamic partition mode
         if args[0].to_lowercase() != "super" {
             return Err("--dp 只能与 super 分区一起使用".into());
         }
@@ -42,20 +42,20 @@ pub fn cmd_read(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
         return Ok(());
     }
 
-    // 普通分区读取
+    // Regular partition read
     da.read_partition(&args[0], &args[1])
         .map_err(|e| format!("读取失败: {}", e))?;
     info!("{}", format!("{} -> {}", args[0], args[1]).green());
     Ok(())
 }
 
-/// 读取设备内存并输出 hex dump
+/// Read device memory and print a hex dump
 ///
-/// 用法:
-///   peek <addr>          — 读取 4 字节（默认）
-///   peek <addr> <size>   — 读取指定字节数
+/// Usage:
+///   peek `<addr>`          — read 4 bytes (default)
+///   peek `<addr>` `<size>`   — read the given number of bytes
 ///
-/// 地址支持 0x 前缀或十进制格式
+/// The address accepts a 0x prefix or decimal format
 pub fn cmd_peek(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
         return Err("用法: peek <addr> [size]".into());
@@ -65,7 +65,7 @@ pub fn cmd_peek(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
     let size: u32 = if args.len() >= 2 {
         parse_size(&args[1])?
     } else {
-        4 // 默认 4 字节
+        4 // 4 bytes by default
     };
 
     if size == 0 {
@@ -88,13 +88,13 @@ pub fn cmd_peek(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-/// 写入数据到设备内存
+/// Write data into device memory
 ///
-/// 用法:
-///   poke <addr> <hex_data>
+/// Usage:
+///   poke `<addr>` <hex_data>
 ///
-/// 地址支持 0x 前缀或十进制格式
-/// hex_data 支持: AABB、AA BB、AA:BB、0xAABB 等格式
+/// The address accepts a 0x prefix or decimal format
+/// hex_data accepts: AABB, AA BB, AA:BB, 0xAABB, etc.
 pub fn cmd_poke(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 2 {
         return Err("用法: poke <addr> <hex_data>".into());
@@ -125,7 +125,7 @@ pub fn cmd_poke(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-/// 解析地址参数（支持 0x 前缀的十六进制或十进制）
+/// Parse an address argument (hex with a 0x prefix, or decimal)
 pub fn parse_addr(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
     let s = s.trim();
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
@@ -137,7 +137,7 @@ pub fn parse_addr(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
     }
 }
 
-/// 解析 size 参数（支持 0x 前缀的十六进制或十进制）
+/// Parse a size argument (hex with a 0x prefix, or decimal)
 pub fn parse_size(s: &str) -> Result<u32, Box<dyn std::error::Error>> {
     let s = s.trim();
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {

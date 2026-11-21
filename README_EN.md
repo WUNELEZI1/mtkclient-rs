@@ -240,7 +240,7 @@ bash
 
 \# Requires Rust toolchain (stable)
 
-git clone https://gitee.com/WUNELEZI1/mtkclient-rs.git
+git clone https://github.com/WUNELEZI1/mtkclient-rs.git
 
 cd mtkclient-rs
 
@@ -278,5 +278,5 @@ License
 
 
 
-Apache-2.0
+GPL-3.0-or-later
 

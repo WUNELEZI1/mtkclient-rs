@@ -1,10 +1,10 @@
-//! DA 两阶段上传
+//! Two-stage DA upload
 //!
-//! - `upload_da1` — Stage1：发送 DA1 + jump_da + 同步握手
-//! - `upload_da2` — Stage2：发送 DA2 + boot_to
+//! - `upload_da1` — Stage1: send DA1 + jump_da + sync handshake
+//! - `upload_da2` — Stage2: send DA2 + boot_to
 
 use log::{info, trace, warn};
-// File/Read 不再需要，DA 文件通过 read_file_auto_decompress 读取
+// File/Read are no longer needed; DA files are read via read_file_auto_decompress
 use std::time::Duration;
 
 use crate::da::loader::header::DaRegion;
@@ -18,7 +18,7 @@ const CMD_SYNC_SIGNAL: u32 = 0x434E5953;
 const DEFAULT_DA_FILE: &str = "MTK_DA_V5.bin";
 
 impl<'a> DAXFlash<'a> {
-    /// 打开 DA 文件路径：优先使用用户指定的路径（--da 参数），否则使用默认路径
+    /// Resolve the DA file path: use the user-specified path (--da) if any, else the default path
     fn open_da_path(&self) -> (std::path::PathBuf, String) {
         let path = if !self.preloader.da_path.is_empty() {
             std::path::PathBuf::from(&self.preloader.da_path)
@@ -29,7 +29,7 @@ impl<'a> DAXFlash<'a> {
         (path, path_str)
     }
 
-    /// 获取或缓存 DA 文件数据（支持 .bin.gz 自动解压）
+    /// Fetch or cache DA file data (auto-decompresses .bin.gz)
     fn load_da_file(&mut self) -> Result<Vec<u8>, String> {
         if let Some(ref data) = self.da_file_data {
             trace!("[DA_CACHE] 复用缓存的 DA 文件数据 ({} 字节)", data.len());
@@ -43,10 +43,10 @@ impl<'a> DAXFlash<'a> {
         Ok(da_data)
     }
 
-    /// 尝试从后台预解析结果获取 DA 数据和 regions
-    /// init() 中已用正确 hw code 完成解析，upload_da 时直接取用，无需重新解析
+    /// Try to take DA data and regions from the background pre-parse result
+    /// init() already parsed with the correct hw code, so upload_da can reuse it without re-parsing
     fn load_da_with_regions(&mut self) -> Result<(Vec<u8>, Vec<DaRegion>), String> {
-        // 优先使用后台线程预解析结果（含 header 解析）
+        // Prefer the background-thread pre-parse result (including header parsing)
         if let Some(ref parsed_arc) = self.preloader.da_parsed {
             if let Ok(guard) = parsed_arc.lock() {
                 if let Some((data, regions)) = guard.as_ref() {
@@ -61,7 +61,7 @@ impl<'a> DAXFlash<'a> {
             }
         }
 
-        // Fallback：同步读取 + 解析（使用芯片 da_code 匹配 DA 文件内条目）
+        // Fallback: synchronous read + parse (use the chip da_code to match entries in the DA file)
         trace!("[DA_PRELOAD] 后台线程未就绪，回退到同步加载");
         let da_data = self.load_da_file()?;
         let da_code = self
@@ -74,8 +74,8 @@ impl<'a> DAXFlash<'a> {
         Ok((da_data, regions))
     }
 
-    /// 上传第一阶段 DA
-    /// 对照 Python xflash_lib.py:upload_da1
+    /// Upload the Stage1 DA
+    /// Mirrors Python xflash_lib.py:upload_da1
     pub fn upload_da1(&mut self) -> Result<bool, String> {
         trace!("上传 XFlash 阶段 1...");
 
@@ -119,24 +119,24 @@ impl<'a> DAXFlash<'a> {
 
         trace!("成功上传 stage 1，跳转中...");
 
-        // jump_da 内部已消费 0xC0 同步信号（含跳过 0x00 填充），无需再次读取
+        // jump_da already consumes the 0xC0 sync signal (skipping 0x00 padding), so no re-read is needed
         self.preloader.jump_da(da1_address)?;
 
-        // Python: self.sync() 发送 XFlash SYNC_SIGNAL
+        // Python: self.sync() sends XFlash SYNC_SIGNAL
         self.xflash_sync()?;
 
         // Python: self.setup_env()
         self.setup_env()?;
 
-        // DA1 刚跳转完成，设备需要时间准备，给予 100ms 缓冲（release 模式优化后可能过快）
+        // DA1 has just jumped; the device needs time to settle, so allow a 100ms buffer (release builds may be too fast)
         std::thread::sleep(Duration::from_millis(100));
 
         // Python: self.setup_hw_init()
         self.setup_hw_init()?;
 
-        // 设备需要时间返回 xread 响应，用轮询代替固定 500ms
-        // 先 flush_input 轮询等设备 ready，再 xread
-        // 100 次 x 10ms = 最大 1s，缓冲区空则提前退出
+        // The device needs time to return the xread response; poll instead of waiting a fixed 500ms
+        // First poll with flush_input until the device is ready, then xread
+        // 100 × 10ms = at most 1s; exits early when the buffer is empty
         self.preloader
             .flush_input_poll(Duration::from_millis(10), 100)?;
 
@@ -150,8 +150,8 @@ impl<'a> DAXFlash<'a> {
         Ok(true)
     }
 
-    /// 上传第二阶段 DA
-    /// 流程：检查是否需要 EMI → 发送 EMI → 调用 boot_to 上传 Stage2 → reinit
+    /// Upload the Stage2 DA
+    /// Flow: check whether EMI is needed → send EMI → call boot_to to upload Stage2 → reinit
     pub fn upload_da2(&mut self) -> Result<bool, String> {
         trace!("上传 XFlash 阶段 2...");
 
@@ -204,13 +204,13 @@ impl<'a> DAXFlash<'a> {
         self.da2_data = da2_data.clone();
         self.da2_base_addr = da2_address as u64;
 
-        // 常规路径：boot_to 发送 DA2 并跳转。成功/失败语义与原来保持一致。
+        // Normal path: boot_to sends DA2 and jumps. Success/failure semantics are unchanged.
         match self.boot_to(da2_address, &da2_data, true, 0.5) {
             Ok(true) => {}
             Ok(false) => return Err("上传 Stage2 失败".to_string()),
             Err(e) => {
-                // 常规 DA2 上传失败（例如 DA1 的 DA2 hash 校验拒绝未签名/已修改的 DA2）时，
-                // 回退到 Carbonara（DA2 hash 欺骗）漏洞利用路径重试一次。
+                // When the normal DA2 upload fails (e.g. DA1's DA2 hash check rejects an unsigned/modified DA2),
+                // fall back to the Carbonara (DA2 hash spoofing) exploit path and retry once.
                 warn!("常规 DA2 上传失败 ({}), 尝试 Carbonara fallback...", e);
                 self.carbonara_upload_da2(&da_data, &regions, &da2_data)
                     .map_err(|ce| format!("{}; Carbonara fallback 也失败: {}", e, ce))?;
@@ -221,12 +221,12 @@ impl<'a> DAXFlash<'a> {
         Ok(true)
     }
 
-    /// Carbonara（DA2 hash 欺骗）fallback：常规 `boot_to` 上传 DA2 失败时，
-    /// 通过 DA1 的 `boot_to` 参数覆写其内存中的 DA2 hash 存储位置，
-    /// 从而让 hash 校验通过并加载自定义（已 patch）的 DA2。
+    /// Carbonara (DA2 hash spoofing) fallback: when the normal `boot_to` DA2 upload fails,
+    /// overwrite the DA2 hash storage location in DA1 memory via its `boot_to` argument,
+    /// so the hash check passes and the custom (patched) DA2 is loaded.
     ///
-    /// `patch_and_upload` 内部会自行检测 DA1 patch 状态与 hash 校验逻辑
-    /// （已打补丁或未检测到 hash 校验时直接返回错误），因此该 fallback 是安全的。
+    /// `patch_and_upload` detects the DA1 patch state and hash-check logic itself
+    /// (it returns an error if already patched or no hash check is found), so this fallback is safe.
     fn carbonara_upload_da2(
         &mut self,
         da_data: &[u8],
@@ -242,7 +242,7 @@ impl<'a> DAXFlash<'a> {
             carbonara.da2_addr(),
             carbonara.da2_data().len()
         );
-        // 检测 DA1 是否已打补丁 / 是否含 hash 校验逻辑
+        // Check whether DA1 is already patched / contains hash-check logic
         carbonara.check_patched()?;
         let mut log_sink = std::io::sink();
         carbonara.patch_and_upload(&mut *self.preloader.device, &mut log_sink, Some(da2_data))

@@ -1,29 +1,29 @@
-//! 自研 avbtool：Android Verified Boot vbmeta 镜像解析与改写
+//! In-house avbtool: parse and rewrite Android Verified Boot vbmeta images
 //!
-//! 对齐 `avbtool`（libavb）的核心能力，纯 Rust 零依赖：
-//! - [`VbmetaImage::parse`]：完整解析 vbmeta 头（0xB0 字节）与全部 descriptor；
-//! - [`VbmetaImage::info`]：`avbtool info-image` 等价格式输出；
-//! - [`VbmetaImage::disable_verification`]：改写 flags 关闭 verity/verification
-//!   （等价 `avbtool make_vbmeta_image --flags`，设备端 bootloader 读 flags 后跳过校验，
-//!   从而避免 dm-verity 启动失败）；
-//! - [`VbmetaImage::strip_descriptors`]：可选把 hash/hashtree descriptor 一并清空
-//!   （等价提取空 vbmeta 重打包，最激进方案）。
+//! Covers the core `avbtool` (libavb) capabilities in pure Rust with no dependencies:
+//! - [`VbmetaImage::parse`]: fully parse the vbmeta header (0xB0 bytes) and all descriptors;
+//! - [`VbmetaImage::info`]: output equivalent to `avbtool info-image`;
+//! - [`VbmetaImage::disable_verification`]: rewrite flags to turn off verity/verification
+//!   (equivalent to `avbtool make_vbmeta_image --flags`; the bootloader reads flags and skips
+//!   verification, avoiding a dm-verity boot failure);
+//! - `VbmetaImage::strip_descriptors`: optionally clears all hash/hashtree descriptors
+//!   (equivalent to repacking an empty vbmeta; the most aggressive option).
 //!
-//! 所有多字节字段为**大端序**（libavb 规定）。
+//! All multi-byte fields are **big-endian** as required by libavb.
 
 use std::fmt::Write as _;
 
-/// vbmeta 魔数。
+/// vbmeta magic.
 pub const AVB_MAGIC: &[u8; 4] = b"AVB0";
-/// vbmeta 头大小（0x80 头 + 48 字节 release_string）。
+/// vbmeta header size (0x80 header + 48-byte release_string).
 pub const AVB_HEADER_SIZE: usize = 0xB0;
 
-/// flags 位：hashtree 禁用（dm-verity off）。
+/// Flag bit: hashtree disabled (dm-verity off).
 pub const FLAG_HASHTREE_DISABLED: u32 = 0x01;
-/// flags 位：签名验证禁用。
+/// Flag bit: signature verification disabled.
 pub const FLAG_VERIFICATION_DISABLED: u32 = 0x02;
 
-/// descriptor 标签（libavb avb_descriptor.h）。
+/// Descriptor tags (libavb avb_descriptor.h).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DescriptorTag {
     Property,
@@ -48,7 +48,7 @@ impl From<u64> for DescriptorTag {
 }
 
 impl Descriptor {
-    /// descriptor 类型的可读名（供在线日志使用）。
+    /// Readable name of the descriptor type (for online logs).
     pub fn tag_debug_name(&self) -> &'static str {
         match self.tag {
             DescriptorTag::Property => "Property",
@@ -74,15 +74,15 @@ impl DescriptorTag {
     }
 }
 
-/// 解析后的 descriptor（摘要信息）。
+/// Parsed descriptor (summary info).
 #[derive(Debug, Clone)]
 pub struct Descriptor {
     pub tag: DescriptorTag,
-    /// 便捷字段：Property/ChainPartition/KernelCmdline 关联的分区名（若有）。
+    /// Convenience field: partition name associated with Property/ChainPartition/KernelCmdline, if any.
     pub partition_name: Option<String>,
 }
 
-/// vbmeta 头字段（全部已按大端序转换）。
+/// vbmeta header fields (all converted from big-endian).
 #[derive(Debug, Clone)]
 pub struct VbmetaHeader {
     pub required_libavb_version_major: u32,
@@ -106,14 +106,14 @@ pub struct VbmetaHeader {
     pub release_string: String,
 }
 
-/// 完整 vbmeta 镜像（头 + descriptor 列表 + 原始认证/辅助块）。
+/// Full vbmeta image (header + descriptor list + raw auth/aux blocks).
 #[derive(Debug, Clone)]
 pub struct VbmetaImage {
     pub header: VbmetaHeader,
     pub descriptors: Vec<Descriptor>,
-    /// 认证块（签名 + hash）原始字节。
+    /// Raw bytes of the authentication block (signature + hash).
     pub auth_block: Vec<u8>,
-    /// 辅助块（公钥 + descriptor + 公钥元数据）原始字节。
+    /// Raw bytes of the auxiliary block (public key + descriptors + public key metadata).
     pub aux_block: Vec<u8>,
 }
 
@@ -145,7 +145,7 @@ fn rd_u32(b: &[u8], off: usize) -> u32 {
 }
 
 impl VbmetaImage {
-    /// 解析 vbmeta 镜像（完整数据，头 + 认证块 + 辅助块）。
+    /// Parse a vbmeta image (full data: header + auth block + aux block).
     pub fn parse(data: &[u8]) -> Result<Self, AvbError> {
         if data.len() < AVB_HEADER_SIZE {
             return Err(AvbError::TooSmall);
@@ -178,7 +178,7 @@ impl VbmetaImage {
                 .to_string(),
         };
 
-        // 认证块紧接头之后，辅助块紧接认证块。
+        // The auth block follows the header, and the aux block follows the auth block.
         let auth_end = AVB_HEADER_SIZE + header.authentication_data_block_size as usize;
         let aux_end = auth_end + header.auxiliary_data_block_size as usize;
         if auth_end > data.len() || aux_end > data.len() {
@@ -187,7 +187,7 @@ impl VbmetaImage {
         let auth_block = data[AVB_HEADER_SIZE..auth_end].to_vec();
         let aux_block = data[auth_end..aux_end].to_vec();
 
-        // descriptor 位于辅助块内（descriptors_offset 相对辅助块起点）。
+        // Descriptors live in the aux block (descriptors_offset is relative to the aux block start).
         let mut descriptors = Vec::new();
         let d_start = header.descriptors_offset as usize;
         let d_end = d_start + header.descriptors_size as usize;
@@ -217,7 +217,7 @@ impl VbmetaImage {
         })
     }
 
-    /// `avbtool info-image` 等价格式。
+    /// Format equivalent to `avbtool info-image`.
     pub fn info(&self) -> String {
         let h = &self.header;
         let mut s = String::new();
@@ -256,11 +256,11 @@ impl VbmetaImage {
         s
     }
 
-    /// 改写 flags 并重组镜像。`flags` 通常传
-    /// `FLAG_HASHTREE_DISABLED | FLAG_VERIFICATION_DISABLED`（=3，刷机场景推荐）。
+    /// Rewrite flags and rebuild the image. `flags` is usually passed as
+    /// `FLAG_HASHTREE_DISABLED | FLAG_VERIFICATION_DISABLED` (=3, recommended for flashing).
     ///
-    /// 注意：改 flags 后原签名失效，但 flags 位本身会被 bootloader 先读——
-    /// 校验关闭路径下不会因签名失效而拒绝启动（与官方 avbtool 行为一致）。
+    /// Note: changing flags invalidates the original signature, but the bootloader reads the flags
+    /// first, so with verification off it will not refuse to boot (same as official avbtool).
     pub fn disable_verification(&self, flags: u32) -> Vec<u8> {
         let mut out =
             Vec::with_capacity(AVB_HEADER_SIZE + self.auth_block.len() + self.aux_block.len());
@@ -271,11 +271,11 @@ impl VbmetaImage {
     }
 
     #[cfg(test)]
-    /// 激进模式：清空全部 hash/hashtree descriptor（重打包为空 vbmeta），
-    /// 同时保留 chain 分区链。等价 `avbtool make_vbmeta_image --flags 3` 全空镜像。
+    /// Aggressive mode: clear all hash/hashtree descriptors (repack as an empty vbmeta)
+    /// while keeping the chain partition chain. Equivalent to an all-empty `--flags 3` image.
     pub fn strip_descriptors(&self, flags: u32) -> Vec<u8> {
         let mut aux = Vec::new();
-        // 公钥部分仍在辅助块开头（public_key_offset），descriptor 移到其后。
+        // The public key stays at the start of the aux block (public_key_offset); descriptors move after it.
         let h = &self.header;
         let pk_end = (h.public_key_offset + h.public_key_size) as usize;
         let pk = if (h.public_key_size as usize) <= self.aux_block.len()
@@ -287,8 +287,8 @@ impl VbmetaImage {
         };
         aux.extend_from_slice(&pk);
 
-        // 重组头：descriptor 区指向公钥之后，长度为 0；签名/哈希置零；
-        // 认证块被丢弃，认证/辅助块大小必须同步更新（否则解析端越界）。
+        // Rebuild the header: descriptor area points past the public key with length 0; signature/hash zeroed;
+        // the auth block is dropped, so both block sizes must be updated (otherwise parsers overrun).
         let mut header = self.rebuild_header(flags);
         header.authentication_data_block_size = 0;
         header.auxiliary_data_block_size = aux.len() as u64;
@@ -312,17 +312,17 @@ impl VbmetaImage {
     }
 }
 
-/// descriptor 内分区名解析（按 libavb 各 descriptor 的真实字段偏移）。
+/// Parse the partition name inside a descriptor (using real libavb field offsets per descriptor).
 ///
-/// 布局（均相对 descriptor 起点；tag(8)+length(8) 前缀共 16 字节）：
-/// - Hash：image_size(8) + hash_algorithm[32] + name_len(4)@56 + salt_len(4) +
-///   digest_len(4) + flags(4)，名字在 @72；
-/// - Hashtree v1.1+：dm_verity(8) + image_size(8) + tree_offset(8) + tree_size(8) +
+/// Layout (relative to the descriptor start; tag(8)+length(8) prefix is 16 bytes):
+/// - Hash: image_size(8) + `hash_algorithm[32]` + name_len(4)@56 + salt_len(4) +
+///   digest_len(4) + flags(4); name at @72;
+/// - Hashtree v1.1+: dm_verity(8) + image_size(8) + tree_offset(8) + tree_size(8) +
 ///   hash_algorithm(4) + name_len(4)@52 + salt_len(4) + root_digest_len(4) + flags(4) +
-///   reserved[60]，名字在 @128；v1.0 无 reserved，名字在 @68；
-/// - Chain：location(4) + name_len(4)@20 + key_len(4) + flags(4)，名字在 @32。
+///   reserved`60`; name at @128. v1.0 has no reserved; name at @68;
+/// - Chain: location(4) + name_len(4)@20 + key_len(4) + flags(4); name at @32.
 fn parse_partition_name(tag: &DescriptorTag, raw: &[u8]) -> Option<String> {
-    /// 从 `name_len_off` 读长度、`name_off` 读名字并校验可打印。
+    /// Read the length at `name_len_off` and the name at `name_off`, validating it is printable.
     fn name_at(raw: &[u8], name_len_off: usize, name_off: usize) -> Option<String> {
         if name_len_off + 4 > raw.len() {
             return None;
@@ -349,11 +349,12 @@ fn parse_partition_name(tag: &DescriptorTag, raw: &[u8]) -> Option<String> {
     }
 }
 
-/// 构造一个最小合法 vbmeta 镜像（头 + hash descriptor 列表，无认证块）。
+/// Build a minimal valid vbmeta image (header + hash descriptor list, no auth block).
 ///
-/// 用途：仿真设备与单测需要"能被 `VbmetaImage::parse` 解析、且 flags 可改"的镜像。
-/// 真实设备上有签名块；这里 algorithm_type=0（无签名）也是 avbtool 允许的合法形态
-/// （`avbtool make_vbmeta_image --flags N` 不指定 key 时即如此）。
+/// Purpose: simulated devices and unit tests need an image that `VbmetaImage::parse` accepts
+/// and whose flags can be modified.
+/// Real devices carry a signature block; algorithm_type=0 (unsigned) is also valid for avbtool
+/// (as produced by `avbtool make_vbmeta_image --flags N` without a key).
 pub fn synthetic_vbmeta(flags: u32, partition_names: &[&str]) -> Vec<u8> {
     let mut aux = Vec::new();
     for name in partition_names {
@@ -398,7 +399,7 @@ pub fn synthetic_vbmeta(flags: u32, partition_names: &[&str]) -> Vec<u8> {
     out
 }
 
-/// 头结构按 libavb 字节序编码（供 strip 后重组）。
+/// Encode the header in libavb byte order (used to rebuild after stripping).
 fn encode_header(h: &VbmetaHeader) -> Vec<u8> {
     let mut b = Vec::with_capacity(AVB_HEADER_SIZE);
     b.extend_from_slice(AVB_MAGIC);
@@ -430,25 +431,25 @@ fn encode_header(h: &VbmetaHeader) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    /// 构造一个最小合法 vbmeta：头 + 1 个 hash descriptor（在辅助块内）。
+    /// Build a minimal valid vbmeta: header + 1 hash descriptor (inside the aux block).
     fn make_test_vbmeta() -> Vec<u8> {
-        // descriptor: tag=3(Hash) len=分区名区大小
+        // descriptor: tag=3(Hash), len = payload size
         let name = b"boot";
         let d_payload_len = 8 + 32 + 4 + 4 + 4 + 4 + name.len();
         let mut d = Vec::new();
         d.extend_from_slice(&3u64.to_be_bytes());
         d.extend_from_slice(&(d_payload_len as u64).to_be_bytes());
         d.extend_from_slice(&0x1000u64.to_be_bytes()); // image_size
-        d.extend_from_slice(&[0u8; 32]); // hash algorithm "sha256" padded? 宽松测试
+        d.extend_from_slice(&[0u8; 32]); // hash algorithm "sha256" padded? lenient test
         d.extend_from_slice(&(name.len() as u32).to_be_bytes()); // partition_name_len
         d.extend_from_slice(&0u32.to_be_bytes()); // salt_len
         d.extend_from_slice(&0u32.to_be_bytes()); // digest_len
         d.extend_from_slice(&0u32.to_be_bytes()); // flags
         d.extend_from_slice(name);
 
-        // 辅助块：公钥（空）+ descriptor
+        // Aux block: public key (empty) + descriptors
         let aux = d.clone();
-        // 头
+        // Header
         let mut hdr = Vec::new();
         hdr.extend_from_slice(AVB_MAGIC);
         hdr.extend_from_slice(&1u32.to_be_bytes()); // major
@@ -464,7 +465,7 @@ mod tests {
         hdr.extend_from_slice(&0u64.to_be_bytes()); // pk size
         hdr.extend_from_slice(&0u64.to_be_bytes()); // pk meta off
         hdr.extend_from_slice(&0u64.to_be_bytes()); // pk meta size
-        hdr.extend_from_slice(&0u64.to_be_bytes()); // descriptors off = 0（相对辅助块）
+        hdr.extend_from_slice(&0u64.to_be_bytes()); // descriptors off = 0 (relative to aux block)
         hdr.extend_from_slice(&(aux.len() as u64).to_be_bytes());
         hdr.extend_from_slice(&0u64.to_be_bytes()); // rollback
         hdr.extend_from_slice(&0u32.to_be_bytes()); // flags
@@ -499,7 +500,7 @@ mod tests {
         let patched = v.disable_verification(FLAG_HASHTREE_DISABLED | FLAG_VERIFICATION_DISABLED);
         let v2 = VbmetaImage::parse(&patched).unwrap();
         assert_eq!(v2.header.flags, 3);
-        assert_eq!(v2.descriptors.len(), 1); // descriptor 保留
+        assert_eq!(v2.descriptors.len(), 1); // descriptors preserved
         let info = v2.info();
         assert!(info.contains("Hashtree disabled: true"));
         assert!(info.contains("Verification disabled: true"));

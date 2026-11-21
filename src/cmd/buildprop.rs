@@ -1,11 +1,11 @@
-//! 轻量级 build.prop 读取器
+//! Lightweight build.prop reader
 //!
-//! 实现策略（按优先级）：
-//! 1. ext4 文件系统解析（复用 fs_shell explorer）：精确定位 /system/build.prop
-//! 2. 原始数据搜索：读取前 64MB，搜索 key=value 字符串
-//! 3. Virtual A/B COW 合并：ext4 解析或原始搜索失败后，尝试 COW 分区合并
+//! Strategy (by priority):
+//! 1. ext4 filesystem parsing (reuses fs_shell explorer): locate /system/build.prop exactly
+//! 2. Raw data search: read the first 64MB and search for key=value strings
+//! 3. Virtual A/B COW merge: if ext4 parsing or raw search fails, try merging the COW partition
 //!
-//! 支持从设备分区或本地镜像文件读取。
+//! Supports reading from a device partition or a local image file.
 
 use crate::color::Colorize;
 use log::{info, warn};
@@ -14,21 +14,21 @@ use std::collections::HashMap;
 use crate::da::DAXFlash;
 use crate::partition::explorer;
 
-/// 需要提取的关键属性及其显示名称
+/// Key properties to extract and their display names
 const BUILDPROP_KEYS: &[(&str, &str)] = &[
-    // Treble system 属性（优先，Android 10+ system 分区标准）
+    // Treble system properties (preferred; Android 10+ system partition standard)
     ("ro.product.system.model", "产品型号"),
     ("ro.product.system.brand", "品牌"),
     ("ro.product.system.name", "产品名称"),
     ("ro.product.system.device", "设备代号"),
     ("ro.product.system.manufacturer", "制造商"),
-    // 通用属性（运行时合并值）
+    // Generic properties (runtime merged values)
     ("ro.product.model", "产品型号(合并)"),
     ("ro.product.brand", "品牌(合并)"),
     ("ro.product.name", "产品名称(合并)"),
     ("ro.product.device", "设备代号(合并)"),
     ("ro.product.manufacturer", "制造商(合并)"),
-    // 系统版本
+    // System version
     ("ro.build.version.release", "Android 版本"),
     ("ro.build.version.os", "系统版本"),
     ("ro.build.version.sdk", "SDK 版本"),
@@ -45,7 +45,7 @@ const BUILDPROP_KEYS: &[(&str, &str)] = &[
     ("ro.board.platform", "SoC 平台"),
     ("ro.product.property_source_order", "属性优先级"),
     ("ro.product.first_api_level", "首次 API 级别"),
-    // Treble 与安全
+    // Treble and security
     ("ro.treble.enabled", "Treble 启用"),
     ("ro.secure", "安全模式"),
     ("ro.adb.secure", "ADB 安全"),
@@ -54,7 +54,7 @@ const BUILDPROP_KEYS: &[(&str, &str)] = &[
     ("security.perf_harden", "安全加固"),
 ];
 
-/// 从数据中提取 build.prop 属性
+/// Extract build.prop properties from the data
 pub fn extract_buildprop(data: &[u8]) -> HashMap<String, String> {
     let mut props = HashMap::new();
 
@@ -97,7 +97,7 @@ pub fn extract_buildprop(data: &[u8]) -> HashMap<String, String> {
     props
 }
 
-/// 保存 build.prop 到当前目录
+/// Save build.prop to the current directory
 fn save_buildprop_file(data: &[u8]) {
     let output_path = "build.prop";
     match std::fs::write(output_path, data) {
@@ -106,11 +106,11 @@ fn save_buildprop_file(data: &[u8]) {
     }
 }
 
-/// 格式化输出 build.prop 属性
+/// Print build.prop properties
 pub fn print_buildprop(props: &HashMap<String, String>, source: &str) {
     let mut found = 0;
 
-    // 计算标签列最大宽度
+    // Compute the maximum label column width
     let max_label_width = BUILDPROP_KEYS
         .iter()
         .filter(|(key, _)| props.contains_key(*key))
@@ -157,36 +157,36 @@ pub fn print_buildprop(props: &HashMap<String, String>, source: &str) {
     }
 }
 
-/// buildprop 命令入口
+/// buildprop command entry point
 ///
-/// 用法:
-///   mtkclient zyb get_build_prop              → 从 system 动态分区读取
-///   mtkclient zyb get_build_prop system_b     → 指定逻辑分区名
-///   mtkclient zyb get_build_prop <file>       → 从本地镜像文件读取
+/// Usage:
+///   mtkclient zyb get_build_prop              → read from the system dynamic partition
+///   mtkclient zyb get_build_prop system_b     → specify a logical partition name
+///   mtkclient zyb get_build_prop `<file>`       → read from a local image file
 ///
-/// 策略（对齐 fs_shell explorer）：
-///   1. 从 super 分区读取 LP metadata，构建 extent 映射
-///   2. 通过 LP translator 读取目标逻辑分区的 ext4 文件系统
-///   3. 解析 build.prop 文件路径并读取内容
+/// Strategy (matching fs_shell explorer):
+///   1. Read LP metadata from the super partition and build the extent map
+///   2. Read the target logical partition's ext4 filesystem via the LP translator
+///   3. Resolve the build.prop path and read its content
 pub fn cmd_buildprop(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let target_part = args.first().map(|s| s.as_str()).unwrap_or("system");
 
-    // 本地文件模式
+    // Local file mode
     if std::path::Path::new(target_part).exists() && !target_part.starts_with('-') {
         info!("从文件读取: {}", target_part);
         let file_data = std::fs::read(target_part).map_err(|e| format!("读取文件失败: {}", e))?;
 
         let props = extract_buildprop(&file_data);
         print_buildprop(&props, &format!("文件 {}", target_part));
-        // 本地文件模式不重复保存
+        // Do not save again in local file mode
         return Ok(());
     }
 
-    // === 确定目标逻辑分区名 ===
+    // === Determine the target logical partition name ===
     let logical_name = resolve_logical_name(da, target_part)?;
     info!("目标逻辑分区: {}", logical_name);
 
-    // === 策略 1: 通过 LP translator 从 super 读取（对齐 fs_shell） ===
+    // === Strategy 1: read from super via the LP translator (matching fs_shell) ===
     info!("通过 LP translator 从 super 分区读取...");
     if let Ok((super_addr, _super_size)) = da.find_partition_addr("super") {
         let mut super_read_fn = |offset: u64, len: u64| -> Result<Vec<u8>, String> {
@@ -194,7 +194,7 @@ pub fn cmd_buildprop(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn s
                 .map_err(|e| format!("DA 读取 super 失败: {}", e))
         };
 
-        // 尝试多个常见路径（ext4 内部路径，不含前导 /）
+        // Try several common paths (ext4-internal paths, without leading /)
         let prop_paths = [
             "system/build.prop",
             "system/system/build.prop",
@@ -211,7 +211,7 @@ pub fn cmd_buildprop(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn s
                     );
                     let props = extract_buildprop(&bp_data);
                     if !props.is_empty() {
-                        // 保存原始 build.prop 到当前目录
+                        // Save the raw build.prop to the current directory
                         save_buildprop_file(&bp_data);
                         print_buildprop(
                             &props,
@@ -230,7 +230,7 @@ pub fn cmd_buildprop(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn s
         warn!("未找到 super 分区，跳过 LP translator 方式");
     }
 
-    // === 策略 2: 回退到旧方式（identity translator + 直接读取） ===
+    // === Strategy 2: fall back to the legacy path (identity translator + direct read) ===
     info!("LP translator 方式失败，回退到直接读取...");
     let (addr, size, actual_name) = find_partition_with_smart(da, target_part)?;
     info!(
@@ -269,7 +269,7 @@ pub fn cmd_buildprop(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn s
         }
     }
 
-    // === 策略 3: 原始数据搜索 ===
+    // === Strategy 3: raw data search ===
     info!("ext4 解析失败，fallback 到原始搜索...");
     let read_size = std::cmp::min(size, 64 * 1024 * 1024);
     let base_data = da
@@ -278,30 +278,30 @@ pub fn cmd_buildprop(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn s
 
     let props = extract_buildprop(&base_data);
     if !props.is_empty() {
-        // 从原始数据中提取纯文本 build.prop 内容
+        // Extract the plain-text build.prop content from the raw data
         save_buildprop_file(&base_data);
     }
     print_buildprop(&props, &actual_name);
     Ok(())
 }
 
-/// 解析逻辑分区名：system → system_b（根据当前槽位）
+/// Resolve the logical partition name: system → system_b (based on the current slot)
 fn resolve_logical_name(
     da: &mut DAXFlash,
     target: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    // 如果已经是完整的分区名（如 system_b），直接使用
+    // If it is already a full partition name (e.g. system_b), use it as is
     if target.contains('_') {
         return Ok(target.to_string());
     }
 
-    // 从 misc 分区读取当前活动槽位
+    // Read the current active slot from the misc partition
     let slot = read_current_slot(da);
     let slot_suffix = if slot == 0 { "_a" } else { "_b" };
     Ok(format!("{}{}", target, slot_suffix))
 }
 
-/// 从 misc 分区的 bootctrl 结构读取当前活动槽位
+/// Read the active slot from the bootctrl struct in the misc partition
 fn read_current_slot(da: &mut DAXFlash) -> u32 {
     let (misc_addr, misc_size) = match da.find_partition_addr("misc") {
         Ok(r) => r,
@@ -322,7 +322,7 @@ fn read_current_slot(da: &mut DAXFlash) -> u32 {
     }
 }
 
-/// 查找分区地址
+/// Find a partition address
 fn find_partition_with_smart(
     da: &mut DAXFlash,
     name: &str,

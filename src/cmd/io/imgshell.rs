@@ -1,13 +1,13 @@
-//! fs_shell 的 boot / proinfo 扩展模式
+//! boot / proinfo extension modes of fs_shell.
 //!
-//! `fs_shell` 除 super 之外还支持：
-//! - `fs_shell boot [file]`   — 交互式浏览 boot/recovery 镜像的 ramdisk (cpio)：
-//!   `ls [path]` / `cat <file>` / `extract <dir>` / `info` / `quit`；
-//!   省略 file 时从设备当前 A/B 槽位读 boot 分区（槽位自动解析）。
-//! - `fs_shell proinfo [file]` — 交互式查看 MTK proinfo 分区的 NV 数据：
-//!   `show` / `raw <len>` / `quit`；省略 file 时从设备读 proinfo 分区。
+//! Besides super, `fs_shell` also supports:
+//! - `fs_shell boot [file]`   — interactively browse the ramdisk (cpio) of a boot/recovery image:
+//!   `ls [path]` / `cat <file>` / `extract <dir>` / `info` / `quit`;
+//!   when file is omitted, reads the boot partition for the current A/B slot (slot resolved automatically).
+//! - `fs_shell proinfo [file]` — interactively inspect the NV data of the MTK proinfo partition:
+//!   `show` / `raw <len>` / `quit`; when file is omitted, reads the proinfo partition from the device.
 //!
-//! 设备侧读取走 `find_partition_addr`（自动处理 A/B 槽位后缀与特殊分区）。
+//! Device-side reads go through `find_partition_addr` (handles A/B slot suffixes and special partitions).
 
 use std::io::{BufRead as _, Write as _};
 
@@ -18,7 +18,7 @@ use log::info;
 use crate::cmd::bootimg::{BootImage, decompress, parse as parse_boot, parse_cpio};
 use crate::cmd::proinfo;
 
-/// fs_shell 扩展入口：`cmd = "boot" | "proinfo"`。
+/// fs_shell extension entry: `cmd = "boot" | "proinfo"`.
 pub fn cmd_imgshell(
     da: &mut DAXFlash,
     kind: &str,
@@ -31,7 +31,7 @@ pub fn cmd_imgshell(
     }
 }
 
-/// 从设备分区或本地文件读取数据。
+/// Read data from a device partition or a local file.
 fn load_source(
     da: &mut DAXFlash,
     partition: &str,
@@ -50,7 +50,7 @@ fn load_source(
 }
 
 // ═══════════════════════════════════════════════════════
-// boot 镜像 shell
+// boot image shell
 // ═══════════════════════════════════════════════════════
 
 fn shell_boot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -145,7 +145,7 @@ fn shell_boot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::err
                 std::fs::create_dir_all(dir)?;
                 let mut n = 0usize;
                 for e in &entries {
-                    // 防路径穿越：去掉条目名里的 ..
+                    // Prevent path traversal: strip .. from entry names
                     let safe = e.name.replace("..", "_");
                     let p = std::path::Path::new(dir).join(safe.trim_start_matches('/'));
                     if let Some(parent) = p.parent() {
@@ -257,7 +257,7 @@ fn dump_hex(data: &[u8]) {
     }
 }
 
-/// `BootImage` 仅用于解引用字段（保持 parse_boot 返回值类型一致）。
+/// `BootImage` is only dereferenced to keep the parse_boot return type consistent.
 #[allow(dead_code)]
 fn _boot_image_type_hint(b: &BootImage) -> &BootImage {
     b

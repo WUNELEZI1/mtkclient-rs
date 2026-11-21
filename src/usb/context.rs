@@ -1,14 +1,14 @@
-//! USB 上下文 + 设备检测
+//! USB context + device detection
 //!
-//! - `USB上下文` — nusb 上下文封装（nusb 无需显式 context，这里保留兼容接口）
-//! - `USB阶段`   — 设备阶段枚举（BROM / Preloader / DA / 未知）
-//! - `获取第一个联发科VID_PID` — nusb 枚举首台联发科 BROM 设备（启动诊断 +
-//!   非 Windows 平台的直连探测）
+//! - `UsbContext` — nusb context wrapper (nusb needs no explicit context, kept for API compatibility)
+//! - `UsbStage`   — device stage enum (BROM / Preloader / DA / Unknown)
+//! - `get_first_mtk_vid_pid` — enumerate the first MediaTek BROM device via nusb (startup diagnostics +
+//!   direct probing on non-Windows platforms)
 
 use crate::system::config::DeviceType;
 use nusb::MaybeFuture;
 
-/// USB 设备阶段
+/// USB device stage
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum UsbStage {
     Brom,
@@ -28,20 +28,20 @@ impl UsbStage {
     }
 }
 
-/// USB 上下文（nusb 不需要显式 context，保留结构体以兼容现有 API）
+/// USB context (nusb needs no explicit context; struct kept for API compatibility)
 pub struct UsbContext {
-    /// nusb 不使用全局 context，此字段仅做标记
+    /// nusb uses no global context; this field is a marker only
     _valid: bool,
 }
 
 impl UsbContext {
     pub fn new() -> Result<Self, String> {
-        // nusb 不需要显式初始化，直接返回
+        // nusb needs no explicit initialization, return directly
         Ok(UsbContext { _valid: true })
     }
 }
 
-/// 枚举 nusb 设备列表，查找 MediaTek BROM 设备
+/// Enumerate the nusb device list and find a MediaTek BROM device
 fn scan_nusb_devices() -> Vec<(u16, u16)> {
     let mut result = Vec::new();
     let devices = match nusb::list_devices().wait() {
@@ -56,7 +56,7 @@ fn scan_nusb_devices() -> Vec<(u16, u16)> {
     result
 }
 
-/// 枚举 USB 设备列表,返回第一个 MediaTek 设备的 (VID, PID, DeviceType)
+/// Enumerate USB devices and return the (VID, PID, DeviceType) of the first MediaTek device
 pub fn get_first_mtk_vid_pid() -> Option<(u16, u16, DeviceType)> {
     scan_nusb_devices().into_iter().find_map(|(vid, pid)| {
         let device_type = DeviceType::from_vid_pid(vid, pid);

@@ -1,4 +1,4 @@
-//! GPT CRC 校验报告日志
+//! GPT CRC verification report logging
 
 use crate::partition::GptInfo;
 use log::{debug, warn};

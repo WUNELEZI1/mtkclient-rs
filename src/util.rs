@@ -1,12 +1,12 @@
-//! 通用工具函数
+//! Shared utility functions
 //!
-//! 统一存放项目中重复使用的工具函数，避免各模块各自定义。
+//! Common helpers used across the project live here, so no module defines its own copy.
 
-/// 按十六进制解析 u64，接受可选 `0x`/`0X` 前缀与前后空白。
+/// Parse a u64 from hex, accepting an optional `0x`/`0X` prefix and surrounding whitespace.
 ///
-/// MediaTek LK 的 `partition-size:<part>` 变量常返回无 `0x` 前缀的十六进制
-/// （如 `1a638f8000`）；`u64::from_str_radix(s, 16)` 对纯数字串同样给出正确的
-/// hex 值，因此这里不做十进制回退——含非 hex 字符的串本来就该报错。
+/// MediaTek LK's `partition-size:<part>` variables often return hex without the `0x`
+/// prefix (e.g. `1a638f8000`); `u64::from_str_radix(s, 16)` yields the correct hex value
+/// for plain digit strings too, so there is no decimal fallback — non-hex input should error.
 pub fn parse_u64_hex(s: &str) -> Result<u64, std::num::ParseIntError> {
     let s = s.trim();
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
@@ -15,9 +15,9 @@ pub fn parse_u64_hex(s: &str) -> Result<u64, std::num::ParseIntError> {
     u64::from_str_radix(s, 16)
 }
 
-/// 将字节数组格式化为大写 HEX 字符串，字节间用空格分隔
+/// Format a byte array as an uppercase HEX string separated by spaces
 ///
-/// 示例: `[0xAB, 0xCD]` → `"AB CD"`
+/// Example: `[0xAB, 0xCD]` → `"AB CD"`
 pub fn hex_str(data: &[u8]) -> String {
     data.iter()
         .map(|b| format!("{:02X}", b))
@@ -25,19 +25,19 @@ pub fn hex_str(data: &[u8]) -> String {
         .join(" ")
 }
 
-/// 将 HEX 字符串解析为字节数组
+/// Parse a HEX string into a byte array
 ///
-/// 支持以下格式:
-/// - `"AABBCCDD"` (无分隔符)
-/// - `"AA BB CC DD"` (空格分隔)
-/// - `"AA:BB:CC:DD"` (冒号分隔)
-/// - `"0xAABBCCDD"` (0x 前缀)
+/// Supported formats:
+/// - `"AABBCCDD"` (no separator)
+/// - `"AA BB CC DD"` (space-separated)
+/// - `"AA:BB:CC:DD"` (colon-separated)
+/// - `"0xAABBCCDD"` (0x prefix)
 ///
-/// 返回解析错误信息
+/// Returns a parse error message
 pub fn parse_hex(hex_str: &str) -> Result<Vec<u8>, String> {
-    // 移除 0x 前缀
+    // Strip the 0x prefix
     let s = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-    // 移除所有分隔符（空格、冒号等）
+    // Strip all separators (spaces, colons, ...)
     let s: String = s
         .chars()
         .filter(|c| !c.is_whitespace() && *c != ':')
@@ -63,9 +63,9 @@ pub fn parse_hex(hex_str: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
-/// 生成 hex dump 格式输出（类似 xxd/xxd 风格）
+/// Produce hex dump output (xxd-like style)
 ///
-/// 输出格式: `ADDR  XX XX XX XX XX XX XX XX  XX XX XX XX XX XX XX XX  |ASCII...........|`
+/// Output format: `ADDR  XX XX XX XX XX XX XX XX  XX XX XX XX XX XX XX XX  |ASCII...........|`
 pub fn hex_dump(data: &[u8], base_addr: u64) -> String {
     let mut lines = Vec::new();
     for chunk in data.chunks(16) {
@@ -83,7 +83,7 @@ pub fn hex_dump(data: &[u8], base_addr: u64) -> String {
             .collect::<Vec<_>>()
             .join(" ");
 
-        // 补齐空格
+        // Pad with spaces
         let hex_padded = if chunk.len() < 16 {
             format!("{:<47}", hex_part)
         } else {
@@ -109,11 +109,11 @@ pub fn hex_dump(data: &[u8], base_addr: u64) -> String {
     lines.join("\n")
 }
 
-/// 在 `haystack` 中查找子串 `needle` 首次出现的位置（相对 `haystack` 起点的偏移）。
+/// Find the first occurrence of `needle` in `haystack` (offset relative to the start of `haystack`).
 ///
-/// 自研替代 `memchr::memmem::find`，用于 build.prop 属性提取等小规模字节序列搜索。
-/// 采用简单线性扫描，对单分区属性扫描（KB~MB 级）性能足够；如需大文本高频搜索
-/// 可后续引入 SIMD 优化，但本项目场景下无必要。返回 `None` 表示未找到。
+/// In-house replacement for `memchr::memmem::find`, used for small byte-sequence searches such as build.prop extraction.
+/// A simple linear scan is fast enough for per-partition property scans (KB~MB); SIMD could be
+/// added later for large high-frequency searches, but it is unnecessary here. `None` means not found.
 pub fn memmem_find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
@@ -132,12 +132,12 @@ pub fn memmem_find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     None
 }
 
-/// 计算字符串的终端显示宽度（字符单元格数）。
+/// Compute the terminal display width of a string (in character cells).
 ///
-/// 自研替代 `unicode_width::UnicodeWidthStr::width`，用于分区表的中文双宽对齐。
-/// 规则：ASCII 及半数常见符号宽度 1；CJK 统一表意文字、全角标点、Hangul 音节块等
-/// 东亚全角字符宽度 2；其余未覆盖的非 ASCII 字符保守按宽度 2 处理（避免中文标签
-/// 对齐错位——宁可略宽也不致重叠）。仅影响显示对齐，不影响任何功能逻辑。
+/// In-house replacement for `unicode_width::UnicodeWidthStr::width`, used to align double-width CJK in partition tables.
+/// Rules: ASCII and half-width common symbols are 1; East Asian full-width characters such as CJK unified
+/// ideographs, full-width punctuation and Hangul syllable blocks are 2; other uncovered non-ASCII characters
+/// conservatively count as 2 (so CJK labels never misalign — slightly too wide beats overlapping). Display only.
 pub fn display_width(input: &str) -> usize {
     input
         .chars()
@@ -145,45 +145,45 @@ pub fn display_width(input: &str) -> usize {
         .sum()
 }
 
-/// 判断字符是否为东亚全宽（显示宽度 2）。
+/// Whether a character is East Asian full-width (display width 2).
 ///
-/// 仅对列出的 Unicode 全宽区块返回 `true`：Hangul Jamo、CJK 部首/康熙部首、
-/// 假名、CJK 统一表意文字（含扩展 A/B+）、Hangul 音节、全角 ASCII 变体、
-/// CJK 兼容字形与兼容形式、符号与 Pictograph（emoji）等。
-/// 其余字符（含 ASCII，以及阿拉伯文/希腊文/西里尔文等 sub-0x1100 非 ASCII）
-/// 一律视为宽度 1。该实现面向以 CJK 为主的分区表对齐场景，对未覆盖的非 ASCII
-/// 字符宁可估窄（宽度 1）也不过度占位；仅影响显示对齐，不影响任何功能逻辑。
+/// Returns `true` only for the listed Unicode full-width blocks: Hangul Jamo, CJK radicals / Kangxi radicals,
+/// kana, CJK unified ideographs (including extensions A/B+), Hangul syllables, full-width ASCII variants,
+/// CJK compatibility ideographs and forms, symbols and pictographs (emoji), etc.
+/// Everything else (ASCII, and sub-0x1100 non-ASCII such as Arabic/Greek/Cyrillic) counts as width 1.
+/// This targets CJK-heavy partition-table alignment: uncovered non-ASCII characters are estimated narrow
+/// (width 1) rather than over-allocating space. Display alignment only; no functional impact.
 fn is_fullwidth(c: char) -> bool {
     let code = c as u32;
-    // ASCII 及 C0/C1 控制字符：窄
+    // ASCII and C0/C1 control characters: narrow
     if code < 0x1100 {
         return false;
     }
     matches!(
         code,
         0x1100..=0x115F       // Hangul Jamo
-        | 0x2E80..=0x303E     // CJK 部首补充 + 康熙部首 + 表意描述符
-        | 0x3041..=0x33FF     // Hiragana/Katakana + 半/全角形 + 谚文兼容 Jamo
-        | 0x3400..=0x4DBF     // CJK 扩展 A
-        | 0x4E00..=0x9FFF     // CJK 统一表意文字
-        | 0xA000..=0xA4CF     // 彝文 + 谚文音节
-        | 0xAC00..=0xD7A3     // Hangul 音节
-        | 0xF900..=0xFAFF     // CJK 兼容象形
-        | 0xFE30..=0xFE4F     // CJK 兼容形式
-        | 0xFF00..=0xFF60     // 全角 ASCII
-        | 0xFFE0..=0xFFE6     // 全角符号
-        | 0x1F300..=0x1FAFF   // 符号与 Pictograph（emoji 等，保守全宽）
-        | 0x20000..=0x3FFFD   // CJK 扩展 B+ 及超大字符集
+        | 0x2E80..=0x303E     // CJK radicals supplement + Kangxi radicals + ideographic description characters
+        | 0x3041..=0x33FF     // Hiragana/Katakana + half/full-width forms + Hangul compatibility Jamo
+        | 0x3400..=0x4DBF     // CJK Extension A
+        | 0x4E00..=0x9FFF     // CJK Unified Ideographs
+        | 0xA000..=0xA4CF     // Yi + Hangul syllables
+        | 0xAC00..=0xD7A3     // Hangul syllables
+        | 0xF900..=0xFAFF     // CJK compatibility ideographs
+        | 0xFE30..=0xFE4F     // CJK compatibility forms
+        | 0xFF00..=0xFF60     // Full-width ASCII
+        | 0xFFE0..=0xFFE6     // Full-width symbols
+        | 0x1F300..=0x1FAFF   // Symbols and pictographs (emoji, etc.; conservatively full-width)
+        | 0x20000..=0x3FFFD   // CJK Extension B+ and supplementary ideographic planes
     )
 }
 
-/// 当前 UTC 时间（ISO 8601，精确到秒），用于审计日志留痕。
+/// Current UTC time (ISO 8601, second precision), used for audit logging.
 pub fn now_iso8601() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    // 不引第三方库，手算 civil date（Howard Hinnant 算法）
+    // No third-party crates; compute the civil date by hand (Howard Hinnant's algorithm)
     let days = (secs / 86400) as i64;
     let rem = secs % 86400;
     let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
@@ -211,7 +211,7 @@ mod tests {
         assert!(s.ends_with('Z'));
         assert_eq!(&s[4..5], "-");
         assert_eq!(&s[10..11], "T");
-        // 2020 年之后（本仓库存在时间）
+        // After 2020 (the lifetime of this repository)
         assert!(s.as_str() > "2020-01-01T00:00:00Z", "实际: {}", s);
     }
 }

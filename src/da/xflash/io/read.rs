@@ -1,6 +1,6 @@
-//! 读取路径方法（readflash_* 流水线）
+//! Read-path methods (readflash_* pipeline)
 //!
-//! 见 [`crate::da::xflash::io`] 模块文档。共享的私有 free fn 由 `super` 提供。
+//! See the [`crate::da::xflash::io`] module docs. Shared private free fns are provided by `super`.
 
 use log::{info, trace, warn};
 use std::time::Duration;
@@ -17,12 +17,12 @@ use super::{
 };
 
 impl<'a> DAXFlash<'a> {
-    /// 读取 flash 数据，返回原始字节（默认 USER 分区类型）
+    /// Read flash data and return the raw bytes (defaults to USER partition type)
     pub(crate) fn readflash_data(&mut self, addr: u64, size: u64) -> Result<Vec<u8>, String> {
         self.readflash_data_ex(addr, size, 8)
     }
 
-    /// 发送 READ_DATA 命令及 56B 参数（提取公共逻辑，消除重复）
+    /// Send the READ_DATA command and its 56B parameters (shared logic to avoid duplication)
     pub(crate) fn send_read_data_cmd(
         &mut self,
         addr: u64,
@@ -37,13 +37,13 @@ impl<'a> DAXFlash<'a> {
             return Err(format!("READ_DATA status=0x{:08X}", st));
         }
 
-        // 56B 参数直接在栈上构造，避免每次读取都堆分配一个 Vec
+        // Build the 56B parameters on the stack to avoid a heap Vec per read
         let mut param = [0u8; 56];
         param[..4].copy_from_slice(&1u32.to_le_bytes());
         param[4..8].copy_from_slice(&parttype.to_le_bytes());
         param[8..16].copy_from_slice(&addr.to_le_bytes());
         param[16..24].copy_from_slice(&size.to_le_bytes());
-        // param[24..56] 保持为零填充（[0u8; 56] 初值）
+        // param[24..56] stays zero-filled ([0u8; 56] initial value)
         let param_pkt = pack3(CMD_MAGIC, 0x01, param.len() as u32);
         self.write_with_retry(&param_pkt, "readflash param_hdr")?;
         self.write_with_retry(&param, "readflash param")?;
@@ -54,15 +54,15 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
-    /// 读取 flash 数据到文件（流水线多线程：USB读取与磁盘写入并行）
+    /// Read flash data to a file (multi-threaded pipeline: USB reads overlap disk writes)
     ///
-    /// 架构：
-    /// - 主线程：USB 读取循环（读头 → 读数据 → 放入 channel → 发 ACK）
-    /// - 写入线程：从 channel 取数据 → 写文件（64MB BufWriter 缓冲）
+    /// Architecture:
+    /// - Main thread: USB read loop (read header → read data → push to channel → send ACK)
+    /// - Writer thread: pop data from the channel → write to file (64MB BufWriter)
     ///
-    /// channel 容量 128（约 512MB @ 4MB/包），主线程满时阻塞等待写入线程消费，
-    /// 使 USB 读取不被磁盘写入阻塞，实现真正的流水线并行。
-    /// 数据包缓冲通过 recycle channel 复用，避免逐包堆分配（心跳包用栈缓冲短路，不占回收池）。
+    /// Channel capacity is 128 (~512MB at 4MB/packet); when full the main thread blocks until the
+    /// writer consumes, so USB reads are never blocked by disk writes, achieving true pipelining.
+    /// Packet buffers are recycled through a channel to avoid per-packet heap allocation (heartbeat packets short-circuit with a stack buffer and do not use the pool).
     pub(crate) fn readflash_to_file<F>(
         &mut self,
         addr: u64,
@@ -81,11 +81,12 @@ impl<'a> DAXFlash<'a> {
         );
         let _quiet_guard = quiet_usb_reads_temporarily();
 
-        // 串口默认超时仅 1s，readflash 流式读取持续数秒，中途包间隔超 1s 即超时失败。
-        // 用较长读超时包裹整个读取逻辑（RAII，覆盖所有提前 return），结束后自动恢复。
+        // The serial default timeout is only 1s, but streaming readflash lasts seconds; a >1s gap
+        // between packets would time out. Wrap the whole read in a longer read timeout (RAII, covers
+        // every early return) and restore it automatically afterwards.
         with_read_timeout(self, READFLASH_READ_TIMEOUT_MS, |da| {
-            const PROGRESS_INTERVAL: u64 = 4 * 1024 * 1024; // 4MB 进度更新（平衡精度和开销）
-            const MAX_PACKET_SIZE: usize = 0x1000000; // 16MB 预分配 buffer
+            const PROGRESS_INTERVAL: u64 = 4 * 1024 * 1024; // 4MB progress updates (balance accuracy and overhead)
+            const MAX_PACKET_SIZE: usize = 0x1000000; // 16MB preallocated buffer
 
             if start_offset > size {
                 return Err(format!(
@@ -105,7 +106,7 @@ impl<'a> DAXFlash<'a> {
                     "检测到活跃读取流，发送 ACK 后从 {} 字节继续接收",
                     start_offset
                 );
-                // 续传 ACK 增加重试：设备可能刚恢复，第一次 ACK 可能超时
+                // Extra retries for the resume ACK: the device may have just recovered, so the first ACK can time out
                 let mut ack_ok = false;
                 for attempt in 0..3 {
                     match da.ack_silent() {
@@ -124,18 +125,20 @@ impl<'a> DAXFlash<'a> {
                     }
                 }
                 if !ack_ok {
-                    // ACK 全部失败：设备可能已断开，清理 resume 文件避免无限死循环
+                    // All ACKs failed: the device may be disconnected; remove the resume file to avoid an endless loop
                     remove_resume_file(output_file);
                     return Err("活跃读取流续接 ACK 全部失败".to_string());
                 }
             } else {
-                // 对齐 Python readflash：在 cmd_read_data 之前先查询 get_packet_length，
-                // 且**只 GET 不 SET**（send_devctrl 内部已含完整 xread + status 握手）。
-                // ★ 0x040008 在 mtkclient Cmd 表中是 GET_RANDOM_ID，不是 SET_PKT_LEN；
-                //   旧实现带参数发送它，会让 DA 状态机错位，紧接着的 READ_DATA 返回
-                //   0xC0010003 (Unsupported command)——真机 printgpt 失败即由此引起。
-                //   读包长度以 DA 自报值为准（断电/异常回报时回退 1 MiB），仅作续传元数据；
-                //   实际接收始终按每个数据包 header 的 slength 分块。
+                // Matching Python readflash: query get_packet_length before cmd_read_data,
+                // and **GET only, never SET** (send_devctrl already includes the full xread + status handshake).
+                // * 0x040008 is GET_RANDOM_ID in the mtkclient Cmd table, not SET_PKT_LEN;
+                //   the old implementation sent it with parameters, desynchronizing the DA state machine so
+                //   the following READ_DATA returned 0xC0010003 (Unsupported command) — this caused printgpt
+                //   failures on real devices.
+                //   The packet length comes from the DA's reported value (fall back to 1 MiB on power loss or
+                //   abnormal report) and serves only as resume metadata; actual reception always chunks by each
+                //   packet header's slength.
                 let reported = match da.send_devctrl(GET_PKT_LEN, None) {
                     Ok(data) => parse_packet_length(&data),
                     Err(e) => {
@@ -154,10 +157,10 @@ impl<'a> DAXFlash<'a> {
                 );
                 packet_len = Some(target);
 
-                // 发送 READ_DATA 命令及参数
-                // 关键修复：非活跃续传分支(start_offset>0 但 resume 不匹配)下，文件以
-                // append 模式打开（spawn_dump_writer），必须从 addr+start_offset 续读，
-                // 否则会读取分区开头段并追加到已有前缀后，生成内容错乱的损坏镜像。
+                // Send the READ_DATA command and its parameters
+                // Key fix: in the inactive-resume branch (start_offset>0 but resume does not match) the file
+                // is opened in append mode (spawn_dump_writer), so reading must resume from addr+start_offset;
+                // otherwise the partition head is read and appended after the existing prefix, producing a corrupted image.
                 da.send_read_data_cmd(addr + start_offset, target_remaining, parttype)?;
                 write_resume_file(
                     output_file,
@@ -220,8 +223,9 @@ impl<'a> DAXFlash<'a> {
                 }
 
                 if slength == 4 {
-                    // 先以栈缓冲判定心跳：心跳包(全零)直接跳过，不占用/泄漏 recycle 缓冲池，
-                    // 否则长读取过程中反复心跳会耗尽回收池、退化为逐包新分配。
+                    // Detect heartbeats with a stack buffer first: heartbeat packets (all zero) are skipped
+                    // without taking or leaking a recycle buffer; otherwise repeated heartbeats during a long
+                    // read would exhaust the pool and degrade to per-packet allocation.
                     let mut tiny = [0u8; 4];
                     da.preloader
                         .device
@@ -231,7 +235,7 @@ impl<'a> DAXFlash<'a> {
                         trace!("[readflash] 心跳包，跳过");
                         continue;
                     }
-                    // 非心跳的 4 字节真实小包极少见，这里直接小分配走回收池
+                    // Non-heartbeat real 4-byte packets are rare; use a small allocation from the pool here
                     writer_tx
                         .send(Some(tiny.to_vec()))
                         .map_err(|_| "写入线程已退出".to_string())?;
@@ -254,10 +258,11 @@ impl<'a> DAXFlash<'a> {
                             .map_err(|e| format!("read data: {}", e))?;
                         data
                     };
-                    // DA 可能在数据块末尾附加固定长度尾帧（DA_READ_PER_CHUNK_TRAILER 字节）。
-                    // ★ 对【每一块】都按"真实数据 = slen - 尾帧"截取并 truncate 丢弃尾帧，
-                    // 保证落盘文件恰为分区大小、流对齐末态包。中间块的尾帧若未剥离会使整段
-                    // 数据按 8 字节/块错位（与 read_ex.rs 同源 bug）。
+                    // DA may append a fixed-length trailer at the end of each data chunk (DA_READ_PER_CHUNK_TRAILER bytes).
+                    // * For **every chunk**, take `real data = slen - trailer` and truncate the trailer, so the
+                    // file on disk is exactly the partition size and the stream aligns with the final packet.
+                    // Leaving the trailer in middle chunks shifts the whole segment by 8 bytes per chunk
+                    // (same bug as read_ex.rs).
                     let take = (slen.saturating_sub(DA_READ_PER_CHUNK_TRAILER))
                         .min((target_remaining - bytes_received) as usize);
                     data.truncate(take);
@@ -273,7 +278,7 @@ impl<'a> DAXFlash<'a> {
                         .device
                         .read_exact(&mut data)
                         .map_err(|e| format!("read data (large): {}", e))?;
-                    // 精确截取请求剩余字节，丢弃 DA 可能附加的尾帧（每块都剥离）
+                    // Take exactly the remaining requested bytes and drop any DA trailer (stripped on every chunk)
                     let take = (slen.saturating_sub(DA_READ_PER_CHUNK_TRAILER))
                         .min((target_remaining - bytes_received) as usize);
                     data.truncate(take);
@@ -308,8 +313,8 @@ impl<'a> DAXFlash<'a> {
                     ));
                 }
 
-                // 优化：先 ACK 再预提交 header
-                // ACK (OUT) → 设备收到后开始准备下一包 → 预提交 header (IN) 顺势捕获
+                // Optimization: ACK first, then pre-submit the header
+                // ACK (OUT) → device starts preparing the next packet once received → pre-submitted header (IN) captures it
                 if let Err(e) = da.ack_silent() {
                     da.preloader.device.cancel_pending_transfers();
                     write_resume_file(
@@ -328,7 +333,7 @@ impl<'a> DAXFlash<'a> {
                     break;
                 }
 
-                // ACK 后预提交下一包 header：设备已收到 ACK，正在准备下一包数据
+                // Pre-submit the next packet header after the ACK: the device received the ACK and is preparing the next packet
                 queued_header = da.preloader.device.submit_read_request(12).unwrap_or(false);
             }
 
@@ -343,9 +348,10 @@ impl<'a> DAXFlash<'a> {
     }
 
     pub(crate) fn readflash_final_status(&mut self) -> Result<(), String> {
-        // 串口默认超时仅 1s，final status header 读取可能因设备收尾延迟超时而失败
-        // （典型报错 "readflash final status header: serial read_exact: Operation timed out"）。
-        // 用较长读超时包裹本次读取，结束后自动恢复原超时。
+        // The serial default timeout is only 1s, and reading the final status header can time out
+        // because the device is slow to finish (typical error
+        // "readflash final status header: serial read_exact: Operation timed out").
+        // Wrap this read in a longer timeout and restore the original afterwards.
         with_read_timeout(self, READFLASH_READ_TIMEOUT_MS, |da| {
             let mut hdr = [0u8; 12];
             da.preloader
@@ -368,8 +374,8 @@ impl<'a> DAXFlash<'a> {
         })
     }
 
-    /// 静默 ACK（仅发不读），用于 readflash_data 循环中不偷吃下一个包
-    /// 优化：将 12B header + 4B data 合并为单次 USB OUT transfer，减少一次 USB 调用
+    /// Silent ACK (send only, no read) so the readflash_data loop does not consume the next packet
+    /// Optimization: merge the 12B header and 4B data into one USB OUT transfer, saving one USB call
     pub(crate) fn ack_silent(&mut self) -> Result<(), String> {
         let hdr = pack3(CMD_MAGIC, 0x01, 4);
         let mut buf = [0u8; 16];

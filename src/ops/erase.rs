@@ -1,21 +1,21 @@
-//! `erase`：擦除分区（幂等）。
+//! `erase`: erase a partition (idempotent).
 //!
-//! 幂等性来自两处保证：
-//! 1. 协议层：FORMAT 只依赖 (地址, 长度)，重复下发结果相同；
-//! 2. 后端层：擦除后再擦一次不会因为"已是空分区"而报错（真机 DA 与仿真设备均如此）。
+//! Idempotency rests on two guarantees:
+//! 1. Protocol layer: FORMAT depends only on (address, length), so repeating it gives the same result;
+//! 2. Backend layer: erasing an already-blank partition does not error (true for both real-device DA and the emulator).
 //!
-//! 因此"擦到一半断线 → 重跑同一条命令"是安全的；这里额外把擦除前后的
-//! 读回结果做一次抽样比对（可选），用于验证后端确实把数据清成 0xFF。
+//! So "connection drops mid-erase then rerun the same command" is safe; an optional
+//! sampled read-back comparison around the erase verifies the backend really cleared data to 0xFF.
 
 use log::{info, warn};
 
 use super::{Op, OpCtx, OpOutcome, danger_for_partition};
 use crate::core::capability::{Capability, CapabilitySet};
 
-/// 擦除分区。
+/// Erase a partition.
 pub struct EraseOp {
     pub part: String,
-    /// 擦除后抽样确认前 4 KiB 已变为空（0xFF / 0x00）
+    /// Sample the first 4 KiB after erase to confirm it is blank (0xFF / 0x00)
     pub check: bool,
 }
 
@@ -36,7 +36,7 @@ impl Op for EraseOp {
             return Err(format!("分区 {} 大小为 0，无法擦除", self.part));
         }
 
-        // 擦除一律确认（擦掉就读不回来了）；不可恢复分区每次都要 token
+        // Erase always requires confirmation (data cannot be recovered); unrecoverable partitions need a token every time
         let danger = danger_for_partition(&self.part);
         ctx.confirm_action(
             "erase",

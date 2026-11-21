@@ -1,41 +1,41 @@
-//! BROM read32 协议实现
+//! BROM read32 protocol implementation
 //!
-//! - `read32_brom`      — 单次读取（含 flush + 延迟，用于首次扫描）
-//! - `read32_brom_batch`— 批量读取（跳过 flush，用于连续读取）
-//! - `read32_brom_inner`— 核心协议：cmd → addr → len → status1 → data → status2
+//! - `read32_brom`      — single read (includes flush + delay, used for the first scan)
+//! - `read32_brom_batch`— batch read (skips flush, used for consecutive reads)
+//! - `read32_brom_inner`— core protocol: cmd → addr → len → status1 → data → status2
 //!
-//! # 性能优化
-//! - `read32_brom` 仅在首次调用时执行 flush + 延迟，之后改用 `read32_brom_batch`
-//! - `flush_input` 超时从 200ms 降至 50ms，减少空等待
-//! - 批量读取时跳过所有 flush/latency 开销
+//! # Performance notes
+//! - `read32_brom` performs flush + delay only on the first call; later reads use `read32_brom_batch`
+//! - `flush_input` timeout was reduced from 200ms to 50ms to cut idle waiting
+//! - batch reads skip all flush/latency overhead
 
 use super::core::Preloader;
 use log::trace;
 
 impl Preloader {
-    /// 读 32 位值（BROM 模式，首次扫描用）
-    /// 使用 0xD1 协议（无 mode 参数）：cmd → addr → len(dwords) → status1 → data → status2
+    /// Read a 32-bit value (BROM mode, for the first scan)
+    /// Uses the 0xD1 protocol (no mode parameter): cmd → addr → len(dwords) → status1 → data → status2
     ///
-    /// 仅在首次调用时执行快速 flush，确保设备处于干净状态。
-    /// 后续连续读取请使用 `read32_brom_batch` 跳过 flush 开销。
+    /// A quick flush runs only on the first call, ensuring the device is in a clean state.
+    /// For subsequent consecutive reads use `read32_brom_batch` to skip flush overhead.
     ///
-    /// ⚠️ 不再插入任何 sleep 延迟：
-    ///    - USB 设备响应在微秒级，2ms 延迟积少成多（9 个地址 × 2ms = 18ms 损失）
-    ///    - 串口设备有 200ms 超时兜底，不需要额外延迟
+    /// ⚠️ No sleep delay is inserted any more:
+    ///    - USB devices respond in microseconds; a 2ms delay adds up (9 addresses × 2ms = 18ms lost)
+    ///    - Serial devices rely on a 200ms timeout and need no extra delay
     pub fn read32_brom(&mut self, addr: u32, dwords: usize) -> Result<Vec<u8>, String> {
-        // 快速 flush：短超时丢弃残余数据（约 20ms × 4 = 80ms）
+        // Quick flush: discard residual data with a short timeout (~20ms × 4 = 80ms)
         self.flush_input_quick();
-        // 不再插入 sleep 延迟 — USB 设备响应极快，串口有超时兜底
+        // No sleep delay — USB devices respond very fast and serial has a timeout fallback
         self.read32_brom_inner(addr, dwords)
     }
 
-    /// 批量版 read32_brom，跳过 flush_input 和延迟。
-    /// 用于已确认设备状态正常的连续循环读取（如 dump_preloader）。
+    /// Batch version of read32_brom; skips flush_input and the delay.
+    /// Used for consecutive polling loops on a device already known to be healthy (e.g. dump_preloader).
     pub fn read32_brom_batch(&mut self, addr: u32, dwords: usize) -> Result<Vec<u8>, String> {
         self.read32_brom_inner(addr, dwords)
     }
 
-    /// read32_brom 的核心实现，不含 flush/delay 前置步骤
+    /// Core implementation of read32_brom without the flush/delay preamble
     fn read32_brom_inner(&mut self, addr: u32, dwords: usize) -> Result<Vec<u8>, String> {
         trace!("[read32_brom] 发送命令 0xD1");
         if !self.echo_1byte(0xD1)? {

@@ -1,4 +1,4 @@
-//! liblp Super 分区元数据解析逻辑
+//! liblp super partition metadata parsing logic
 
 use log::{debug, trace, warn};
 
@@ -8,41 +8,41 @@ use super::types::{
 };
 use super::{GEOMETRY_MAGIC, HEADER_MAGIC};
 
-/// 解析后的 Super 分区元数据
+/// Parsed super partition metadata
 #[derive(Debug, Clone)]
 pub struct SuperMetadata {
     pub partitions: Vec<LpMetadataPartition>,
     pub extents: Vec<LpMetadataExtent>,
-    /// 逻辑块大小（扇区大小，默认 512 字节）
+    /// Logical block size (sector size, 512 bytes by default)
     pub block_size: u32,
 }
 
 // ============================================================================
-// SuperMetadata 主解析逻辑
+// SuperMetadata main parsing logic
 // ============================================================================
 
 impl SuperMetadata {
-    /// 从 super/metadata 分区原始数据中解析元数据
+    /// Parse metadata from raw super/metadata partition data
     ///
-    /// 策略：
-    /// 1. 扫描 "0PLA" (LP_METADATA_HEADER_MAGIC = 0x414C5030)
-    /// 2. 向前回溯找到 Geometry (magic = 0x616C4467)
-    /// 3. 如果找不到 Geometry，直接从 Header 位置解析
-    /// 4. 按 TableDescriptor 定位各表，解析 partition/extent/group
+    /// Strategy:
+    /// 1. Scan for "0PLA" (LP_METADATA_HEADER_MAGIC = 0x414C5030)
+    /// 2. Walk backwards to find Geometry (magic = 0x616C4467)
+    /// 3. If Geometry is not found, parse directly from the Header offset
+    /// 4. Locate each table via TableDescriptor and parse partition/extent/group
     pub fn parse(data: &[u8]) -> Result<Self, String> {
-        let max_scan = std::cmp::min(data.len(), 0x80000); // 扫描前 512KB
+        let max_scan = std::cmp::min(data.len(), 0x80000); // scan the first 512 KB
 
-        // 步骤 1：扫描 Header magic "0PLA"
+        // Step 1: scan for the Header magic "0PLA"
         let header_offset = Self::find_header_magic(data, max_scan)?;
         debug!(
             "找到 LP_METADATA_HEADER_MAGIC at offset 0x{:04X}",
             header_offset
         );
 
-        // 步骤 2：尝试找 Geometry
+        // Step 2: try to find Geometry
         let geometry = Self::find_geometry(data, header_offset, max_scan);
 
-        // 步骤 3：解析 Header（含 TableDescriptor）
+        // Step 3: parse the Header (including TableDescriptor)
         let header = Self::parse_header(data, header_offset)?;
         trace!(
             "Header: version={}.{}, header_size={}, tables_size={}",
@@ -67,8 +67,8 @@ impl SuperMetadata {
             header.block_devices.entry_size
         );
 
-        // 步骤 4：按 TableDescriptor 解析各表
-        // 表位置 = header_offset + header_size + descriptor.offset
+        // Step 4: parse each table via TableDescriptor
+        // Table position = header_offset + header_size + descriptor.offset
         let tables_base = header_offset + header.header_size as usize;
 
         let partitions = Self::parse_partitions(
@@ -95,7 +95,7 @@ impl SuperMetadata {
         );
         debug!("解析 {} 个 group", groups.len());
 
-        // 确定 block_size：优先从 geometry 读取，否则默认 512
+        // Determine block_size: prefer geometry, otherwise default to 512
         let block_size = geometry
             .as_ref()
             .map(|g| g.logical_block_size)
@@ -109,10 +109,10 @@ impl SuperMetadata {
     }
 
     // ========================================================================
-    // 扫描 magic
+    // Magic scanning
     // ========================================================================
 
-    /// 扫描 "0PLA" Header magic
+    /// Scan for the "0PLA" Header magic
     fn find_header_magic(data: &[u8], max_scan: usize) -> Result<usize, String> {
         for offset in (0..max_scan.saturating_sub(256)).step_by(512) {
             if offset + 4 > data.len() {
@@ -123,7 +123,7 @@ impl SuperMetadata {
                 return Ok(offset);
             }
         }
-        // 也尝试逐字节扫描（某些偏移可能不对齐到 512）
+        // Also try a byte-by-byte scan (some offsets may not be 512-byte aligned)
         for offset in 0..std::cmp::min(data.len().saturating_sub(256), max_scan) {
             let magic = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
             if magic == HEADER_MAGIC {
@@ -136,14 +136,14 @@ impl SuperMetadata {
         ))
     }
 
-    /// 从 header_offset 向前回溯查找 Geometry
+    /// Walk backwards from header_offset to find Geometry
     fn find_geometry(
         data: &[u8],
         header_offset: usize,
         _max_scan: usize,
     ) -> Option<LpMetadataGeometry> {
-        // Geometry 通常在 header 之前的 0x1000 倍数位置
-        // 扫描 header_offset 之前的区域
+        // Geometry is usually at a multiple of 0x1000 before the header
+        // Scan the region before header_offset
         let scan_start = header_offset.saturating_sub(0x40000);
         for offset in (scan_start..header_offset).rev().step_by(512) {
             if offset + 52 > data.len() {
@@ -152,10 +152,10 @@ impl SuperMetadata {
             let magic = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
             if magic == GEOMETRY_MAGIC {
                 debug!("找到 LP_METADATA_GEOMETRY_MAGIC at offset 0x{:04X}", offset);
-                // AOSP 固定扇区大小为 512（LP_SECTOR_SIZE）；部分厂商在 geometry 的
-                // offset 48 处存放 logical_block_size（4096 常见）。该偏移在 AOSP 规范里
-                // 实为 first_logical_sector(uint64) 低位，直接当 block_size 读可能得到
-                // 垃圾值。仅信任合法的 2 的幂，否则回落 512，避免动态分区大小被算错。
+                // AOSP fixes the sector size at 512 (LP_SECTOR_SIZE); some vendors store
+                // logical_block_size at geometry offset 48 (4096 is common). In the AOSP spec
+                // that offset is actually the low half of first_logical_sector (uint64), so reading it
+                // directly as block_size may yield garbage. Only trust a valid power of two and fall back to 512 otherwise, to avoid miscalculating dynamic partition sizes.
                 let raw = if offset + 52 <= data.len() {
                     u32::from_le_bytes(data[offset + 48..offset + 52].try_into().unwrap())
                 } else {
@@ -174,11 +174,11 @@ impl SuperMetadata {
     }
 
     // ========================================================================
-    // 解析 Header
+    // Parse Header
     // ========================================================================
 
     fn parse_header(data: &[u8], offset: usize) -> Result<LpMetadataHeader, String> {
-        // Header 最少需要 128 字节才能读取 4 个 TableDescriptor
+        // The Header needs at least 128 bytes to read the 4 TableDescriptors
         const MIN_HEADER_SIZE: usize = 128;
         if offset + MIN_HEADER_SIZE > data.len() {
             return Err(format!(
@@ -200,10 +200,10 @@ impl SuperMetadata {
         let minor_version = u16::from_le_bytes(data[offset + 6..offset + 8].try_into().unwrap());
         let header_size = u32::from_le_bytes(data[offset + 8..offset + 12].try_into().unwrap());
 
-        // tables_size 在 offset 44 (跳过 32 字节 SHA256 header_checksum)
+        // tables_size is at offset 44 (after the 32-byte SHA256 header_checksum)
         let tables_size = u32::from_le_bytes(data[offset + 44..offset + 48].try_into().unwrap());
 
-        // 4 个 TableDescriptor 从 offset 80 开始，每个 12 字节
+        // The 4 TableDescriptors start at offset 80, 12 bytes each
         let partitions = Self::read_table_descriptor(data, offset + 80)?;
         let extents = Self::read_table_descriptor(data, offset + 92)?;
         let groups = Self::read_table_descriptor(data, offset + 104)?;
@@ -236,7 +236,7 @@ impl SuperMetadata {
     }
 
     // ========================================================================
-    // 解析 Partition 表
+    // Parse the Partition table
     // ========================================================================
 
     fn parse_partitions(
@@ -266,7 +266,7 @@ impl SuperMetadata {
                 .trim_end_matches('\0')
                 .to_string();
 
-            // AOSP 标准偏移：name[36] + attributes(u32@36) + first_extent(u32@40) + num_extents(u32@44) + group(u32@48)
+            // AOSP standard offsets: name`36` + attributes(u32@36) + first_extent(u32@40) + num_extents(u32@44) + group(u32@48)
             let attributes = u32::from_le_bytes(data[eo + 36..eo + 40].try_into().unwrap());
             let first_extent_index = u32::from_le_bytes(data[eo + 40..eo + 44].try_into().unwrap());
             let num_extents = u32::from_le_bytes(data[eo + 44..eo + 48].try_into().unwrap());
@@ -293,7 +293,7 @@ impl SuperMetadata {
     }
 
     // ========================================================================
-    // 解析 Extent 表
+    // Parse the Extent table
     // ========================================================================
 
     fn parse_extents(
@@ -315,10 +315,10 @@ impl SuperMetadata {
                 break;
             }
 
-            // AOSP 标准 24 字节布局：
+            // AOSP standard 24-byte layout:
             //   0..8:  num_sectors(u64)
             //   8..12: target_type(u32)  0=LINEAR, 1=ZERO
-            //   12..20: target_data(u64)  LINEAR 时为物理扇区偏移
+            //   12..20: target_data(u64)  physical sector offset when LINEAR
             //   20..24: target_source(u32)
             let num_sectors = u64::from_le_bytes(data[eo..eo + 8].try_into().unwrap());
             let target_type = u32::from_le_bytes(data[eo + 8..eo + 12].try_into().unwrap());
@@ -342,7 +342,7 @@ impl SuperMetadata {
     }
 
     // ========================================================================
-    // 解析 Group 表
+    // Parse the Group table
     // ========================================================================
 
     fn parse_groups(
@@ -364,7 +364,7 @@ impl SuperMetadata {
                 .trim_end_matches('\0')
                 .to_string();
 
-            // AOSP 标准：name[36] + flags(u32@36) + maximum_size(u64@40)
+            // AOSP standard: name`36` + flags(u32@36) + maximum_size(u64@40)
             let flags = u32::from_le_bytes(data[eo + 36..eo + 40].try_into().unwrap());
             let maximum_size = u64::from_le_bytes(data[eo + 40..eo + 48].try_into().unwrap());
 
@@ -380,10 +380,10 @@ impl SuperMetadata {
     }
 
     // ========================================================================
-    // 查找分区
+    // Find a partition
     // ========================================================================
 
-    /// 按名称查找 logical partition，返回 (起始扇区偏移 × block_size, 总字节数)
+    /// Find a logical partition by name; returns (start sector offset × block_size, total byte count)
     pub fn find_partition(&self, name: &str) -> Option<(u64, u64)> {
         for part in &self.partitions {
             if part.name == name {
@@ -409,14 +409,14 @@ impl SuperMetadata {
         None
     }
 
-    /// 智能查找分区，自动处理 A/B 槽位
+    /// Smart lookup that automatically handles A/B slots
     pub fn find_partition_smart(&self, name: &str) -> Option<(String, u64, u64)> {
-        // 1. 精确匹配
+        // 1. Exact match
         if let Some((off, size)) = self.find_partition(name) {
             return Some((name.to_string(), off, size));
         }
 
-        // 2. 尝试 _a / _b 后缀
+        // 2. Try _a / _b suffixes
         for suffix in &["_a", "_b"] {
             let slot_name = format!("{}{}", name, suffix);
             if let Some((off, size)) = self.find_partition(&slot_name) {

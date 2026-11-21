@@ -1,13 +1,16 @@
-//! 写入后的 AVB 验证状态体检（Phase 1.3）。
+//! Post-write AVB verification status check (Phase 1.3).
 //!
-//! 刷入 `boot` / `system` 这类参与 AVB 校验的分区后，如果设备的验证没有关闭，
-//! 开机会校验失败——轻则进 fastboot，重则反复重启（"刷完变砖"）。
-//! 本模块在写入成功后**强制**检查一次验证状态，开启则打印红字警告并给出补救命令。
+//! After flashing partitions that participate in AVB verification (such as `boot` /
+//! `system`), if device verification is still enabled the boot will fail: at best it
+//! drops to fastboot, at worst it boot-loops ("bricked after flashing"). This module
+//! **forces** one verification status check after a successful write and prints a red
+//! warning with remediation commands when verification is enabled.
 //!
-//! 判定优先级（拿得到就用，越靠前越权威）：
-//! 1. 同槽位/全局 `vbmeta` 的 flags（`HASHTREE_DISABLED` / `VERIFICATION_DISABLED`）；
-//! 2. `seccfg` 的 `lock_state` 与 `dm_verity_state`；
-//! 3. 都拿不到 → `Unknown`，只记警告，不阻断（绝不能因为"查不到"就让刷机失败）。
+//! Decision priority (use whatever is available, earlier is more authoritative):
+//! 1. flags of the same-slot/global `vbmeta` (`HASHTREE_DISABLED` / `VERIFICATION_DISABLED`);
+//! 2. `seccfg` `lock_state` and `dm_verity_state`;
+//! 3. none available -> `Unknown`: log a warning only, never block (a flashing failure
+//!    must never be caused by "cannot determine").
 
 use log::{info, warn};
 
@@ -16,18 +19,19 @@ use crate::security::avb::{FLAG_HASHTREE_DISABLED, FLAG_VERIFICATION_DISABLED, V
 use crate::security::seccfg::v4::SecCfgV4;
 use crate::session::Session;
 
-/// 验证状态。
+/// Verification state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerificationState {
-    /// 验证已关闭（安全）。
+    /// Verification disabled (safe).
     Disabled { source: String },
-    /// 验证仍开启（刷修改过的镜像有变砖风险）。
+    /// Verification still enabled (flashing a modified image may brick the device).
     Enabled { source: String, detail: String },
-    /// 无法确定。
+    /// Cannot be determined.
     Unknown { reason: String },
 }
 
-/// 参与 AVB 校验、被改动后可能影响开机的分区（去掉槽位后缀后比较）。
+/// Partitions that participate in AVB verification and may affect boot when modified
+/// (compared after stripping the slot suffix).
 const AVB_PARTITIONS: &[&str] = &[
     "boot",
     "init_boot",
@@ -41,7 +45,7 @@ const AVB_PARTITIONS: &[&str] = &[
     "dtbo",
 ];
 
-/// 去掉 `_a` / `_b` 槽位后缀。
+/// Strips the `_a` / `_b` slot suffix.
 fn base_name(part: &str) -> &str {
     match part.rsplit_once('_') {
         Some((base, "a" | "b")) => base,
@@ -49,9 +53,10 @@ fn base_name(part: &str) -> &str {
     }
 }
 
-/// 该分区写入后是否需要做 AVB 体检。
+/// Whether this partition needs an AVB check after being written.
 ///
-/// `vbmeta*` 本身排除：写它往往正是"关验证"动作，不该反过来警告。
+/// `vbmeta*` itself is excluded: writing it is usually the "disable verification"
+/// action, so it must not trigger a warning.
 pub fn is_avb_protected(part: &str) -> bool {
     let base = base_name(part);
     if base.starts_with("vbmeta") {
@@ -60,7 +65,7 @@ pub fn is_avb_protected(part: &str) -> bool {
     AVB_PARTITIONS.contains(&base)
 }
 
-/// 候选 vbmeta 分区（按优先级）。
+/// Candidate vbmeta partitions (in priority order).
 fn vbmeta_candidates(part: &str) -> Vec<String> {
     let mut out = Vec::new();
     if let Some((_, slot @ ("a" | "b"))) = part.rsplit_once('_') {
@@ -72,11 +77,11 @@ fn vbmeta_candidates(part: &str) -> Vec<String> {
     out
 }
 
-/// 检查设备当前的 AVB 验证状态。
+/// Checks the device's current AVB verification state.
 pub fn check(session: &mut dyn Session, part: &str) -> VerificationState {
     // 1) vbmeta flags
     for name in vbmeta_candidates(part) {
-        // 分区不存在就换下一个候选（`find_partition` 对缺失分区返回 Err）。
+        // Missing partition: try the next candidate (`find_partition` returns Err for missing partitions).
         let span = match session.find_partition(&name) {
             Ok(s) => s,
             Err(_) => continue,
@@ -103,10 +108,10 @@ pub fn check(session: &mut dyn Session, part: &str) -> VerificationState {
                 }
             };
         }
-        // 解析失败不算结论，继续看下一个候选 / 退到 seccfg。
+        // Parse failure is not a conclusion; try the next candidate / fall back to seccfg.
     }
 
-    // 2) seccfg 兜底
+    // 2) seccfg fallback
     if let Ok(span) = session.find_partition("seccfg")
         && let Ok(data) = session.read_flash(span.addr, span.size.min(0x4000))
         && let Ok(v4) = SecCfgV4::parse(&data)
@@ -138,7 +143,8 @@ pub fn check(session: &mut dyn Session, part: &str) -> VerificationState {
     }
 }
 
-/// 写入成功后调用：验证未关闭则打红字警告（不阻断写入）。
+/// Called after a successful write: prints a red warning when verification is not
+/// disabled (does not block the write).
 pub fn warn_after_write(session: &mut dyn Session, part: &str) {
     if !is_avb_protected(part) {
         return;

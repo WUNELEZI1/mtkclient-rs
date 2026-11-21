@@ -17,15 +17,15 @@ pub struct Explorer {
 }
 
 impl Explorer {
-    /// 按名称查找分区，自动补 _b 后缀
+    /// Find a partition by name, automatically appending the _b suffix
     pub(crate) fn find_partition(&self, name: &str) -> Result<usize, String> {
-        // 精确匹配
+        // Exact match
         for (i, p) in self.partitions.iter().enumerate() {
             if p.name == name {
                 return Ok(i);
             }
         }
-        // 尝试 _b / _a 后缀
+        // Try the _b / _a suffixes
         for suffix in &["_b", "_a"] {
             let candidate = format!("{}{}", name, suffix);
             for (i, p) in self.partitions.iter().enumerate() {
@@ -37,7 +37,7 @@ impl Explorer {
         Err(format!("未找到分区: {}", name))
     }
 
-    /// 构造指定分区的 LpTranslator
+    /// Build an LpTranslator for the given partition
     pub(crate) fn make_translator(&self, part_idx: usize) -> Result<LpTranslator, String> {
         let part = &self.partitions[part_idx];
         let mut extents = Vec::new();
@@ -55,7 +55,7 @@ impl Explorer {
         })
     }
 
-    /// 计算分区总大小
+    /// Compute the total partition size
     pub(crate) fn partition_size(&self, part_idx: usize) -> u64 {
         let part = &self.partitions[part_idx];
         let mut total = 0u64;
@@ -68,14 +68,14 @@ impl Explorer {
         total
     }
 
-    /// 拆分 target: "system_b/system/etc" → ("system_b", "system/etc")
+    /// Split target: "system_b/system/etc" → ("system_b", "system/etc")
     pub(crate) fn split_target(&self, target: &str) -> Result<(String, String), String> {
         let target = target.trim_start_matches('/');
         if target.is_empty() {
             return Ok(("".to_string(), "".to_string()));
         }
-        // 尝试匹配分区名（第一段或前两段）
-        // 先尝试完整第一段作为分区名
+        // Try to match a partition name (first segment or first two segments)
+        // First try the whole first segment as the partition name
         let first_slash = target.find('/');
         let first_seg = if let Some(pos) = first_slash {
             &target[..pos]
@@ -83,7 +83,7 @@ impl Explorer {
             return Ok((target.to_string(), "".to_string()));
         };
 
-        // 精确匹配
+        // Exact match
         if self.find_partition(first_seg).is_ok() {
             Ok((
                 first_seg.to_string(),
@@ -96,7 +96,7 @@ impl Explorer {
 }
 
 impl Explorer {
-    /// ls super — 列出所有 LP 分区
+    /// ls super — list all LP partitions
     fn cmd_ls_super(&self) {
         println!("{:<20} {:>12} {:>12}  {}", "分区", "偏移", "大小", "标记");
         println!("{}", "-".repeat(60));
@@ -138,7 +138,7 @@ impl Explorer {
         }
     }
 
-    /// ls [partition][/path] — 列出目录内容
+    /// ls `partition``/path` — list directory contents
     pub(crate) fn cmd_ls<F>(&self, read_fn: &mut F, target: &str) -> Result<(), String>
     where
         F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
@@ -149,10 +149,10 @@ impl Explorer {
                 self.cmd_ls_super();
                 return Ok(());
             }
-            // 有当前分区时，列出当前路径
+            // With a current partition, list the current path
             let part_name = self.current_partition.as_ref().unwrap().clone();
             let sub_path = self.current_path.clone();
-            // 构造完整 target: part_name/sub_path
+            // Build the full target: part_name/sub_path
             let full_target = if sub_path.is_empty() {
                 part_name
             } else {
@@ -161,18 +161,18 @@ impl Explorer {
             return self.cmd_ls_path(read_fn, &full_target, "");
         }
 
-        // 处理相对路径：不以 / 开头且当前在分区内
+        // Handle relative paths: not starting with / and currently inside a partition
         if !trimmed.starts_with('/') {
             if let Some(ref cur_part) = self.current_partition {
-                // 先检查是否是分区名
+                // Check whether it is a partition name first
                 if self.find_partition(trimmed).is_err() {
-                    // 不是分区名，拼接当前路径
+                    // Not a partition name; join with the current path
                     let full_target = if self.current_path.is_empty() {
                         format!("{}", cur_part)
                     } else {
                         format!("{}/{}", cur_part, self.current_path)
                     };
-                    // 拼接 target
+                    // Join the target
                     let full_target = if trimmed.is_empty() {
                         full_target
                     } else {
@@ -211,7 +211,7 @@ impl Explorer {
         let size = get_inode_size(&inode_data);
 
         if is_file_mode(mode) {
-            // 单文件：显示文件信息
+            // Single file: show file info
             let mut ft = "FILE".to_string();
             if (get_inode_flags(&inode_data) & EXT4_INODE_FLAG_EXTENTS) != 0 {
                 ft = "FILE(ext)".to_string();
@@ -220,11 +220,11 @@ impl Explorer {
             return Ok(());
         }
 
-        // 目录
+        // Directory
         let dir_data = read_inode_data(read_fn, &lp, &sb, &inode_data)?;
         let entries = parse_dir(&dir_data);
 
-        // 分离目录和文件
+        // Separate directories from files
         let mut dirs: Vec<&DirEntry> = Vec::new();
         let mut files: Vec<&DirEntry> = Vec::new();
         for e in &entries {
@@ -239,12 +239,12 @@ impl Explorer {
         dirs.sort_by(|a, b| a.name.cmp(&b.name));
         files.sort_by(|a, b| a.name.cmp(&b.name));
 
-        // 获取每个条目的大小（需要读 inode）
+        // Get each entry's size (requires reading its inode)
         for d in &dirs {
             match read_inode(read_fn, &lp, &sb, d.inode) {
                 Ok(ino_data) => {
                     let ino_size = get_inode_size(&ino_data);
-                    // inode 数据损坏时大小可能离奇，限制显示
+                    // Corrupted inode data can yield absurd sizes; clamp what is displayed
                     let display_size = if ino_size > 0x1_0000_0000 {
                         4096u64
                     } else {
@@ -271,7 +271,7 @@ impl Explorer {
             match read_inode(read_fn, &lp, &sb, f.inode) {
                 Ok(ino_data) => {
                     let ino_size = get_inode_size(&ino_data);
-                    // inode 数据损坏时大小可能离奇，限制显示
+                    // Corrupted inode data can yield absurd sizes; clamp what is displayed
                     let display_size = if ino_size > 0x1_0000_0000 {
                         4096u64
                     } else {
@@ -304,7 +304,7 @@ impl Explorer {
         Ok(())
     }
 
-    /// cat <partition/path> — 显示文件内容
+    /// cat <partition/path> — display file contents
     pub(crate) fn cmd_cat<F>(&self, read_fn: &mut F, target: &str) -> Result<(), String>
     where
         F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
@@ -324,7 +324,7 @@ impl Explorer {
         let size = get_inode_size(&inode_data);
 
         if is_dir_mode(mode) {
-            // 目录 → 列出条目
+            // Directory → list entries
             let dir_data = read_inode_data(read_fn, &lp, &sb, &inode_data)?;
             let entries = parse_dir(&dir_data);
             println!("(目录) {} 条目:", entries.len());
@@ -343,7 +343,7 @@ impl Explorer {
             return Ok(());
         }
 
-        // 文件
+        // File
         let file_data = read_inode_data(read_fn, &lp, &sb, &inode_data)?;
         println!("[{}, {} bytes]", part_name, size);
 
@@ -355,7 +355,7 @@ impl Explorer {
             }
             Err(_) => {
                 println!("[binary, {} bytes]", file_data.len());
-                // hex dump 前 512 字节
+                // hex dump of the first 512 bytes
                 let dump_len = 512.min(file_data.len());
                 for row in 0..dump_len / 16 {
                     let off = row * 16;

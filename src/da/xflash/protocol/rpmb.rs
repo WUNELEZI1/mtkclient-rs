@@ -1,19 +1,19 @@
-//! RPMB 扩展命令（CUSTOM_RPMB_*，对齐 mtkclient xflash extension）
+//! RPMB extension commands (CUSTOM_RPMB_*, matching the mtkclient xflash extension)
 //!
-//! RPMB（Replay Protected Memory Block）是 eMMC/UFS 的受保护分区，
-//! 其读写必须由设备端用 RPMB Key 计算 HMAC。DA 扩展提供了四个命令：
+//! RPMB (Replay Protected Memory Block) is a protected area of eMMC/UFS;
+//! reads and writes must be HMAC-signed by the device using the RPMB key. The DA extension provides the following commands:
 //!
-//! | 命令 | 值 | 作用 |
+//! | Command | Value | Purpose |
 //! |---|---|---|
-//! | `CUSTOM_RPMB_SET_KEY` | 0x0F0006 | 写入 32 字节 RPMB Key（设备回显校验） |
-//! | `CUSTOM_RPMB_PROG_KEY`| 0x0F0007 | 由平台自行编程密钥（部分芯片） |
-//! | `CUSTOM_RPMB_INIT`    | 0x0F0008 | 初始化 RPMB 会话，返回设备派生密钥 |
-//! | `CUSTOM_RPMB_READ`    | 0x0F0009 | 按 0x100 字节帧读 |
-//! | `CUSTOM_RPMB_WRITE`   | 0x0F000A | 按 0x100 字节帧写 |
+//! | `CUSTOM_RPMB_SET_KEY` | 0x0F0006 | write the 32-byte RPMB key (verified by device echo) |
+//! | `CUSTOM_RPMB_PROG_KEY`| 0x0F0007 | let the platform program the key itself (some chips) |
+//! | `CUSTOM_RPMB_INIT`    | 0x0F0008 | initialize the RPMB session and return the device-derived key |
+//! | `CUSTOM_RPMB_READ`    | 0x0F0009 | read in 0x100-byte frames |
+//! | `CUSTOM_RPMB_WRITE`   | 0x0F000A | write in 0x100-byte frames |
 //!
-//! 与 `send_devctrl` 的差异：RPMB 命令在 `cmd` 之后**不会立即回数据**，
-//! 必须再发送参数（sector/sectors/帧）才会返回结果，因此这里使用
-//! “只做两阶段握手”的 `rpmb_cmd`，避免提前 xread 造成超时。
+//! Unlike `send_devctrl`, RPMB commands do **not** return data right after `cmd`;
+//! parameters (sector/sectors/frame) must be sent first, so this module uses
+//! `rpmb_cmd`, which only does the two-stage handshake, avoiding premature xread timeouts.
 
 use super::{CMD_MAGIC, pack3};
 use crate::da::xflash::DAXFlash;
@@ -21,17 +21,17 @@ use log::{debug, info};
 
 pub const CUSTOM_RPMB_SET_KEY: u32 = 0x0F0006;
 #[allow(dead_code)]
-pub const CUSTOM_RPMB_PROG_KEY: u32 = 0x0F0007; // 保留：部分平台用其编程密钥
+pub const CUSTOM_RPMB_PROG_KEY: u32 = 0x0F0007; // reserved: some platforms use it to program the key
 pub const CUSTOM_RPMB_INIT: u32 = 0x0F0008;
 pub const CUSTOM_RPMB_READ: u32 = 0x0F0009;
 pub const CUSTOM_RPMB_WRITE: u32 = 0x0F000A;
 
-/// RPMB Key 固定 32 字节
+/// The RPMB key is always 32 bytes
 pub const RPMB_KEY_LEN: usize = 32;
-/// RPMB 单帧长度
+/// Length of a single RPMB frame
 pub const RPMB_FRAME_LEN: usize = 0x100;
 
-/// JEDEC RPMB 结果码（对齐 mtkclient `rpmb_error` 表）
+/// JEDEC RPMB result codes (matching the mtkclient `rpmb_error` table)
 const RPMB_ERRORS: &[&str] = &[
     "OK",                                    // 0x0000
     "General failure",                       // 0x0001
@@ -44,7 +44,7 @@ const RPMB_ERRORS: &[&str] = &[
     "Invalid number of bytes",               // 0x0008
 ];
 
-/// 把 RPMB 结果码翻译成可读文本
+/// Translate an RPMB result code into readable text
 pub fn rpmb_error_msg(code: u16) -> String {
     match RPMB_ERRORS.get(code as usize) {
         Some(msg) => format!("{} (0x{:04X})", msg, code),
@@ -52,7 +52,7 @@ pub fn rpmb_error_msg(code: u16) -> String {
     }
 }
 
-/// 解析 32 字节 hex 密钥（容忍空格/`0x` 前缀）
+/// Parse a 32-byte hex key (tolerates spaces and a `0x` prefix)
 pub fn parse_key_hex(s: &str) -> Result<[u8; RPMB_KEY_LEN], String> {
     let cleaned: String = s
         .trim()
@@ -80,11 +80,11 @@ pub fn parse_key_hex(s: &str) -> Result<[u8; RPMB_KEY_LEN], String> {
     Ok(key)
 }
 
-/// 生成 32 字节随机 RPMB 密钥（优先系统熵源，失败退回时间熵）
+/// Generate a 32-byte random RPMB key (prefers the system entropy source, falls back to time entropy)
 pub fn generate_key() -> [u8; RPMB_KEY_LEN] {
     let mut key = [0u8; RPMB_KEY_LEN];
-    // 注意：不能用 std::fs::read("/dev/urandom")——该字符设备永不返回 EOF，
-    // 会一直读到内存耗尽（旧 genkey 实现即有该缺陷）。
+    // Note: do not use std::fs::read("/dev/urandom") — that char device never returns EOF,
+    // so it reads until memory is exhausted (a flaw in the old genkey implementation).
     if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
         use std::io::Read;
         if f.read_exact(&mut key).is_ok() {
@@ -105,7 +105,7 @@ pub fn generate_key() -> [u8; RPMB_KEY_LEN] {
 }
 
 impl<'a> DAXFlash<'a> {
-    /// XFlash 发送 4 字节整数参数
+    /// Send a 4-byte integer parameter over XFlash
     fn rpmb_send_u32(&mut self, v: u32) -> Result<(), String> {
         let pkt = pack3(CMD_MAGIC, 0x01, 4);
         self.preloader.device.write(&pkt)?;
@@ -113,7 +113,7 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
-    /// XFlash 发送数据块参数
+    /// Send a data-block parameter over XFlash
     fn rpmb_send_data(&mut self, data: &[u8]) -> Result<(), String> {
         let pkt = pack3(CMD_MAGIC, 0x01, data.len() as u32);
         self.preloader.device.write(&pkt)?;
@@ -121,7 +121,7 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
-    /// 对齐 Python `cmd()`：DEVICE_CTRL → cmd 两阶段握手，不读取数据
+    /// Mirrors Python `cmd()`: DEVICE_CTRL → cmd two-stage handshake, no data read
     fn rpmb_cmd(&mut self, cmd: u32) -> Result<bool, String> {
         if !self.daext {
             return Err("DA Extensions 未启用，无法使用 RPMB 命令".to_string());
@@ -143,7 +143,7 @@ impl<'a> DAXFlash<'a> {
         Ok(st1 == 0 && st2 == 0)
     }
 
-    /// 写入 RPMB Key 并校验设备回显（**不可逆操作**：写入后无法再读出原密钥）
+    /// Write the RPMB key and verify the device echo (**irreversible**: the key cannot be read back)
     pub fn custom_rpmb_set_key(&mut self, key: &[u8]) -> Result<(), String> {
         if key.len() != RPMB_KEY_LEN {
             return Err(format!(
@@ -172,8 +172,8 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
-    /// 初始化 RPMB 会话；`key` 非空时先烧写密钥。
-    /// 返回设备派生出的 RPMB 密钥（部分平台为空）。
+    /// Initialize an RPMB session; when `key` is provided, program the key first.
+    /// Returns the device-derived RPMB key (empty on some platforms).
     pub fn custom_rpmb_init(&mut self, key: Option<&[u8]>) -> Result<Option<Vec<u8>>, String> {
         if let Some(k) = key {
             self.custom_rpmb_set_key(k)?;
@@ -181,7 +181,7 @@ impl<'a> DAXFlash<'a> {
         if !self.rpmb_cmd(CUSTOM_RPMB_INIT)? {
             return Err("CUSTOM_RPMB_INIT 失败（RPMB 未初始化或平台不支持）".to_string());
         }
-        // 0x1209/0x1129 平台需要 mode=1
+        // Platforms 0x1209/0x1129 require mode=1
         let hw_code = self.preloader.chip.as_ref().map(|c| c.hw_code).unwrap_or(0);
         let mode: u32 = if hw_code == 0x1209 || hw_code == 0x1129 {
             1
@@ -207,7 +207,7 @@ impl<'a> DAXFlash<'a> {
         }
     }
 
-    /// 读取 RPMB（按 0x100 字节帧）
+    /// Read RPMB (in 0x100-byte frames)
     pub fn custom_rpmb_read(&mut self, sector: u32, sectors: u32) -> Result<Vec<u8>, String> {
         if sectors == 0 {
             return Ok(Vec::new());
@@ -243,7 +243,7 @@ impl<'a> DAXFlash<'a> {
         Ok(out)
     }
 
-    /// 写入 RPMB（数据长度必须是 0x100 的整数倍）
+    /// Write RPMB (data length must be a multiple of 0x100)
     pub fn custom_rpmb_write(&mut self, sector: u32, data: &[u8]) -> Result<(), String> {
         if data.is_empty() {
             return Ok(());
@@ -287,7 +287,7 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
-    /// 查询设备 RPMB 大小（字节），0 表示未知/不支持
+    /// Query the device RPMB size in bytes; 0 means unknown/unsupported
     pub fn rpmb_size(&mut self) -> Result<u64, String> {
         let info = self.get_emmc_info()?;
         Ok(info.rpmb_size)
@@ -298,7 +298,7 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{:02X}", x)).collect()
 }
 
-/// 供 CLI 展示用：把 RPMB 长度格式化为 MB
+/// For CLI display: format the RPMB size in MB
 pub fn fmt_rpmb_size(bytes: u64) -> String {
     if bytes == 0 {
         "未知".to_string()

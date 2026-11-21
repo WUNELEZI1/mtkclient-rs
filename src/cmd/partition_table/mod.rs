@@ -1,12 +1,12 @@
-//! GPT 分区表相关命令
+//! GPT partition table commands
 //!
-//! - `printgpt`         — 已迁到 `ops::printgpt`（能力驱动，见 exec 模块）
-//! - `cmd_read_gpt`     — 读取 GPT 原始数据到目录
-//! - `cmd_read_all`     — 读取全部分区到目录
-//! - `cmd_print_scatter`— 打印 scatter 到屏幕并保存文件
+//! - `printgpt`         — moved to `ops::printgpt` (capability-driven, see exec module)
+//! - `cmd_read_gpt`     — read raw GPT data into a directory
+//! - `cmd_read_all`     — read all partitions into a directory
+//! - `cmd_print_scatter`— print scatter to screen and save to file
 //!
-//! 私有助手：
-//! - `print_gpt_table`  — 表格格式化输出
+//! Private helpers:
+//! - `print_gpt_table`  — formatted table output
 
 use crate::color::Colorize;
 use log::{info, trace, warn};
@@ -17,7 +17,7 @@ use crate::system::config::AppConfig;
 mod emmc;
 mod table;
 
-/// 供 ops 层复用表格渲染（保证与 `printgpt` 老命令输出一致）。
+/// Table rendering reused by the ops layer (keeps output consistent with the legacy `printgpt` command).
 pub(crate) fn print_gpt_table_public(
     data: &[u8],
     boot1_size: u64,
@@ -27,16 +27,16 @@ pub(crate) fn print_gpt_table_public(
     table::print_gpt_table(data, boot1_size, boot2_size, super_metadata);
 }
 
-/// 读取 GPT 原始数据到指定路径
+/// Read raw GPT data to the given path
 ///
-/// 如果 `path` 包含文件扩展名（如 .bin/.img），直接保存为该文件；
-/// 否则将其视为目录，在目录下创建 `gpt.bin`。
+/// If `path` has a file extension (e.g. .bin/.img), save directly to that file;
+/// otherwise treat it as a directory and create `gpt.bin` inside it.
 pub fn cmd_read_gpt(
     da: &mut DAXFlash,
     path: &str,
     log_level: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 判断 path 是文件还是目录：含常见扩展名则视为文件
+    // Determine whether path is a file or directory: a common extension means it is a file
     let output = if path.ends_with(".bin") || path.ends_with(".img") || path.ends_with(".dat") {
         path.to_string()
     } else {
@@ -62,26 +62,26 @@ pub fn cmd_read_gpt(
     Ok(())
 }
 
-/// 将 GPT 镜像写回设备（eMMC，仅主 GPT 区域：LBA0 保护 MBR + LBA1 头 + 分区项）
+/// Write a GPT image back to the device (eMMC, primary GPT area only: LBA0 protective MBR + LBA1 header + partition entries)
 ///
-/// 与 `cmd_read_gpt` 对应：`r gpt <dir>` 产出 `<dir>/gpt.bin`，本命令把该文件写回。
-/// 写回前重算分区项 CRC32 与头部 CRC32，保证写回的 GPT 合法（SPFT 可直接读取）。
-/// 写回范围为镜像实际长度（覆盖 LBA0 + 主 GPT 头 + 分区项表），备份 GPT 因镜像不含
-/// 盘尾区域暂不写回；主 GPT 是 Bootloader 启动时读取的首要根据，满足修改/恢复 GPT 需求。
+/// Counterpart to `cmd_read_gpt`: `r gpt <dir>` produces `<dir>/gpt.bin`, which this command writes back.
+/// Entry CRC32 and header CRC32 are recomputed before writing so the GPT is valid (SPFT can read it directly).
+/// The write range is the actual image length (LBA0 + primary GPT header + entry table); the backup GPT is not written
+/// because the image lacks the tail-of-disk area. The primary GPT is what the Bootloader reads first at startup, satisfying GPT modification/recovery needs.
 pub fn cmd_write_gpt(da: &mut DAXFlash, file: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut data =
         std::fs::read(file).map_err(|e| format!("读取 GPT 文件失败 '{}': {}", file, e))?;
     let gpt_info =
         crate::partition::GptInfo::parse(&data).map_err(|e| format!("GPT 文件无效: {}", e))?;
-    // 提取 Copy 字段后释放对 data 的不可变借用，避免与下方 &mut data 冲突（E0502）
+    // Copy fields out to release the immutable borrow of data and avoid conflict with the later &mut data (E0502)
     let base_offset = gpt_info.base_offset;
     let part_entry_start_lba = gpt_info.part_entry_start_lba;
     let num_part_entries = gpt_info.num_part_entries;
     let part_entry_size = gpt_info.part_entry_size;
     let header_size = gpt_info.header_size;
 
-    // 写回前重算 CRC，确保设备/SPFT 读到合法 GPT
-    // 注：gpt_info 的不可变借用在其字段被复制提取后即结束（NLL），无需显式 drop
+    // Recompute CRC before writing so the device/SPFT read a valid GPT
+    // Note: the immutable borrow of gpt_info ends once its fields are copied out (NLL); no explicit drop needed
     recompute_gpt_crc(
         &mut data,
         base_offset,
@@ -100,10 +100,10 @@ pub fn cmd_write_gpt(da: &mut DAXFlash, file: &str) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-/// 重算 GPT 头部 CRC32 与分区项 CRC32（就地修改 buffer）
+/// Recompute GPT header CRC32 and partition entry CRC32 (modifies the buffer in place)
 ///
-/// - 分区项 CRC：覆盖 `part_entry_start_lba*512 .. + num*entry_size`
-/// - 头部 CRC：先将头部中 CRC 字段(偏移 16..20)清零，再对 `header_size` 字节计算
+/// - Entry CRC: covers `part_entry_start_lba*512 .. + num*entry_size`
+/// - Header CRC: zero the header CRC field (offset 16..20) first, then compute over `header_size` bytes
 fn recompute_gpt_crc(
     buf: &mut [u8],
     base_offset: usize,
@@ -114,7 +114,7 @@ fn recompute_gpt_crc(
 ) {
     let base = base_offset;
 
-    // 分区项 CRC（头部中存储位置 base+88..92）
+    // Entry CRC (stored in the header at base+88..92)
     let ent_off = (part_entry_start_lba * 512) as usize;
     let ent_len = (num_part_entries * part_entry_size) as usize;
     if ent_off + ent_len <= buf.len() && ent_len > 0 {
@@ -122,7 +122,7 @@ fn recompute_gpt_crc(
         buf[base + 88..base + 92].copy_from_slice(&crc.to_le_bytes());
     }
 
-    // 头部 CRC（先清零 CRC 字段再计算）
+    // Header CRC (zero the CRC field before computing)
     let hdr_len = header_size as usize;
     if base + hdr_len <= buf.len() && hdr_len >= 20 {
         buf[base + 16..base + 20].copy_from_slice(&0u32.to_le_bytes());
@@ -131,7 +131,7 @@ fn recompute_gpt_crc(
     }
 }
 
-/// 读取全部分区到目录（支持 --skip 跳过指定分区）
+/// Read all partitions into a directory (supports --skip to omit specified partitions)
 pub fn cmd_read_all(
     da: &mut DAXFlash,
     dir: &str,
@@ -143,10 +143,10 @@ pub fn cmd_read_all(
         da.read_gpt().map_err(|e| format!("GPT 读取失败: {}", e))?;
     }
 
-    // 解析 --skip 分区列表
-    // 注意：根级 `--skip` 标志会被 clap 的尾部 args(Vec, allow_hyphen_values=true) 在命令之后
-    // 贪婪吞为命令参数，导致 app_config.skip_partitions 拿不到值。因此除读取根级 flag 外，
-    // 还需从 app_config.cmd_args 中扫描 `--skip <val>` / `--skip=<val>`（与 reboot --via 同理）。
+    // Parse the --skip partition list
+    // Note: trailing args of clap (Vec, allow_hyphen_values=true) greedily consume the root-level `--skip`
+    // flag after a command as command arguments, leaving app_config.skip_partitions empty. So besides reading
+    // the root flag, also scan app_config.cmd_args for `--skip <val>` / `--skip=<val>` (same as reboot --via).
     let mut skip_raw: Option<String> = app_config.skip_partitions.clone();
     if skip_raw.is_none() {
         // `--skip <val>`
@@ -183,11 +183,11 @@ pub fn cmd_read_all(
 
     let gpt_data = da.get_last_gpt_data()?.clone();
     let gpt_info = crate::partition::GptInfo::parse(&gpt_data)?;
-    let mut read_count = 0usize; // 实际读取/续传成功（用于汇总）
-    let mut done_count = 0usize; // 已存在且完整、本次跳过未重读
-    let mut idx = 0usize; // [n/total] 连续序号（含 DONE 跳过，保证续跑编号连续）
+    let mut read_count = 0usize; // actually read/resumed successfully (for the summary)
+    let mut done_count = 0usize; // already present and complete, skipped this run without re-reading
+    let mut idx = 0usize; // [n/total] continuous counter (includes DONE skips so rerun numbering stays continuous)
 
-    // 预先统计被 --skip 的分区数，避免循环内递增导致分母随迭代变化
+    // Pre-count --skip partitions to avoid a changing denominator if incremented inside the loop
     let skip_count = gpt_info
         .iter_partitions()
         .filter(|e| skip_set.contains(&e.name.to_lowercase()))
@@ -195,19 +195,19 @@ pub fn cmd_read_all(
     let total = gpt_info.partitions().len() - skip_count;
 
     for entry in gpt_info.iter_partitions() {
-        // 跳过指定分区（大小写不敏感比较）
+        // Skip specified partitions (case-insensitive comparison)
         if skip_set.contains(&entry.name.to_lowercase()) {
             info!("  [SKIP] {} (0x{:X})", entry.name, entry.size);
-            continue; // skip_count 已预先统计，此处不再递增
+            continue; // skip_count is pre-counted, so do not increment here
         }
 
         let output = format!("{}/{}.img", dir, entry.name);
 
-        // 断点续传 / 已完成跳过：
-        // 1) 移除可能残留的 `.resume` 活跃读取标记——跨进程重跑时设备已不在推送旧数据流，
-        //    必须走“重新发送 READ_DATA 从断点续读”，而非“ACK 续接活跃流”（避免续接失败）。
-        // 2) compute_read_resume_offset：文件已完整 → 返回 size（跳过）；部分存在 →
-        //    截断到 512 对齐边界并返回偏移（续传）。
+        // Resume / already-done skip:
+        // 1) Remove any leftover `.resume` active-read marker — on a cross-process rerun the device is no longer
+        //    pushing the old data stream, so resend READ_DATA to resume from the breakpoint instead of ACKing to
+        //    continue the active stream (avoids resume failure).
+        // 2) compute_read_resume_offset: file complete -> returns size (skip); partially present -> truncates to a 512-aligned boundary and returns the offset (resume).
         let _ = std::fs::remove_file(crate::resume::read_resume_path(&output));
         let start_offset = crate::partition::io::compute_read_resume_offset(&output, entry.size);
         if start_offset >= entry.size {
@@ -235,8 +235,8 @@ pub fn cmd_read_all(
             }
         );
 
-        // 带进度条的分区块读取（对齐 io::cmd_read 单分区读取体验，
-        // parttype=8 对应 GPT 物理分区；流式写文件避免大分区整块读进内存）
+        // Chunked partition read with a progress bar (matches the io::cmd_read single-partition experience;
+        // parttype=8 corresponds to the GPT physical partition; streaming to file avoids loading a large partition entirely into memory)
         use crate::progress::{ProgressBar, ProgressStyle};
         let bar = if crate::usb::log::QUIET_USB_READ.load(std::sync::atomic::Ordering::Relaxed) {
             ProgressBar::hidden()
@@ -255,9 +255,9 @@ pub fn cmd_read_all(
         if start_offset > 0 {
             bar.set_position(start_offset);
         }
-        // 续传时从 start_offset 处继续读取。
-        // 注意：readflash_to_file 内部会在非活跃续传分支按 (addr + start_offset) 重新下发
-        // READ_DATA，故此处传“分区基址”entry.start_addr（而非已偏移地址），避免双重偏移。
+        // On resume, continue reading from start_offset.
+        // Note: readflash_to_file internally resends READ_DATA at (addr + start_offset) in the inactive-resume branch,
+        // so pass the "partition base address" entry.start_addr (not the already-offset address) to avoid double offsetting.
         da.readflash_to_file(entry.start_addr, entry.size, 8, &output, start_offset, {
             let bar = bar.clone();
             move |bytes_read| {
@@ -281,7 +281,7 @@ pub fn cmd_read_all(
     Ok(())
 }
 
-/// 从目录中读取所有 <分区名>.img 或 <分区名>.bin 文件并写回对应分区
+/// Read all `<partition name>`.img or `<partition name>`.bin files from a directory and write them back to their partitions
 pub fn cmd_write_all(
     da: &mut DAXFlash,
     dir: &str,
@@ -300,7 +300,7 @@ pub fn cmd_write_all(
     let mut skip_count = 0usize;
 
     for entry in gpt_info.iter_partitions() {
-        // 优先找 .img，其次找 .bin
+        // Prefer .img, then .bin
         let img_path = format!("{}/{}.img", dir, entry.name);
         let bin_path = format!("{}/{}.bin", dir, entry.name);
         let input = if std::path::Path::new(&img_path).exists() {

@@ -1,14 +1,14 @@
-//! USB 通信系统
+//! USB communication subsystem.
 //!
-//! 负责底层 USB 通信、设备交互、日志追踪
+//! Handles low-level USB transport, device interaction, and trace logging.
 //!
-//! # 系统架构
-//! - `上下文` - USB 阶段枚举、设备检测函数（nusb 无需显式 context）
-//! - `设备` - USB 设备结构体与生命周期管理（nusb Interface/Device）
-//! - `设备IO` - USB 设备 IO 操作（读取/写入/控制传输/清除停顿）
-//! - `设备握手` - BROM 握手协议
-//! - `诊断` - USB 连接诊断与状态检测
-//! - `日志` - USB 通信追踪日志（--usb-log）
+//! # Architecture
+//! - `context` - USB stage enum and device detection (nusb needs no explicit context)
+//! - `device` - USB device wrapper and lifecycle management (nusb Interface/Device)
+//! - `device_io` - USB device I/O (read/write/control transfer/clear halt)
+//! - `device_handshake` - BROM handshake protocol
+//! - `diag` - USB connection diagnostics and status checks
+//! - `log` - USB traffic trace log (--usb-log)
 
 #[path = "context.rs"]
 pub mod context;
@@ -22,11 +22,11 @@ pub mod diag;
 #[path = "log.rs"]
 pub mod log;
 
-// 公共 re-export，保持外部调用方式不变
+// Public re-exports; keep external call sites unchanged.
 #[allow(unused_imports)]
 pub use context::{UsbContext, UsbStage, get_first_mtk_vid_pid};
 pub use device::UsbDevice;
 #[allow(unused_imports)]
 pub use log::{set_usb_log_switch, set_usb_read_quiet, usb_trace};
-// 注意：usb_trace_tx! / usb_trace_rx! 由 #[macro_export] 在 crate 根导出，
-// 调用方应使用 crate::usb_trace_tx! / crate::usb_trace_rx!
+// Note: usb_trace_tx! / usb_trace_rx! are exported at the crate root via #[macro_export];
+// callers must use crate::usb_trace_tx! / crate::usb_trace_rx!

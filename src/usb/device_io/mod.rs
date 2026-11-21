@@ -1,7 +1,7 @@
-//! USB 设备 IO 操作：读取 / 写入 / 控制传输 / 清除停顿
+//! USB device IO: read / write / control transfer / clear halt
 //!
-//! 使用 nusb Interface 的 control_transfer_in/out 和 bulk transfer_blocking。
-//! 后续阶段 2 会将 bulk 读取改为异步流水线（submit/complete）。
+//! Uses nusb Interface control_transfer_in/out and bulk transfer_blocking.
+//! A later stage 2 will turn bulk reads into an async pipeline (submit/complete).
 
 pub(crate) mod control;
 pub(crate) mod read;

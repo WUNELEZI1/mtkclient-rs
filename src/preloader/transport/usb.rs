@@ -2,7 +2,7 @@ use super::BromTransport;
 use crate::usb::UsbDevice;
 use std::time::Duration;
 
-/// UsbDevice 实现 BROM 传输
+/// Implements BROM transport for UsbDevice.
 impl BromTransport for UsbDevice {
     fn write(&mut self, data: &[u8]) -> Result<usize, String> {
         super::trace_io("->", data);

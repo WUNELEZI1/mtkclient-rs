@@ -1,12 +1,12 @@
-//! sdata.json 运行时加载
+//! sdata.json runtime loading
 //!
-//! `sdata.json`（位于 `data/sdata.json`）是芯片支持的**动态配置**，由外部 GUI（刷机匣）
-//! 或用户维护。Rust 在运行时读取它，根据设备上报的 `hw_code` 决定对应的 payload 文件路径，
-//! 而不是把"支持哪些芯片 / 每个芯片用哪个 payload"硬编码进代码。
+//! `sdata.json` (at `data/sdata.json`) is the **dynamic configuration** for chip support, maintained by an external GUI (flashing toolbox)
+//! or by the user. Rust reads it at runtime and determines the corresponding payload file path from the device-reported `hw_code`,
+//! rather than hardcoding "which chips are supported / which payload each chip uses" into the code.
 //!
-//! 唯一保持硬编码的是 `chips_generated.rs` 的 `CHIP_CONFIGS`——hwcode ↔ 芯片 bootrom 寄存器
-//! 地址对照表。这是因为：① 设备只上报 hwcode，必须有一张表把 hwcode 映射到芯片；② 每台芯片
-//! 的 bootrom 寄存器地址不同，无法动态化。这部分不在 sdata.json 的职责范围内。
+//! The only thing kept hardcoded is `CHIP_CONFIGS` in `chips_generated.rs` — the hwcode ↔ chip bootrom register
+//! address mapping table. Reasons: (1) the device only reports the hwcode, so a table is needed to map hwcode to a chip; (2) each chip
+//! has different bootrom register addresses, which cannot be dynamic. This is outside the scope of sdata.json.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -14,44 +14,44 @@ use std::sync::OnceLock;
 use crate::system::config::CHIP_CONFIGS;
 use crate::system::paths::get_exe_relative_path;
 
-/// 解析后的 sdata
+/// parsed sdata
 pub struct SData {
-    /// support_chip：芯片键 -> hwcode（十六进制字符串，如 `"0x788"`）
+    /// support_chip: chip key -> hwcode (hex string, e.g. `"0x788"`)
     pub support_chip: HashMap<String, String>,
-    /// 各芯片键 -> payload 相对路径（如 `"mt6771\\mt6771_payload.bin"`）
+    /// each chip key -> payload relative path (e.g. `"mt6771\\mt6771_payload.bin"`)
     pub payloads: HashMap<String, String>,
 }
 
 static S_DATA: OnceLock<Option<SData>> = OnceLock::new();
 
-/// 获取（并缓存）sdata。读取/解析失败返回 `None`。
+/// get (and cache) the sdata. Returns `None` on read/parse failure.
 pub fn sdata() -> Option<&'static SData> {
     S_DATA.get_or_init(load_sdata).as_ref()
 }
 
-/// 把 `CHIP_CONFIGS.name`（如 `"MT6768/MT6769"`、`"MT6771"`）归一化为 sdata.json 的短键。
-/// 规则：取 `/` 或空格前的第一段，整体转小写 → `"mt6768"` / `"mt6771"`。
+/// normalize `CHIP_CONFIGS.name` (e.g. `"MT6768/MT6769"`, `"MT6771"`) to the short key used by sdata.json.
+/// rule: take the first segment before `/` or a space, lowercase it → `"mt6768"` / `"mt6771"`.
 fn normalize_chip_key(name: &str) -> String {
     name.split(['/', ' ']).next().unwrap_or(name).to_lowercase()
 }
 
-/// 动态解析某芯片的 payload 路径（基于 sdata.json 的 `data/<芯片>/<文件>` 布局）。
+/// dynamically resolve a chip's payload path (based on the sdata.json `data/<chip>/<file>` layout).
 ///
-/// 解析策略：
-/// 1. 用 `CHIP_CONFIGS`（硬编码 hwcode ↔ 芯片名）按 `hw_code` **或** `da_code` 双向匹配，
-///    兼容 BROM 上报 `0x0707` 与 DA 内部 `0x6768` 两种情况，得到芯片身份。
-/// 2. 收集候选的 sdata.json `payloads` 键：
-///    - CHIP_CONFIGS 芯片名归一化短键（如 `"MT6768/MT6769"` → `"mt6768"`）；
-///    - sdata.json `support_chip` 中命中 hw_code / da_code 的键（自身即 payloads 键）。
-/// 3. 依次用候选键查 `payloads`，拼成 `data/<相对路径>` 并返回首个存在的文件。
-/// 4. 全部未命中时回退到旧式 `payload/<fallback_loader>` 目录。
+/// resolution strategy:
+/// 1. use `CHIP_CONFIGS` (hardcoded hwcode ↔ chip name) to match bidirectionally by `hw_code` **or** `da_code`,
+///    covering both the BROM-reported `0x0707` and DA-internal `0x6768` cases to obtain the chip identity.
+/// 2. collect candidate sdata.json `payloads` keys:
+///    - the normalized short key of the CHIP_CONFIGS chip name (e.g. `"MT6768/MT6769"` → `"mt6768"`);
+///    - keys in sdata.json `support_chip` that match hw_code / da_code (the key itself is a payloads key).
+/// 3. look up `payloads` with each candidate key in turn, assemble `data/<relative path>`, and return the first existing file.
+/// 4. if nothing matches, fall back to the legacy `payload/<fallback_loader>` directory.
 pub fn resolve_chip_payload(hw_code: u32, fallback_loader: &str) -> std::path::PathBuf {
-    // 1. 确定芯片身份（hw_code 或 da_code 任一匹配）
+    // 1. determine the chip identity (either hw_code or da_code matches)
     let chip = CHIP_CONFIGS
         .iter()
         .find(|c| c.hw_code as u32 == hw_code || c.da_code as u32 == hw_code);
 
-    // 2. 收集候选的 sdata payloads 键
+    // 2. collect candidate sdata payloads keys
     let mut keys: Vec<String> = Vec::new();
     if let Some(cfg) = chip {
         keys.push(normalize_chip_key(cfg.name));
@@ -60,7 +60,7 @@ pub fn resolve_chip_payload(hw_code: u32, fallback_loader: &str) -> std::path::P
         let probe = chip.map(|c| (c.hw_code as u32, c.da_code as u32));
         for (key, hwstr) in &sd.support_chip {
             if let Some(h) = parse_hwcode(hwstr) {
-                // 命中：设备上报值，或该芯片已知的 hw_code/da_code（覆盖 da_code 上报场景）
+                // hit: a device-reported value, or a known hw_code/da_code of this chip (covers the da_code reporting case)
                 let hit = h == hw_code || probe.map_or(false, |(hw, da)| h == hw || h == da);
                 if hit {
                     keys.push(key.clone());
@@ -69,7 +69,7 @@ pub fn resolve_chip_payload(hw_code: u32, fallback_loader: &str) -> std::path::P
         }
     }
 
-    // 3. 依次用候选键查 sdata payloads，返回首个存在的 data/<相对路径>
+    // 3. look up sdata payloads with each candidate key in turn; return the first existing data/<relative path>
     if let Some(sd) = sdata() {
         for key in &keys {
             if let Some(rel) = sd.payloads.get(key) {
@@ -81,13 +81,13 @@ pub fn resolve_chip_payload(hw_code: u32, fallback_loader: &str) -> std::path::P
         }
     }
 
-    // 4. 回退：旧式 payload/ 目录
+    // 4. fallback: legacy payload/ directory
     get_exe_relative_path(&format!("payload/{}", fallback_loader))
 }
 
-/// 解析 sdata.json 中具名 payload（如 `generic_preloader_dump` / `generic_patcher`）的路径。
+/// resolve the path of a named payload in sdata.json (e.g. `generic_preloader_dump` / `generic_patcher`).
 ///
-/// sdata.json 缺失或未含该键时，回退到旧式 `payload/<fallback_filename>` 目录。
+/// if sdata.json is missing or lacks the key, fall back to the legacy `payload/<fallback_filename>` directory.
 pub fn resolve_named_payload(sdata_key: &str, fallback_filename: &str) -> std::path::PathBuf {
     if let Some(sd) = sdata() {
         if let Some(rel) = sd.payloads.get(sdata_key) {
@@ -100,13 +100,13 @@ pub fn resolve_named_payload(sdata_key: &str, fallback_filename: &str) -> std::p
     get_exe_relative_path(&format!("payload/{}", fallback_filename))
 }
 
-/// 解析 hwcode 字符串（支持 `0x788` / `0X707` / 十进制 `788`）
+/// parse a hwcode string (supports `0x788` / `0X707` / decimal `788`)
 fn parse_hwcode(s: &str) -> Option<u32> {
     let t = s.trim().trim_start_matches("0x").trim_start_matches("0X");
     u32::from_str_radix(t, 16).ok()
 }
 
-/// 把 Windows 反斜杠路径分隔符归一化为 `/`（Rust Path 跨平台拼接时更稳）
+/// normalize Windows backslash path separators to `/` (more robust for cross-platform Rust Path joining)
 fn normalize_sep(p: &str) -> String {
     p.replace('\\', "/")
 }
@@ -141,12 +141,12 @@ fn load_sdata() -> Option<SData> {
     })
 }
 
-// ---------- 最小化 JSON 解析器（无第三方依赖，离线可用） ----------
+// ---------- minimal JSON parser (no third-party dependencies, works offline) ----------
 
-/// 最小化 JSON 值类型。
+/// minimal JSON value type.
 ///
-/// sdata.json 只使用对象/字符串（`Obj`/`Str`）；`Null`/`Bool`/`Num`/`Arr` 仅为让解析器
-/// 能接受并跳过合法但未被消费的 JSON 片段而保留，其内部值无需读取，故不带负载字段。
+/// sdata.json only uses objects/strings (`Obj`/`Str`); `Null`/`Bool`/`Num`/`Arr` are kept only so the parser
+/// can accept and skip valid but unconsumed JSON fragments; their inner values are never read, so they carry no payload field.
 enum JVal {
     Null,
     Bool,
@@ -219,7 +219,7 @@ impl<'a> Parser<'a> {
             }
         }
         let s = std::str::from_utf8(&self.b[start..self.i]).ok()?;
-        // 数值本身不被 sdata 使用，仅校验其数值格式合法
+        // the number itself is not used by sdata; this only validates that its numeric format is legal
         s.parse::<f64>().ok().map(|_| JVal::Num)
     }
 
@@ -271,7 +271,7 @@ impl<'a> Parser<'a> {
             return Some(JVal::Arr);
         }
         loop {
-            // 数组元素值不被 sdata 使用，仅递归解析以校验并跳过该片段
+            // array element values are not used by sdata; parse recursively only to validate and skip the fragment
             self.parse_value()?;
             self.skip_ws();
             match self.peek()? {
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn test_sdata_roundtrip() {
-        // 校验 support_chip 逆向映射 + payload 路径解析（不依赖磁盘文件）
+        // verify the support_chip reverse mapping + payload path resolution (no disk file dependency)
         let json = r#"{
             "support_chip": {"mt6771":"0x788","mt6768":"0x707"},
             "mt6771": "mt6771\\mt6771_payload.bin",
@@ -377,7 +377,7 @@ mod tests {
                 payloads.insert(k, s);
             }
         }
-        // 模拟 payload_for_hwcode 的核心逻辑
+        // simulate the core logic of payload_for_hwcode
         let hw = 0x788u32;
         let mut found = None;
         for (key, hwstr) in &support_chip {

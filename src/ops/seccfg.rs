@@ -1,14 +1,14 @@
-//! `seccfg`：Bootloader 解锁 / 上锁（能力驱动路径）。
+//! `seccfg`: bootloader unlock / lock (capability-driven path).
 //!
-//! 与既有 `zyb seccfg unlock` 共用同一套结构解析与签名实现，区别只在
-//! 数据通道：这里走 [`Session`]，因此真机与仿真跑的是同一段代码。
+//! Shares the same structure parsing and signing code as `zyb seccfg unlock`; only the data
+//! channel differs: this path goes through [`crate::session::Session`], so real hardware and simulation run the same code.
 //!
-//! 关键安全点（有测试钉死）：
-//! - 偏移 0x0C = `lock_state`（1=locked，3=unlocked）；
-//! - 偏移 0x10 = `dm_verity_state`，**unlock/lock 都写 0**。
-//!   上游 mtkclient 默认保留原值、`critical=True` 时 unlock 写 1
-//!   （= DM_VERITY_GENERAL_ERROR），这正是"强解 BL 后开机会报 dm-verity error"的成因。
-//!   我们选择强制写 0：代价是行为与上游不同，收益是不会因一条命令让设备起不来。
+//! Key safety points (pinned by tests):
+//! - Offset 0x0C = `lock_state` (1=locked, 3=unlocked);
+//! - Offset 0x10 = `dm_verity_state`, **written as 0 for both unlock and lock**.
+//!   Upstream mtkclient keeps the original value by default and writes 1 on unlock with `critical=True`
+//!   (= DM_VERITY_GENERAL_ERROR), which is exactly why a forced BL unlock makes boot report a dm-verity error.
+//!   We always write 0: behavior differs from upstream, but one command can never leave the device unbootable.
 
 use log::{info, warn};
 
@@ -18,7 +18,7 @@ use crate::core::capability::{Capability, CapabilitySet};
 use crate::security::seccfg::v3::SecCfgV3;
 use crate::security::seccfg::v4::SecCfgV4;
 
-/// 解锁 / 上锁。
+/// Unlock / lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeccfgAction {
     Unlock,
@@ -39,8 +39,8 @@ pub struct SeccfgOp {
 }
 
 impl SeccfgOp {
-    /// 只读地检查当前锁状态（供 unlock 链判断是否需要动 vbmeta）。
-    /// 同时支持 V3（attr 映射为 1/3）与 V4（lock_state 原生值）。
+    /// Read the current lock state without modifying it (used by the unlock chain to decide whether vbmeta must change).
+    /// Supports V3 (attr mapped to 1/3) and V4 (native lock_state value).
     pub fn current_lock_state(ctx: &mut OpCtx<'_>) -> Result<u32, String> {
         let span = ctx.session.find_partition("seccfg")?;
         let data = ctx.session.read_flash(span.addr, span.size.min(0x4000))?;
@@ -57,13 +57,13 @@ impl SeccfgOp {
         }
     }
 
-    /// V3 头以 `AND_SECCFG_v\0\0\0` 开头；V4 头首 4 字节是 magic 0x4D4D4D4D。
+    /// A V3 header starts with `AND_SECCFG_v\0\0\0`; the first 4 bytes of a V4 header are magic 0x4D4D4D4D.
     fn is_v3(data: &[u8]) -> bool {
         data.len() >= 16 && &data[..12] == b"AND_SECCFG_v"
     }
 
-    /// V3 解锁/上锁：解析 → 幂等检查 → 软件 SEJ 重签 → 写回 → 回读校验 attr。
-    /// V3 的 SEJ 加密是纯软件 AES（不依赖设备 HACC），因此真机与仿真共用本实现。
+    /// V3 unlock/lock: parse → idempotence check → software SEJ re-sign → write back → read-back attr verification.
+    /// V3 SEJ encryption is pure software AES (no device HACC), so real hardware and simulation share this implementation.
     fn run_v3(&self, ctx: &mut OpCtx<'_>, data: &[u8]) -> Result<OpOutcome, String> {
         let span = ctx.session.find_partition("seccfg")?;
         let v3 = SecCfgV3::parse(data)?;
@@ -149,7 +149,7 @@ impl Op for SeccfgOp {
             data.len()
         );
 
-        // 全版本支持：V3（AND_SECCFG_v 头，软件 SEJ）与 V4（0x4D4D4D4D 头）。
+        // All versions supported: V3 (AND_SECCFG_v header, software SEJ) and V4 (0x4D4D4D4D header).
         if Self::is_v3(&data) {
             return self.run_v3(ctx, &data);
         }
@@ -190,7 +190,7 @@ impl Op for SeccfgOp {
             ),
         )?;
 
-        // 构造新头 + 签名（真机走 HACC/SEJ；仿真返回明文摘要）
+        // Build the new header + signature (real devices use HACC/SEJ; the simulation returns the digest as-is)
         let (header, new_lock, new_dm, _) =
             crate::security::seccfg::build::build_v4_header(&v4, self.action.flag())?;
         let digest = crate::sha::Sha256::digest(header);
@@ -200,7 +200,7 @@ impl Op for SeccfgOp {
 
         ctx.session.write_flash(span.addr, &image)?;
 
-        // 回读校验：偏移 0x0C / 0x10 必须是我们写的值
+        // Read-back verification: offsets 0x0C / 0x10 must equal what we wrote
         let back = ctx.session.read_flash(span.addr, 0x40.min(span.size))?;
         if back.len() < 20 {
             return Err("回读 seccfg 失败（长度不足）".into());

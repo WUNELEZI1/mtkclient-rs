@@ -2,10 +2,10 @@ use crate::color::Colorize;
 use crate::da::DAXFlash;
 use log::{info, warn};
 
-/// A/B 槽位管理
-/// slot show — 显示当前槽位
-/// slot a    — 切换到 A 槽
-/// slot b    — 切换到 B 槽
+/// A/B slot management
+/// slot show — show the current slot
+/// slot a    — switch to slot A
+/// slot b    — switch to slot B
 pub fn cmd_slot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
         return Err("用法: mtkclient slot show/a/b".into());
@@ -26,9 +26,9 @@ pub fn cmd_slot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-/// 读取并显示当前 A/B 槽位
+/// Read and display the current A/B slot
 fn show_slot(da: &mut DAXFlash) -> Result<(), String> {
-    // 尝试从 misc 分区读取槽位信息
+    // Try to read slot info from the misc partition
     let slot = read_slot_from_misc(da)?;
     match slot {
         Some(s) => {
@@ -41,11 +41,11 @@ fn show_slot(da: &mut DAXFlash) -> Result<(), String> {
     Ok(())
 }
 
-/// 设置 A/B 槽位
+/// Set the A/B slot
 fn set_slot(da: &mut DAXFlash, slot: char) -> Result<(), String> {
     info!("设置 A/B 槽位为 {}...", slot);
 
-    // 读取 misc 分区到内存
+    // Read the misc partition into memory
     let (misc_addr, misc_size) = da
         .find_partition_addr("misc")
         .map_err(|e| format!("查找 misc 分区失败: {}", e))?;
@@ -54,7 +54,7 @@ fn set_slot(da: &mut DAXFlash, slot: char) -> Result<(), String> {
         .readflash_data(misc_addr, misc_size)
         .map_err(|e| format!("读取 misc 分区失败: {}", e))?;
 
-    // 优先检查 bootctrl 结构（偏移 0x2000）
+    // Check the bootctrl struct first (offset 0x2000)
     let bootctrl_offset = 0x2000;
     if new_misc.len() >= bootctrl_offset + 12 {
         let magic = u32::from_le_bytes([
@@ -64,13 +64,13 @@ fn set_slot(da: &mut DAXFlash, slot: char) -> Result<(), String> {
             new_misc[bootctrl_offset + 3],
         ]);
         if magic == 0x424F4F54 {
-            // 已有 bootctrl 结构，直接修改 active_slot
+            // bootctrl struct exists; update active_slot in place
             let new_slot_val = if slot == 'a' { 0u32 } else { 1u32 };
             new_misc[bootctrl_offset + 8..bootctrl_offset + 12]
                 .copy_from_slice(&new_slot_val.to_le_bytes());
             info!("bootctrl 结构已更新 (active_slot={})", new_slot_val);
         } else {
-            // 没有 bootctrl 结构，初始化一个
+            // No bootctrl struct; initialize one
             warn!("misc 分区中无 bootctrl 结构，创建新的...");
             new_misc[bootctrl_offset..bootctrl_offset + 4]
                 .copy_from_slice(&0x424F4F54u32.to_le_bytes()); // "BOOT"
@@ -80,12 +80,13 @@ fn set_slot(da: &mut DAXFlash, slot: char) -> Result<(), String> {
         }
     }
 
-    // 直接从内存写入 misc 分区
+    // Write the buffer straight to the misc partition
     write_partition_from_memory(da, "misc", &new_misc)?;
 
-    // 缓存失效：`da.active_slot` 是本会话内"只读一次 misc"的缓存，
-    // 槽位刚被改写，必须同步更新，否则后续 vbmeta / r boot / 分区名解析
-    // 仍会用旧槽位（典型症状：切换后立刻 zyb vbmeta 改到上一个槽）。
+    // Cache invalidation: `da.active_slot` caches "read misc once per session".
+    // The slot was just rewritten, so it must be refreshed here; otherwise later
+    // vbmeta / r boot / partition-name resolution still uses the old slot
+    // (classic symptom: zyb vbmeta right after switching edits the previous slot).
     da.active_slot = Some(slot);
     log::debug!("active_slot 缓存已更新为 {:?}", da.active_slot);
 
@@ -93,7 +94,7 @@ fn set_slot(da: &mut DAXFlash, slot: char) -> Result<(), String> {
     Ok(())
 }
 
-/// 从 misc 分区读取槽位信息
+/// Read slot info from the misc partition
 fn read_slot_from_misc(da: &mut DAXFlash) -> Result<Option<String>, String> {
     let (misc_addr, misc_size) = match da.find_partition_addr("misc") {
         Ok(r) => r,
@@ -109,7 +110,7 @@ fn read_slot_from_misc(da: &mut DAXFlash) -> Result<Option<String>, String> {
         return Ok(None);
     }
 
-    // 检查 bootctrl 结构（偏移 0x2000）
+    // Check the bootctrl struct (offset 0x2000)
     let bootctrl_offset = 0x2000;
     let magic = u32::from_le_bytes([
         misc_data[bootctrl_offset],
@@ -134,7 +135,7 @@ fn read_slot_from_misc(da: &mut DAXFlash) -> Result<Option<String>, String> {
         return Ok(Some(slot));
     }
 
-    // 尝试在数据中搜索槽位标记
+    // Fall back to searching for slot markers in the data
     let data_str = String::from_utf8_lossy(&misc_data);
     if data_str.contains("_a") && !data_str.contains("_b") {
         return Ok(Some("a".to_string()));
@@ -145,9 +146,9 @@ fn read_slot_from_misc(da: &mut DAXFlash) -> Result<Option<String>, String> {
     Ok(None)
 }
 
-/// 从内存直接写入分区数据（无需临时文件）
+/// Write partition data directly from memory (no temp file).
 ///
-/// 将 data 写入到指定分区，自动查找分区地址并处理 512 字节对齐
+/// Writes `data` to the given partition, resolving its address and handling 512-byte alignment.
 pub(crate) fn write_partition_from_memory(
     da: &mut DAXFlash,
     part_name: &str,

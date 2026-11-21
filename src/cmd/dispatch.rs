@@ -1,7 +1,7 @@
-//! 统一命令分发（dispatch_cmd / execute_single_command）
+//! Unified command dispatch (dispatch_cmd / execute_single_command)
 //!
-//! `dispatch_cmd` 是所有命令 match 逻辑的唯一来源，被 `execute_single_command`、
-//! `multi::cmd_multi`、`script::dispatch_command` 共同调用，确保三处命令列表和逻辑一致。
+//! `dispatch_cmd` is the single source of all command match logic, called by `execute_single_command`,
+//! `multi::cmd_multi` and `script::dispatch_command` so all three share the same command list and logic.
 
 use crate::color::Colorize;
 use log::{error, info};
@@ -9,14 +9,14 @@ use log::{error, info};
 use crate::da::DAXFlash;
 use crate::system::config::AppConfig;
 
-/// 统一命令分发函数（所有命令 match 逻辑的唯一来源）
+/// Unified command dispatch function (the single source of all command match logic)
 ///
-/// 被 `execute_single_command`、`multi::cmd_multi`、`script::dispatch_command` 共同调用，
-/// 确保三处命令列表和逻辑完全一致。
-/// 用能力驱动路径执行一个 op（真机）。
+/// Called by `execute_single_command`, `multi::cmd_multi` and `script::dispatch_command`
+/// so all three share exactly the same command list and logic.
+/// Execute an op through the capability-driven path (on real hardware).
 ///
-/// 与 `printgpt` 走同一条链路：RealSession（DA 已由 Phase1 上传）→ Executor →
-/// Orchestrator 决策 → 逐步执行 + 能力校验。确认策略来自 `--yes`（直接放行）或交互式 y/N。
+/// Uses the same chain as `printgpt`: RealSession (DA already uploaded by Phase1) → Executor →
+/// Orchestrator decisions → step execution + capability checks. Confirmation comes from `--yes` (auto-approve) or interactive y/N.
 pub(crate) fn run_op<O: crate::ops::Op>(
     da: &mut DAXFlash,
     op: &O,
@@ -44,9 +44,9 @@ pub fn dispatch_cmd(
 ) -> Result<(), crate::error::AppError> {
     match cmd {
         "printgpt" => {
-            // 能力驱动入口：规划 → 执行 → 能力校验，不再硬编码流程。
-            // DA 已由 handle_command 的 Phase1 上传完成，因此 RealSession 直接声明
-            // DaLoaded，Planner 只会规划 "开存储 → 解析 GPT"。
+            // Capability-driven entry: plan → execute → verify capabilities, no hard-coded flow.
+            // DA was uploaded by handle_command's Phase1, so RealSession directly declares
+            // DaLoaded and the Planner only plans "open storage → parse GPT".
             let state = real_device_state(da);
             let mode = crate::core::plan::Mode::parse(mode_label(app_config))
                 .unwrap_or(crate::core::plan::Mode::Auto);
@@ -61,8 +61,8 @@ pub fn dispatch_cmd(
                 .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "dumppreloader" => {
-            // DA 模式会话下：cmd_dumppreloader 内部走 XFlash read_data 直接读出（快、稳），
-            // 失败时明确报错，不再静默忽略提示"请在 BROM 模式下执行"。
+            // In a DA-mode session: cmd_dumppreloader reads directly via XFlash read_data (fast and stable);
+            // on failure it reports an error instead of silently hinting "run in BROM mode".
             super::dump::cmd_dumppreloader(da, None)
                 .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
@@ -72,7 +72,7 @@ pub fn dispatch_cmd(
                 super::partition_table::cmd_read_gpt(da, dir, log_level)
                     .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
             } else if args.iter().any(|a| a == "--dp") {
-                // super 动态分区读取需要 super 元数据解析，仍走既有实现
+                // Dynamic super partition reads need super metadata parsing, so use the existing implementation
                 super::io::cmd_read(da, args)
                     .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
             } else {
@@ -132,7 +132,7 @@ pub fn dispatch_cmd(
             )?;
         }
         "unlock" => {
-            // 一键解锁：seccfg unlock + vbmeta 关校验（同一 op，规划只做一次）
+            // One-shot unlock: seccfg unlock + disable vbmeta verification (single op, planned once)
             run_op(da, &crate::ops::unlock::UnlockOp, app_config, log_level)?;
         }
         "zyb" => {
@@ -157,9 +157,9 @@ pub fn dispatch_cmd(
             .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "dumpbrom" => {
-            // BROM 本体提取（0xD1 BROM 读取路径，与 dumppreloader 同链路）
+            // Extract the BROM itself (0xD1 BROM read path, same chain as dumppreloader)
             let out = args.first().cloned().unwrap_or_else(|| "brom.bin".into());
-            // 可选第二个参数：显式长度（十六进制或十进制）；不传则走默认 128 KiB 入口
+            // Optional second argument: explicit length (hex or decimal); defaults to the 128 KiB entry point
             let result = match args.get(1) {
                 None => da.preloader.dump_brom(),
                 Some(v) => {
@@ -197,10 +197,10 @@ pub fn dispatch_cmd(
                 .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "genkey" => {
-            // RPMB 密钥生成（参考 mtkclient）：32 字节随机密钥。
-            // 生成后可用 mtkclient 家族的 rpmb 烧写流程写入设备。
-            // 复用 rpmb 模块的实现（读取 /dev/urandom 必须用 read_exact，
-            // std::fs::read 会因字符设备不返回 EOF 而无限读取直至 OOM）
+            // RPMB key generation (following mtkclient): a 32-byte random key.
+            // Once generated it can be written to the device via the mtkclient-family rpmb flow.
+            // Reuse the rpmb module implementation (reading /dev/urandom must use read_exact;
+            // std::fs::read loops forever until OOM because the char device never returns EOF)
             let key = crate::da::xflash::protocol::rpmb::generate_key();
             let hex: String = key.iter().map(|b| format!("{b:02X}")).collect();
             println!("{}", "═══ RPMB 密钥（32 字节）═══".cyan().bold());
@@ -215,7 +215,7 @@ pub fn dispatch_cmd(
             );
         }
         "chain" => {
-            // 智能利用链规划：探测设备状态并打印推荐执行链（只读，不执行）
+            // Smart exploit-chain planning: probe device state and print the recommended chain (read-only, not executed)
             let goal = match args.first().map(|s| s.as_str()) {
                 Some("read") | Some("printgpt") => crate::exploit::chain::Goal::ReadInfo,
                 Some("rp") => crate::exploit::chain::Goal::ReadPartition,
@@ -229,10 +229,10 @@ pub fn dispatch_cmd(
             let caps = crate::exploit::chain::DeviceCapabilities {
                 hw_code: da.preloader.chip.as_ref().map(|c| c.hw_code).unwrap_or(0),
                 chip_name: da.preloader.chip.as_ref().map(|c| c.name.to_string()),
-                // SLA/DAA 状态：BROM 阶段探测标志（安全启用时需要 exploit 链）。
-                // chain 命令运行于 DA 会话内，此处按保守值（已绕过阶段）上报。
+                // SLA/DAA state: flags probed during the BROM stage (an exploit chain is needed when security is enabled).
+                // The chain command runs inside a DA session, so report conservative values (already bypassed).
                 security_enabled: false,
-                da_loaded: true, // chain 命令在 DA 会话内运行
+                da_loaded: true, // the chain command runs inside a DA session
                 preloader_available: false,
                 carbonara_applicable: true,
                 preloader_mode: da.preloader.is_preloader_mode,
@@ -258,10 +258,10 @@ pub fn dispatch_cmd(
                 .map_err(|e| crate::error::AppError::Protocol(e.to_string()))?;
         }
         "fs_shell" => {
-            // 扩展模式：fs_shell boot [file] / fs_shell proinfo [file]
-            // —— 除 super 外还支持 boot ramdisk (cpio) 与 proinfo NV 浏览
+            // Extended mode: fs_shell boot [file] / fs_shell proinfo [file]
+            // —— besides super, also supports boot ramdisk (cpio) and proinfo NV browsing
             if let Some(mode) = args.first().map(|s| s.as_str()) {
-                // 非交互动作：fs_shell boot ls|cat|info / fs_shell proinfo show
+                // Non-interactive actions: fs_shell boot ls|cat|info / fs_shell proinfo show
                 let action = match args.get(1).map(|s| s.as_str()) {
                     Some("ls") => Some(crate::ops::fsshell::FsAction::List(
                         args.get(2).cloned().unwrap_or_default(),
@@ -281,7 +281,7 @@ pub fn dispatch_cmd(
                     },
                     action,
                 ) {
-                    // 第三种形式：fs_shell <target> <action> [file]
+                    // Third form: fs_shell <target> <action> [file]
                     let file = args
                         .get(2)
                         .filter(|a| a.ends_with(".img") || a.ends_with(".bin"))
@@ -304,7 +304,7 @@ pub fn dispatch_cmd(
                     return Ok(());
                 }
             }
-            // 默认：读 GPT 获取 super 分区地址
+            // Default: read the GPT to get the super partition address
             da.read_gpt().map_err(|e| {
                 crate::error::AppError::Protocol(crate::i18n::tr(
                     "read_gpt_failed",
@@ -331,7 +331,7 @@ pub fn dispatch_cmd(
 
             info!("super 分区地址: 0x{:08X}", super_addr);
 
-            // 构造 read_fn 闭包
+            // Build the read_fn closure
             let da_ref = &mut *da;
             let mut read_fn = |offset: u64, len: u64| -> Result<Vec<u8>, String> {
                 da_ref.readflash_data_ex(super_addr + offset, len, 8)
@@ -351,10 +351,10 @@ pub fn dispatch_cmd(
     Ok(())
 }
 
-/// 从已连接设备提取规划所需状态。
+/// Extract the state needed for planning from the connected device.
 ///
-/// 安全标志在 Phase1 已完成（必要时已 bypass），因此这里按"已解决"上报；
-/// 协议版本无法从 DA 文件读取时交给 `DeviceState::is_v6` 用 da_code 名单预判。
+/// Security flags were handled in Phase1 (bypassed if needed), so report them as "resolved" here;
+/// when the protocol version cannot be read from the DA file, `DeviceState::is_v6` infers it from the da_code list.
 fn real_device_state(da: &DAXFlash) -> crate::core::device::DeviceState {
     let chip = da.preloader.chip.as_ref();
     crate::core::device::DeviceState {
@@ -367,15 +367,15 @@ fn real_device_state(da: &DAXFlash) -> crate::core::device::DeviceState {
         preloader_patched: false,
         da_signature_failed: false,
         current_slot: da.active_slot,
-        // 真机无法凭空判定 CVE-2022-20069（需要 preloader 版本/构建指纹比对），
-        // 默认按"不受影响"处理：宁可少规划一条路径，也不要凭猜测去打 exploit。
-        // 确知设备受影响时用 `--exploit cve-20069` 显式指定（走 apply_key 路径）。
+        // CVE-2022-20069 cannot be determined out of thin air on real hardware (needs preloader version/build fingerprint comparison),
+        // so default to "not affected": better to plan one path fewer than to run an exploit on a guess.
+        // When the device is known to be affected, specify `--exploit cve-20069` explicitly (the apply_key path).
         cve_20069_affected: false,
         cve_20069_patched: false,
     }
 }
 
-/// `AppConfig.work_mode` → 规划模式标签。
+/// `AppConfig.work_mode` → planning mode label.
 fn mode_label(cfg: &AppConfig) -> &'static str {
     match cfg.work_mode {
         crate::system::config::WorkMode::Brom => "brom",
@@ -384,9 +384,9 @@ fn mode_label(cfg: &AppConfig) -> &'static str {
     }
 }
 
-/// 执行单个 DA 命令（不处理 Phase1/Phase2）
+/// Execute a single DA command (no Phase1/Phase2 handling)
 ///
-/// 薄包装：委托给 `dispatch_cmd` 完成实际命令分发。
+/// Thin wrapper: delegates actual dispatch to `dispatch_cmd`.
 pub fn execute_single_command(
     da: &mut DAXFlash,
     cmd: &str,

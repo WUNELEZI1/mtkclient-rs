@@ -1,9 +1,9 @@
-//! XFlash 协议环境初始化
+//! XFlash protocol environment initialization
 //!
 //! - `setup_env`     — CMD_SETUP_ENVIRONMENT
 //! - `setup_hw_init` — CMD_SETUP_HW_INIT_PARAMS
-//! - `send_emi`      — CMD_INIT_EXT_RAM + EMI 数据
-//! - `boot_to`       — CMD_BOOT_TO + 发送 DA Stage2
+//! - `send_emi`      — CMD_INIT_EXT_RAM + EMI data
+//! - `boot_to`       — CMD_BOOT_TO + send DA Stage2
 
 use log::{info, trace, warn};
 use std::thread::sleep;
@@ -16,13 +16,13 @@ use crate::da::xflash::protocol::{
 };
 
 impl<'a> DAXFlash<'a> {
-    /// 带重试的 USB 写入：第2次起先等待再纯重试。
+    /// USB write with retries: from the second attempt on, wait first and then retry plainly.
     ///
-    /// 注意：WinUSB/nusb 下**不要**主动 clear_halt_out 来"恢复" stalled endpoint。
-    /// 老平台 DA（MT6771/0x788 等）在 setup_env 阶段的端点 stall 由 DA 自身流控处理，
-    /// 主动发 CLEAR_FEATURE control transfer 反而会让 WinUSB 返回 ERROR_GEN_FAILURE(31)，
-    /// 把一次可重试的写失败升级成不可逆的 os error 31（对齐 brom_reg_access.rs 的约定）。
-    /// 因此 clear_halt 仅作为 libusb 后端、且前序纯重试均失败后的最后手段，且吞掉其错误。
+    /// Note: under WinUSB/nusb, do **not** actively clear_halt_out to "recover" a stalled endpoint.
+    /// On older DA platforms (MT6771/0x788 etc.) endpoint stalls during setup_env are handled by DA flow
+    /// control; issuing a CLEAR_FEATURE control transfer makes WinUSB return ERROR_GEN_FAILURE(31),
+    /// turning a retryable write failure into an irreversible os error 31 (matching the brom_reg_access.rs convention).
+    /// So clear_halt is only a last resort for the libusb backend after all plain retries failed, and its error is ignored.
     pub(crate) fn write_with_retry(&mut self, data: &[u8], label: &str) -> Result<(), String> {
         const MAX_RETRY: u32 = 5;
         const RETRY_DELAY_MS: u64 = 100;
@@ -41,17 +41,18 @@ impl<'a> DAXFlash<'a> {
                         label, attempt, MAX_RETRY, last_err
                     );
                     if attempt < MAX_RETRY {
-                        // 先等待，让 DA 流控自行恢复端点
+                        // Wait first so DA flow control can recover the endpoint
                         sleep(Duration::from_millis(RETRY_DELAY_MS));
-                        // 恢复（对齐刷机匣 unstick 流程）：先排空 IN 管道残留。
-                        // 若 DA 因上一条命令的响应未被主机读走而流控反压、阻塞了对新 OUT
-                        // 的 ACK，排空 IN 后即可恢复（IN 为空时 drain 无害）。
-                        // 此情形在 brom/WinUSB 后端 DA 加载后偶发，串口后端无此概念。
+                        // Recovery (matching the flasher unstick flow): drain leftover IN data first.
+                        // If DA flow control back-pressures because the host did not read the previous
+                        // command's response, blocking the ACK for the new OUT, draining IN restores it
+                        // (draining an empty IN is harmless). This occurs occasionally after DA load on the
+                        // brom/WinUSB backend; serial has no such concept.
                         self.preloader.device.drain_pending();
                         if attempt == MAX_RETRY - 1 {
-                            // 最后手段：清 OUT/IN halt（仅最后一步，错误吞掉不传播）。
-                            // 旧 DA(如 MT6771) 在 setup_env 阶段 WinUSB 上 clear_halt 偶发
-                            // error 31，故仅作末步兜底，不提前触发以免恶化。
+                            // Last resort: clear OUT/IN halt (final step only; errors swallowed, not propagated).
+                            // Old DA (e.g. MT6771) over WinUSB occasionally returns error 31 from clear_halt
+                            // during setup_env, so trigger it only at the last step to avoid worsening things.
                             let _ = self.preloader.device.clear_halt_out();
                             let _ = self.preloader.device.clear_halt_in();
                         }
@@ -67,8 +68,8 @@ impl<'a> DAXFlash<'a> {
         unreachable!()
     }
 
-    /// 设置环境
-    /// Python: xsend(CMD_SETUP_ENVIRONMENT) → send_param(20字节) → status()
+    /// Set up the environment
+    /// Python: xsend(CMD_SETUP_ENVIRONMENT) → send_param(20 bytes) → status()
     pub fn setup_env(&mut self) -> Result<bool, String> {
         trace!("设置环境...");
 
@@ -77,7 +78,7 @@ impl<'a> DAXFlash<'a> {
         self.write_with_retry(&pkt, "setup_env xsend")?;
         self.write_with_retry(&CMD_SETUP_ENVIRONMENT.to_le_bytes(), "setup_env CMD")?;
 
-        // send_param(20字节): da_log_level, log_channel, system_os, ufs_provision, 0x0
+        // send_param(20 bytes): da_log_level, log_channel, system_os, ufs_provision, 0x0
         let param: [u8; 20] = [
             0x00, 0x00, 0x00, 0x00, // da_log_level = 0
             0x01, 0x00, 0x00, 0x00, // log_channel = 1
@@ -102,7 +103,7 @@ impl<'a> DAXFlash<'a> {
         Ok(true)
     }
 
-    /// 初始化硬件
+    /// Initialize hardware
     /// Python: xsend(CMD_SETUP_HW_INIT_PARAMS) → send_param(pack("<I", 0x0)) → status()
     pub fn setup_hw_init(&mut self) -> Result<bool, String> {
         info!("初始化硬件...");
@@ -112,7 +113,7 @@ impl<'a> DAXFlash<'a> {
         self.write_with_retry(&pkt, "setup_hw_init xsend")?;
         self.write_with_retry(&CMD_SETUP_HW_INIT_PARAMS.to_le_bytes(), "setup_hw_init CMD")?;
 
-        // send_param(pack("<I", 0x0)): 4字节参数 = 0x0
+        // send_param(pack("<I", 0x0)): 4-byte parameter = 0x0
         let param = 0x0u32.to_le_bytes();
         let param_pkt = pack3(CMD_MAGIC, 0x01, 4);
         self.write_with_retry(&param_pkt, "setup_hw_init param_hdr")?;
@@ -131,8 +132,8 @@ impl<'a> DAXFlash<'a> {
         Ok(true)
     }
 
-    /// 发送 EMI 数据初始化 DRAM
-    /// 流程：发送 INIT_EXT_RAM → 发送 EMI 数据 → 验证状态
+    /// Send EMI data to initialize DRAM
+    /// Flow: send INIT_EXT_RAM → send EMI data → verify status
     pub fn send_emi(&mut self, emi: &[u8]) -> Result<bool, String> {
         trace!("发送 EMI 数据初始化 DRAM...");
         trace!(
@@ -196,8 +197,8 @@ impl<'a> DAXFlash<'a> {
         Ok(true)
     }
 
-    /// Boot 到指定地址
-    /// 对齐 Python boot_to + send_data 流程
+    /// Boot to the given address
+    /// Matching the Python boot_to + send_data flow
     pub(crate) fn boot_to(
         &mut self,
         addr: u32,
@@ -209,7 +210,7 @@ impl<'a> DAXFlash<'a> {
             trace!("Boot 到地址: 0x{:08X}, 大小: {} 字节", addr, da.len());
         }
 
-        // 设置足够的写入超时
+        // Set a generous write timeout
         let orig_timeout = self.preloader.device.get_timeout();
         self.preloader
             .device
@@ -236,13 +237,13 @@ impl<'a> DAXFlash<'a> {
         self.write_with_retry(&pkt1, "boot_to param header")?;
         self.write_with_retry(&param, "boot_to param data")?;
 
-        // Python: self.send_data(da) — 发送 12 字节头 + 大块数据
-        // USB bulk 传输支持任意大小的 buffer，底层驱动自动拆分
-        // 使用 64KB 分块（而非 EP maxPacketSize 512B），大幅减少系统调用次数
+        // Python: self.send_data(da) — send 12-byte header + bulk data
+        // USB bulk transfers accept buffers of any size; the driver splits them automatically
+        // Use 64KB chunks (instead of EP maxPacketSize 512B) to greatly reduce syscall count
         let pkt2 = pack3(CMD_MAGIC, 0x01, da.len() as u32);
         self.write_with_retry(&pkt2, "boot_to data header")?;
 
-        const BULK_CHUNK: usize = 0x200000; // 2MB — 对齐刷机匣实测块大小，大幅减少系统调用与往返
+        const BULK_CHUNK: usize = 0x200000; // 2MB — matches the chunk size measured with the flasher, greatly reducing syscalls and round trips
         let mut remaining = da.len();
         let mut pos = 0;
 
@@ -267,19 +268,19 @@ impl<'a> DAXFlash<'a> {
             }
         }
 
-        // 恢复超时
+        // Restore the timeout
         self.preloader.device.set_timeout(orig_timeout);
 
-        // 对齐 Python boot_to：先 sleep 让设备执行跳转代码，然后只读一次 status。
-        // 不能用轮询——轮询会消耗 SYNC 包，导致后续 DA extensions 的 DEVICE_CTRL
-        // 读到错误状态（SYNC 被提前消费），DA extensions 无法加载。
+        // Matching Python boot_to: sleep first so the device can run the jump code, then read status only once.
+        // Do not poll — polling consumes the SYNC packet, so later DA extensions' DEVICE_CTRL reads a wrong
+        // state (SYNC consumed early) and DA extensions fail to load.
         let sleep_ms = (timeout * 1000.0) as u64;
         if sleep_ms > 0 {
             sleep(Duration::from_millis(sleep_ms));
         }
 
-        // Python: status = self.status() — 只读一次
-        // 接受 SYNC (0x434E5953) 或 0x0 作为成功
+        // Python: status = self.status() — read only once
+        // Accept SYNC (0x434E5953) or 0x0 as success
         match self.status() {
             Ok(st2) => {
                 if st2 == CMD_SYNC_SIGNAL || st2 == 0x0 {
@@ -288,15 +289,15 @@ impl<'a> DAXFlash<'a> {
                     }
                     Ok(true)
                 } else {
-                    // Python: 其他状态码只打印 error，不抛异常
+                    // Python: other status codes are only logged as errors, no exception
                     if display {
                         warn!("boot_to 状态: 0x{:08X}", st2);
                     }
-                    Ok(true) // 不返回错误，继续执行
+                    Ok(true) // do not return an error; continue
                 }
             }
             Err(_) => {
-                // Python: status 读取失败时打印 error 但继续
+                // Python: log an error but continue if status read fails
                 if display {
                     warn!("boot_to status 读取失败（设备已重新枚举）");
                 }

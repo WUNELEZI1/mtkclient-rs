@@ -19,7 +19,7 @@ fn cancel_and_drain_in_endpoint(ep_in: &mut nusb::Endpoint<Bulk, In>) {
     }
 }
 
-/// 获取 IN 端点地址（解决借用检查问题）
+/// Get the IN endpoint address (works around borrow-checker issues)
 fn in_ep_addr(device: &UsbDevice) -> u8 {
     device.in_ep
 }
@@ -124,12 +124,12 @@ impl UsbDevice {
                 Ok(copy_len)
             }
             Err(e) => match e {
-                // bulk-IN 端点 STALL：清停顿后重试一次，否则端点会持续失败
+                // bulk-IN endpoint STALL: clear the halt and retry once, otherwise the endpoint keeps failing
                 nusb::transfer::TransferError::Stall => {
                     if !quiet {
                         trace!("[USB READ] bulk-IN stalled, clear_halt_in + retry once");
                     }
-                    // 上一次 wait_next_complete 后 ep_in 的借用已结束（NLL），此处可安全重新借用 self
+                    // The ep_in borrow from the previous wait_next_complete has ended (NLL), so self can be borrowed again
                     let _ = self.clear_halt_in();
                     let ep_in = self.in_endpoint_mut().ok_or("输入端点未初始化")?;
                     let buffer = nusb::transfer::Buffer::new(submit_len);
@@ -165,16 +165,16 @@ impl UsbDevice {
                         }
                     }
                 }
-                // 取消/超时：WinUSB 上 ERROR_TIMEOUT 映射为 Cancelled，与原字符串判定行为一致返回 Ok(0)
+                // Cancel/timeout: on WinUSB ERROR_TIMEOUT maps to Cancelled; return Ok(0) as the old string check did
                 nusb::transfer::TransferError::Cancelled => Ok(0),
                 other => Err(format!("read err: {:?}", other)),
             },
         }
     }
 
-    /// 精确读取：循环 bulk transfer 直到读满 buf.len()
-    /// 使用双缓冲流水线：在等待当前 transfer 时提前提交下一个，
-    /// 消除 USB 总线在两次 submit 之间的空闲间隙。
+    /// Exact read: loop bulk transfers until buf.len() bytes have been read.
+    /// Uses a double-buffered pipeline: submit the next transfer while waiting for the current one,
+    /// eliminating the USB bus idle gap between two submits.
     pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<usize, String> {
         if buf.is_empty() {
             return Ok(0);
@@ -206,7 +206,7 @@ impl UsbDevice {
             let timeout = self.timeout;
             let ep_in = self.in_endpoint_mut().ok_or("输入端点未初始化")?;
 
-            // 双缓冲流水线：提前提交第一个 transfer
+            // Double-buffered pipeline: submit the first transfer up front
             if total < buf.len() {
                 let remaining = buf.len() - total;
                 let submit_len = bulk_in_submit_len(remaining, max_packet_size);
@@ -236,7 +236,7 @@ impl UsbDevice {
                     }
                 };
 
-                // 立即提交下一个 transfer（流水线关键：不等数据处理完就提交）
+                // Submit the next transfer immediately (the key to pipelining: do not wait for data processing)
                 if total + result.actual_len < buf.len() {
                     let remaining = buf.len() - (total + result.actual_len);
                     let submit_len = bulk_in_submit_len(remaining, max_packet_size);
@@ -298,7 +298,7 @@ impl UsbDevice {
             self.in_buf.drain(..take);
         }
 
-        // 双缓冲流水线：提前提交第一个 transfer
+        // Double-buffered pipeline: submit the first transfer up front
         {
             let ep_in = self.in_endpoint_mut().ok_or("输入端点未初始化")?;
             if out.len() < len {
@@ -321,7 +321,7 @@ impl UsbDevice {
                     }
                 };
 
-                // 立即提交下一个 transfer（流水线）
+                // Submit the next transfer immediately (pipelining)
                 let actual_len = result.actual_len;
                 if out.len() + actual_len < len {
                     let next_remaining = len - (out.len() + actual_len);
@@ -356,8 +356,8 @@ impl UsbDevice {
     }
 
     pub fn clear_halt_in(&mut self) -> Result<(), String> {
-        // nusb: 通过 control transfer 实现 clear_halt
-        // SET_FEATURE ENDPOINT_HALT (0x00) 清除 halt
+        // nusb: implement clear_halt via a control transfer
+        // SET_FEATURE with ENDPOINT_HALT (0x00) clears the halt
         let ep_addr = in_ep_addr(self);
         let interface = self.interface_mut().ok_or("设备未初始化")?;
         let control = nusb::transfer::ControlOut {

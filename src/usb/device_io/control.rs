@@ -75,7 +75,7 @@ impl UsbDevice {
         Ok(data.len())
     }
 
-    /// 将 libusb 的 bmRequestType 转换为 nusb ControlType
+    /// Convert libusb bmRequestType to nusb ControlType
     pub(crate) fn convert_ctrl_type(bm_request_type: u8) -> ControlType {
         let typ = (bm_request_type >> 5) & 0x03;
         match typ {
@@ -86,7 +86,7 @@ impl UsbDevice {
         }
     }
 
-    /// 将 libusb 的 bmRequestType 转换为 nusb Recipient
+    /// Convert libusb bmRequestType to nusb Recipient
     pub(crate) fn convert_receiver(bm_request_type: u8) -> Recipient {
         let rec = bm_request_type & 0x1F;
         match rec {

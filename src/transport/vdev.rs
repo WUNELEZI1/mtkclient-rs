@@ -1,17 +1,18 @@
-//! 虚拟 MTK 设备（100% 离线仿真）。
+//! Virtual MTK device (100% offline simulation).
 //!
-//! 这是**设备侧**实现：它接收主机发出的字节，按 BROM / XFlash 协议解析，
-//! 并生成设备应答。配合 `da::engine`（主机侧状态机）即可在没有真机的情况下
-//! 跑完 `连接 → DA 上传 → 开存储 → 读 GPT` 全流程。
+//! This is the **device side**: it receives host bytes, parses them per the BROM / XFlash
+//! protocol, and produces device responses. Paired with `da::engine` (host-side state machine)
+//! it can run the whole `connect → DA upload → open storage → read GPT` flow without a real device.
 //!
-//! 设计取舍：
-//! - 解析按**单字节喂入**，状态机状态显式保存，天然支持分片到达（模拟 USB 短包）；
-//! - 设备画像（[`DeviceProfile`]）描述"这是一台什么机器"：芯片、安全标志、
-//!   存储尺寸、分区布局、故障注入点；内置若干预设（见 [`preset`]）；
-//! - GPT 由分区列表**现场生成**（含两处 CRC），因此 `GptInfo::parse` 的校验路径
-//!   会被真实覆盖，不是写死的一段字节；
-//! - exploit 无法在字节流里复现，用仿真专用命令 [`wire::SIM_EXPLOIT_CMD`] 表示
-//!   "设备侧接受该 exploit"，用于验证编排链路（文档中已标注 sim-only）。
+//! Design trade-offs:
+//! - Parsing is fed **one byte at a time** with explicit state-machine state, so fragmented
+//!   arrival (USB short packets) works naturally;
+//! - A device profile ([`DeviceProfile`]) describes "what machine this is": chip, security
+//!   flags, storage sizes, partition layout, fault injection points; several presets built in (see `preset`);
+//! - The GPT is **generated on the fly** from the partition list (including both CRCs), so
+//!   `GptInfo::parse`'s validation path is genuinely exercised rather than fed fixed bytes;
+//! - Exploits cannot be reproduced in a byte stream, so a sim-only command [`wire::SIM_EXPLOIT_CMD`]
+//!   means "the device accepts this exploit", used to validate the orchestration chain (marked sim-only in docs).
 
 use std::collections::VecDeque;
 
@@ -19,10 +20,10 @@ use super::wire;
 use super::{PortError, StreamPort};
 
 // =============================================================================
-// 设备画像
+// Device profiles
 // =============================================================================
 
-/// 存储画像。
+/// Storage profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StorageProfile {
     pub boot1: u64,
@@ -47,36 +48,37 @@ impl Default for StorageProfile {
     }
 }
 
-/// 故障注入（设备侧）。
+/// Fault injection (device side).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceFault {
-    /// 从第 N 个主机字节起，设备不再应答（主机侧表现为超时）
+    /// From host byte N onward the device stops responding (host sees a timeout)
     Silent,
-    /// 从第 N 个主机字节起，设备断开（主机侧表现为 Disconnected）
+    /// From host byte N onward the device disconnects (host sees Disconnected)
     Dead,
-    /// 累计写入字节达到 N 时断开（模拟写入中途拔线，用于验证断点续传）
+    /// Disconnect once the cumulative written bytes reach N (simulates an unplug mid-write, for resume tests)
     WriteDead(u64),
-    /// 累计写入字节达到 N 时静默（模拟写入卡死）
+    /// Go silent once the cumulative written bytes reach N (simulates a stuck write)
     WriteSilent(u64),
 }
 
-/// 混沌故障注入配置（`--sim-chaos`）。
+/// Chaos fault injection config (`--sim-chaos`).
 ///
-/// 概率一律用**千分比**表达；`0` 表示关闭该项。默认全 0（最稳，行为与普通仿真完全一致）。
-/// 用**固定种子**驱动确定性 PRNG，同一种子可完整复现同一条故障序列——这是让混沌
-/// 既能"逼出极限"又能"可复现回归"的前提。
+/// Probabilities are always expressed in **per-mille**; `0` disables that item. All default to 0
+/// (most stable; behavior identical to plain simulation). A **fixed seed** drives a deterministic
+/// PRNG, so the same seed reproduces the same fault sequence exactly — the precondition for chaos
+/// to both "hit the limits" and "regress reproducibly".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChaosConfig {
     pub seed: u64,
-    /// 写入落盘时的位翻转概率（‰）：模拟闪存位衰变 / 传输噪声。
-    /// 注意：翻转发生在**校验和已通过之后**，因此只能靠回读校验/CRC 抓到——
-    /// 正是"静默损坏绝不能被当成成功"的防线。
+    /// Bit-flip probability (‰) when a write lands: simulates flash bit decay / link noise.
+    /// Note: the flip happens **after the checksum passed**, so only read-back verification/CRC
+    /// can catch it — exactly the guard line ensuring "silent corruption must never pass as success".
     pub bitflip_permille: u32,
-    /// 读回数据时截断本次返回的概率（‰）：模拟劣质线材丢字节（短包）。
+    /// Probability (‰) of truncating a read response: simulates a bad cable dropping bytes (short packet).
     pub drop_permille: u32,
-    /// 设备静默概率（‰）：触发后读超时，**直到重连才恢复**（模拟线缆脱落）。
+    /// Device silence probability (‰): triggers a read timeout and **recovers only after reconnect** (simulates a loose cable).
     pub silence_permille: u32,
-    /// 瞬时超时概率（‰）：单次读超时后自动恢复（模拟延迟毛刺 / 接触不良抖动）。
+    /// Transient timeout probability (‰): a single read times out then recovers (simulates latency spikes / contact jitter).
     pub glitch_permille: u32,
 }
 
@@ -93,20 +95,20 @@ impl Default for ChaosConfig {
 }
 
 impl ChaosConfig {
-    /// `--sim-chaos` 的推荐档位：不激进，但足以逼出续传/校验缺陷。
+    /// Recommended `--sim-chaos` tier: not aggressive, but enough to expose resume/verify defects.
     pub fn typical(seed: Option<u64>) -> Self {
         Self {
             seed: seed.unwrap_or(0x5EED_1234),
             bitflip_permille: 8,
-            // 静默 = 线缆脱落，必须人工重插，不属于"可自动恢复"的压力档位；
-            // 需要验证掉线/续传时用 `fault=silent` 或显式配置，不在默认档位随机触发。
+            // Silence = cable unplugged, requires manual replug, so it is not an "auto-recoverable"
+            // stress tier; use `fault=silent` or explicit config to test disconnects/resume.
             drop_permille: 8,
             silence_permille: 0,
             glitch_permille: 8,
         }
     }
 
-    /// 是否等价于"不注入任何故障"。
+    /// Whether this is equivalent to "inject no faults".
     pub fn is_noop(&self) -> bool {
         self.bitflip_permille == 0
             && self.drop_permille == 0
@@ -115,7 +117,7 @@ impl ChaosConfig {
     }
 }
 
-/// SplitMix64：确定性 PRNG（零依赖，跨平台一致）。
+/// SplitMix64: deterministic PRNG (zero dependencies, consistent across platforms).
 #[derive(Debug, Clone)]
 struct ChaosRng(u64);
 
@@ -132,13 +134,13 @@ impl ChaosRng {
         z ^ (z >> 31)
     }
 
-    /// 命中概率 `p`（千分比）。
+    /// Hit with probability `p` (per-mille).
     fn hit(&mut self, p: u32) -> bool {
         p > 0 && (self.next_u64() % 1000) < p as u64
     }
 }
 
-/// 混沌运行态（配置 + PRNG + 计数）。
+/// Chaos runtime state (config + PRNG + counters).
 #[derive(Debug, Clone)]
 struct ChaosState {
     cfg: ChaosConfig,
@@ -150,7 +152,7 @@ struct ChaosState {
 }
 
 impl ChaosState {
-    /// 位翻转判定：命中则返回 (payload 内字节下标, 位号)。
+    /// Bit-flip decision: on hit returns (byte index in payload, bit number).
     fn dirty(&mut self, len: usize) -> Option<(usize, u8)> {
         if len == 0 || !self.rng.hit(self.cfg.bitflip_permille) {
             return None;
@@ -162,7 +164,7 @@ impl ChaosState {
     }
 }
 
-/// 设备画像。
+/// Device profile.
 #[derive(Debug, Clone)]
 pub struct DeviceProfile {
     pub name: String,
@@ -170,42 +172,42 @@ pub struct DeviceProfile {
     pub hw_sub: u16,
     pub hw_ver: u16,
     pub sw_ver: u16,
-    /// DA 头里声明的 da_code（0x6768 等）
+    /// da_code declared in the DA header (0x6768 etc.)
     pub da_code: u16,
-    /// true = V6(XML) 平台
+    /// true = V6 (XML) platform
     pub v6: bool,
-    /// target config 原始位（安全标志）
+    /// Raw target config bits (security flags)
     pub safety: u32,
-    /// SEND_DA 返回 0x1D0D（SLA 拒绝）
+    /// SEND_DA returns 0x1D0D (SLA rejected)
     pub sla_required: bool,
-    /// BROM 需要认证（拿不到 auth 时 BROM 路径不可达）
+    /// BROM requires auth (the BROM path is unreachable without auth)
     pub brom_auth: bool,
     pub preloader_patched: bool,
     pub da_sig_failed: bool,
     pub storage: StorageProfile,
-    /// (名称, 起始 LBA, 字节数)
+    /// (name, start LBA, byte count)
     pub partitions: Vec<(String, u64, u64)>,
     pub faults: Vec<(usize, DeviceFault)>,
-    /// 设备是否支持 eMMC 信息查询
+    /// Whether the device supports the eMMC info query
     pub emmc_info: bool,
-    /// 设备侧接受的 exploit 名称（仿真专用）
+    /// Exploit names accepted by the device side (simulation only)
     pub exploits: Vec<String>,
-    /// 当前活动 A/B 槽（None = 非 A/B 设备）
+    /// Current active A/B slot (None = non-A/B device)
     pub slot: Option<char>,
-    /// bootctrl 是否可读（false 时若 _a/_b 同时存在 → 槽位不可判定）
+    /// Whether bootctrl is readable (if false and both _a/_b exist → slot undeterminable)
     pub bootctrl: bool,
-    /// seccfg 分区的 lock_state（1=locked, 3=unlocked）
+    /// lock_state of the seccfg partition (1=locked, 3=unlocked)
     pub seccfg_lock_state: u32,
-    /// seccfg 的 dm_verity_state（0x10 偏移）
+    /// dm_verity_state of seccfg (offset 0x10)
     pub seccfg_dm_verity: u32,
-    /// seccfg 使用 V3 结构（`AND_SECCFG_v` 头 + 软件 SEJ），而非默认 V4
+    /// seccfg uses the V3 struct (`AND_SECCFG_v` header + software SEJ) instead of the default V4
     pub seccfg_v3: bool,
-    /// DA1 是否已应用 Carbonara 加固（强制 DA2 加载地址为 0x40000000）
+    /// Whether DA1 has applied Carbonara hardening (forces DA2 load address 0x40000000)
     pub da1_hardened: bool,
-    /// 是否受 CVE-2022-20069 影响（Preloader USB OOB write）。
-    /// 别名：CVE-2022-20435（误记，实为 Android 系统服务漏洞）。
+    /// Whether affected by CVE-2022-20069 (Preloader USB OOB write).
+    /// Alias: CVE-2022-20435 (a mistaken id; actually an Android system service bug).
     pub cve_20069_affected: bool,
-    /// CVE-2022-20069 是否已修补。
+    /// Whether CVE-2022-20069 has been patched.
     pub cve_20069_patched: bool,
 }
 
@@ -242,8 +244,8 @@ impl Default for DeviceProfile {
 }
 
 impl DeviceProfile {
-    /// 让 `storage.user` 至少覆盖最后一个分区（否则 GPT 里分区会超出盘尾，
-    /// 与真机不符且容易掩盖边界 bug）。
+    /// Ensure `storage.user` covers at least the last partition (otherwise GPT partitions exceed
+    /// the disk end, which differs from real hardware and hides boundary bugs).
     fn fit_storage(&mut self) {
         let end = self
             .partitions
@@ -260,7 +262,7 @@ impl DeviceProfile {
         }
     }
 
-    /// 转换为规划层的设备状态。
+    /// Convert to the planner-layer device state.
     pub fn to_state(&self) -> crate::core::device::DeviceState {
         use crate::core::device::ProtocolVersion;
         crate::core::device::DeviceState {
@@ -282,9 +284,9 @@ impl DeviceProfile {
         }
     }
 
-    /// 从 `key=value` 文本解析（每行一条，`#` 开头为注释）。
+    /// Parse from `key=value` text (one per line, `#` starts a comment).
     ///
-    /// 分区用 `partition=name:start_lba:size_bytes`，故障用 `fault=silent:24`。
+    /// Partitions use `partition=name:start_lba:size_bytes`; faults use `fault=silent:24`.
     pub fn from_text(text: &str) -> Result<Self, String> {
         let mut p = DeviceProfile::default();
         p.partitions.clear();
@@ -363,7 +365,7 @@ impl DeviceProfile {
                 "seccfg.dm_verity" => p.seccfg_dm_verity = num(v)?.as_num::<u32>(k)?,
                 "seccfg.v3" => p.seccfg_v3 = truthy(v),
                 "da1_hardened" => p.da1_hardened = truthy(v),
-                // CVE-2022-20069；`cve_20435.*` 为历史误记编号的兼容别名。
+                // CVE-2022-20069; `cve_20435.*` is a compatibility alias for the historical mistaken id.
                 "cve_20069.affected" | "cve_20435.affected" => p.cve_20069_affected = truthy(v),
                 "cve_20069.patched" | "cve_20435.patched" => p.cve_20069_patched = truthy(v),
                 other => return Err(format!("未知配置项: {}", other)),
@@ -376,33 +378,33 @@ impl DeviceProfile {
         Ok(p)
     }
 
-    /// 内置预设（`--port mock://<预设名>`）。
+    /// Built-in presets (`--port mock://<preset-name>`).
     pub fn preset(name: &str) -> Option<Self> {
         let mut p = DeviceProfile {
             partitions: default_partitions(),
             ..Default::default()
         };
         match name {
-            // 干净的 V5 机器：无安全标志，直接 DA 加载即可读表（cost=690 路径）
+            // Clean V5 machine: no security flags, plain DA load can read the table (cost=690 path)
             "v5-clean" => {
                 p.name = "MT6768 (V5 clean)".into();
                 p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
             }
-            // V3 seccfg 机器：验证 bootloader 解锁/上锁的全版本支持
+            // V3 seccfg machine: verifies bootloader unlock/lock support across versions
             "v5-seccfg-v3" => {
                 p.name = "MT6768 (V3 seccfg)".into();
                 p.seccfg_v3 = true;
                 p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
             }
-            // SLA 打开的 V5 机器：必须先绕过，否则 SEND_DA 返回 0x1D0D
+            // V5 machine with SLA on: must bypass first, otherwise SEND_DA returns 0x1D0D
             "v5-sla" => {
                 p.name = "MT6768 (SLA enabled)".into();
                 p.safety = 0x2; // SLA
                 p.sla_required = true;
                 p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
             }
-            // Carbonara 加固机：SLA 打开，但 DA1 已含补丁特征 → carbonara 不可用。
-            // 用于验证"probe 返回 NotVulnerable 时 Planner 不规划 Carbonara 路径"。
+            // Carbonara-hardened machine: SLA on, but DA1 already carries the patch signature → carbonara unusable.
+            // Used to verify "the Planner does not plan a Carbonara path when probe returns NotVulnerable".
             "carbonara-hardened" => {
                 p.name = "MT6768 (Carbonara hardened)".into();
                 p.safety = 0x2;
@@ -410,31 +412,31 @@ impl DeviceProfile {
                 p.da1_hardened = true;
                 p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
             }
-            // CVE-2022-20069（Preloader USB OOB write）：受影响且未修补 → 可绕过认证
+            // CVE-2022-20069 (Preloader USB OOB write): affected and unpatched → auth can be bypassed
             "cve-20069-vulnerable" => {
                 p.name = "MT6768 (CVE-2022-20069 affected)".into();
                 p.safety = 0x2;
                 p.sla_required = true;
-                // BROM 需认证且无 kamakiri2 可用 → 唯一可行路径是 Preloader OOB
+                // BROM needs auth and kamakiri2 is unavailable → the only viable path is Preloader OOB
                 p.brom_auth = true;
                 p.cve_20069_affected = true;
-                // 只接受该 CVE 的利用路径，用来验证 Planner 真的把它选中（而不是被
-                // 成本相同、排在前面的 kamakiri2 抢走）。
+                // Accept only this CVE's path, to verify the Planner really picks it (rather than
+                // being taken by the equally cheap kamakiri2 ranked ahead).
                 p.exploits = vec!["cve-20069".into()];
             }
-            // 同一颗芯片但 OEM 已打补丁 → probe 必须判不可用
+            // Same chip but OEM-patched → probe must report unavailable
             "cve-20069-patched" => {
                 p.name = "MT6768 (CVE-2022-20069 patched)".into();
                 p.safety = 0x2;
                 p.sla_required = true;
                 p.brom_auth = true;
-                // 顺带封死 Carbonara，确保"无可用 bypass"是唯一结论
+                // Also block Carbonara so "no available bypass" is the only conclusion
                 p.da1_hardened = true;
                 p.cve_20069_affected = true;
                 p.cve_20069_patched = true;
                 p.exploits = vec!["cve-20069".into()];
             }
-            // DAA + SBC 双开：只有 DA 层 patch 能过
+            // DAA + SBC both on: only a DA-layer patch can get through
             "v5-daa" => {
                 p.name = "MT6785 (DAA+SBC)".into();
                 p.hw_code = 0x0707;
@@ -442,7 +444,7 @@ impl DeviceProfile {
                 p.safety = 0x2 | 0x4; // SLA + DAA
                 p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
             }
-            // V6 平台：BROM 不可达，只能走 DA
+            // V6 platform: BROM unreachable, DA path only
             "v6" => {
                 p.name = "MT6983 (V6 XML)".into();
                 p.hw_code = 0x0A0A;
@@ -451,7 +453,7 @@ impl DeviceProfile {
                 p.partitions = v6_partitions();
                 p.exploits = vec!["carbonara".into()];
             }
-            // UFS + A/B 布局
+            // UFS + A/B layout
             "ufs-ab" => {
                 p.name = "MT6877 (UFS, A/B)".into();
                 p.da_code = 0x6877;
@@ -466,24 +468,24 @@ impl DeviceProfile {
                 p.partitions = ab_partitions();
                 p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
             }
-            // 传输不稳：第 400 个主机字节起设备静默（模拟线缆接触不良）
+            // Flaky link: device goes silent from host byte 400 (simulates poor cable contact)
             "flaky" => {
                 p.name = "MT6768 (flaky link)".into();
                 p.faults = vec![(400, DeviceFault::Silent)];
                 p.exploits = vec!["kamakiri2".into()];
             }
-            // 半路掉线：DA 上传前断开
+            // Drop mid-way: disconnect before the DA upload
             "unplug" => {
                 p.name = "MT6768 (unplugged)".into();
                 p.faults = vec![(120, DeviceFault::Dead)];
             }
-            // 写入中途拔线：写到 10MB 断开，用于验证断点续传
+            // Unplug mid-write: disconnect at 10MB, for resume tests
             "flaky-write" => {
                 p.name = "MT6768 (write drops @10MB)".into();
                 p.faults = vec![(0, DeviceFault::WriteDead(10 * 1024 * 1024))];
                 p.exploits = vec!["kamakiri2".into()];
             }
-            // A/B 混合布局 + bootctrl 不可读：槽位不可判定（vbmeta 必须报错而不是猜）
+            // Mixed A/B layout + unreadable bootctrl: slot undeterminable (vbmeta must error, not guess)
             "ab-unknown-slot" => {
                 p.name = "MT6877 (A/B, bootctrl unreadable)".into();
                 p.da_code = 0x6877;
@@ -492,7 +494,7 @@ impl DeviceProfile {
                 p.bootctrl = false;
                 p.exploits = vec!["kamakiri2".into()];
             }
-            // DA 拒绝服务（SEND_DA 状态错误）：用于验证错误传播
+            // DA rejects service (SEND_DA status error): for error propagation tests
             "no-emmc-info" => {
                 p.name = "MT6768 (no emmc info)".into();
                 p.emmc_info = false;
@@ -505,7 +507,7 @@ impl DeviceProfile {
     }
 }
 
-/// 按给定顺序从 LBA 34 起排布分区（1 MiB 对齐），返回 (名称, 起始 LBA, 字节数)。
+/// Lay out partitions from LBA 34 in the given order (1 MiB aligned), returning (name, start LBA, byte count).
 fn layout(items: &[(&str, u64)]) -> Vec<(String, u64, u64)> {
     const ALIGN_LBA: u64 = 2048; // 1 MiB
     let mut lba = 34u64;
@@ -587,44 +589,44 @@ fn num(v: &str) -> Result<ParsedNum, String> {
 }
 
 // =============================================================================
-// 虚拟设备
+// Virtual device
 // =============================================================================
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum State {
-    /// 握手：已收到 i 个字节
+    /// Handshake: i bytes received so far
     Handshake(usize),
-    /// BROM 单字节命令态
+    /// BROM single-byte command state
     Brom,
-    /// 4 字节字命令（首字节为 0x00 时进入）
+    /// 4-byte word command (entered when the first byte is 0x00)
     BromWord { buf: [u8; 4], n: usize },
-    /// SEND_DA 参数：0=addr 1=size 2=siglen
+    /// SEND_DA args: 0=addr 1=size 2=siglen
     SendDaArgs { idx: u8, buf: [u8; 4], n: usize },
-    /// SEND_DA 数据体
+    /// SEND_DA data body
     SendDaData,
-    /// JUMP_DA 第一次地址回显
+    /// JUMP_DA first address echo
     JumpEcho { buf: [u8; 4], n: usize },
-    /// JUMP_DA 第二次地址（触发跳转）
+    /// JUMP_DA second address (triggers the jump)
     JumpTrigger { buf: [u8; 4], n: usize },
-    /// DA 包头
+    /// DA packet header
     DaHeader { buf: [u8; 12], n: usize },
-    /// DA 负载
+    /// DA payload
     DaPayload { len: usize, buf: Vec<u8> },
-    /// 仿真专用 exploit 握手的 id 字节
+    /// id byte of the sim-only exploit handshake
     ExploitId,
 }
 
-/// 仿真设备认识的 exploit 名称（id 即下标）。
+/// Exploit names known to the simulated device (id = index).
 pub const SIM_EXPLOITS: [&str; 5] = [
     "kamakiri2",
     "carbonara",
     "heapbait",
     "hashimoto",
-    // CVE-2022-20069（Preloader OOB）；别名 CVE-2022-20435 为历史误记。
+    // CVE-2022-20069 (Preloader OOB); the CVE-2022-20435 alias is a historical mistake.
     "cve-20069",
 ];
 
-/// exploit 名称 → id（未登记的名字返回 None）。
+/// Exploit name → id (None for unregistered names).
 pub fn exploit_id(name: &str) -> Option<u8> {
     SIM_EXPLOITS
         .iter()
@@ -632,65 +634,65 @@ pub fn exploit_id(name: &str) -> Option<u8> {
         .map(|i| i as u8)
 }
 
-/// 虚拟设备。
+/// Virtual device.
 pub struct VirtualDevice {
     pub profile: DeviceProfile,
     out: VecDeque<u8>,
     state: State,
-    /// 已上传的 DA 段数（0 → 下一个是 DA1，1 → DA2）
+    /// Number of DA segments uploaded (0 → next is DA1, 1 → DA2)
     da_stage: u8,
     send_addr: u32,
     send_size: usize,
     send_siglen: u32,
     da_buf: Vec<u8>,
-    /// 安全标志是否已被 exploit 清除
+    /// Whether the security flags have been cleared by an exploit
     bypassed: bool,
-    /// 当前等待参数的 DA 命令
+    /// DA command currently waiting for parameters
     pending_cmd: Option<u32>,
-    /// 最近一次 READ_DATA 请求
+    /// Most recent READ_DATA request
     pending_read: Option<(u64, u64)>,
-    /// 存储镜像（GPT 区域）
+    /// Storage image (GPT area)
     image: Vec<u8>,
-    /// 分区内容（按 4 KiB 页存，稀疏；未命中回落到 image / 0x00）
+    /// Partition content (stored per 4 KiB page, sparse; misses fall back to image / 0x00)
     pages: std::collections::HashMap<u64, Vec<u8>>,
-    /// 已擦除区间（读回 0xFF）。用区间表示而不是逐页填充，
-    /// 否则擦一个 1 GiB 的分区会直接吃掉 1 GiB 内存。
+    /// Erased ranges (read back as 0xFF). Stored as ranges rather than page-filling,
+    /// otherwise erasing a 1 GiB partition would consume 1 GiB of memory.
     erased: Vec<(u64, u64)>,
-    /// 当前写入事务
+    /// Current write transaction
     write: Option<WriteSession>,
-    /// FORMAT 事务阶段（0=空闲 1=等第一个 ack 2=等收尾 ack）
+    /// FORMAT transaction stage (0=idle 1=waiting for first ack 2=waiting for final ack)
     format_stage: u8,
-    /// 本设备累计被写入的字节数（故障注入用）
+    /// Cumulative bytes written to this device (for fault injection)
     total_written: u64,
     faults: Vec<(usize, DeviceFault)>,
     host_bytes: usize,
     dead: bool,
     silent: bool,
-    /// 设备侧事件日志（测试断言用）
+    /// Device-side event log (for test assertions)
     pub events: Vec<String>,
-    /// 主机侧写入缓冲区（诊断用）
+    /// Host-side write buffer (diagnostics)
     pub written: Vec<u8>,
-    /// 混沌注入（`--sim-chaos`）；`None` = 不注入，行为与普通仿真完全一致。
+    /// Chaos injection (`--sim-chaos`); `None` = off, behavior identical to plain simulation.
     chaos: Option<ChaosState>,
 }
 
-/// 镜像窗口大小：足够覆盖 LBA0.. 主 GPT + 分区项（32KB 读取足够，留余量）。
+/// Image window size: enough to cover LBA0.. primary GPT + partition entries (32KB reads suffice, with margin).
 const IMAGE_LEN: usize = 1024 * 1024;
 
-/// 存储页大小（稀疏存储粒度）。
+/// Storage page size (sparse storage granularity).
 const PAGE: u64 = 4096;
-/// 仿真状态文件的魔数（8 字节，紧跟 u32 版本号）。
+/// Magic of the simulation state file (8 bytes, right after the u32 version).
 const STATE_MAGIC: &[u8; 8] = b"VDEV1\0\0\0";
-/// 仿真状态文件布局版本；布局变更时递增，避免读到旧格式后静默错乱。
+/// Simulation state file layout version; bump on layout changes to avoid silently misreading old formats.
 const STATE_VERSION: u32 = 1;
 
-/// 一次写入事务（设备侧）。
+/// A single write transaction (device side).
 #[derive(Debug)]
 struct WriteSession {
     addr: u64,
     size: u64,
     written: u64,
-    /// 0=期待 0u32 1=期待 checksum 2=期待数据
+    /// 0=expects 0u32 1=expects checksum 2=expects data
     stage: u8,
     checksum: u32,
 }
@@ -728,13 +730,13 @@ impl VirtualDevice {
         }
     }
 
-    /// 由预设名构建设备（测试与外部工具入口）。
+    /// Build a device from a preset name (entry point for tests and external tools).
     #[allow(dead_code)]
     pub fn from_preset(name: &str) -> Option<Self> {
         DeviceProfile::preset(name).map(Self::new)
     }
 
-    /// 启用混沌注入（`--sim-chaos`）。配置为 noop 时等价于不启用。
+    /// Enable chaos injection (`--sim-chaos`). A noop config is equivalent to disabled.
     pub fn with_chaos(mut self, cfg: ChaosConfig) -> Self {
         self.chaos = if cfg.is_noop() {
             None
@@ -751,7 +753,7 @@ impl VirtualDevice {
         self
     }
 
-    /// 混沌计数（位翻转, 丢包, 静默, 瞬时超时）——诊断/测试用。
+    /// Chaos counters (bitflips, drops, silences, glitches) — for diagnostics/tests.
     #[allow(dead_code)]
     pub fn chaos_counts(&self) -> (u64, u64, u64, u64) {
         match &self.chaos {
@@ -760,15 +762,15 @@ impl VirtualDevice {
         }
     }
 
-    /// 由画像文本构建设备（外部工具入口）。
+    /// Build a device from profile text (entry point for external tools).
     #[allow(dead_code)]
     pub fn profile_text(text: &str) -> Result<Self, String> {
         DeviceProfile::from_text(text).map(Self::new)
     }
 
-    /// 保存 flash 状态（页 + 擦除区间）到文件，用于跨进程复现"拔插重连"。
+    /// Save flash state (pages + erased ranges) to a file, to reproduce "replug/reconnect" across processes.
     pub fn save_state(&self, path: &str) -> Result<(), String> {
-        // 头部固定 12 字节：magic(8) + 版本(4)，与 `load_state` 的 p=12 严格对称
+        // Header is a fixed 12 bytes: magic(8) + version(4), strictly symmetric with `load_state`'s p=12
         let mut buf = Vec::with_capacity(12 + self.pages.len() * (8 + PAGE as usize));
         buf.extend_from_slice(STATE_MAGIC);
         buf.extend_from_slice(&STATE_VERSION.to_le_bytes());
@@ -786,7 +788,7 @@ impl VirtualDevice {
         std::fs::write(path, buf).map_err(|e| format!("保存仿真状态失败: {}", e))
     }
 
-    /// 载入 flash 状态（`save_state` 的逆操作）。
+    /// Load flash state (inverse of `save_state`).
     pub fn load_state(&mut self, path: &str) -> Result<(), String> {
         let buf = std::fs::read(path).map_err(|e| format!("读取仿真状态失败: {}", e))?;
         if buf.len() < 12 || &buf[0..8] != STATE_MAGIC {
@@ -805,7 +807,7 @@ impl VirtualDevice {
         };
         let pages = rd_u32(&buf, p) as usize;
         p += 4;
-        // 页数上限：防止损坏文件导致巨额预分配（4 GiB 的 4 KiB 页 = 1M，留 8 倍余量）
+        // Page count cap: prevent a corrupt file from forcing a huge preallocation (4 GiB / 4 KiB = 1M pages, 8x margin)
         if pages > 8 * 1024 * 1024 || 12 + 4 + pages * (8 + PAGE as usize) > buf.len() {
             return Err("仿真状态文件被截断（页区）".to_string());
         }
@@ -846,10 +848,10 @@ impl VirtualDevice {
     }
 
     #[cfg(test)]
-    /// 模拟"拔插一次"：清故障与协议状态，**保留 flash 内容**（写入/擦除结果不丢）。
+    /// Simulate one "replug": clear faults and protocol state, **keep flash content** (writes/erases are not lost).
     ///
-    /// 断点续传的语义正是建立在这条假设上：重连后存储里的数据还在，
-    /// 因此可以从 `.resume` 记录的偏移继续写。
+    /// Resume semantics rest on exactly this assumption: after reconnect the storage still holds
+    /// the data, so writing can continue from the offset recorded in `.resume`.
     pub fn replug(&mut self) {
         self.out.clear();
         self.state = State::Handshake(0);
@@ -888,14 +890,14 @@ impl VirtualDevice {
         self.push_packet(wire::XFLASH_TYPE_FLOW, &value.to_le_bytes());
     }
 
-    /// 单字节推进状态机。
+    /// Advance the state machine by one byte.
     fn feed(&mut self, b: u8) -> Result<(), PortError> {
         self.host_bytes += 1;
         self.written.push(b);
         if self.dead {
             return Err(PortError::Disconnected);
         }
-        // 故障注入：到点后静默/断开
+        // Fault injection: go silent / disconnect at the trigger point
         if self
             .faults
             .iter()
@@ -924,7 +926,7 @@ impl VirtualDevice {
                 let want = wire::BROM_HANDSHAKE[i];
                 if b != want {
                     self.ev(format!("handshake: 期望 0x{:02X} 收到 0x{:02X}", want, b));
-                    // 回错字节，主机侧会重试
+                    // Echo a wrong byte so the host retries
                     self.push(&[!b]);
                     State::Handshake(0)
                 } else {
@@ -938,15 +940,15 @@ impl VirtualDevice {
                 }
             }
             State::Brom => {
-                // BROM sync FE 不回显命令本身，只回一个状态字节
+                // BROM sync FE does not echo the command itself, only a status byte
                 if b == 0xFE {
                     self.push(&[wire::BROM_SYNC_FE_ACK]);
                     State::Brom
                 } else if b == wire::SIM_EXPLOIT_CMD {
-                    // 仿真专用握手：命令本身不回显，应答为 [cmd, id, status]
+                    // Sim-only handshake: the command itself is not echoed; response is [cmd, id, status]
                     State::ExploitId
                 } else if b == 0x00 {
-                    // 可能是 4 字节字命令（BE，高字节为 0）
+                    // Possibly a 4-byte word command (BE, high byte 0)
                     State::BromWord {
                         buf: [0, 0, 0, 0],
                         n: 1,
@@ -961,7 +963,7 @@ impl VirtualDevice {
                     State::BromWord { buf, n: n + 1 }
                 } else {
                     let word = u32::from_be_bytes(buf);
-                    // 回显整个字
+                    // Echo the whole word
                     self.push(&buf);
                     let cmd = (word & 0xFF) as u8;
                     self.on_brom_cmd_after_echo(cmd)?
@@ -972,7 +974,7 @@ impl VirtualDevice {
                 if n + 1 < 4 {
                     State::SendDaArgs { idx, buf, n: n + 1 }
                 } else {
-                    // 回显参数
+                    // Echo the argument
                     self.push(&buf);
                     let val = u32::from_be_bytes(buf);
                     match idx {
@@ -994,7 +996,7 @@ impl VirtualDevice {
                         }
                         _ => {
                             self.send_siglen = val;
-                            // SLA 未绕过时拒绝
+                            // Reject if SLA has not been bypassed
                             let status = if self.profile.sla_required && !self.bypassed {
                                 wire::BROM_STATUS_SLA_REQUIRED
                             } else {
@@ -1049,7 +1051,7 @@ impl VirtualDevice {
                     let addr = u32::from_be_bytes(buf);
                     self.ev(format!("JUMP_DA: 0x{:08X}", addr));
                     self.push(&[wire::BROM_JUMP_ACK]);
-                    // DA 启动 → 发 SYNC
+                    // DA started → send SYNC
                     self.push(&wire::XFLASH_SYNC_SIGNAL.to_le_bytes());
                     self.ev("DA: SYNC 已发送");
                     State::DaHeader { buf: [0; 12], n: 0 }
@@ -1065,7 +1067,7 @@ impl VirtualDevice {
                     let len = u32::from_le_bytes(buf[8..12].try_into().unwrap()) as usize;
                     if magic != wire::XFLASH_MAGIC {
                         self.ev(format!("DA: 包头 magic 错误 0x{:08X}", magic));
-                        // 重新同步：丢弃到下一个 magic（简化：回到头态）
+                        // Resync: discard until the next magic (simplified: return to header state)
                         return Ok(());
                     }
                     let _ = dtype;
@@ -1108,7 +1110,7 @@ impl VirtualDevice {
     }
 
     fn on_brom_cmd(&mut self, b: u8) -> Result<State, PortError> {
-        // 单字节命令：先回显，再给应答
+        // Single-byte command: echo first, then respond
         self.push(&[b]);
         self.on_brom_cmd_after_echo(b)
     }
@@ -1155,7 +1157,7 @@ impl VirtualDevice {
                 n: 0,
             },
             wire::BROM_JUMP_DA => State::JumpEcho { buf: [0; 4], n: 0 },
-            // SIM: exploit 握手 `0x1F <id>`，id 由主机与设备约定
+            // SIM: exploit handshake `0x1F <id>`, id agreed between host and device
             0xD6 => {
                 self.push(&[0x00, 0x00]);
                 self.push(&[0x00, 0x00]);
@@ -1169,26 +1171,26 @@ impl VirtualDevice {
     }
 
     fn on_da_payload(&mut self, payload: &[u8]) -> Result<(), PortError> {
-        // ── 写入事务：三个参数包 [0u32][checksum][data] 为一块，块末回一个 status
+        // ── Write transaction: three parameter packets [0u32]`checksum``data` form one block, with one status at block end
         if self.write.is_some() {
             let done = self.on_write_param(payload)?;
             if done {
                 return Ok(());
             }
         }
-        // ── FORMAT 的两步 ack
+        // ── FORMAT two-step ack
         if self.format_stage > 0 && payload.len() == 4 {
             self.on_format_ack(payload)?;
             return Ok(());
         }
-        // 参数块（长度 56 或紧跟"需要参数"的命令）
+        // Parameter block (length 56, or immediately following a command that expects parameters)
         if let Some(cmd) = self.pending_cmd {
             if payload.len() != 4 || !is_command_word(payload) {
                 self.on_da_param(cmd, payload)?;
                 self.pending_cmd = None;
                 return Ok(());
             }
-            // 长度 4 且是已知命令 → 仍按命令处理（放弃上一次待参数，避免卡死）
+            // Length 4 and a known command → still handle as a command (drop the pending parameter to avoid getting stuck)
             self.pending_cmd = None;
         }
         if payload.len() != 4 {
@@ -1312,7 +1314,7 @@ impl VirtualDevice {
                 self.erase_range(addr, size);
                 self.ev(format!("FORMAT: addr=0x{:X} size={}", addr, size));
                 self.push_status(0);
-                // 设备侧耗时：CONTINUE + 等待毫秒，等主机 ack 后给 COMPLETE
+                // Device-side time consumption: CONTINUE + wait milliseconds, then send COMPLETE after host ack
                 self.push_status(wire::XFLASH_STATUS_CONTINUE);
                 self.push_status(2);
                 self.format_stage = 1;
@@ -1325,7 +1327,7 @@ impl VirtualDevice {
         Ok(())
     }
 
-    /// 读一段 flash：先查稀疏页（写入/擦除过的内容），再回落到 GPT 镜像。
+    /// Read a flash range: check sparse pages (written/erased content) first, then fall back to the GPT image.
     fn read_window(&self, addr: u64, size: u64) -> Vec<u8> {
         let mut out = Vec::with_capacity(size as usize);
         let mut pos = addr;
@@ -1341,12 +1343,12 @@ impl VirtualDevice {
         out
     }
 
-    /// 该地址是否落在已擦除区间内。
+    /// Whether the address falls within an erased range.
     fn is_erased(&self, addr: u64) -> bool {
         self.erased.iter().any(|(s, e)| addr >= *s && addr < *e)
     }
 
-    /// 取一页（4 KiB）当前内容：稀疏页优先 → 已擦除区间（0xFF）→ GPT 镜像 → 0x00。
+    /// Get the current content of one page (4 KiB): sparse page first → erased range (0xFF) → GPT image → 0x00.
     fn page_bytes(&self, page: u64) -> Vec<u8> {
         if let Some(v) = self.pages.get(&page) {
             return v.clone();
@@ -1364,7 +1366,7 @@ impl VirtualDevice {
         v
     }
 
-    /// 写一段数据到稀疏页（自动读-改-写，保证页内其他字节不变）。
+    /// Write data into sparse pages (automatic read-modify-write, keeping other bytes in the page intact).
     fn write_range(&mut self, addr: u64, data: &[u8]) {
         let mut pos = addr;
         let end = addr + data.len() as u64;
@@ -1381,16 +1383,16 @@ impl VirtualDevice {
         }
     }
 
-    /// 擦除一段区域：真机擦除后读回 0xFF。
+    /// Erase a range: real hardware reads back 0xFF after erase.
     ///
-    /// 先丢弃该区间内被写过的页，再记录一条擦除区间（合并相邻区间），
-    /// 这样擦 1 GiB 也只占几条记录，而不是 26 万个 4 KiB 页。
+    /// First drop any written pages in the range, then record one erased range (merging adjacent ranges),
+    /// so erasing 1 GiB takes only a few records instead of 260,000 4 KiB pages.
     fn erase_range(&mut self, addr: u64, size: u64) {
         let end = addr + size;
         let (p0, p1) = (addr / PAGE, end.div_ceil(PAGE));
         self.pages.retain(|p, _| *p < p0 || *p >= p1);
         self.erased.push((addr, end));
-        // 合并相邻/重叠区间
+        // Merge adjacent/overlapping ranges
         self.erased.sort_unstable();
         let mut merged: Vec<(u64, u64)> = Vec::with_capacity(self.erased.len());
         for (s, e) in self.erased.drain(..) {
@@ -1402,14 +1404,14 @@ impl VirtualDevice {
         self.erased = merged;
     }
 
-    /// 已写入的总字节数（诊断用）。
+    /// Total number of bytes written (for diagnostics).
     #[allow(dead_code)]
     pub fn written_bytes(&self) -> u64 {
         self.total_written
     }
 
-    /// 写入事务：处理 [0u32][checksum][data] 三个参数包。
-    /// 返回 Ok(true) 表示该负载已被写入事务消费。
+    /// Write transaction: handle the three parameter packets `[0u32][checksum][data]`.
+    /// Returns Ok(true) if the payload was consumed by the write transaction.
     fn on_write_param(&mut self, payload: &[u8]) -> Result<bool, PortError> {
         let Some(mut ws) = self.write.take() else {
             return Ok(false);
@@ -1439,7 +1441,7 @@ impl VirtualDevice {
                     self.push_status(wire::XFLASH_STATUS_CHECKSUM);
                     return Ok(true);
                 }
-                // 校验和（对齐 mtkclient: sum(data) & 0xFFFF）
+                // Checksum (aligned with mtkclient: sum(data) & 0xFFFF)
                 let sum = (payload.iter().map(|b| *b as u32).sum::<u32>()) & 0xFFFF;
                 if sum != ws.checksum {
                     self.ev(format!(
@@ -1449,7 +1451,7 @@ impl VirtualDevice {
                     self.push_status(wire::XFLASH_STATUS_CHECKSUM);
                     return Ok(true);
                 }
-                // 写入中途故障注入
+                // Mid-write fault injection
                 self.total_written += payload.len() as u64;
                 let want_dead = self
                     .faults
@@ -1476,8 +1478,8 @@ impl VirtualDevice {
                     return Ok(true);
                 }
 
-                // 混沌：位翻转。故意放在校验和通过之后——模拟"传输正确、落盘损坏"，
-                // 因此只能靠主机侧回读校验 / CRC 抓到；若工具静默接受即被此注入测出。
+                // Chaos: bit flip. Deliberately placed after the checksum passes — simulates "transferred correctly, corrupted on disk",
+                // so only host-side read-back verification / CRC can catch it; a tool that silently accepts is exposed by this injection.
                 match self.chaos.as_mut().and_then(|c| c.dirty(payload.len())) {
                     Some((idx, bit)) => {
                         let mut dirty = payload.to_vec();
@@ -1491,7 +1493,7 @@ impl VirtualDevice {
                 ws.stage = 0;
                 self.push_status(0);
                 if ws.written >= ws.size {
-                    // 事务收尾 status（主机 end_write 会读它）
+                    // Transaction-final status (read by the host end_write)
                     self.push_status(0);
                     self.ev(format!(
                         "WRITE_DATA 完成: 0x{:X} + {} 字节",
@@ -1504,7 +1506,7 @@ impl VirtualDevice {
                 return Ok(true);
             }
         }
-        // 不符合预期：拒绝该负载，终止写入事务
+        // Unexpected: reject the payload and terminate the write transaction
         self.ev(format!(
             "WRITE_DATA: 非预期参数 len={} stage={}",
             payload.len(),
@@ -1514,7 +1516,7 @@ impl VirtualDevice {
         Ok(true)
     }
 
-    /// FORMAT 的 ack 处理：第一次 ack → COMPLETE；第二次 ack → 收尾 0。
+    /// FORMAT ack handling: first ack → COMPLETE; second ack → final 0.
     fn on_format_ack(&mut self, payload: &[u8]) -> Result<(), PortError> {
         if payload.len() != 4 {
             return Ok(());
@@ -1534,11 +1536,11 @@ impl VirtualDevice {
     }
 
     fn emmc_info_payload(&self) -> Vec<u8> {
-        // 104 字节，严格对齐 mtkclient `get_emmc_info` 的解析顺序：
+        // 104 bytes, strictly aligned with mtkclient `get_emmc_info` parsing order:
         //   0 type(4) | 4 block(4) | 8 boot1(8) | 16 boot2(8) | 24 rpmb(8)
         //   32 gp1 | 40 gp2 | 48 gp3 | 56 gp4 | **64 user(8)** | 72 cid(16) | 88 fwver(8)
-        // 注意：user_size 在 0x40 而不是 0x20（0x20 是 gp1），
-        // 早期实现两边都写在 0x20，"互相自洽但与真机不符"。
+        // Note: user_size is at 0x40, not 0x20 (0x20 is gp1),
+        // early implementations wrote both at 0x20, "self-consistent but not matching real hardware".
         let mut v = vec![0u8; 104];
         v[0..4].copy_from_slice(&self.profile.storage.emmc_type.to_le_bytes());
         v[4..8].copy_from_slice(&self.profile.storage.block.to_le_bytes());
@@ -1575,11 +1577,11 @@ impl StreamPort for VirtualDevice {
             return Err(PortError::Disconnected);
         }
         if self.silent {
-            // 静默 = 线缆脱落，语义等同"断开"：必须立刻失败让上层触发续传/提示重插，
-            // 不能被当成可重试的瞬时超时（否则会在死设备上反复重试、白白干等）。
+            // Silence = cable unplugged, semantically equivalent to "disconnected": fail immediately so the upper layer triggers resume / prompts replug,
+            // it must not be treated as a retryable transient timeout (otherwise it would retry endlessly on a dead device and wait in vain).
             return Err(PortError::Disconnected);
         }
-        // 混沌：瞬时超时（不锁存，下一次读自动恢复）/ 静默（锁存到 replug）。
+        // Chaos: transient timeout (not latched, recovers on next read) / silence (latched until replug).
         let mut go_silent = false;
         if let Some(c) = self.chaos.as_mut() {
             if c.rng.hit(c.cfg.glitch_permille) {
@@ -1602,11 +1604,11 @@ impl StreamPort for VirtualDevice {
             return Err(PortError::Timeout);
         }
         let m = buf.len().min(self.out.len());
-        // 混沌：丢包——仍"在线上发出"了 m 字节，但尾部 d 字节丢失，主机只收到 deliver 字节。
+        // Chaos: packet drop — m bytes are still "sent on the wire", but the last d bytes are lost and the host receives only deliver bytes.
         //
-        // 只对数据块（≥16 字节）生效：真实 USB 短包不会"丢尾部字节"，控制帧
-        // （握手 / 命令回显 / 状态字，1~8 字节）丢字节只会让主机无限等待，
-        // 与物理现实不符。丢包要模拟的是大块数据传输被劣质线材/干扰截断。
+        // Only applies to data blocks (≥16 bytes): a real USB short packet does not "drop trailing bytes"; control frames
+        // (handshake / command echo / status word, 1~8 bytes) losing bytes would only make the host wait forever,
+        // which is physically unrealistic. Packet drop models a large data transfer being truncated by a bad cable / interference.
         let mut deliver = m;
         if let Some(c) = self.chaos.as_mut() {
             if m >= 16 && c.rng.hit(c.cfg.drop_permille) {
@@ -1637,8 +1639,7 @@ impl StreamPort for VirtualDevice {
         Ok(())
     }
 
-
-    /// 清空未消费的输入字节（帧错位后重新同步）。
+    /// Discard unconsumed input bytes (resync after frame misalignment).
     fn drain(&mut self) -> Result<(), PortError> {
         self.out.clear();
         Ok(())
@@ -1646,12 +1647,12 @@ impl StreamPort for VirtualDevice {
 }
 
 // =============================================================================
-// GPT 镜像生成
+// GPT image generation
 // =============================================================================
 
 const GPT_ENTRIES: u32 = 128;
 const GPT_ENTRY_SIZE: u32 = 128;
-/// 每个分区的类型 GUID（Linux filesystem data，固定值即可）
+/// Type GUID for every partition (Linux filesystem data, a fixed value suffices)
 const TYPE_GUID: [u8; 16] = [
     0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4,
 ];
@@ -1671,9 +1672,9 @@ fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
-/// 生成各分区的初始内容（按 4 KiB 页稀疏存放）。
+/// Generate initial content for each partition (stored sparsely by 4 KiB page).
 ///
-/// 只有"有内容的分区"才占页：GPT 之外的空白区域读回 0x00，不会白白吃内存。
+/// Only partitions "with content" occupy pages: the blank area outside the GPT reads back as 0x00 and does not waste memory.
 fn build_pages(profile: &DeviceProfile) -> std::collections::HashMap<u64, Vec<u8>> {
     use std::collections::HashMap;
     let mut pages: HashMap<u64, Vec<u8>> = HashMap::new();
@@ -1698,10 +1699,10 @@ fn build_pages(profile: &DeviceProfile) -> std::collections::HashMap<u64, Vec<u8
     for (name, start_lba, size) in &profile.partitions {
         let addr = start_lba * 512;
         match name.as_str() {
-            // seccfg：真实 V4 结构（28 字节头 + 32 字节哈希），供 unlock 测试
+            // seccfg: real V4 structure (28-byte header + 32-byte hash), for unlock tests
             "seccfg" => {
                 if profile.seccfg_v3 {
-                    // V3：AND_SECCFG_v 头 + 软件 SEJ 加密段，端到端验证全版本解锁
+                    // V3: AND_SECCFG_v header + software SEJ encrypted section, end-to-end verification of unlock across all versions
                     let img = crate::security::seccfg::v3::synthetic_v3_image(
                         profile.seccfg_lock_state == 1,
                     );
@@ -1721,12 +1722,12 @@ fn build_pages(profile: &DeviceProfile) -> std::collections::HashMap<u64, Vec<u8
                     put(addr, &img);
                 }
             }
-            // vbmeta / vbmeta_system_*：合法 AVB 镜像（flags=0，含 boot descriptor）
+            // vbmeta / vbmeta_system_*: valid AVB image (flags=0, includes boot descriptor)
             n if n.starts_with("vbmeta") => {
                 let img = crate::security::avb::synthetic_vbmeta(0, &["boot"]);
                 put(addr, &img);
             }
-            // misc：boot_control 结构（偏移 0x2000 的 "BOOT" + 活动槽）
+            // misc: boot_control structure ("BOOT" at offset 0x2000 + active slot)
             "misc" => {
                 let mut img = vec![0u8; 0x3000];
                 if profile.bootctrl {
@@ -1739,7 +1740,7 @@ fn build_pages(profile: &DeviceProfile) -> std::collections::HashMap<u64, Vec<u8
                 }
                 put(addr, &img);
             }
-            // 其余分区：写入可辨识的初始内容（前 64 KiB），便于验证读写回环
+            // Other partitions: write recognizable initial content (first 64 KiB) to verify read/write round-trips
             _ => {
                 let len = (*size).min(64 * 1024) as usize;
                 let mut img = vec![0u8; len];
@@ -1756,7 +1757,7 @@ fn build_pages(profile: &DeviceProfile) -> std::collections::HashMap<u64, Vec<u8
 
 fn build_image(profile: &DeviceProfile) -> Vec<u8> {
     let mut img = vec![0u8; IMAGE_LEN];
-    // LBA0: 保护性 MBR
+    // LBA0: protective MBR
     img[0x1BE] = 0x00; // not bootable
     img[0x1C2] = 0xEE; // type
     img[0x1C6..0x1CA].copy_from_slice(&1u32.to_le_bytes());
@@ -1766,7 +1767,7 @@ fn build_image(profile: &DeviceProfile) -> Vec<u8> {
     img[0x1FE] = 0x55;
     img[0x1FF] = 0xAA;
 
-    // 分区项数组（LBA2 起，128*128）
+    // Partition entry array (starting at LBA2, 128*128)
     let entries_off = 1024usize;
     for (i, (name, start, size)) in profile.partitions.iter().enumerate() {
         let e = entries_off + i * GPT_ENTRY_SIZE as usize;
@@ -1779,7 +1780,7 @@ fn build_image(profile: &DeviceProfile) -> Vec<u8> {
         let last = first + size / 512 - 1;
         img[e + 32..e + 40].copy_from_slice(&first.to_le_bytes());
         img[e + 40..e + 48].copy_from_slice(&last.to_le_bytes());
-        // 名称：UTF-16LE，最多 36 字符
+        // Name: UTF-16LE, up to 36 characters
         for (j, ch) in name.encode_utf16().take(35).enumerate() {
             img[e + 56 + j * 2..e + 58 + j * 2].copy_from_slice(&ch.to_le_bytes());
         }
@@ -1787,7 +1788,7 @@ fn build_image(profile: &DeviceProfile) -> Vec<u8> {
     let entries_len = (GPT_ENTRIES * GPT_ENTRY_SIZE) as usize;
     let entries_crc = crc32(&img[entries_off..entries_off + entries_len]);
 
-    // LBA1: 主 GPT 头
+    // LBA1: primary GPT header
     let h = 512usize;
     img[h..h + 8].copy_from_slice(b"EFI PART");
     img[h + 8..h + 12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
@@ -1811,7 +1812,7 @@ fn build_image(profile: &DeviceProfile) -> Vec<u8> {
 }
 
 // =============================================================================
-// 测试
+// Tests
 // =============================================================================
 
 #[cfg(test)]
@@ -1860,7 +1861,11 @@ mod tests {
         assert!(report.header_ok(), "头 CRC 必须正确");
         assert!(report.partition_entries_ok(), "分区项 CRC 必须正确");
         let names: Vec<String> = info.partitions().iter().map(|e| e.name.clone()).collect();
-        assert!(names.contains(&"super".to_string()), "实际: {:?}", names);
+        assert!(
+            names.iter().any(|name| name == "super"),
+            "实际: {:?}",
+            names
+        );
     }
 
     #[test]
@@ -1882,7 +1887,7 @@ mod tests {
         e.connect(&mut dev).unwrap();
         e.load_da(&mut dev, &[0xAB; 256]).unwrap();
         e.begin_write(&mut dev, 0x100000, 512, 1, 8).unwrap();
-        // 直接构造一个校验和错误的分块
+        // Directly construct a chunk with a bad checksum
         let data = [0x11u8; 512];
         let bad = 0x1234u32.to_le_bytes();
         let zero = 0u32.to_le_bytes();
@@ -1903,7 +1908,7 @@ mod tests {
         dev.write(&pkt).unwrap();
         let mut st = [0u8; 16];
         let n = dev.read(&mut st).unwrap();
-        // 回包：12 字节头 + 4 字节状态
+        // Response: 12-byte header + 4-byte status
         let status = u32::from_le_bytes(st[n - 4..n].try_into().unwrap());
         assert_eq!(status, wire::XFLASH_STATUS_CHECKSUM);
         assert!(
@@ -1921,14 +1926,14 @@ mod tests {
         assert!(dev.pages.len() <= before, "擦除不应物化页");
         let head = dev.read_window(0, 512);
         assert!(head.iter().all(|b| *b == 0xFF));
-        // 幂等：再擦一次，结果相同
+        // Idempotent: erasing again yields the same result
         dev.erase_range(0, 64 * 1024 * 1024);
         assert!(dev.read_window(0, 512).iter().all(|b| *b == 0xFF));
     }
 
     #[test]
     fn cve_20435_alias_maps_to_cve_20069_fields() {
-        // 历史误记编号作为兼容别名：解析结果必须落到 cve_20069_* 字段上。
+        // The historically mistaken ID is a compatibility alias: parsing must land on the cve_20069_* fields.
         let p =
             DeviceProfile::from_text("cve_20435.affected=true\ncve_20435.patched=false\n").unwrap();
         assert!(p.cve_20069_affected);
@@ -1969,7 +1974,7 @@ exploit=kamakiri2
         let mut dev = VirtualDevice::new(p);
         dev.write(&[0xA0, 0x0A, 0x50, 0x05]).unwrap();
         let mut b = [0u8; 1];
-        // 静默锁存 = 需要重插，按"断开"上报（不可重试）
+        // Latched silence = replug required, reported as "disconnected" (not retryable)
         assert_eq!(dev.read(&mut b), Err(PortError::Disconnected));
     }
 
@@ -1981,12 +1986,12 @@ exploit=kamakiri2
         assert!(dev.events.iter().any(|e| e.contains("未支持命令")));
     }
 
-    /// 状态文件的读写布局必须严格对称——跨进程断点续传全靠它。
+    /// The state file read/write layout must be strictly symmetric — cross-process resume depends entirely on it.
     #[test]
     fn state_roundtrip_preserves_pages_and_erased() {
         let mut dev = VirtualDevice::from_preset("v5-clean").unwrap();
-        dev.write_range(0x1000, &[0xAB; 8192]); // 两页
-        dev.write_range(0x9000, &[0xCD; 4096]); // 一页
+        dev.write_range(0x1000, &[0xAB; 8192]); // two pages
+        dev.write_range(0x9000, &[0xCD; 4096]); // one page
         dev.erase_range(0x2_0000, 0x1_0000);
         dev.total_written = 0x1234;
 
@@ -1998,7 +2003,7 @@ exploit=kamakiri2
         dst.load_state(&path).unwrap();
         let _ = std::fs::remove_file(&path);
 
-        assert_eq!(dst.pages, dev.pages); // 预设自带的种子页也要一页不差
+        assert_eq!(dst.pages, dev.pages); // even the preset built-in seed pages must match exactly
         assert_eq!(dst.total_written, 0x1234);
         assert_eq!(dst.erased, dev.erased);
         assert!(
@@ -2006,7 +2011,7 @@ exploit=kamakiri2
                 .iter()
                 .any(|(s, e)| *s <= 0x2_0000 && *e >= 0x3_0000)
         );
-        // 内容逐字节一致（含页内未被写的空白部分）
+        // Content identical byte-for-byte (including untouched blank parts within pages)
         assert_eq!(dst.read_window(0x1000, 8192), vec![0xAB; 8192]);
         assert_eq!(dst.read_window(0x9000, 4096), vec![0xCD; 4096]);
         assert_eq!(dst.read_window(0x2_0000, 4096), vec![0xFF; 4096]);
@@ -2032,7 +2037,7 @@ exploit=kamakiri2
         let _ = std::fs::remove_file(&bad);
     }
 
-    // ── Phase 1.1 混沌注入 ─────────────────────────────────────────
+    // ── Phase 1.1 Chaos injection ─────────────────────────────────────────
 
     fn chaos_state(cfg: ChaosConfig) -> ChaosState {
         ChaosState {
@@ -2067,11 +2072,11 @@ exploit=kamakiri2
 
     #[test]
     fn chaos_bitflip_primitive() {
-        // 0‰ 永不翻转
+        // 0‰ never flips
         let mut nil = chaos_state(ChaosConfig::default());
         assert_eq!(nil.dirty(64), None);
 
-        // 1000‰ 必然翻转，且下标/位号在范围内
+        // 1000‰ always flips, with index/bit within range
         let cfg = ChaosConfig {
             seed: 42,
             bitflip_permille: 1000,
@@ -2095,11 +2100,11 @@ exploit=kamakiri2
             .with_chaos(cfg);
         dev.out.push_back(0x5A);
         let mut b = [0u8; 1];
-        // 静默锁存 = 必须重插，上报为 Disconnected（不可重试，立刻失败）
+        // Latched silence = replug required, reported as Disconnected (not retryable, fail immediately)
         assert_eq!(dev.read(&mut b), Err(PortError::Disconnected));
         assert!(dev.silent, "静默必须锁存（直到 replug）");
         assert_eq!(dev.read(&mut b), Err(PortError::Disconnected));
-        // replug 后恢复（并让环境恢复平静，验证 replug 清掉的是锁存标志而非混沌本身）
+        // Recover after replug (and calm the environment to verify replug clears the latch flag, not the chaos config itself)
         dev.replug();
         dev.chaos.as_mut().unwrap().cfg.silence_permille = 0;
         dev.out.push_back(0x5A);
@@ -2124,7 +2129,7 @@ exploit=kamakiri2
         assert_eq!(dev.chaos_counts().3, 1);
     }
 
-    /// Phase 1.1b 验收：真静默（掉线）必须**立刻**失败，绝不在死设备上重试干等。
+    /// Phase 1.1b acceptance: real silence (link down) must fail **immediately**, never retry and wait in vain on a dead device.
     #[test]
     fn chaos_silence_fails_fast_without_retry() {
         use crate::da::engine::{DaEngine, EngineError};
@@ -2150,8 +2155,8 @@ exploit=kamakiri2
         );
     }
 
-    /// Phase 1.1b 验收：数据块被丢字节（长度不符）时，靠"清空输入缓冲 + 重发
-    /// READ_DATA"整条重来恢复——字节级续读救不了已丢失的字节。
+    /// Phase 1.1b acceptance: when a data block loses bytes (length mismatch), recover by clearing the input buffer + resending the
+    /// whole READ_DATA command — byte-level resume cannot recover lost bytes.
     #[test]
     fn chaos_drop_recovers_via_read_command_retry() {
         use crate::da::engine::DaEngine;
@@ -2173,7 +2178,7 @@ exploit=kamakiri2
         assert!(dev.chaos_counts().1 > 0, "本用例必须真的注入过丢包");
     }
 
-    /// Phase 1.1b 验收：混沌瞬时超时被有界重试吸收，DA 加载不应被单次抖动打断。
+    /// Phase 1.1b acceptance: chaos transient timeouts are absorbed by bounded retries; DA loading must not be interrupted by a single glitch.
     #[test]
     fn chaos_glitch_is_absorbed_by_bounded_retry() {
         use crate::da::engine::DaEngine;
@@ -2230,8 +2235,8 @@ exploit=kamakiri2
         assert_eq!(dev.chaos_counts(), (0, 0, 0, 0));
     }
 
-    /// 端到端：位翻转发生在校验和通过之后，落盘数据被改坏，
-    /// 只能靠主机侧回读校验发现——证明"静默损坏不会冒充成功"。
+    /// End-to-end: the bit flip happens after the checksum passes, corrupting data on disk,
+    /// detectable only through host-side read-back verification — proving "silent corruption never passes as success".
     #[test]
     fn chaos_bitflip_corrupts_after_checksum_accepted() {
         use crate::da::engine::DaEngine;
@@ -2266,7 +2271,7 @@ exploit=kamakiri2
         pkt.extend(data);
         dev.write(&pkt).unwrap();
 
-        // 校验和本身是通过的（设备回 status=0），随后才发生落盘位翻转。
+        // The checksum itself passes (device returns status=0); the on-disk bit flip happens afterwards.
         let mut st = [0u8; 64];
         let n = dev.read(&mut st).unwrap();
         let status = u32::from_le_bytes(st[n - 4..n].try_into().unwrap());

@@ -1,39 +1,39 @@
-//! 内存端口（mock）：内存 pipe + 故障注入。
+//! In-memory port (mock): memory pipe + fault injection.
 //!
-//! 用途：
-//! - fixture 回放时作为被读取的一端；
-//! - 协议状态机单测（第 N 字节错误 / 超时 / 断开）。
+//! Use cases:
+//! - act as the read side during fixture replay;
+//! - protocol state machine unit tests (error at byte N / timeout / disconnect).
 
 use std::collections::VecDeque;
 
 use super::{BromPort, ControlRequest, Direction, Endpoint, PortError, StreamPort};
 
-/// 故障类型。
+/// Fault kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FaultKind {
-    /// 读到 / 写到第 N 字节时返回 IO 错误
+    /// Return an IO error when reading / writing byte N
     Error,
-    /// 第 N 字节处超时
+    /// Timeout at byte N
     Timeout,
-    /// 第 N 字节处断开
+    /// Disconnect at byte N
     Disconnect,
 }
 
-/// 单个注入点。
+/// A single injection point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fault {
-    /// 触发位置（全局字节计数，从 0 开始）
+    /// Trigger position (global byte counter, 0-based)
     pub at: usize,
     pub kind: FaultKind,
 }
 
-/// 内存端口。
+/// In-memory port.
 pub struct MockPort {
-    /// 设备 → 主机（read 从这里取）
+    /// Device → host (reads take from here)
     rx: VecDeque<u8>,
-    /// 主机 → 设备（write 写这里）
+    /// Host → device (writes go here)
     tx: Vec<u8>,
-    /// 已从 rx 读出的字节数（用于故障定位）
+    /// Bytes read from rx so far (used to locate faults)
     read_pos: usize,
     written_pos: usize,
     faults: Vec<Fault>,
@@ -54,12 +54,12 @@ impl MockPort {
         }
     }
 
-    /// 追加设备侧数据（可分段追加，模拟真实到达）。
+    /// Append device-side data (can be appended in chunks to mimic real arrival).
     pub fn push_rx(&mut self, bytes: &[u8]) {
         self.rx.extend(bytes.iter().copied());
     }
 
-    /// 主机侧写入的字节。
+    /// Bytes written by the host.
     pub fn tx(&self) -> &[u8] {
         &self.tx
     }
@@ -72,13 +72,13 @@ impl MockPort {
         &self.bulk_log
     }
 
-    /// 注入故障。
+    /// Inject a fault.
     pub fn with_fault(mut self, at: usize, kind: FaultKind) -> Self {
         self.faults.push(Fault { at, kind });
         self
     }
 
-    /// 检查区间 `[from, to)` 是否命中故障；命中则消费它（只触发一次）。
+    /// Check whether range `[from, to)` hits a fault; consume it on hit (fires only once).
     fn hit_fault(&mut self, from: usize, to: usize) -> Option<PortError> {
         let idx = self.faults.iter().position(|f| f.at >= from && f.at < to)?;
         let f = self.faults.remove(idx);
@@ -121,7 +121,6 @@ impl StreamPort for MockPort {
     fn flush(&mut self) -> Result<(), PortError> {
         Ok(())
     }
-
 }
 
 impl BromPort for MockPort {
@@ -131,7 +130,7 @@ impl BromPort for MockPort {
         data: &mut [u8],
     ) -> Result<usize, PortError> {
         self.control_log.push((req, data.len()));
-        // 0x80 方向（IN）时从 rx 填充
+        // For 0x80 direction (IN), fill from rx
         if req.request_type & 0x80 != 0 {
             return self.read(data);
         }
@@ -170,17 +169,17 @@ mod tests {
     fn read_exact_detects_disconnect() {
         let mut p = MockPort::new(vec![1u8, 2]);
         let mut buf = [0u8; 4];
-        // 前 2 字节成功，后 2 字节无数据 → 超时
+        // First 2 bytes succeed, next 2 have no data → timeout
         assert_eq!(p.read_exact(&mut buf), Err(PortError::Timeout));
     }
 
     #[test]
     fn injected_fault_fires_once() {
         let mut p = MockPort::new(vec![0u8; 16]).with_fault(2, FaultKind::Error);
-        // 第一次读的区间 [0,4) 覆盖故障点 2 → 立即报错
+        // First read covers range [0,4) including fault point 2 → immediate error
         let mut b = [0u8; 4];
         assert!(matches!(p.read(&mut b), Err(PortError::Io(_))));
-        // 故障只触发一次
+        // Fault fires only once
         let mut b2 = [0u8; 4];
         assert!(p.read(&mut b2).is_ok());
     }

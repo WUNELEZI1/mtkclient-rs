@@ -1,13 +1,13 @@
-//! 安全配置系统
+//! Security configuration subsystem.
 //!
-//! 负责加密签名、Bootloader 解锁、安全配置管理
+//! Handles crypto signing, bootloader unlock and security config management.
 //!
-//! # 系统架构
-//! - `sej` - SEJ/HACC 加密签名后端
-//! - `seccfg` - 安全配置解析与修改(V3/V4)
-//! - `vbmeta` - vbmeta 禁用与修补
-//! - `frp` - FRP (Factory Reset Protection) 解锁
-//! - `obfuscate` - 反逆向：编译期字符串混淆宏 `obf!` 与反调试探测
+//! # Architecture
+//! - `sej` - SEJ/HACC signing backend
+//! - `seccfg` - security config parsing and patching (V3/V4)
+//! - `vbmeta` - vbmeta disable and patch
+//! - `frp` - FRP (Factory Reset Protection) unlock
+//! - `obfuscate` - anti-reverse engineering: compile-time string obfuscation macro `obf!` and anti-debug probes
 
 pub mod avb;
 #[path = "frp.rs"]
@@ -21,7 +21,7 @@ pub mod sej;
 #[path = "vbmeta.rs"]
 pub mod vbmeta;
 
-// 公共 API re-export
+// Public API re-exports.
 #[allow(unused_imports)]
 pub use frp::frp_unlock;
 #[allow(unused_imports)]

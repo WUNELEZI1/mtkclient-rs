@@ -1,11 +1,11 @@
-//! boot / recovery 镜像解析与 ramdisk 解包
+//! boot / recovery image parsing and ramdisk unpacking
 //!
-//! 纯 Rust 实现，无外部二进制依赖。压缩格式自动识别：
+//! Pure Rust, no external binary dependencies. Compression formats auto-detected:
 //!   gzip (1f 8b) / lz4 legacy (02 21 4c 18) / lz4 frame (04 22 4d 18) /
-//!   xz (fd 37 7a 58 5a 00) / 未压缩(pipe)
+//!   xz (fd 37 7a 58 5a 00) / uncompressed (pipe)
 //!
-//! 参考 AOSP bootable/recovery/bootimg.h 的字段布局（支持 v0~v4 头部）。
-//! 本模块为离线命令，不需要连接设备。
+//! Field layout follows AOSP bootable/recovery/bootimg.h (supports v0~v4 headers).
+//! This module is an offline command and does not connect to a device.
 
 use crate::color::Colorize;
 use std::io::{Cursor, Read};
@@ -133,8 +133,8 @@ pub fn parse(buf: &[u8]) -> Result<BootImage, String> {
         } else {
             0
         },
-        // 头部 @1652 的 dtb_addr 是「加载地址」，不是文件内偏移；
-        // v2 的 dtb 实际顺序追加在其它段之后（页对齐），故此处先置 0，下面顺序计算。
+        // dtb_addr at header offset 1652 is a "load address", not a file offset;
+        // in v2 the dtb is appended sequentially after the other segments (page-aligned), so set it to 0 here and compute the order below.
         dtb_offset: 0,
         kernel_off: ps,
         ramdisk_off: 0,
@@ -142,7 +142,7 @@ pub fn parse(buf: &[u8]) -> Result<BootImage, String> {
     };
     bi.ramdisk_off = ps + align_up(bi.kernel_size as u64, ps);
     bi.second_off = bi.ramdisk_off + align_up(bi.ramdisk_size as u64, ps);
-    // v2 dtb 文件偏移：在 recovery_dtbo 之后（若无则紧跟 second/ramdisk），按页对齐顺序追加
+    // v2 dtb file offset: after recovery_dtbo (or right after second/ramdisk if absent), appended page-aligned in order
     bi.dtb_offset = if bi.dtb_size > 0 {
         let base = if bi.recovery_dtbo_size > 0 {
             bi.recovery_dtbo_offset + bi.recovery_dtbo_size as u64
@@ -156,7 +156,7 @@ pub fn parse(buf: &[u8]) -> Result<BootImage, String> {
     Ok(bi)
 }
 
-// ── 压缩解压 ──
+// ── Decompression ──
 
 pub fn decompress(data: &[u8]) -> Result<Vec<u8>, String> {
     if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
@@ -214,19 +214,19 @@ fn lz4_frame_decompress(data: &[u8]) -> Result<Vec<u8>, String> {
     let mut pos = 4;
     let flg = *data.get(pos).ok_or("lz4 frame: 截断")?;
     pos += 1;
-    let _bd = *data.get(pos).ok_or("lz4 frame: 截断")?; // BD：块最大尺寸
+    let _bd = *data.get(pos).ok_or("lz4 frame: 截断")?; // BD: maximum block size
     pos += 1;
     let content_size = (flg & 0x08) != 0;
     let dict_id = (flg & 0x01) != 0;
     let block_chksum = (flg & 0x10) != 0;
     if content_size {
-        pos += 8; // 8 字节 content_size 字段
+        pos += 8; // 8-byte content_size field
     }
     if dict_id {
-        pos += 4; // 4 字节 dictID 字段
+        pos += 4; // 4-byte dictID field
     }
-    pos += 1; // HC：1 字节 Header Checksum（标准 frame 必带，覆盖 FLG/BD/可选字段；
-    // 之前漏跳这 1 字节，会令后续块长度整体错位）
+    pos += 1; // HC: 1-byte Header Checksum (mandatory in a standard frame; covers FLG/BD/optional fields;
+    // skipping this byte previously shifted all following block lengths)
     let mut out = Vec::new();
     loop {
         if pos + 4 > data.len() {
@@ -314,7 +314,7 @@ pub fn lz4_block_decompress(src: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-// ── cpio (newc / 070702) 解析 ──
+// ── cpio (newc / 070702) parsing ──
 
 #[derive(Debug, Clone)]
 pub struct CpioEntry {
@@ -354,8 +354,8 @@ pub fn parse_cpio(buf: &[u8]) -> Result<Vec<CpioEntry>, String> {
         let name_pos = pos + 110;
         let name = String::from_utf8_lossy(&buf[name_pos..name_pos + namesize.saturating_sub(1)])
             .into_owned();
-        // newc 对齐规则（与 Linux initramfs 解析器一致）：
-        // name 字段按 (namesize+3)&!3 对齐，数据字段按 (filesize+3)&!3 对齐
+        // newc alignment rules (same as the Linux initramfs parser):
+        // the name field is aligned to (namesize+3)&!3, the data field to (filesize+3)&!3
         let namefield_len = (namesize + 3) & !3;
         let data_pos = pos + 110 + namefield_len;
         let data_end = data_pos + ((filesize + 3) & !3);
@@ -394,10 +394,10 @@ pub fn classify(entries: &[CpioEntry]) -> &'static str {
     "boot"
 }
 
-// ── 命令入口 ──
+// ── Command entry ──
 
-/// boot <boot.img> [--extract <dir>]
-/// 解析 boot/recovery 镜像，抽取 kernel/ramdisk/dtbo/dtb，解压 ramdisk、列出 cpio、判定 boot/recovery。
+/// boot <boot.img> [--extract `<dir>`]
+/// Parse a boot/recovery image, extract kernel/ramdisk/dtbo/dtb, decompress the ramdisk, list cpio entries, and classify boot/recovery.
 pub fn cmd_boot(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut file: Option<String> = None;
     let mut extract: Option<String> = None;
@@ -458,7 +458,7 @@ pub fn cmd_boot(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     println!("  name        : {}", bi.name);
     println!("  cmdline     : {}", bi.cmdline);
 
-    // 抽取
+    // Extract
     let outdir = if let Some(ref d) = extract {
         std::fs::create_dir_all(d).map_err(|e| format!("创建目录 {} 失败: {}", d, e))?;
         Some(std::path::PathBuf::from(d))

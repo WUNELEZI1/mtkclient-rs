@@ -1,0 +1,8 @@
+# Minimal offline device profile for integration tests.
+name=MT6768-Integration
+hw_code=0x0707
+da_code=0x6768
+proto=v5
+safety=0x0
+storage.user=0x10000000
+partition=boot:34:0x2000000

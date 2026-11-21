@@ -1,15 +1,15 @@
-//! MTK proinfo 分区解析
+//! MTK proinfo partition parser
 //!
-//! 注意：MTK proinfo 没有全局统一格式，不同机型/代际差异很大。
-//! 这里实现两套策略：
-//!    1) 若分区起始存在 ASCII magic "PROINFO"，按 `version(u32) + count(u32)`
-//!       + 若干 `{name[32], offset(u32), length(u32)}` 块表解析；
-//!    2) 否则做启发式扫描：在分区内寻找"32 字节可打印 name + 合理 offset/length"
-//!       的候选块表项。
+//! Note: MTK proinfo has no globally unified format; it varies widely by model and generation.
+//! Two strategies are implemented:
+//!    1) If the partition starts with the ASCII magic "PROINFO", parse as `version(u32) + count(u32)`
+//!       followed by `{name[32], offset(u32), length(u32)}` block-table entries;
+//!    2) Otherwise scan heuristically for candidate block-table entries of
+//!       "32 printable bytes name + plausible offset/length".
 //!
-//! 真实设备上若 magic/布局不同，需要按机型校准。
+//! If the magic/layout differs on a real device, calibrate per model.
 //!
-//! 本模块为离线命令，不需要连接设备。
+//! This module is an offline command and does not connect to a device.
 
 use crate::color::Colorize;
 
@@ -60,7 +60,7 @@ pub fn parse(buf: &[u8]) -> ProInfo {
             p += 40;
         }
     } else {
-        // 启发式扫描：以 4 字节为步长，找 32 字节可打印 name + 合理 offset/length
+        // Heuristic scan: step by 4 bytes looking for a 32-byte printable name + plausible offset/length
         let mut p = 0;
         while p + 40 <= buf.len() {
             let nb = &buf[p..p + 32];
@@ -95,7 +95,7 @@ pub fn parse(buf: &[u8]) -> ProInfo {
 }
 
 /// proinfo <proinfo.bin>
-/// 解析 MTK proinfo 分区。
+/// Parse an MTK proinfo partition.
 pub fn cmd_proinfo(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let file = args
         .first()

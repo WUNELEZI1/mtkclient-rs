@@ -1,13 +1,13 @@
-//! SecCfg 处理模块（Bootloader 解锁/锁定）
+//! SecCfg handling module (bootloader unlock/lock).
 //!
-//! 子模块：
-//! - `v4`    — SecCfgV4 结构与解析/构建（28 字节头 + SHA256+AES 签名）
-//! - `v3`    — SecCfgV3 结构与解析/构建（44 字节头 + SEJ 加密段）
-//! - `build` — 共享的 header 构建辅助（build_v4_header / sign_v4_digest）
-//! - `plain` — V3 解密后明文的结构化解析与打分（用于细分 SW/V2/V3/V4）
-//! - `cmd`   — 顶层 `seccfg info` 只读查询入口
+//! Submodules:
+//! - `v4`    - SecCfgV4 structure with parse/build (28-byte header + SHA256+AES signature)
+//! - `v3`    - SecCfgV3 structure with parse/build (44-byte header + SEJ encrypted section)
+//! - `build` - shared header build helpers (build_v4_header / sign_v4_digest)
+//! - `plain` - structured parsing and scoring of decrypted V3 plaintext (to distinguish SW/V2/V3/V4)
+//! - `cmd`   - top-level `seccfg info` read-only query entry
 //!
-//! 解锁/上锁统一走 [`crate::ops::seccfg::SeccfgOp`]，V3/V4 全版本支持。
+//! Unlock/lock always goes through [`crate::ops::seccfg::SeccfgOp`], supporting all V3/V4 versions.
 
 #[path = "build.rs"]
 pub mod build;

@@ -6,7 +6,7 @@ use std::time::Duration;
 use nusb::MaybeFuture;
 use nusb::transfer::{ControlType, Recipient};
 
-/// 获取 OUT 端点地址
+/// Get the OUT endpoint address
 fn out_ep_addr(device: &UsbDevice) -> u8 {
     device.out_ep
 }
@@ -40,8 +40,9 @@ impl UsbDevice {
                     timeout.as_millis(),
                     data.len()
                 );
-                // 超时后必须排空 OUT endpoint 的 pending transfer，否则后续 submit
-                // 会被追加到队列末尾，WinUSB 仍在等待第一个（已失败的）transfer
+                // After a timeout the OUT endpoint pending transfers must be drained, otherwise
+                // later submits are appended to the queue while WinUSB still waits on the first
+                // (already failed) transfer
                 Self::drain_out_pending(ep_out);
                 return Err("写入超时".to_string());
             }
@@ -53,7 +54,7 @@ impl UsbDevice {
         Ok(result.actual_len)
     }
 
-    /// 排空 OUT endpoint 上所有挂起的 transfer（超时后必须调用）
+    /// Drain all pending transfers on the OUT endpoint (must be called after a timeout)
     fn drain_out_pending(ep_out: &mut nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::Out>) {
         let pending = ep_out.pending();
         if pending > 0 {

@@ -1,7 +1,7 @@
-//! 单命令执行入口（handle_command）
+//! Single-command execution entry (handle_command)
 //!
-//! 处理 Phase1（preloader dump / Kamakiri2 bypass / EMI 加载 / upload_da）
-//! 与 Phase2（DA 命令分发），是 main.rs 直接调用的顶层入口。
+//! Handles Phase1 (preloader dump / Kamakiri2 bypass / EMI load / upload_da)
+//! and Phase2 (DA command dispatch); it is the top-level entry called directly by main.rs.
 
 use crate::color::Colorize;
 use log::{debug, info, warn};
@@ -10,7 +10,7 @@ use crate::da::DAXFlash;
 use crate::system::config::AppConfig;
 use crate::usb::UsbContext;
 
-/// 单命令执行入口
+/// Single-command execution entry
 pub fn handle_command(
     da: &mut DAXFlash,
     app_config: &AppConfig,
@@ -24,19 +24,19 @@ pub fn handle_command(
 
     let cmd = app_config.command.as_deref().unwrap_or("");
 
-    // 预检查：在 DA 加载之前验证命令有效性，避免浪费时间后才发现命令错误
+    // Precheck: validate the command before loading the DA, avoiding wasting time only to find it invalid
     super::validate_command(cmd, &app_config.cmd_args)?;
 
-    // reboot 命令分流：
-    //   - 仅 --via preloader 需要在 DA 加载前拦截（依赖原始 Preloader/BROM 握手态的
-    //     Pattern 协议：先触发看门狗再握手 Preloader 发模式标识）。
-    //   - 其余 reboot 模式（system/fastboot/recovery/fastbootd/meta）一律放过，
-    //     由 handle_command 完成 bypass→dump→EMI→upload_da 后，在 cmd_reboot 内
-    //     通过 DA SHUTDOWN(bootmode=HOME_SCREEN) 可靠重启进系统。
+    // reboot command branching:
+    //   - Only --via preloader must be intercepted before DA load (it depends on the raw Preloader/BROM handshake
+    //     Pattern protocol: trigger the watchdog first, then handshake with Preloader to send the mode marker).
+    //   - All other reboot modes (system/fastboot/recovery/fastbootd/meta) fall through,
+    //     letting handle_command finish bypass→dump→EMI→upload_da, then reboot reliably into the system
+    //     inside cmd_reboot via DA SHUTDOWN(bootmode=HOME_SCREEN).
     //
-    // 为何不再用裸看门狗作为 system 默认：MTK 在 USB 连接下裸看门狗硬件复位会重新掉回
-    // Preloader/BROM 下载模式而非进系统（表现为"日志显示重启成功但设备没进系统"）。
-    // 只有 DA SHUTDOWN 能干净地让设备跳过下载态直接 boot 到系统，行为对齐 mtkclient。
+    // Why not use a bare watchdog as the system default: under a USB connection, an MTK bare watchdog hardware reset
+    // drops back into Preloader/BROM download mode instead of booting the system (symptom: "log says reboot succeeded but device did not boot").
+    // Only DA SHUTDOWN can cleanly make the device skip download mode and boot straight into the system, matching mtkclient.
     if cmd == "reboot" {
         let mut has_via_preloader = false;
         let args = &app_config.cmd_args;
@@ -54,9 +54,9 @@ pub fn handle_command(
                 _ => i += 1,
             }
         }
-        // --via preloader 必须在 DA 加载前执行（依赖原始握手态的 Pattern 协议）。
-        // 但若设备已处于 DA 模式（daext=true，含 DA 复用/fallback），Pattern 协议不可用，
-        // 此时不放行提前拦截，改走下方 DA 路径（cmd_reboot 内部会降级为 DA 默认重启）。
+        // --via preloader must run before DA load (depends on the raw handshake Pattern protocol).
+        // But if the device is already in DA mode (daext=true, including DA reuse/fallback), the Pattern protocol is unavailable;
+        // in that case do not intercept early and fall through to the DA path below (cmd_reboot falls back to the DA default reboot).
         if has_via_preloader && !da.daext {
             return super::io::cmd_reboot(da, args, is_brom, !is_brom);
         }
@@ -67,14 +67,14 @@ pub fn handle_command(
     let has_active_write_resume =
         cmd == "w" && super::active_write_resume_exists(&app_config.cmd_args);
 
-    // 写入续传：DA 仍在 DRAM 中运行，但 USB 状态可能不一致（上次取消导致 endpoint 残留）
-    // 保持 DA 会话复用（不重置），但在后续 handle_command 中通过 drain + xflash_sync 重新同步
-    // 不能 reset_session() + 重新加载 DA，因为设备已在 DA 模式，BROM 握手会失败
+    // Write resume: the DA is still running in DRAM, but the USB state may be inconsistent (a prior cancel left endpoint residue).
+    // Keep the DA session (do not reset), but re-sync later in handle_command via drain + xflash_sync.
+    // Do not reset_session() + reload the DA: the device is already in DA mode, so the BROM handshake would fail.
     if has_active_write_resume {
         debug!("[DA_SESSION] 检测到写入续传，保持 DA 会话，将重新同步 USB 通信");
     }
 
-    // DA 会话复用时跳过 preloader dump / bypass / EMI 加载（DA 仍在运行）
+    // Skip preloader dump / bypass / EMI load when reusing a DA session (the DA is still running)
     if !da.daext && is_brom {
         match cmd {
             "dumppreloader" => {
@@ -84,7 +84,7 @@ pub fn handle_command(
             _ => {}
         }
 
-        // 1. 获取 target config 判断是否需要 bypass
+        // 1. Get the target config to decide whether a bypass is needed
         let has_security = match da.preloader.get_target_config() {
             Ok(cfg) => {
                 info!("{}", cfg.format_info());
@@ -100,12 +100,12 @@ pub fn handle_command(
             }
         };
 
-        // 自动提取 preloader（未指定 --preloader）依赖 read32(0xD1) 从 RAM 读 preloader。
-        // MTK BROM 对 SRAM 的读取限制与 SBC/SLA/DAA 这套安全标志无关：即便 0x0 无保护，
-        // read32 仍可能被 BROM 拒绝（实测 --mode brom printgpt 自动提取报
-        // "read32 无法访问该内存区域"），必须先用 Kamakiri2 解除内存读取限制。
-        // bypass_security 注入 patcher 后会重新握手恢复 BROM 状态，不污染后续 DA 上传，
-        // 因此仅在"需要自动提取"时窄范围强制 bypass，通用 DA 加载路径不受影响。
+        // Automatic preloader extraction (without --preloader) relies on read32(0xD1) to read the preloader from RAM.
+        // MTK BROM's SRAM read restriction is unrelated to the SBC/SLA/DAA security flags: even with 0x0 unprotected,
+        // read32 may still be rejected by BROM (observed: `--mode brom printgpt` auto-extraction reports
+        // "read32 cannot access this memory region"), so Kamakiri2 must first lift the memory read restriction.
+        // bypass_security re-handshakes after injecting the patcher and restores BROM state without polluting the later DA upload,
+        // so bypass is forced only in the narrow "auto-extract" case; the general DA load path is unaffected.
         let auto_extract = preloader_file.is_empty();
         let needs_bypass = has_security || auto_extract;
 
@@ -126,10 +126,10 @@ pub fn handle_command(
             );
         }
 
-        // 2. 如果没有指定 preloader 文件，自动从 RAM 提取 preloader（非破坏性 read32）。
-        //    上方已对 auto_extract 场景窄范围强制 Kamakiri2，post-bypass 的 read32 可正常
-        //    读取 preloader；若设备内存仍不可读（极罕见，如 patcher 不兼容），给出明确指引
-        //    让用户用 dumppreloader 或 --preloader。
+        // 2. If no preloader file is given, automatically extract the preloader from RAM (non-destructive read32).
+        //    The auto_extract case above already forced Kamakiri2 in a narrow scope, so post-bypass read32 can
+        //    read the preloader normally; if device memory is still unreadable (very rare, e.g. incompatible patcher), give clear guidance
+        //    telling the user to use dumppreloader or --preloader.
         if preloader_file.is_empty() {
             info!("未指定 --preloader，自动从 RAM 提取 preloader...");
             match da.preloader.dump_preloader_via_brom_read() {
@@ -152,7 +152,7 @@ pub fn handle_command(
         }
     }
 
-    // Preloader 模式下 DRAM 已由 preloader 初始化，EMI 数据可选
+    // In preloader mode DRAM is already initialized by the preloader, so EMI data is optional
     let effective_preloader = if !preloader_file.is_empty() {
         Some(preloader_file.to_string())
     } else {
@@ -171,17 +171,17 @@ pub fn handle_command(
         return Err("未找到 preloader 文件，且自动提取失败".into());
     }
 
-    // DA 会话复用：直接使用，不做心跳验证
-    // 刷机匣日志证实 USB 重新打开后 DA 状态机完整，直接 devctrl 查询即可。
-    // 心跳验证在 USB 刚重开时可能超时导致误判，触发破坏性的 reconnect/fallback 流程。
+    // DA session reuse: use it directly without heartbeat verification.
+    // Flash-tool logs confirm the DA state machine is intact after USB reopen; a direct devctrl query suffices.
+    // Heartbeat verification may time out right after USB reopen and be misjudged, triggering a destructive reconnect/fallback.
     if da.daext {
         if has_active_read_resume {
             debug!("[DA_SESSION] 检测到活跃读取续传，直接续接数据流");
         } else if has_active_write_resume {
-            // 写入续传：USB 连接刚重新打开，需要排空残留 + 重新同步 DA 状态机
+            // Write resume: the USB connection has just reopened; drain residue + re-sync the DA state machine
             debug!("[DA_SESSION] 检测到写入续传状态，重新同步 DA 通信...");
             da.preloader.device.drain_pipes();
-            // 发送 xflash_sync 重新同步（写入取消可能导致 DA 等待未完成的写包响应）
+            // Send xflash_sync to re-sync (a write cancel may leave the DA waiting for an unfinished write-packet response)
             match da.xflash_sync() {
                 Ok(_) => debug!("[DA_SESSION] DA 同步成功，可以续写"),
                 Err(e) => {
@@ -211,7 +211,7 @@ pub fn handle_command(
     let args = &app_config.cmd_args;
     let verify = app_config.verify;
 
-    // multi 和 adb 都在 DA 会话已建立后执行，不需要走 execute_single_command
+    // multi and adb both run after the DA session is established and do not go through execute_single_command
     if cmd == "adb" {
         da.enable_adb_and_reboot()?;
         info!("{}", "ADB 已启用，设备正在重启进入系统".green());
@@ -229,24 +229,24 @@ pub fn handle_command(
     }
 
     super::execute_single_command(da, cmd, args, verify, log_level, app_config).map_err(|e| {
-        // 会话重置策略（关键修正）：只有 DA/USB 传输层真正失效时才重置会话。
+        // Session reset policy (key fix): reset the session only when the DA/USB transport layer is truly broken.
         //
-        // 旧逻辑靠字符串前缀（"未知命令"/"用法:"）判断"非通信错误"，但错误经 AppError
-        // 包裹后 Display 会加"协议错误:""USB 错误:"等前缀，starts_with 判断完全失效，
-        // 导致几乎所有命令级错误（参数错、分区找不到、文件错、解析错、安全错）都被误判为
-        // DA 通信错误而重置会话——这是没必要的，会强制下次重新握手/Bypass，浪费时间。
+        // The old logic used string prefixes ("unknown command"/"usage:") to detect "non-communication errors", but once wrapped by AppError
+        // Display adds prefixes like "protocol error:"/"USB error:", so starts_with checks completely fail,
+        // causing almost all command-level errors (bad args, partition not found, file error, parse error, security error) to be misjudged
+        // as DA communication errors and reset the session — unnecessary, forcing a re-handshake/Bypass next time and wasting time.
         //
-        // 新逻辑：默认保留会话；仅当错误确为传输层失败（USB 断连、DA 超时、端点错误等）才重置。
-        // 判定：① 用户取消(Ctrl+C) → 保留；② AppError::Usb（真实传输失败）→ 重置；
-        // ③ 其余 AppError(Protocol/Security/Parse/Io)与业务错误 → 保留，仅当消息含传输关键词才重置。
+        // New logic: keep the session by default; reset only when the error is truly a transport-layer failure (USB disconnect, DA timeout, endpoint error, etc.).
+        // Criteria: ① user cancel (Ctrl+C) → keep; ② AppError::Usb (real transport failure) → reset;
+        // ③ other AppError (Protocol/Security/Parse/Io) and business errors → keep, reset only if the message contains transport keywords.
         let err_str = e.to_string();
         let is_user_cancel = crate::cancel::requested() || crate::cancel::force_requested();
         let is_transport_error = super::is_transport_error(&*e);
         if is_transport_error && !is_user_cancel {
             warn!("[DA_SESSION] DA 通信错误，重置会话状态: {}", err_str);
             crate::connection::reset_session();
-            // 清理可能残留的 read resume 文件，避免下次启动死循环
-            // 注意：write resume 文件不在此时清理，保留供断点续写使用
+            // Clean up any leftover read resume file to avoid an infinite loop on the next startup
+            // Note: the write resume file is not cleaned here; keep it for checkpoint resume
             if cmd == "r" {
                 if let Some(output) = app_config.cmd_args.get(1) {
                     let resume_path = crate::resume::read_resume_path(output);
@@ -254,7 +254,7 @@ pub fn handle_command(
                 }
             }
         } else if !is_user_cancel {
-            // 非传输错误：DA 会话本身健康，仅记录日志，不重置
+            // Non-transport error: the DA session itself is healthy; only log, do not reset
             debug!(
                 "[DA_SESSION] 非传输错误，保留 DA 会话（不重置）: {}",
                 err_str

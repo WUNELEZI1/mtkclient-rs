@@ -1,3 +1,3 @@
-//! 分区写入：已迁到 `ops::write`（能力驱动 + 断点续传 + 回读校验）。
+//! Partition writing: moved to `ops::write` (capability-driven + resume + read-back verify).
 //!
-//! 保留本文件仅为模块结构稳定；设备侧入口见 `cmd::dispatch::run_op`。
+//! This file only keeps the module structure stable; see `cmd::dispatch::run_op` for the device entry.

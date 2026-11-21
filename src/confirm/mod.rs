@@ -1,19 +1,19 @@
-//! 危险操作确认。
+//! Dangerous operation confirmation.
 //!
-//! 两种模式（与规划一致）：
-//! - **不加 `--yes`**：先向 stderr 打印风险提示，再交互式地问 `y/N`。
-//!   非交互环境（stdin 非终端、管道）无法提问，直接报错并提示加 `--yes`。
-//! - **加 `--yes`**：直接放行，不打印任何警告。这是给脚本 / 其他程序调用
-//!   准备的 —— 调用方自己负责确认后果，输出保持干净。
+//! Two modes (consistent with planning):
+//! - **Without `--yes`**: print the risk notice to stderr, then ask `y/N` interactively.
+//!   In a non-interactive environment (stdin is not a TTY, pipes) the question is impossible, so error out and suggest `--yes`.
+//! - **With `--yes`**: proceed directly and print no warning. This is meant for scripts /
+//!   other programs — the caller owns the consequences and the output stays clean.
 
 use std::io::BufRead;
 
-/// 确认失败原因。
+/// Reason a confirmation failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmError {
-    /// 用户明确拒绝（交互式输入了 n/N）
+    /// The user explicitly declined (typed n/N)
     Declined,
-    /// 非交互环境且无 `--yes`，无法确认
+    /// Non-interactive environment without `--yes`; cannot confirm
     NeedConfirmation,
 }
 
@@ -28,17 +28,17 @@ impl std::fmt::Display for ConfirmError {
 
 impl std::error::Error for ConfirmError {}
 
-/// 危险等级（仅决定警告文案的措辞，不影响交互方式）。
+/// Danger level (affects only the wording of the warning, not the interaction mode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Danger {
-    /// 不可逆（preloader / seccfg / nvram 等写坏即变砖）
+    /// Irreversible (a bad write to preloader / seccfg / nvram bricks the device)
     Irreversible,
-    /// 高风险但可恢复（boot / super / vbmeta 等）
+    /// High risk but recoverable (boot / super / vbmeta, etc.)
     High,
 }
 
 impl Danger {
-    /// 警告文案里的等级词。
+    /// Level word used in the warning text.
     pub fn label(&self) -> &'static str {
         match self {
             Danger::Irreversible => "不可逆",
@@ -47,19 +47,19 @@ impl Danger {
     }
 }
 
-/// 确认上下文。
+/// Confirmation context.
 #[derive(Debug, Clone)]
 pub struct ConfirmContext {
-    /// 设备序列号（用于审计留痕）
+    /// Device serial number (for the audit trail)
     pub serial: String,
-    /// 附加指纹（如分区名 / 镜像 sha）
+    /// Extra fingerprint (e.g. partition name / image sha)
     pub fingerprint: String,
-    /// 时间戳（由调用方传入，便于测试）
+    /// Timestamp (passed in by the caller for easy testing)
     pub timestamp: String,
 }
 
 impl ConfirmContext {
-    /// 审计行（仅用于 stderr 警告，便于事后追溯）。
+    /// Audit line (for the stderr warning only; keeps a trace afterwards).
     pub fn audit_line(&self, action: &str) -> String {
         format!(
             "[audit] {} action={} sn={} fp={}",
@@ -68,13 +68,13 @@ impl ConfirmContext {
     }
 }
 
-/// 确认器。
+/// Confirmer.
 pub struct DangerConfirm {
-    /// `--yes`：直接放行，不提问、不打警告。
+    /// `--yes`: proceed directly, no question and no warning.
     assume_yes: bool,
-    /// 是否允许交互式输入（stdin 为 TTY 时由 CLI 打开）。
+    /// Whether interactive input is allowed (enabled by the CLI when stdin is a TTY).
     interactive: bool,
-    /// 测试注入的 yes/no 答案来源；`None` 时惰性使用 stdin（每次读取单独加锁，避免嵌套死锁）。
+    /// Test-injected yes/no answer source; when `None`, stdin is used lazily (locked per read to avoid nested deadlocks).
     injected: Option<Box<dyn BufRead>>,
 }
 
@@ -87,29 +87,29 @@ impl DangerConfirm {
         }
     }
 
-    /// 打开交互式确认（单元测试直接构造；CLI 走 `set_interactive`）。
+    /// Enable interactive confirmation (unit tests build it directly; the CLI uses `set_interactive`).
     #[cfg(test)]
     pub fn interactive(mut self, on: bool) -> Self {
         self.interactive = on;
         self
     }
 
-    /// 直接设置（保留其它字段；CLI 在 `--yes` 之后调用也不会丢掉它）。
+    /// Set in place (other fields are kept; calling it after `--yes` in the CLI does not lose the flag).
     pub fn set_interactive(&mut self, on: bool) {
         self.interactive = on;
     }
 
-    /// 测试用：注入 yes/no 答案来源。
+    /// Test-only: inject a yes/no answer source.
     #[cfg(test)]
     pub fn with_reader(mut self, r: impl BufRead + 'static) -> Self {
         self.injected = Some(Box::new(r));
         self
     }
 
-    /// 请求确认。
+    /// Request confirmation.
     ///
-    /// - `--yes`：直接返回 `Ok(())`，不打印任何内容（给程序调用）。
-    /// - 否则：先打印警告到 stderr；交互式则问 `y/N`，非交互式直接报错。
+    /// - `--yes`: return `Ok(())` immediately and print nothing (for programmatic calls).
+    /// - Otherwise: print the warning to stderr; ask `y/N` when interactive, error out otherwise.
     pub fn require(
         &mut self,
         action: &'static str,
@@ -117,7 +117,7 @@ impl DangerConfirm {
         ctx: &ConfirmContext,
     ) -> Result<(), ConfirmError> {
         if self.assume_yes {
-            // 给程序调用：静默放行
+            // Programmatic call: proceed silently
             return Ok(());
         }
 
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn irreversible_warning_label_differs_from_high() {
-        // 仅校验文案分支，交互逻辑一致（都是 y/N）
+        // Only the wording branch is checked; the interaction logic is identical (both y/N)
         let mut c = DangerConfirm::new(false);
         assert_eq!(
             c.require("seccfg unlock", Danger::Irreversible, &ctx()),

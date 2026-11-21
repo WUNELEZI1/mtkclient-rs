@@ -1,55 +1,55 @@
-//! SecCfg V3 解密后明文的结构化解析（“SW 明文细分”）
+//! Structured parsing of decrypted SecCfg V3 plaintext ("SW plaintext breakdown")
 //!
-//! 背景：V3 的加密段解密后是一段 0x2C 对齐的明文：
+//! Background: after decryption, the V3 encrypted section is 0x2C-aligned plaintext:
 //!
 //! ```text
-//! +0x000  20 × 0x68  每项 imginfo（name[32] + 若干 u32 元数据）
+//! +0x000  20 × 0x68  one imginfo each (name[32] + several u32 metadata fields)
 //! +0x820  u32        siu_status
 //! +0x824  u32        seccfg_status
-//! +0x828  u32        seccfg_attr（锁状态真正来源）
-//! +0x82C  ...        seccfg_ext（版本相关的扩展字段）
+//! +0x828  u32        seccfg_attr (the real source of the lock state)
+//! +0x82C  ...        seccfg_ext (version-dependent extension fields)
 //! ```
 //!
-//! 旧实现只用“解密结果前 4 字节是 IIII/CCCC/0000”来判断 hwtype，
-//! 四种解密算法都可能偶然命中 `0000`，会把 hwtype 判错。
-//! 本模块改为对明文做**打分**：
-//! - 首 4 字节标记（IIII / CCCC / 全零）
-//! - 20 个 imginfo 的名称字段是否可读（ASCII 可见字符 + NUL 填充）
-//! - 已知镜像名字（boot / recovery / system ...）的命中数量
-//! - 尾部 attr 是否落在已知取值集合内
+//! The old implementation inferred hwtype only from "the first 4 decrypted bytes are IIII/CCCC/0000",
+//! but all four decryption algorithms can accidentally hit `0000`, so hwtype could be misidentified.
+//! This module instead **scores** the plaintext:
+//! - the leading 4-byte marker (IIII / CCCC / all zero)
+//! - whether the 20 imginfo name fields are readable (visible ASCII + NUL padding)
+//! - how many known image names (boot / recovery / system ...) match
+//! - whether the trailing attr falls into the known value set
 //!
-//! 打分函数只依赖明文本身，可离线单测，不需要设备。
+//! The scoring function depends only on the plaintext, so it can be unit-tested offline without a device.
 
-/// imginfo 条目数量（固定 20 项，对齐 mtkclient）
+/// Number of imginfo entries (fixed at 20, matching mtkclient)
 pub(crate) const IMG_COUNT: usize = 20;
-/// 单个 imginfo 条目大小
+/// Size of a single imginfo entry
 pub(crate) const IMG_ENTRY_SIZE: usize = 0x68;
-/// imginfo 名称字段长度
+/// Length of the imginfo name field
 pub(crate) const IMG_NAME_LEN: usize = 32;
-/// 明文头部（imginfo 区）长度
+/// Length of the plaintext header (imginfo area)
 pub(crate) const PLAIN_HEAD_LEN: usize = IMG_COUNT * IMG_ENTRY_SIZE;
-/// 明文最短长度：头部 + siu/status/attr 三个 u32
+/// Minimum plaintext length: header + the three u32 fields siu/status/attr
 pub(crate) const PLAIN_MIN_LEN: usize = PLAIN_HEAD_LEN + 12;
-/// `seccfg_ext` 长度（0x1004，对齐 mtkclient `ed.bytes(0x1000 + 4)`）
+/// `seccfg_ext` length (0x1004, matching mtkclient `ed.bytes(0x1000 + 4)`)
 #[allow(dead_code)]
 pub(crate) const EXT_LEN: usize = 0x1004;
-/// 少数平台把标记放在 0x850（mtkclient 会提示上报样本，暂不支持改写）
+/// A few platforms put the marker at 0x850 (mtkclient asks for samples; rewriting is not supported yet)
 pub(crate) const ALT_MARKER_OFFSET: usize = 0x850;
 
-/// `seccfg_status` 的两个合法取值：完整 / 不完整
+/// The two valid `seccfg_status` values: complete / incomplete
 pub(crate) const STATUS_COMPLETE: u32 = 0x4343_4343; // "CCCC"
 pub(crate) const STATUS_INCOMPLETE: u32 = 0x4949_4949; // "IIII"
 
-/// 明文首 4 字节标记类型
+/// Type of the leading 4-byte marker in the plaintext
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlainMarker {
-    /// `IIII`：普通镜像信息段
+    /// `IIII`: normal image info section
     Img,
-    /// `CCCC`：配置段
+    /// `CCCC`: config section
     Cfg,
-    /// 全零：部分平台不写标记
+    /// All zero: some platforms omit the marker
     Zero,
-    /// 其它
+    /// Anything else
     Other,
 }
 
@@ -73,12 +73,12 @@ impl PlainMarker {
     }
 }
 
-/// 锁状态（由明文尾部的 seccfg_attr 解码）
+/// Lock state (decoded from seccfg_attr at the end of the plaintext)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LockState {
     Locked,
     Unlocked,
-    /// 未知取值，保留原始值
+    /// Unknown value; the raw value is kept
     Unknown(u32),
 }
 
@@ -87,7 +87,7 @@ impl LockState {
         match attr {
             0x4444_4444 => LockState::Unlocked,
             0x3333_3333 => LockState::Locked,
-            // 0x6000..=0x6003 是各代平台的“已上锁”变体
+            // 0x6000..=0x6003 are the "locked" variants of different platform generations
             0x6000..=0x6003 => LockState::Locked,
             other => LockState::Unknown(other),
         }
@@ -113,12 +113,12 @@ impl LockState {
     }
 }
 
-/// 一条 imginfo 记录（保留原始 0x68 字节，保证回写时字节级一致）
+/// One imginfo record (keeps the raw 0x68 bytes so write-back is byte-identical)
 #[derive(Debug, Clone)]
 pub(crate) struct ImgInfo {
     pub(crate) raw: [u8; IMG_ENTRY_SIZE],
     pub(crate) name: String,
-    /// 名称字段之后的元数据字（u32 LE），供排查用
+    /// Metadata words after the name field (u32 LE), for troubleshooting
     pub(crate) words: Vec<u32>,
 }
 
@@ -138,7 +138,7 @@ impl ImgInfo {
         ImgInfo { raw, name, words }
     }
 
-    /// 名称是否“像”一个分区/镜像名：可见 ASCII、含字母、长度合理
+    /// Whether the name "looks like" a partition/image name: visible ASCII, contains letters, reasonable length
     fn name_plausible(&self) -> bool {
         if self.name.is_empty() || self.name.len() > IMG_NAME_LEN {
             return false;
@@ -155,7 +155,7 @@ impl ImgInfo {
     }
 }
 
-/// 已知镜像名（命中可显著提高打分，帮助区分四种解密算法）
+/// Known image names (a match significantly raises the score and helps tell the four decryption algorithms apart)
 const KNOWN_IMAGES: &[&str] = &[
     "preloader",
     "boot",
@@ -179,26 +179,26 @@ const KNOWN_IMAGES: &[&str] = &[
     "cam_vpu1",
 ];
 
-/// 解密后的明文结构
+/// Structure of the decrypted plaintext
 #[derive(Debug, Clone)]
 pub(crate) struct Plain {
-    /// 标记所在偏移：正常为 0，特殊布局为 0x850
+    /// Offset of the marker: normally 0, for the special layout 0x850
     pub(crate) marker_offset: usize,
     pub(crate) marker: PlainMarker,
     pub(crate) imgs: Vec<ImgInfo>,
     pub(crate) siu_status: u32,
     pub(crate) status: u32,
     pub(crate) attr: u32,
-    /// 明文长度（含 ext 区）
+    /// Plaintext length (including the ext area)
     pub(crate) len: usize,
-    /// seccfg_ext 原始字节（回写时原样保留）
+    /// Raw seccfg_ext bytes (preserved verbatim on write-back)
     pub(crate) ext: Vec<u8>,
-    /// 打分（0..=100），越高越可信
+    /// Score (0..=100); higher is more trustworthy
     pub(crate) score: u32,
 }
 
 impl Plain {
-    /// 尝试解析明文；结构长度不足或标记未知返回 None
+    /// Try to parse the plaintext; returns None if it is too short or the marker is unknown
     pub(crate) fn parse(dec: &[u8]) -> Option<Plain> {
         let base = Self::locate(dec)?;
         if dec.len() < base + PLAIN_MIN_LEN {
@@ -235,7 +235,7 @@ impl Plain {
         Some(p)
     }
 
-    /// 定位标记偏移：优先 0，其次 0x850 特殊布局
+    /// Locate the marker offset: prefer 0, then the special 0x850 layout
     fn locate(dec: &[u8]) -> Option<usize> {
         if dec.len() >= PLAIN_MIN_LEN && PlainMarker::of(dec) != PlainMarker::Other {
             return Some(0);
@@ -251,18 +251,18 @@ impl Plain {
     fn compute_score(&self) -> u32 {
         let mut score: u32 = 0;
 
-        // 1) 首 4 字节标记
+        // 1) leading 4-byte marker
         score += match self.marker {
             PlainMarker::Img | PlainMarker::Cfg => 30,
             PlainMarker::Zero => 12,
             PlainMarker::Other => 0,
         };
 
-        // 2) imginfo 名称可读率（最多 35 分）
+        // 2) imginfo name readability (up to 35 points)
         let plausible = self.imgs.iter().filter(|i| i.name_plausible()).count();
         score += ((plausible as u32) * 6).min(35);
 
-        // 3) 已知镜像名命中（每个 5 分，最多 25 分）
+        // 3) known image name hits (5 points each, up to 25)
         let mut known = 0u32;
         for img in &self.imgs {
             if !img.name.is_empty()
@@ -275,19 +275,19 @@ impl Plain {
         }
         score += (known * 5).min(25);
 
-        // 4) seccfg_status 合法（CCCC/IIII 才可能是真实明文）
+        // 4) valid seccfg_status (only CCCC/IIII can be real plaintext)
         score += match self.status {
             STATUS_COMPLETE | STATUS_INCOMPLETE => 10,
             _ => 0,
         };
 
-        // 5) 锁状态取值合法（最多 8 分）
+        // 5) valid lock-state value (up to 8 points)
         score += match LockState::from_attr(self.attr) {
             LockState::Locked | LockState::Unlocked => 8,
             LockState::Unknown(_) => 0,
         };
 
-        // 6) 特殊 0x850 布局扣分：能读但不建议按此改写
+        // 6) penalty for the special 0x850 layout: readable, but rewriting this way is not recommended
         if self.marker_offset != 0 {
             score = score.saturating_sub(10);
         }
@@ -300,7 +300,7 @@ impl Plain {
         LockState::from_attr(self.attr)
     }
 
-    /// 有效镜像名列表（跳过标记块与空项，用于日志/info 输出）
+    /// Non-empty image names (skipping marker blocks and empty entries), for log/info output
     pub(crate) fn non_empty_names(&self) -> Vec<&str> {
         self.imgs
             .iter()
@@ -310,9 +310,9 @@ impl Plain {
     }
 }
 
-/// 从一组候选解密密文中挑选最可信的一个。
+/// Pick the most trustworthy result from a set of candidate decryptions.
 ///
-/// 参数为 `(hwtype, 解密结果)`；只有打分 >= `min_score` 的候选才会被接受。
+/// Arguments are `(hwtype, decrypted bytes)`; only candidates with score >= `min_score` are accepted.
 pub(crate) fn best_plain(
     candidates: Vec<(&'static str, Vec<u8>)>,
     min_score: u32,
@@ -340,16 +340,16 @@ pub(crate) fn best_plain(
 mod tests {
     use super::*;
 
-    /// 构造一段合成明文：指定前 4 字节标记与若干镜像名
+    /// Build a synthetic plaintext with the given leading marker and image names
     fn synth(marker: &[u8; 4], names: &[&str], attr: u32) -> Vec<u8> {
         let mut buf = vec![0u8; PLAIN_MIN_LEN + EXT_LEN];
         buf[..4].copy_from_slice(marker);
         for (i, n) in names.iter().enumerate() {
-            // 第 0 项是标记块，镜像名从第 1 项开始（与真实布局一致）
+            // Entry 0 is the marker block; image names start at entry 1 (matching the real layout)
             let off = (i + 1) * IMG_ENTRY_SIZE;
             let b = n.as_bytes();
             buf[off..off + b.len()].copy_from_slice(b);
-            // 元数据：偏移/长度，模拟真实结构
+            // Metadata: offset/length, mimicking the real structure
             buf[off + IMG_NAME_LEN..off + IMG_NAME_LEN + 4]
                 .copy_from_slice(&(0x1000u32 * (i as u32 + 1)).to_le_bytes());
             buf[off + IMG_NAME_LEN + 4..off + IMG_NAME_LEN + 8]
@@ -412,7 +412,7 @@ mod tests {
         );
         let mut bad = vec![0u8; PLAIN_MIN_LEN];
         bad[..4].copy_from_slice(&[0, 0, 0, 0]);
-        // 未设置合法 status/attr，分数不足以胜过 good
+        // No valid status/attr set, so the score cannot beat good
         let picked = best_plain(vec![("SW", bad), ("V3", good)], 50).expect("应选中高分组");
         assert_eq!(picked.0, "V3");
         assert!(picked.1.lock_state().is_locked());

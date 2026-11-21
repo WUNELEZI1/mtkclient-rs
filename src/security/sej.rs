@@ -5,8 +5,8 @@ use std::cell::RefCell;
 use std::thread::sleep;
 use std::time::Duration;
 
-// HACC 寄存器偏移（对齐 Python hwcrypto_sej.py regval 表）
-// 基址 sej_base = 0x1000A000 (MT6768)
+// HACC register offsets (matching the Python hwcrypto_sej.py regval table)
+// Base address sej_base = 0x1000A000 (MT6768)
 const HACC_ACON: u32 = 0x004;
 const HACC_ACON2: u32 = 0x008;
 const HACC_ACONK: u32 = 0x00C;
@@ -16,7 +16,7 @@ const HACC_ACFG0: u32 = 0x040;
 const HACC_AOUT0: u32 = 0x050;
 const HACC_UNK: u32 = 0x0BC;
 
-// HACC 控制标志（对齐 Python Sej 类常量）
+// HACC control flags (matching the Python Sej class constants)
 const AES_ENC: u32 = 0x00000001;
 const AES_CBC: u32 = 0x00000002;
 const AES_128: u32 = 0x00000000;
@@ -27,7 +27,7 @@ const AES_RDY: u32 = 0x00008000;
 const AES_BK2C: u32 = 0x00000010;
 const AES_R2K: u32 = 0x00000100;
 
-// SEJ V3 初始化用的固定模式
+// Fixed pattern used by SEJ V3 init
 const CFG_RANDOM_PATTERN: [u32; 12] = [
     0x2D44BB70, 0xA744D227, 0xD0A9864B, 0x83FFC244, 0x7EC8266B, 0x43E80FB2, 0x01A6348A, 0x2067F9A0,
     0x54536405, 0xD546A6B1, 0x1CC3EC3A, 0xDE377A83,
@@ -102,7 +102,7 @@ unsafe fn backend_ready_trampoline<T: HaccBackend>(ptr: *mut ()) -> bool {
     backend.is_hacc_ready()
 }
 
-/// 在当前线程内临时绑定 HACC 后端，供 `sej_hacc_sign` 使用。
+/// Temporarily bind a HACC backend on the current thread for `sej_hacc_sign`.
 pub fn with_backend<T, R>(backend: &mut T, f: impl FnOnce() -> R) -> R
 where
     T: HaccBackend,
@@ -154,39 +154,39 @@ fn hacc_read(ctx: &HaccBackendVtable, offset: u32) -> Result<u32, String> {
     unsafe { (ctx.reg_read32)(ctx.ptr, ctx.sej_base + offset) }
 }
 
-/// SEJ V3 初始化 — 对齐 Python SEJ_V3_Init()
+/// SEJ V3 init — matches Python SEJ_V3_Init()
 fn sej_v3_init(
     ctx: &HaccBackendVtable,
     encrypt: bool,
     iv: &[u32; 4],
     legacy: bool,
 ) -> Result<(), String> {
-    // 1. 清除所有 8 个密钥寄存器 (AKEY0-7, offset 0x20-0x3C)
+    // 1. Clear all 8 key registers (AKEY0-7, offset 0x20-0x3C)
     for i in 0..8 {
         hacc_write(ctx, HACC_AKEY0 + i * 4, 0)?;
     }
 
-    // 2. 设置 ACON = CBC | DEC | 128（生成 META Key 用解密模式）
+    // 2. Set ACON = CBC | DEC | 128 (decrypt mode for META key generation)
     let acon_init = AES_CHG_BO_OFF | AES_CBC | AES_128; // DEC = 0
     hacc_write(ctx, HACC_ACON, acon_init)?;
 
-    // 3. ACONK = BK2C | R2K — 绑定 HUID/HUK 到 HACC
+    // 3. ACONK = BK2C | R2K — bind HUID/HUK to HACC
     hacc_write(ctx, HACC_ACONK, AES_BK2C | AES_R2K)?;
 
-    // 4. 清除 HACC_ASRC/HACC_ACFG/HACC_AOUT
+    // 4. Clear HACC_ASRC/HACC_ACFG/HACC_AOUT
     hacc_write(ctx, HACC_ACON2, AES_CLR)?;
 
-    // 5. 设置 IV 到 ACFG0-3
+    // 5. Load the IV into ACFG0-3
     hacc_write(ctx, HACC_ACFG0, iv[0])?;
     hacc_write(ctx, HACC_ACFG0 + 4, iv[1])?;
     hacc_write(ctx, HACC_ACFG0 + 8, iv[2])?;
     hacc_write(ctx, HACC_ACFG0 + 12, iv[3])?;
 
-    // 6. Legacy vs 非 Legacy 路径
+    // 6. Legacy vs non-legacy path
     let acon_setting = AES_CHG_BO_OFF | AES_128 | AES_CBC | if encrypt { AES_ENC } else { 0 };
 
     if legacy {
-        // Legacy 路径：设置 HACC_UNK bit1，然后做一次 CLR 等待
+        // Legacy path: set HACC_UNK bit1, then do one CLR wait
         let unk = hacc_read(ctx, HACC_UNK)?;
         hacc_write(ctx, HACC_UNK, unk | 2)?;
 
@@ -199,15 +199,15 @@ fn sej_v3_init(
             sleep(Duration::from_millis(1));
         }
 
-        // 关闭 R2K，保留 BK2C
+        // Disable R2K, keep BK2C
         hacc_write(ctx, HACC_UNK, unk & 0xFFFFFFFE)?;
         hacc_write(ctx, HACC_ACONK, AES_BK2C)?;
         hacc_write(ctx, HACC_ACON, acon_setting)?;
     } else {
-        // 非 Legacy 路径：设置 HACC_UNK=1
+        // Non-legacy path: set HACC_UNK=1
         hacc_write(ctx, HACC_UNK, 1)?;
 
-        // 用 g_CFG_RANDOM_PATTERN 做 3 轮加密生成密钥
+        // Derive keys with 3 encryption rounds over g_CFG_RANDOM_PATTERN
         for i in 0..3 {
             let pos = i * 4;
             hacc_write(ctx, HACC_ASRC0, CFG_RANDOM_PATTERN[pos])?;
@@ -219,7 +219,7 @@ fn sej_v3_init(
         }
 
         hacc_write(ctx, HACC_ACON2, AES_CLR)?;
-        // 重新设置 IV
+        // Reload the IV
         hacc_write(ctx, HACC_ACFG0, iv[0])?;
         hacc_write(ctx, HACC_ACFG0 + 4, iv[1])?;
         hacc_write(ctx, HACC_ACFG0 + 8, iv[2])?;
@@ -232,7 +232,7 @@ fn sej_v3_init(
     Ok(())
 }
 
-/// SEJ 数据加密/解密 — 对齐 Python sej_run()
+/// SEJ data encrypt/decrypt — matches Python sej_run()
 fn sej_run(ctx: &HaccBackendVtable, data: &[u8]) -> Result<Vec<u8>, String> {
     let mut result = Vec::with_capacity(data.len());
     let dwords: Vec<u32> = data
@@ -260,7 +260,7 @@ fn sej_run(ctx: &HaccBackendVtable, data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(result)
 }
 
-/// SEJ 终止 — 对齐 Python sej_terminate()
+/// SEJ terminate — matches Python sej_terminate()
 fn sej_terminate(ctx: &HaccBackendVtable) -> Result<(), String> {
     hacc_write(ctx, HACC_ACON2, AES_CLR)?;
     for i in 0..8 {
@@ -269,13 +269,13 @@ fn sej_terminate(ctx: &HaccBackendVtable) -> Result<(), String> {
     Ok(())
 }
 
-/// 通过 HACC 引擎对输入做 AES-128-CBC 签名 — 完整对齐 Python hw_aes128_cbc_encrypt
+/// AES-128-CBC sign the input via the HACC engine — fully matches Python hw_aes128_cbc_encrypt
 fn extract_hacc_output(
     ctx: &HaccBackendVtable,
     data: &[u8],
     legacy: bool,
 ) -> Result<Vec<u8>, String> {
-    // 使用前确认 HACC 后端就绪（DA Extensions 已启用），否则寄存器访问必然失败
+    // Confirm the HACC backend is ready (DA Extensions enabled); register access always fails otherwise
     if !unsafe { (ctx.is_hacc_ready)(ctx.ptr) } {
         return Err("HACC backend 未就绪（DA Extensions 未启用）".to_string());
     }
@@ -283,14 +283,14 @@ fn extract_hacc_output(
     info!("HACC init");
     let iv: [u32; 4] = G_HACC_CFG_1[0..4].try_into().unwrap();
 
-    // 1. SEJ V3 初始化（绑定 HUID/HUK 密钥）
+    // 1. SEJ V3 init (binds the HUID/HUK keys)
     sej_v3_init(ctx, true, &iv, legacy)?;
 
-    // 2. 逐块加密
+    // 2. Encrypt block by block
     info!("HACC run");
     let result = sej_run(ctx, data)?;
 
-    // 3. 终止（清除密钥）
+    // 3. Terminate (wipe keys)
     info!("HACC terminate");
     sej_terminate(ctx)?;
 
@@ -353,22 +353,22 @@ fn sej_sec_cfg_sw_decrypt_with_key(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8
     Ok(buf)
 }
 
-/// 软件模式 AES-256-CBC 解密（sej_sec_cfg_sw 解密）
-/// 对齐 Python: sej_sec_cfg_sw(data, encrypt=False)
+/// Software-mode AES-256-CBC decryption (sej_sec_cfg_sw decrypt)
+/// Matches Python: sej_sec_cfg_sw(data, encrypt=False)
 pub(crate) fn sej_sec_cfg_sw_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     sej_sec_cfg_sw_decrypt_with_key(data, &sw_key_default())
 }
 
-/// 软件模式 AES-256-CBC 加密（sej_sec_cfg_sw 加密）
-/// 对齐 Python: sej_sec_cfg_sw(data, encrypt=True)
+/// Software-mode AES-256-CBC encryption (sej_sec_cfg_sw encrypt)
+/// Matches Python: sej_sec_cfg_sw(data, encrypt=True)
 pub(crate) fn sej_sec_cfg_sw_encrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     sej_sec_cfg_sw_encrypt_with_key(data, &sw_key_default())
 }
 
-/// 硬件模式 AES-128-CBC 加密（SEJ V3/V4 hwtype 签名用）
-/// 对齐 Python: sej_sec_cfg_hw_V3 → hw_aes128_cbc_encrypt
-/// 由于无法访问硬件 SEJ 寄存器，此处用软件模拟
-/// 使用 g_HACC_CFG_1 作为 IV，AES-128-CBC
+/// Hardware-mode AES-128-CBC encryption (for SEJ V3/V4 hwtype signing)
+/// Matches Python: sej_sec_cfg_hw_V3 → hw_aes128_cbc_encrypt
+/// Since hardware SEJ registers are unreachable, this is a software emulation
+/// Uses g_HACC_CFG_1 as the IV, AES-128-CBC
 pub(crate) fn sej_sec_cfg_hw_v3_encrypt(data: &[u8], legacy: bool) -> Result<Vec<u8>, String> {
     use aes::Aes128;
     type Aes128CbcEnc = cbc::Encryptor<Aes128>;
@@ -391,8 +391,8 @@ pub(crate) fn sej_sec_cfg_hw_v3_encrypt(data: &[u8], legacy: bool) -> Result<Vec
     Ok(buf)
 }
 
-/// 硬件模式 V2 加密（sej_sec_cfg_hw）
-/// 对齐 Python: sej_sec_cfg_hw
+/// Hardware-mode V2 encryption (sej_sec_cfg_hw)
+/// Matches Python: sej_sec_cfg_hw
 pub(crate) fn sej_sec_cfg_hw_encrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     use aes::Aes128;
     type Aes128CbcEnc = cbc::Encryptor<Aes128>;
@@ -414,7 +414,7 @@ pub(crate) fn sej_sec_cfg_hw_encrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-/// 硬件模式 AES-128-CBC 解密（V3/V4 用）
+/// Hardware-mode AES-128-CBC decryption (for V3/V4)
 pub(crate) fn sej_sec_cfg_hw_v3_decrypt(data: &[u8], legacy: bool) -> Result<Vec<u8>, String> {
     use aes::Aes128;
     type Aes128CbcDec = cbc::Decryptor<Aes128>;
@@ -436,7 +436,7 @@ pub(crate) fn sej_sec_cfg_hw_v3_decrypt(data: &[u8], legacy: bool) -> Result<Vec
     Ok(buf)
 }
 
-/// 硬件模式 V2 解密
+/// Hardware-mode V2 decryption
 pub(crate) fn sej_sec_cfg_hw_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     use aes::Aes128;
     type Aes128CbcDec = cbc::Decryptor<Aes128>;
@@ -457,8 +457,8 @@ pub(crate) fn sej_sec_cfg_hw_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-/// 通过 HACC 引擎对输入做签名/加密，并返回结果。
-/// legacy=true 对应 V4 类型，legacy=false 对应 V3 类型。
+/// Sign/encrypt the input via the HACC engine and return the result.
+/// legacy=true maps to V4, legacy=false maps to V3.
 pub fn sej_hacc_sign(data: &[u8], hw_code: u16, legacy: bool) -> Result<Vec<u8>, String> {
     match with_backend_mut(|ctx| extract_hacc_output(ctx, data, legacy)) {
         Ok(sig) => {

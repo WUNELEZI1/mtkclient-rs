@@ -1,9 +1,9 @@
-//! DA 模式控制接口
+//! DA mode control interface
 //!
-//! - `set_meta`             — 设置 meta boot 模式（usb / off）
-//! - `enable_adb_and_reboot`— 在 DA 模式下开启 ADB，然后重启进系统
-//! - `cmd_peek`             — 通过 DA Extension 读取设备内存
-//! - `cmd_poke`             — 通过 DA Extension 写入设备内存
+//! - `set_meta`             — set the meta boot mode (usb / off)
+//! - `enable_adb_and_reboot`— enable ADB in DA mode, then reboot into the system
+//! - `cmd_peek`             — read device memory via a DA Extension
+//! - `cmd_poke`             — write device memory via a DA Extension
 
 use log::info;
 
@@ -11,8 +11,8 @@ use crate::da::xflash::DAXFlash;
 use crate::da::xflash::protocol::{DA_EXT_BOOT_ADDR, SET_META_BOOT_MODE};
 
 impl<'a> DAXFlash<'a> {
-    /// 设置 meta boot 模式
-    /// 对齐 Python xflash_lib.py set_meta()
+    /// Set the meta boot mode
+    /// Matches Python xflash_lib.py set_meta()
     pub fn set_meta(&mut self, mode: &str) -> Result<(), String> {
         let (boot_mode, com_type, com_id) = match mode {
             "usb" => (0x01u8, 0x02u8, 0x00u8),
@@ -25,7 +25,7 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
-    /// 在 DA 模式下开启 ADB，然后重启进系统
+    /// Enable ADB in DA mode, then reboot into the system
     pub fn enable_adb_and_reboot(&mut self) -> Result<(), String> {
         info!("在 DA 模式下开启 ADB...");
         self.set_meta("usb")?;
@@ -34,14 +34,14 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
-    /// 通过 DA Extension 读取设备内存
+    /// Read device memory via a DA Extension
     ///
-    /// 使用 XFlash READ_DATA 协议直接读取 flash 地址处的数据。
-    /// 需要 DA 已加载（daext = true）。
+    /// Uses the XFlash READ_DATA protocol to read data directly at the flash address.
+    /// Requires DA to be loaded (daext = true).
     ///
-    /// 参数:
-    /// - `addr`: 读取的起始物理地址
-    /// - `size`: 读取的字节数
+    /// Parameters:
+    /// - `addr`: starting physical address to read
+    /// - `size`: number of bytes to read
     pub fn cmd_peek(&mut self, addr: u64, size: u32) -> Result<Vec<u8>, String> {
         if !self.daext {
             return Err(format!(
@@ -56,14 +56,14 @@ impl<'a> DAXFlash<'a> {
         Ok(data)
     }
 
-    /// 通过 DA Extension 写入设备内存
+    /// Write device memory via a DA Extension
     ///
-    /// 使用 XFlash WRITE_DATA 协议直接写入 flash 地址。
-    /// 需要 DA 已加载（daext = true）。
+    /// Uses the XFlash WRITE_DATA protocol to write directly to the flash address.
+    /// Requires DA to be loaded (daext = true).
     ///
-    /// 参数:
-    /// - `addr`: 写入的起始物理地址
-    /// - `data`: 要写入的字节数据
+    /// Parameters:
+    /// - `addr`: starting physical address to write
+    /// - `data`: byte data to write
     pub fn cmd_poke(&mut self, addr: u64, data: &[u8]) -> Result<(), String> {
         if !self.daext {
             return Err(format!(

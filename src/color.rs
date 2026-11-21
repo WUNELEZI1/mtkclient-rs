@@ -1,16 +1,16 @@
-//! 自研终端着色（替代 colored crate）
+//! In-house terminal coloring (replaces the colored crate)
 //!
-//! 仅实现项目实际用到的 10 个 `Colorize` 方法，全部为纯 ANSI 转义码，零外部依赖。
-//! - 非 Windows 平台：终端原生支持 ANSI，直接输出即可。
-//! - Windows 平台：需启用控制台虚拟终端处理（见 `enable_virtual_terminal`，
-//!   复刻 `colored::control::set_virtual_terminal` 的行为），否则 CMD/PowerShell
-//!   会把转义序列当作普通字符打印。
+//! Implements only the 10 `Colorize` methods actually used by the project, all pure ANSI escapes, zero external dependencies.
+//! - Non-Windows platforms: terminals support ANSI natively, emit directly.
+//! - Windows: console virtual terminal processing must be enabled (see `enable_virtual_terminal`,
+//!   mirroring `colored::control::set_virtual_terminal`), otherwise CMD/PowerShell
+//!   prints escape sequences as literal characters.
 //!
-//! 行为对齐：始终输出颜色（原项目调用 `colored::control::set_override(true)`
-//! 强制开启），不做 TTY 检测，避免管道/日志场景下的行为漂移。
+//! Behavior alignment: always emit colors (the original project called `colored::control::set_override(true)`
+//! to force it on), with no TTY detection, avoiding behavior drift in piped/log scenarios.
 
-/// 所有着色方法返回的类型统一为 [`String`]，与 `colored` 的 `ColoredString`
-/// 一样实现 `Display`，但比 `ColoredString` 更轻、且天然可参与 `String` 运算。
+/// All coloring methods return [`String`], implementing `Display` like `colored`'s `ColoredString`,
+/// but lighter and naturally usable in `String` operations.
 pub trait Colorize {
     fn red(self) -> String;
     fn green(self) -> String;
@@ -26,17 +26,17 @@ pub trait Colorize {
 
 const RESET: &str = "\x1b[0m";
 
-/// 用指定 SGR 码包裹字符串（开码 … 文本 … 复位）。
+/// Wrap a string with the given SGR code (start code … text … reset).
 ///
-/// 链式调用（如 `"x".red().bold()`）会产生多层转义，但首个 `RESET` 之前的属性
-/// 均已生效，视觉结果正确，无副作用。
+/// Chained calls (e.g. `"x".red().bold()`) produce multiple escape layers, but all attributes
+/// before the first `RESET` already apply, so the visual result is correct with no side effects.
 fn paint(s: &str, code: &str) -> String {
     format!("\x1b[{code}m{s}{RESET}")
 }
 
-/// 为所有 `AsRef<str>` 类型（`str` / `String` / `&str` / `&String` / `Cow<str>` 等）
-/// 统一实现 `Colorize`。`self` 按值接收，但 `&str`/`&String` 均为 `Copy`，
-/// 不会 move 底层数据；`String` 按值消费亦符合原 `colored` 语义。
+/// Uniformly implement `Colorize` for all `AsRef<str>` types (`str` / `String` / `&str` / `&String` / `Cow<str>` etc.).
+/// `self` is taken by value, but `&str`/`&String` are `Copy`,
+/// so no underlying data is moved; consuming `String` by value also matches the original `colored` semantics.
 macro_rules! impl_colorize {
     ($($name:ident => $code:literal),* $(,)?) => {
         impl<T: AsRef<str>> Colorize for T {
@@ -58,11 +58,11 @@ impl_colorize! {
     underline => "4",
 }
 
-/// 启用 Windows 控制台虚拟终端处理，使 ANSI 转义序列在 CMD/PowerShell 中生效。
+/// Enable Windows console virtual terminal processing so ANSI escapes work in CMD/PowerShell.
 ///
-/// 复刻 `colored::control::set_virtual_terminal(true)`：对 stdout/stderr 控制台句柄
-/// 追加 `ENABLE_VIRTUAL_TERMINAL_PROCESSING`。若句柄并非控制台（如被管道重定向），
-/// `GetConsoleMode` 返回 0，安全跳过，不影响管道场景。
+/// Mirrors `colored::control::set_virtual_terminal(true)`: for the stdout/stderr console handles
+/// add `ENABLE_VIRTUAL_TERMINAL_PROCESSING`. If a handle is not a console (e.g. redirected to a pipe),
+/// `GetConsoleMode` returns 0 and is safely skipped, leaving piped scenarios unaffected.
 #[cfg(windows)]
 pub fn enable_virtual_terminal() {
     use std::os::windows::io::AsRawHandle;
@@ -91,6 +91,6 @@ unsafe extern "system" {
     fn SetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, dwMode: u32) -> i32;
 }
 
-// 非 Windows 平台终端原生支持 ANSI，无需任何处理；main.rs 仅在
-// `#[cfg(target_os = "windows")]` 分支调用 `enable_virtual_terminal`，
-// 因此这里不再提供非 Windows 版本的空实现（避免成为 dead_code）。
+// Non-Windows terminals support ANSI natively and need no handling; main.rs calls
+// `enable_virtual_terminal` only under `#[cfg(target_os = "windows")]`,
+// so no empty non-Windows variant is provided here (avoids dead_code).

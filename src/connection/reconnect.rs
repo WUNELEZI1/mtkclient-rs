@@ -11,8 +11,8 @@ use super::manager::{ConnectionManager, DeviceMode};
 use crate::preloader::SerialPortTransport;
 
 impl ConnectionManager {
-    /// WinUSB 重连循环
-    /// 无限等待直到设备出现（用户手动按组合键进入 BROM 模式可能需要几十秒到几分钟）
+    /// WinUSB reconnect loop
+    /// Waits indefinitely until the device appears (entering BROM manually can take seconds to minutes)
     pub fn reconnect_loop(
         &self,
         context: &UsbContext,
@@ -20,7 +20,8 @@ impl ConnectionManager {
     ) -> Result<usb::UsbDevice, String> {
         let mut retry = 0;
         let mut context_refreshed = false;
-        // 总等待上限：设备重枚举通常 < 2s，超时说明设备未回到目标阶段，避免无限卡死。
+        // Overall wait cap: re-enumeration usually takes < 2s; a timeout means the device never
+        // reached the target stage, avoiding an endless hang.
         const RECONNECT_TOTAL_WAIT_SECS: u64 = 60;
         let start = Instant::now();
 
@@ -39,12 +40,12 @@ impl ConnectionManager {
         loop {
             retry += 1;
 
-            // Ctrl+C 检查：用户取消时退出等待
+            // Ctrl+C check: leave the wait when the user cancels
             if crate::cancel::requested() {
                 return Err("用户取消等待".to_string());
             }
 
-            // 总等待超时：避免设备未重枚举到目标阶段时无限卡在端口检测
+            // Overall wait timeout: avoid hanging in port scanning if the device never re-enumerates
             if start.elapsed().as_secs() >= RECONNECT_TOTAL_WAIT_SECS {
                 return Err(format!(
                     "[RECONNECT] 等待设备重连超时 ({}s)：未检测到 {:?}。请确认设备已回到目标模式后重试。",
@@ -72,8 +73,8 @@ impl ConnectionManager {
                 }
             }
 
-            // 驱动切换后旧的 libusb context 可能无法枚举新设备
-            // 每 50 次重试（约 10 秒）尝试用新 context 打开
+            // After a driver switch, the old libusb context may fail to enumerate new devices;
+            // every 50 retries (~10s) try opening with a fresh context
             if retry % 50 == 0 && !context_refreshed {
                 trace!("[RECONNECT] 尝试刷新 libusb context...");
                 if let Ok(new_ctx) = UsbContext::new() {
@@ -98,16 +99,16 @@ impl ConnectionManager {
         }
     }
 
-    // 说明：原 reconnect_after_da / reconnect_after_kamakiri / reconnect_after_usb_reset /
-    // try_quick_connect / mode / stage / port_name 等接口为历史预留（DA 会话复用已全面
-    // 禁用，见 main.rs / session.rs 注释），全平台无真实调用点，已按“显式废弃的死代码
-    // 直接删除”原则移除；其依赖的 USB_REENUM_DELAY_MS / QUICK_CONNECT_INTERVAL_MS 常量
-    // 亦一并从 manager.rs 清理。
+    // Note: the former reconnect_after_da / reconnect_after_kamakiri / reconnect_after_usb_reset /
+    // try_quick_connect / mode / stage / port_name interfaces were historical placeholders (DA session
+    // reuse is fully disabled, see comments in main.rs / session.rs) with no real call sites on any
+    // platform, and were removed under the "delete explicitly dead code" rule; their dependent
+    // USB_REENUM_DELAY_MS / QUICK_CONNECT_INTERVAL_MS constants were also cleaned from manager.rs.
 
-    /// Preloader 模式初始化：等待 Preloader VCOM (PID=0x2000)，握手后直接返回
-    /// allow_brom_fallback: 当找不到 Preloader 时是否尝试 fallback 到 BROM（--mode auto 用 true，--mode preloader 用 false）
+    /// Preloader mode init: wait for Preloader VCOM (PID=0x2000), return right after the handshake
+    /// allow_brom_fallback: whether to fall back to BROM when Preloader is not found (true for --mode auto, false for --mode preloader)
     ///
-    /// 注：DA 会话复用已全面禁用（见 main.rs / session.rs device_online），不再有 allow_da_fallback 分支。
+    /// Note: DA session reuse is fully disabled (see device_online in main.rs / session.rs); there is no allow_da_fallback branch.
     pub(crate) fn smart_init_preloader(
         &mut self,
         context: &UsbContext,
@@ -115,43 +116,46 @@ impl ConnectionManager {
     ) -> Result<(Preloader, DeviceMode), String> {
         info!("等待 Preloader VCOM 设备连接 (PID=0x2000)，无需按任何按键...");
 
-        // 0. Preloader 模式的 DA 会话复用已禁用（不再尝试）。
+        // 0. DA session reuse is disabled in Preloader mode (no longer attempted).
         //
-        // 根因：Preloader 串口（VCOM, PID=0x2000）在进程退出时因 DTR 掉线会导致设备
-        // 复位，并重新枚举为同一 PID=0x2000 的 Preloader 握手态——此时 DA 早已死掉，
-        // 但 PID 与“DA 模式串口”完全一样，无法仅凭 PID 区分。旧逻辑据此盲目复用
-        // .state(da_loaded) + PID=0x2000，向一个处于 Preloader 握手态（无 DA）的设备
-        // 直接发 DA SHUTDOWN，被误读后 status 巧合返回 0 → 假成功 → 设备毫无反应
-        // （典型表现：reboot 日志显示“DA SHUTDOWN 成功”但设备不重启）。
+        // Root cause: on process exit the Preloader serial port (VCOM, PID=0x2000) drops DTR, which
+        // resets the device and it re-enumerates into the same PID=0x2000 Preloader handshake state.
+        // DA is long dead by then, but the PID is identical to that of "DA mode serial", so PID alone
+        // cannot distinguish them. The old logic blindly reused .state(da_loaded) + PID=0x2000 and sent
+        // DA SHUTDOWN to a device in Preloader handshake state (no DA); the misread status happened to
+        // return 0 → false success → the device did nothing (typical symptom: the reboot log says
+        // "DA SHUTDOWN succeeded" but the device does not reboot).
         //
-        // 由于 Preloader 串口的 DA 不跨进程存活，会话复用在此模式下本质上永远无效，
-        // 故统一改为“每次都重新握手 + 重载 DA”，保证发往的是活着的、已验证的 DA 链路
-        // （与你 run 3 的 printgpt 走的是同一条已被验证可用的新鲜路径）。
-        // 注：BROM 模式的 DA 同样不跨进程存活（DA 加载后 PID 仍是 0x0003，设备复位后亦回
-        // 0x0003，DA 已死），故 BROM 亦不做 .state DA 会话复用——统一由 smart_init(Brom)
-        // 重新握手 + 重载 DA。此处仅说明历史设计，复用逻辑已全部禁用。
+        // Since the Preloader serial DA does not survive across processes, session reuse is inherently
+        // useless in this mode; always re-handshake and reload DA so traffic goes to a live, verified
+        // DA link (the same fresh path already proven by printgpt in run 3).
+        // Note: BROM-mode DA also does not survive across processes (after DA load the PID is still
+        // 0x0003, and after a device reset it returns to 0x0003 with DA dead), so BROM also skips
+        // .state DA session reuse — smart_init(Brom) always re-handshakes and reloads DA.
+        // This only documents the historical design; all reuse logic is disabled.
 
         let mut retry_count = 0u32;
         let mut reported_ports = HashSet::new();
-        const PRELOADER_MAX_RETRY: u32 = 50; // 约 10 秒 (50 * 200ms)
-        // 等待策略（对齐 brom 路径 manager.rs 主循环，仅 Ctrl+C 退出）：
-        // ① 未检测到 Preloader 端口时【无限等待】——用户手动进入 Preloader 握手态可能需要
-        //    若干秒到几分钟，不应有 30s 上限（修复 bug #1：等待应无限）。
-        // ② 端口已出现但握手【持续失败】（设备处于 DA 模式而非 Preloader 握手态）时，无限重试
-        //    无益，超出窗口后给出明确指引（修复 bug #3：避免"发现端口后卡死"）。
+        const PRELOADER_MAX_RETRY: u32 = 50; // ~10s (50 * 200ms)
+        // Wait policy (matching the brom path in the manager.rs main loop, exit only on Ctrl+C):
+        // 1) When no Preloader port is detected, wait indefinitely — entering the Preloader handshake
+        //    manually may take seconds to minutes, so there should be no 30s cap (bug #1 fix: wait forever).
+        // 2) When the port appears but the handshake keeps failing (device in DA mode rather than Preloader
+        //    handshake), endless retries are useless; give clear guidance once the window expires
+        //    (bug #3 fix: avoid "stuck after the port appears").
         const PRELOADER_HANDSHAKE_FAIL_WINDOW_SECS: u64 = 25;
         let mut handshake_fail_start: Option<Instant> = None;
 
         loop {
             retry_count += 1;
 
-            // Ctrl+C 检查：用户取消时退出等待
+            // Ctrl+C check: leave the wait when the user cancels
             if crate::cancel::requested() {
                 return Err("用户取消等待".to_string());
             }
-            // 注意：Preloader 模式不再设总等待上限（对齐 brom 路径），未检测到端口时无限等待。
+            // Note: Preloader mode has no overall wait cap (matching the brom path); wait indefinitely when no port is detected.
 
-            // 1. 枚举 COM 口，找 PID=0x2000 的 Preloader VCOM
+            // 1. Enumerate COM ports and look for the Preloader VCOM with PID=0x2000
             if let Ok(ports) = serialport::available_ports() {
                 for p in &ports {
                     if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
@@ -178,9 +182,9 @@ impl ConnectionManager {
                             }
                             Err(e) => {
                                 warn!("[PRELOADER] {} 握手失败: {}", p.port_name, e);
-                                // 端口已出现但握手反复失败：设备很可能处于 DA 模式（非 Preloader
-                                // 握手态），继续无限重试不会自动恢复，超出窗口后给出明确指引
-                                //（修复 bug #3：避免"发现端口后卡死"）。
+                                // Port present but handshake keeps failing: the device is likely in DA mode
+                                // (not Preloader handshake); endless retries will not recover it, so give
+                                // clear guidance once the window expires (bug #3 fix: avoid "stuck after the port appears").
                                 match handshake_fail_start {
                                     None => handshake_fail_start = Some(Instant::now()),
                                     Some(t)
@@ -200,7 +204,7 @@ impl ConnectionManager {
                 }
             }
 
-            // 2. 串口没找到，尝试 WinUSB（PID=0x2000）
+            // 2. Serial port not found; try WinUSB (PID=0x2000)
             if let Ok(usb_device) = usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x2000) {
                 info!(
                     "[PRELOADER] WinUSB 设备已连接: VID={:04X} PID={:04X}",
@@ -218,7 +222,7 @@ impl ConnectionManager {
                     }
                     Err(e) => {
                         warn!("[PRELOADER] init 失败: {}，继续等待...", e);
-                        // 端口已出现但 init 反复失败：同串口握手失败，超出窗口后给出明确指引。
+                        // Port present but init keeps failing: same as serial handshake failure; give clear guidance after the window.
                         match handshake_fail_start {
                             None => handshake_fail_start = Some(Instant::now()),
                             Some(t)
@@ -236,7 +240,7 @@ impl ConnectionManager {
                 }
             }
 
-            // 3. 尝试一定次数后仍未找到 Preloader 设备
+            // 3. Preloader device still not found after the given number of attempts
             if retry_count >= PRELOADER_MAX_RETRY {
                 if allow_brom_fallback {
                     trace!(
@@ -245,7 +249,7 @@ impl ConnectionManager {
                         (retry_count * 200) / 1000
                     );
 
-                    // 检测 BROM COM 口
+                    // Detect a BROM COM port
                     if let Ok(ports) = serialport::available_ports() {
                         for p in &ports {
                             if let serialport::SerialPortType::UsbPort(ref info) = p.port_type
@@ -262,7 +266,7 @@ impl ConnectionManager {
                         }
                     }
 
-                    // 检测 BROM WinUSB 设备
+                    // Detect a BROM WinUSB device
                     if let Ok(_usb_device) =
                         usb::UsbDevice::open_by_vid_pid(context, 0x0E8D, 0x0003)
                     {
@@ -281,7 +285,7 @@ impl ConnectionManager {
                     );
                 }
 
-                // 重置计数器继续等待（给用户更多时间）
+                // Reset the counter and keep waiting (give the user more time)
                 retry_count = 0;
             }
 
@@ -289,13 +293,14 @@ impl ConnectionManager {
         }
     }
 
-    /// Preloader 串口握手：打开 COM 口 → init_preloader
+    /// Preloader serial handshake: open the COM port → init_preloader
     pub(crate) fn preloader_serial_handshake(&self, port_name: &str) -> Result<Preloader, String> {
-        // 必须用 open_raw 而非 new：new 会先 verify_port_exists（打开→关闭 COM 口），
-        // 打开串口会清空接收缓冲区中的 Preloader "READY" 同步信号；Preloader 设备在
-        // 进入握手态时持续发送 READY（刷机匣成功日志 0x52/45/41/44/59 = "READY"），
-        // verify 的打开-关闭会消耗掉这些字节，导致后续握手"未收到任何响应字节"。
-        // 对齐 preloader_boot_mode.rs 的成功做法（open_raw 不清缓冲）。
+        // Must use open_raw instead of new: new first calls verify_port_exists (open→close the COM port),
+        // and opening the serial port clears the Preloader "READY" sync signal from the receive buffer;
+        // the Preloader continuously sends READY while in handshake state (flasher success log
+        // 0x52/45/41/44/59 = "READY"), and the open-close in verify consumes those bytes, so the
+        // following handshake reports "no response bytes received".
+        // Matching the working approach in preloader_boot_mode.rs (open_raw does not clear the buffer).
         let transport = SerialPortTransport::open_raw(port_name, 115200)?;
         let mut preloader = Preloader::new(Box::new(transport));
         if !preloader

@@ -1,22 +1,24 @@
-//! A/B 槽位自动解析
+//! A/B slot auto-resolution.
 //!
-//! 统一入口 [`detect_active_slot`] / [`resolve_slot_partition`]：
-//! 1. misc 分区 bootctrl 结构（boot_control_message / AVB 槽位元数据，偏移 0x2000）；
-//! 2. GPT 启发：存在 `xxx_a`/`xxx_b` 而请求裸名 `xxx` 时按活跃槽位补后缀；
-//! 3. 兜底：misc 文本中的槽位标记。
+//! Unified entry points [`detect_active_slot`] / [`resolve_slot_partition`]:
+//! 1. misc partition bootctrl structure (boot_control_message / AVB slot metadata, offset 0x2000);
+//! 2. GPT heuristic: if `xxx_a`/`xxx_b` exist but the bare name `xxx` is requested,
+//!    append the active slot suffix;
+//! 3. fallback: slot markers in the misc text.
 //!
-//! 接线点：`find_partition_addr` 在 GPT 直查失败后自动调用
-//! [`resolve_slot_partition`]，使 `r boot` / `w vbmeta` 等命令无需手动带 `_a/_b`。
+//! Wiring: `find_partition_addr` calls [`resolve_slot_partition`] automatically after a
+//! direct GPT lookup fails, so commands like `r boot` / `w vbmeta` need no manual `_a/_b`.
 
 use crate::da::DAXFlash;
 
-/// bootctrl 魔数字节流 "BOOT"（按字节比较，规避端序歧义）。
+/// bootctrl magic byte string "BOOT" (compared per byte to avoid endianness ambiguity).
 const BOOTCTRL_MAGIC: &[u8; 4] = b"BOOT";
 
-/// 检测当前活跃 A/B 槽位。
+/// Detects the currently active A/B slot.
 ///
-/// 返回 `Ok(Some('a' | 'b'))`；非 A/B 设备或检测失败返回 `Ok(None)`。
-/// 结果缓存在 `da.active_slot`，同一 DA 会话内只读一次 misc。
+/// Returns `Ok(Some('a' | 'b'))`; returns `Ok(None)` on non-A/B devices or when
+/// detection fails. The result is cached in `da.active_slot`, so misc is read only
+/// once per DA session.
 pub fn detect_active_slot(da: &mut DAXFlash) -> Result<Option<char>, String> {
     if let Some(cached) = da.active_slot {
         return Ok(Some(cached));
@@ -28,7 +30,7 @@ pub fn detect_active_slot(da: &mut DAXFlash) -> Result<Option<char>, String> {
     Ok(slot)
 }
 
-/// 不走缓存的原始检测（misc 分区 bootctrl + 文本启发）。
+/// Uncached raw detection (misc bootctrl + text heuristic).
 fn detect_active_slot_uncached(da: &mut DAXFlash) -> Result<Option<char>, String> {
     let (misc_addr, misc_size) = match da.find_partition_addr("misc") {
         Ok((addr, size)) => (addr, size.min(0x10000)),
@@ -40,19 +42,19 @@ fn detect_active_slot_uncached(da: &mut DAXFlash) -> Result<Option<char>, String
         Err(_) => return Ok(None),
     };
 
-    // 主路径：boot_control 结构（misc 偏移 0x2000，AOSP boot_control AVB 元数据布局）。
-    // 魔数按字节流比较 "BOOT"（不同固件写入端序不一，字节级匹配两种都认）。
+    // Primary path: boot_control structure (misc offset 0x2000, AOSP boot_control AVB metadata layout).
+    // The magic is compared as a byte stream against "BOOT" (firmware endianness varies, byte-level matching accepts both).
     if misc_data.len() >= 0x2000 + 12 {
         let off = 0x2000;
         if &misc_data[off..off + 4] == BOOTCTRL_MAGIC {
-            // active_slot 在 magic + 8（跳过 u32 保留位）
+            // active_slot sits at magic + 8 (skipping the u32 reserved field)
             let active = u32::from_le_bytes(misc_data[off + 8..off + 12].try_into().unwrap());
             let slot = if active == 0 { 'a' } else { 'b' };
             return Ok(Some(slot));
         }
     }
 
-    // 兜底：misc 里的 bootloader 消息 / 文本槽位标记
+    // Fallback: bootloader messages / textual slot markers in misc
     let data_str = String::from_utf8_lossy(&misc_data);
     if data_str.contains("_a") && !data_str.contains("_b") {
         Ok(Some('a'))
@@ -63,19 +65,20 @@ fn detect_active_slot_uncached(da: &mut DAXFlash) -> Result<Option<char>, String
     }
 }
 
-/// 把裸分区名解析为带槽位后缀的实际 GPT 名。
+/// Resolves a bare partition name to the actual GPT name with slot suffix.
 ///
-/// 规则：
-/// - 名字已带 `_a`/`_b` 后缀 → 原样返回；
-/// - GPT 中直接存在该名 → 原样返回（非 A/B 分区）；
-/// - GPT 中存在 `name_a` 或 `name_b` → 按活跃槽位返回（无槽位信息时返回存在的那个）。
+/// Rules:
+/// - name already ends with `_a`/`_b` -> returned as is;
+/// - the name exists directly in GPT -> returned as is (non-A/B partition);
+/// - `name_a` or `name_b` exists in GPT -> return according to the active slot
+///   (if slot info is unavailable, return the one that exists).
 pub fn resolve_slot_partition(da: &mut DAXFlash, name: &str) -> Option<String> {
-    // 已带后缀：不处理
+    // Already suffixed: nothing to do
     if name.ends_with("_a") || name.ends_with("_b") {
         return None;
     }
 
-    // 需要 GPT 在缓存中（find_partition_addr 调用前已加载）
+    // GPT must be cached (loaded before find_partition_addr is called)
     let gpt_data = da.last_gpt_data.as_ref()?;
 
     let has_partition = |n: &str| -> bool {
@@ -85,7 +88,7 @@ pub fn resolve_slot_partition(da: &mut DAXFlash, name: &str) -> Option<String> {
     };
 
     if has_partition(name) {
-        return None; // 裸名存在，非 A/B
+        return None; // bare name exists, not A/B
     }
 
     let has_a = has_partition(&format!("{name}_a"));
@@ -94,7 +97,7 @@ pub fn resolve_slot_partition(da: &mut DAXFlash, name: &str) -> Option<String> {
         return None;
     }
 
-    // 双槽位：按活跃槽位；单槽位（罕见）：返回存在者
+    // Dual slot: follow the active slot; single slot (rare): return the one present
     let slot = detect_active_slot(da).ok().flatten();
     match (slot, has_a, has_b) {
         (Some('a'), true, _) => Some(format!("{name}_a")),
@@ -102,7 +105,7 @@ pub fn resolve_slot_partition(da: &mut DAXFlash, name: &str) -> Option<String> {
         (None, true, false) => Some(format!("{name}_a")),
         (None, false, true) => Some(format!("{name}_b")),
         (None, true, true) => {
-            // 无槽位信息但双槽位存在：默认 a（与 bootloader 默认一致）
+            // No slot info but both slots exist: default to a (matches bootloader default)
             Some(format!("{name}_a"))
         }
         _ => None,
@@ -115,14 +118,14 @@ mod tests {
 
     #[test]
     fn bootctrl_magic_bytes() {
-        // 魔数按字节流比较，两种端序的固件写入都能匹配
+        // Magic compared as byte stream, so firmware of either endianness matches
         assert_eq!(&BOOTCTRL_MAGIC[..], b"BOOT");
         assert_eq!(u32::from_be_bytes(*BOOTCTRL_MAGIC), 0x424F_4F54);
     }
 
     #[test]
     fn suffix_detection_is_safe() {
-        // ends_with 检查不误伤特殊分区名
+        // ends_with check does not misfire on special partition names
         assert!("boot_a".ends_with("_a"));
         assert!(!"boot1".ends_with("_a"));
         assert!(!"rpmb".ends_with("_b"));

@@ -1,9 +1,9 @@
-//! `Preloader` 初始化流程的剩余原语
+//! Remaining primitives of the `Preloader` initialization flow
 //!
-//! 本文件承接 `mod.rs` 中的 `impl Preloader` 第二块，包含：
-//! - `get_hw_subcode` 读取 HW Subcode
-//! - `flush_input` / `flush_input_quick` / `flush_input_poll` 输入缓冲清理
-//! - `rword` 读 16 位字基础工具
+//! The second `impl Preloader` block split out of `mod.rs`, containing:
+//! - `get_hw_subcode` reads the HW Subcode
+//! - `flush_input` / `flush_input_quick` / `flush_input_poll` input buffer cleanup
+//! - `rword` basic 16-bit word reader
 
 use super::{
     FLUSH_INPUT_CHUNK, FLUSH_INPUT_MAX_ITER, FLUSH_INPUT_QUICK_CHUNK, FLUSH_INPUT_QUICK_MAX_ITER,
@@ -14,7 +14,7 @@ use log::trace;
 use std::time::Duration;
 
 impl Preloader {
-    /// 读取 HW Subcode
+    /// Read the HW Subcode
     /// Python: echo(0xDB) → rbyte(2)
     pub fn get_hw_subcode(&mut self) -> Result<u16, String> {
         if !self.sendcmd(0xDB)? {
@@ -27,7 +27,7 @@ impl Preloader {
         Ok(u16::from_be_bytes(buf))
     }
 
-    /// 清空输入缓冲（串口模式下丢弃所有待读数据，防止 echo mismatch 后读取错位）
+    /// Flush the input buffer (in serial mode, discard all pending data to avoid misalignment after an echo mismatch)
     pub fn flush_input(&mut self) {
         self.device
             .set_timeout(Duration::from_millis(FLUSH_INPUT_TIMEOUT_MS));
@@ -46,8 +46,8 @@ impl Preloader {
         }
     }
 
-    /// 快速 flush：短超时（50ms），用于 read32_brom 前置清理
-    /// 比常规 flush 快 4 倍，适用于已确认设备状态正常的场景
+    /// Fast flush: short timeout (50ms), used before read32_brom
+    /// 4x faster than the regular flush; suits cases where the device state is known to be healthy
     pub(crate) fn flush_input_quick(&mut self) {
         self.device
             .set_timeout(Duration::from_millis(FLUSH_INPUT_QUICK_TIMEOUT_MS));
@@ -66,8 +66,8 @@ impl Preloader {
         }
     }
 
-    /// 轮询式 flush：用短超时反复读取，直到 USB 缓冲区为空（设备 ready）
-    /// 比固定 sleep 更快 — 设备准备好了就立刻返回
+    /// Polling flush: read repeatedly with a short timeout until the USB buffer is empty (device ready)
+    /// Faster than a fixed sleep — return as soon as the device is ready
     pub fn flush_input_poll(&mut self, interval: Duration, max_iters: u32) -> Result<(), String> {
         self.device.set_timeout(interval);
         let mut trash = [0u8; FLUSH_INPUT_CHUNK];
@@ -76,7 +76,7 @@ impl Preloader {
             match self.device.read(&mut trash) {
                 Ok(n) if n > 0 => total += n,
                 _ => {
-                    // 缓冲区空了，设备 ready
+                    // Buffer empty, device ready
                     break;
                 }
             }
@@ -89,7 +89,7 @@ impl Preloader {
         Ok(())
     }
 
-    /// 读 16 位字（2 字节，big-endian，对齐 Python DeviceHandler.rword(little=False)）
+    /// Read a 16-bit word (2 bytes, big-endian, matching Python DeviceHandler.rword(little=False))
     pub fn rword(&mut self) -> Result<u16, String> {
         let mut buf = [0u8; 2];
         self.device.read_exact(&mut buf)?;

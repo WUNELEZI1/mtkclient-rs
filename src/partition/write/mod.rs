@@ -1,15 +1,15 @@
-//! DAXFlash 底层写入原语
+//! Low-level DAXFlash write primitives
 //!
-//! 子模块划分：
-//! - `stream` — 按原始地址流式写入数据（带进度条/续传）
-//! - `cmd`    — 写包长度协商（SET_PKT_LEN）与写命令发送
+//! Submodules:
+//! - `stream` — stream data to a raw address (progress bar / resume)
+//! - `cmd`    — write packet length negotiation (SET_PKT_LEN) and write command dispatch
 //!
-//! 写入断点续传辅助函数与状态错误解释（自由函数，外部按路径调用）：
-//! - `write_resume_path_for`       — 生成 `.wresume` 文件路径
-//! - `write_write_resume_file`     — 写入续传状态文件
-//! - `remove_write_resume_file`    — 删除续传状态文件
-//! - `check_write_resume`          — 检查续传状态是否匹配
-//! - `explain_write_status` / `format_write_status_error` — 写状态错误解释
+//! Write resume helpers and status error explanation (free functions called by path):
+//! - `write_resume_path_for`       — build the `.wresume` file path
+//! - `write_write_resume_file`     — write the resume state file
+//! - `remove_write_resume_file`    — delete the resume state file
+//! - `check_write_resume`          — check whether resume state matches
+//! - `explain_write_status` / `format_write_status_error` — explain write status errors
 
 use crate::da::xflash::protocol::CMD_WRITE_DATA;
 
@@ -17,15 +17,15 @@ pub(crate) mod cmd;
 pub(crate) mod stream;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 写入断点续传辅助函数
+// Write resume helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// 生成写入续传状态文件路径
+/// Build the write resume state file path
 pub(crate) fn write_resume_path_for(input_file: &str) -> String {
     format!("{}.wresume", input_file)
 }
 
-/// 写入续传状态文件
+/// Write the resume state file
 pub(crate) fn write_write_resume_file(
     input_file: &str,
     addr: u64,
@@ -42,13 +42,13 @@ pub(crate) fn write_write_resume_file(
         .map_err(|e| format!("写入续传状态失败: {}", e))
 }
 
-/// 删除写入续传状态文件
+/// Delete the write resume state file
 pub(crate) fn remove_write_resume_file(input_file: &str) {
     let _ = std::fs::remove_file(write_resume_path_for(input_file));
 }
 
-/// 检查写入续传状态是否匹配
-/// 返回已写入字节数（若匹配且有效），否则 None
+/// Check whether write resume state matches
+/// Return the number of bytes already written (if matching and valid), else None
 pub(crate) fn check_write_resume(input_file: &str, addr: u64, total: u64) -> Option<u64> {
     let content = match std::fs::read_to_string(write_resume_path_for(input_file)) {
         Ok(c) => c,
@@ -84,8 +84,8 @@ pub(crate) fn explain_write_status(status: u32) -> &'static str {
 }
 
 pub(crate) fn format_write_status_error(stage: &str, status: u32) -> String {
-    // 用结构化状态码分类给出更明确的错误域（安全域/设备域/协议…），
-    // 便于用户判断是命令不被支持还是设备侧拒绝。
+    // Classify by structured status code to give a clearer error domain (security/device/protocol…),
+    // so users can tell unsupported commands from device-side rejection.
     match crate::error::XFlashError::from_status(status) {
         Some(err) => format!(
             "{} status error: 0x{:08X} [{}] ({})",
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn write_status_error_classifies_device_domain() {
-        // 0xC004____ → 设备域错误，消息应带分类标注
+        // 0xC004____ → device-domain error; the message should carry the category label
         let message = format_write_status_error("writeflash final", 0xC004_0040);
         assert!(message.contains("0xC0040040"), "{}", message);
         assert!(message.contains("设备域错误"), "{}", message);

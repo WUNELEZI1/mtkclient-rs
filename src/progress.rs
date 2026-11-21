@@ -1,10 +1,11 @@
-//! 自研轻量进度条（替代 indicatif crate）
+//! Lightweight in-house progress bar (replaces the indicatif crate).
 //!
-//! 仅实现项目实际用到的 API：
+//! Implements only the API actually used by the project:
 //! `ProgressBar::{hidden,new,set_style,set_message,set_position,finish_with_message,
-//! finish_and_clear,abandon_with_message}` + `Clone`。
-//! 渲染到 stderr，复用 `color` 模块着色；stderr 非控制台（被重定向）或 hidden 时静默，
-//! 避免污染日志/管道输出（对齐 indicatif 的 TTY 检测行为）。
+//! finish_and_clear,abandon_with_message}` + `Clone`.
+//! Renders to stderr and reuses the `color` module for styling; stays silent when
+//! stderr is not a console (redirected) or when hidden, to avoid polluting
+//! logs/piped output (mirrors indicatif's TTY detection).
 
 use crate::color::Colorize;
 use crate::util::display_width;
@@ -12,17 +13,18 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// 行尾清除序列（擦除光标到行末）。
+/// End-of-line clear sequence (erase cursor to end of line).
 const CLEAR_EOL: &str = "\x1b[K";
 
-/// 进度条内部可变状态。通过 `Arc<Mutex>` 共享，使 `ProgressBar` 可 `Clone` 且满足 `Send+Sync`。
+/// Mutable internal state of the bar. Shared via `Arc<Mutex>` so `ProgressBar` is
+/// `Clone` and `Send+Sync`.
 struct BarState {
     total: u64,
     position: u64,
     message: String,
     start: Instant,
     template: String,
-    /// 进度字符：[0]=已填充 [1]=部分填充 [2]=空白
+    /// Progress chars: `0`=filled `1`=partial `2`=blank
     pchars: [char; 3],
     hidden: bool,
     finished: bool,
@@ -46,7 +48,7 @@ impl BarState {
         }
     }
 
-    /// 平均速率（字节/秒）= 已传输量 / 已用时间。
+    /// Average speed (bytes/sec) = transferred / elapsed.
     fn speed_per_sec(&self) -> f64 {
         let secs = self.start.elapsed().as_secs_f64();
         if secs <= 0.0 {
@@ -57,10 +59,10 @@ impl BarState {
     }
 }
 
-/// 进度条样式（替代 `indicatif::ProgressStyle`）。
+/// Progress bar style (replaces `indicatif::ProgressStyle`).
 ///
-/// `with_template` 返回 `Result` 以兼容调用处的 `.unwrap()` 链式写法
-/// （`ProgressStyle::with_template(t).unwrap().progress_chars("█▓░")`）。
+/// `with_template` returns `Result` to keep the call-site chain working
+/// (`ProgressStyle::with_template(t).unwrap().progress_chars("█▓░")`).
 pub struct ProgressStyle {
     template: String,
     pchars: [char; 3],
@@ -83,14 +85,14 @@ impl ProgressStyle {
     }
 }
 
-/// 轻量进度条（替代 `indicatif::ProgressBar`）。
+/// Lightweight progress bar (replaces `indicatif::ProgressBar`).
 #[derive(Clone)]
 pub struct ProgressBar {
     inner: Arc<Mutex<BarState>>,
 }
 
 impl ProgressBar {
-    /// 隐藏的进度条：所有渲染静默（用于 `--quiet-dump` / `QUIET_USB_READ`）。
+    /// Hidden progress bar: all rendering is silent (used by `--quiet-dump` / `QUIET_USB_READ`).
     pub fn hidden() -> Self {
         ProgressBar {
             inner: Arc::new(Mutex::new(BarState {
@@ -107,7 +109,7 @@ impl ProgressBar {
         }
     }
 
-    /// 创建长度为 `len` 字节的进度条。
+    /// Creates a progress bar with a total length of `len` bytes.
     pub fn new(len: u64) -> Self {
         ProgressBar {
             inner: Arc::new(Mutex::new(BarState {
@@ -175,12 +177,14 @@ impl ProgressBar {
         }
     }
 
-    /// 把当前状态渲染到 stderr 的同一行（回车覆盖，不清历史）。
+    /// Renders the current state on the same stderr line (carriage return overwrite,
+    /// history not cleared).
     fn draw(&self, s: &BarState) {
         if s.hidden || s.finished || !stderr_is_console() {
             return;
         }
-        // 先用 bar_width=0 渲染其余部分以测量其可见宽度，再据终端宽度反推进度条宽度。
+        // First render the rest with bar_width=0 to measure its visible width, then
+        // derive the bar width from the terminal width.
         let rest = expand(&s.template, s, 0);
         let rest_w = display_width(&strip_ansi(&rest));
         let bar_w = terminal_width().saturating_sub(rest_w).max(8);
@@ -190,7 +194,7 @@ impl ProgressBar {
         let _ = std::io::stderr().flush();
     }
 
-    /// 结束渲染：清除进度行并打印最终消息（独占一行）。
+    /// Finish rendering: clear the progress line and print the final message on its own line.
     fn finalize(&self, s: &BarState) {
         if s.hidden || !stderr_is_console() {
             return;
@@ -201,14 +205,15 @@ impl ProgressBar {
     }
 }
 
-/// 默认模板（与既有调用一致：spinner + 耗时 + 进度条 + 字节/百分比 + 消息）。
+/// Default template (matching existing call sites: spinner + elapsed + bar + bytes/percent + message).
 fn default_template() -> String {
     "  {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] \
      {binary_bytes}/{binary_total_bytes} ({percent}%) {msg}"
         .to_string()
 }
 
-/// 按模板展开为可见字符串。`bar_width` 为进度条占位宽度（0 表示先测量其余部分）。
+/// Expands the template into a visible string. `bar_width` is the bar placeholder width
+/// (0 means measure the rest first).
 fn expand(template: &str, s: &BarState, bar_width: usize) -> String {
     let bytes = template.as_bytes();
     let mut out = String::new();
@@ -221,9 +226,9 @@ fn expand(template: &str, s: &BarState, bar_width: usize) -> String {
                 token.push(bytes[i] as char);
                 i += 1;
             }
-            i += 1; // 跳过 '}'
+            i += 1; // skip '}'
             let name = match token.split_once(':') {
-                Some((n, _)) => n, // 颜色修饰符（如 .green / .cyan/blue）此处忽略，着色在 render_token 内硬编码
+                Some((n, _)) => n, // color modifiers (e.g. .green / .cyan/blue) are ignored here; colors are hardcoded in render_token
                 None => token.as_str(),
             };
             out.push_str(&render_token(name, s, bar_width));
@@ -235,7 +240,7 @@ fn expand(template: &str, s: &BarState, bar_width: usize) -> String {
     out
 }
 
-/// 渲染单个占位符。
+/// Renders a single placeholder.
 fn render_token(name: &str, s: &BarState, bar_width: usize) -> String {
     match name {
         "spinner" => {
@@ -255,7 +260,7 @@ fn render_token(name: &str, s: &BarState, bar_width: usize) -> String {
     }
 }
 
-/// 构建宽度为 `width` 的进度条字符串（填充=cyan，空白=blue）。
+/// Builds the progress bar string of width `width` (filled=cyan, blank=blue).
 fn build_bar(s: &BarState, width: usize) -> String {
     if width == 0 {
         return String::new();
@@ -282,7 +287,8 @@ fn build_bar(s: &BarState, width: usize) -> String {
     out
 }
 
-/// 二进制可读字节数（B / KiB / MiB / GiB …），对齐 indicatif 紧凑风格（无空格）。
+/// Human-readable binary byte count (B / KiB / MiB / GiB ...), matching indicatif's
+/// compact style (no space).
 fn fmt_binary(bytes: f64) -> String {
     if bytes < 1024.0 {
         return format!("{}B", bytes as i64);
@@ -297,7 +303,8 @@ fn fmt_binary(bytes: f64) -> String {
     format!("{:.2}{}", v, units[i])
 }
 
-/// 时长格式化为 `MM:SS.cc`（>=1h 前缀 `H:`），对齐 indicatif 的 `elapsed_precise`。
+/// Formats a duration as `MM:SS.cc` (with `H:` prefix when >=1h), matching indicatif's
+/// `elapsed_precise`.
 fn fmt_duration(d: Duration) -> String {
     let total = d.as_secs();
     let h = total / 3600;
@@ -311,7 +318,7 @@ fn fmt_duration(d: Duration) -> String {
     }
 }
 
-/// 剩余时间估算；速率为 0 或尚未开始则返回 `--:--`。
+/// Estimated remaining time; returns `--:--` when speed is 0 or nothing has started.
 fn fmt_eta(s: &BarState) -> String {
     if s.position == 0 {
         return "--:--".to_string();
@@ -324,7 +331,7 @@ fn fmt_eta(s: &BarState) -> String {
     fmt_duration(Duration::from_secs_f64(remaining))
 }
 
-/// 移除 ANSI 转义序列（用于测量可见宽度）。
+/// Removes ANSI escape sequences (used for visible-width measurement).
 fn strip_ansi(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
@@ -335,7 +342,7 @@ fn strip_ansi(s: &str) -> String {
                 i += 1;
             }
             if i < bytes.len() {
-                i += 1; // 跳过 'm'
+                i += 1; // skip 'm'
             }
         } else {
             let len = utf8_len(bytes[i]);
@@ -410,7 +417,8 @@ fn terminal_width() -> usize {
     80
 }
 
-/// stderr 是否为控制台（未被重定向）。非控制台时进度条静默，避免污染日志/管道。
+/// Whether stderr is a console (not redirected). When not a console the bar stays
+/// silent to avoid polluting logs/pipes.
 #[cfg(windows)]
 fn stderr_is_console() -> bool {
     const STD_ERROR_HANDLE: i32 = -12;

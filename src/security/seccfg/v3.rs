@@ -1,6 +1,6 @@
-//! SecCfg V3 结构（44 字节头 + SEJ 加密段 + 4 字节 endflag）
+//! SecCfg V3 structure (44-byte header + SEJ encrypted segment + 4-byte endflag)
 //!
-//! 加密类型：SW / V2 / V3 / V4 四种 hwtype，对应不同 SEJ 加解密算法。
+//! Encryption types: SW / V2 / V3 / V4 hwtypes, each mapping to a different SEJ cipher.
 
 use log::{debug, info, warn};
 
@@ -11,7 +11,7 @@ use crate::security::sej::{
 
 use super::plain::{self, Plain};
 
-/// 明文最低可信分数：低于该值视为“解密失败/算法不匹配”
+/// Minimum trusted plaintext score: below this value treat it as "decryption failed / algorithm mismatch"
 const MIN_PLAIN_SCORE: u32 = 40;
 
 pub(crate) struct SecCfgV3 {
@@ -27,20 +27,20 @@ pub(crate) struct SecCfgV3 {
     pub(crate) page_count: u32,
     pub(crate) seccfg_attr: u32,
     pub(crate) seccfg_status: u32,
-    /// SIU（安全镜像更新）状态位，回写时必须原样保留
+    /// SIU (secure image update) status bits; must be preserved verbatim on write-back
     pub(crate) siu_status: u32,
     pub(crate) endflag: u32,
     pub(crate) hwtype: String,
     pub(crate) imginfo: Vec<[u8; 0x68]>,
-    /// 解密后明文的结构化视图（名称/状态/锁状态），供 `seccfg info` 输出
+    /// Structured view of the decrypted plaintext (name/status/lock state) for `seccfg info` output
     pub(crate) plain: Option<Plain>,
-    /// 特殊 0x850 布局：可解析但拒绝改写
+    /// Special 0x850 layout: parseable but writes are refused
     pub(crate) alt_layout: bool,
     pub(crate) seccfg_ext: Vec<u8>,
 }
 
-/// 合成一张合法的 V3 seccfg（SW 加密、单组镜像名），供虚拟设备与单测共用。
-/// `locked=true` 生成 ATTR_DEFAULT（锁定），false 生成 ATTR_UNLOCK。
+/// Build a valid synthetic V3 seccfg (SW cipher, single image name group) shared by the virtual device and unit tests.
+/// `locked=true` generates ATTR_DEFAULT (locked); false generates ATTR_UNLOCK.
 pub(crate) fn synthetic_v3_image(locked: bool) -> Vec<u8> {
     let attr = if locked {
         SecCfgV3::ATTR_DEFAULT
@@ -111,8 +111,8 @@ impl SecCfgV3 {
             return Err("seccfg V3 magic 不匹配".to_string());
         }
 
-        // 加密段紧跟在 44 字节头之后，长度 = seccfg_size - 头(0x2C) - endflag(4)
-        // （对齐 mtkclient: data = rrf.bytes(seccfg_size - 0x2C - 4)）
+        // The encrypted segment follows the 44-byte header; length = seccfg_size - header(0x2C) - endflag(4)
+        // (matching mtkclient: data = rrf.bytes(seccfg_size - 0x2C - 4))
         const HEAD_LEN: usize = 0x2C;
         let body_len = (size as usize)
             .checked_sub(HEAD_LEN + 4)
@@ -132,8 +132,8 @@ impl SecCfgV3 {
             return Err("seccfg V3 endflag 不匹配".to_string());
         }
 
-        // 逐一尝试四种解密算法，对结果“明文结构”打分后取最高分，
-        // 避免旧实现“首个命中即采用”导致的 hwtype 误判。
+        // Try all four ciphers, score each resulting plaintext structure, and take the best score,
+        // avoiding the hwtype misdetection caused by the old "first success wins" approach.
         let mut candidates: Vec<(&'static str, Vec<u8>)> = Vec::with_capacity(4);
         if let Ok(d) = sej_sec_cfg_sw_decrypt(enc_data) {
             candidates.push(("SW", d));
@@ -164,7 +164,7 @@ impl SecCfgV3 {
         let seccfg_status = plain.status;
         let seccfg_attr = plain.attr;
         let siu_status = plain.siu_status;
-        // seccfg_ext 必须原样保留，否则回写会把扩展区截断（旧实现固定写空 → 设备异常）
+        // seccfg_ext must be preserved verbatim; otherwise write-back truncates the extension area (the old implementation wrote an empty Vec → device anomaly)
         let mut ext = plain.ext.clone();
         if plain.marker_offset != 0 {
             warn!("seccfg V3 使用 0x850 特殊布局，仅支持查看，禁止改写");
@@ -251,7 +251,7 @@ impl SecCfgV3 {
         result.extend_from_slice(&self.info_header);
         result.extend_from_slice(&self.magic.to_le_bytes());
         result.extend_from_slice(&self.seccfg_ver.to_le_bytes());
-        // size 字段 = 头 + 加密段 + endflag，保持与字节流一致
+        // size field = header + encrypted segment + endflag, kept consistent with the byte stream
         let new_size = (0x2C + enc_data.len() + 4) as u32;
         result.extend_from_slice(&new_size.to_le_bytes());
         result.extend_from_slice(&self.seccfg_enc_offset.to_le_bytes());
@@ -283,17 +283,17 @@ mod tests {
     use super::*;
     use crate::security::sej::sej_sec_cfg_sw_encrypt;
 
-    /// 构造一张合法的 V3 seccfg（SW 加密），用于离线单测
+    /// Build a valid V3 seccfg (SW cipher) for offline unit tests
     fn synth_v3(attr: u32, names: &[&str], ext_len: usize) -> Vec<u8> {
         let mut plain = vec![0u8; plain::PLAIN_HEAD_LEN];
         plain[..4].copy_from_slice(b"IIII");
         for (i, n) in names.iter().enumerate() {
-            // 第 0 项是标记块，镜像名从第 1 项开始
+            // Entry 0 is the marker block; image names start at entry 1
             let off = (i + 1) * plain::IMG_ENTRY_SIZE;
             plain[off..off + n.len()].copy_from_slice(n.as_bytes());
             plain[off + 32..off + 36].copy_from_slice(&(0x1000u32).to_le_bytes());
         }
-        plain.extend_from_slice(&0x1234u32.to_le_bytes()); // siu_status（回写需保留）
+        plain.extend_from_slice(&0x1234u32.to_le_bytes()); // siu_status (must be preserved on write-back)
         plain.extend_from_slice(&plain::STATUS_COMPLETE.to_le_bytes());
         plain.extend_from_slice(&attr.to_le_bytes());
         plain.extend(std::iter::repeat_n(0xA5u8, ext_len));
@@ -329,7 +329,7 @@ mod tests {
         let p = v3.plain.as_ref().unwrap();
         assert_eq!(p.marker.label(), "IIII");
         assert!(p.score >= 75, "score={}", p.score);
-        // 扩展区必须完整保留
+        // Extension area must be fully preserved
         assert_eq!(v3.seccfg_ext.len(), 0x1004);
         assert!(v3.seccfg_ext.iter().all(|&b| b == 0xA5));
         assert_eq!(v3.siu_status, 0x1234);
@@ -345,16 +345,16 @@ mod tests {
         let v3b = SecCfgV3::parse(&out).expect("回写结果应可再次解析");
         assert_eq!(v3b.seccfg_attr, SecCfgV3::ATTR_UNLOCK);
         assert_eq!(v3b.hwtype, "SW");
-        // 扩展区不能被截断（旧实现固定写空 Vec）
+        // Extension area must not be truncated (the old implementation always wrote an empty Vec)
         assert_eq!(v3b.seccfg_ext.len(), 0x1004);
         assert!(v3b.seccfg_ext.iter().all(|&b| b == 0xA5));
-        // SIU 状态位必须原样保留（旧实现写 0，会清掉 SIU 更新标记）
+        // SIU status bits must be preserved verbatim (the old implementation wrote 0, clearing the SIU update flag)
         assert_eq!(v3b.siu_status, 0x1234);
     }
 
     #[test]
     fn lock_rejects_locked_attr() {
-        // 已锁定的设备再次执行 lock 应直接报错（避免无意义重签）
+        // Running lock on an already-locked device should fail immediately (avoid pointless re-signing)
         let img = synth_v3(0x3333_3333, &["boot"], 0x1004);
         let v3 = SecCfgV3::parse(&img).unwrap();
         assert!(

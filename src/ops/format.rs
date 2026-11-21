@@ -1,18 +1,18 @@
-//! `format`：给分区刷入最小文件系统镜像（erase + format 的 format 半步）。
+//! `format`: flash a minimal filesystem image into a partition (the format half of erase + format).
 //!
-//! 与 `erase_data` 里固定给 userdata 刷 f2fs 不同，本 op 允许显式指定
-//! 分区与文件系统（f2fs / ext4），用于 metadata / cache 等传统 ext4 分区的
-//! 恢复出厂场景。两种镜像生成器都是纯 Rust 自实现，无 mke2fs/make_f2fs 依赖；
-//! ext4 输出已用 e2fsck 1.47 验证可挂载（5 阶段全过）。
+//! Unlike `erase_data`, which always flashes f2fs into userdata, this op lets you specify
+//! the partition and filesystem (f2fs / ext4), for factory-reset scenarios on traditional
+//! ext4 partitions such as metadata / cache. Both image generators are pure Rust, with no
+//! mke2fs/make_f2fs dependency; ext4 output has been verified mountable with e2fsck 1.47 (all 5 phases pass).
 //!
-//! 安全：格式化会覆盖分区全部内容，一律走危险确认；写入后回读 magic 校验。
+//! Safety: formatting overwrites the entire partition contents, always goes through danger confirmation; magic is read back and verified after writing.
 
 use log::info;
 
 use super::{Op, OpCtx, OpOutcome, danger_for_partition};
 use crate::core::capability::{Capability, CapabilitySet};
 
-/// 给分区格式化为指定文件系统。
+/// Format a partition to the specified filesystem.
 pub struct FormatOp {
     pub part: String,
     /// "f2fs" / "ext4"
@@ -59,10 +59,12 @@ impl Op for FormatOp {
         );
         ctx.session.write_flash(span.addr, &image)?;
 
-        // 回读校验：确认 magic 落盘，避免"写了但没生效"。
-        // ext4 superblock 在 1024，magic 在 sb+0x38 = 0x438；
-        // f2fs superblock 也在 1024，magic 在 sb+0 = 0x400。
-        let back = ctx.session.read_flash(span.addr, 0x43A.min(image.len() as u64))?;
+        // Read-back verification: confirm the magic actually landed, avoiding "wrote but not applied".
+        // ext4 superblock is at 1024, magic at sb+0x38 = 0x438;
+        // f2fs superblock is also at 1024, magic at sb+0 = 0x400.
+        let back = ctx
+            .session
+            .read_flash(span.addr, 0x43A.min(image.len() as u64))?;
         let magic_ok = match self.fs.to_ascii_lowercase().as_str() {
             "ext4" => {
                 back.len() > 0x439 && u16::from_le_bytes([back[0x438], back[0x439]]) == 0xEF53
@@ -76,7 +78,9 @@ impl Op for FormatOp {
         if !magic_ok {
             return Err(format!(
                 "回读校验失败: {} 的 {} magic 未正确落盘（back.len={}）",
-                self.part, self.fs, back.len()
+                self.part,
+                self.fs,
+                back.len()
             ));
         }
 

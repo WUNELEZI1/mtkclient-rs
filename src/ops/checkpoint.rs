@@ -1,44 +1,44 @@
-//! 写入断点续传（checkpoint）。
+//! Write-side checkpoint (resume) support.
 //!
-//! 设计要点：
-//! - **与后端无关**：真机（`DAXFlash`）与仿真（`da::engine`）共用同一份 checkpoint；
-//! - **只认强证据**：分区名、目标地址、总长度、源文件大小与 mtime、**GPT 哈希**全部
-//!   匹配才续传，任何一项变化都从头开始（宁可重写，不要写错位）；
-//! - **每 64 MiB 一个 CRC**：续传前先校验设备上已写数据，发现前缀损坏立即报错中止，
-//!   绝不"接着往后写"把坏数据留在分区里；
-//! - **写盘时机**：每 8 MiB 落一次、出错时立刻落一次，进程被杀最多丢 8 MiB；
-//! - **完成后删除**：成功后删除 `.resume`，避免下次误续传。
+//! Design points:
+//! - **Backend-agnostic**: the real device (`DAXFlash`) and the simulation (`da::engine`) share one checkpoint;
+//! - **Strong evidence only**: resume only if the partition name, target address, total length, source file size and mtime, and **GPT hash** all
+//!   match; any change restarts from scratch (better to rewrite than to write to the wrong offset);
+//! - **One CRC per 64 MiB**: verify data already written on the device before resuming; abort immediately if the prefix is corrupt,
+//!   never "keep writing past it" and leave bad data in the partition;
+//! - **Persistence timing**: flush every 8 MiB and immediately on error; a killed process loses at most 8 MiB;
+//! - **Delete on completion**: remove `.resume` on success to avoid an accidental resume next time.
 
 use std::io::Write;
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
 
-/// checkpoint 版本（格式变更时递增，旧文件自动失效）。
+/// Checkpoint version (incremented when the format changes; old files are invalidated automatically).
 ///
-/// v1：只有偏移量。
-/// v2：新增 GPT CRC 与分块 CRC 清单（Phase 1.2）。
+/// v1: offset only.
+/// v2: added the GPT CRC and per-chunk CRC list (Phase 1.2).
 const VERSION: u32 = 2;
 
-/// 续传状态文件后缀。
+/// Resume state file suffix.
 pub const RESUME_SUFFIX: &str = ".resume";
 
-/// 落盘间隔。
+/// Persistence interval.
 pub const PERSIST_INTERVAL: u64 = 8 * 1024 * 1024;
 
-/// 分块 CRC 的块大小（64 MiB）。
+/// Chunk size for per-chunk CRC (64 MiB).
 pub const CRC_CHUNK: u64 = 64 * 1024 * 1024;
 
-/// 已写数据的一个 CRC 分块（覆盖 `[offset, offset+len)`，相对分区起点）。
+/// One CRC chunk of written data (covers `[offset, offset+len)`, relative to the partition start).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChunkCrc {
     pub offset: u64,
     pub len: u64,
-    /// 源数据（含尾部补零）的 CRC32-IEEE。
+    /// CRC32-IEEE of the source data (including trailing zero padding).
     pub crc: u32,
 }
 
-/// 一次写入的续传状态。
+/// Resume state of a single write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteCheckpoint {
     pub part: String,
@@ -47,28 +47,27 @@ pub struct WriteCheckpoint {
     pub written: u64,
     pub file_size: u64,
     pub file_mtime: u64,
-    /// 写入时设备 GPT 的 CRC32；GPT 变了说明分区布局可能已变。
+    /// CRC32 of the device GPT at write time; a changed GPT means the partition layout may have changed.
     pub gpt_crc: u32,
-    /// 分块大小（写入时实际使用的值，便于校验与向前兼容）。
+    /// Chunk size (the value actually used at write time, for verification and forward compatibility).
     pub chunk_size: u64,
-    /// 已写范围的 CRC 清单，必须无空洞地覆盖 `[0, written)`。
+    /// CRC list of the written range, which must cover `[0, written)` without gaps.
     pub chunks: Vec<ChunkCrc>,
 }
 
 impl WriteCheckpoint {
-    /// `.resume` 路径（与源文件同目录）。
+    /// Path of `.resume` (in the same directory as the source file).
     pub fn path_for(file: &str) -> PathBuf {
         PathBuf::from(format!("{}{}", file, RESUME_SUFFIX))
     }
 
-
-    /// 读取并严格校验。
+    /// Read and strictly validate.
     ///
-    /// 返回值语义（关系到"绝不静默续写"这条铁律）：
-    /// - `Ok(None)`：没有可用的断点（文件不存在 / 指纹不匹配），应从头写；
-    /// - `Ok(Some(cp))`：断点完全可信，可以续传；
-    /// - `Err(msg)`：**断点存在但不可信**（损坏、GPT 已变），必须中止并提示用户处理，
-    ///   绝不能悄悄当成"没有断点"从头覆盖——那会让用户以为在续传。
+    /// Return value semantics (central to the "never resume silently" rule):
+    /// - `Ok(None)`: no usable checkpoint (file missing / fingerprint mismatch); write from scratch;
+    /// - `Ok(Some(cp))`: checkpoint fully trusted; safe to resume;
+    /// - `Err(msg)`: **checkpoint exists but is untrusted** (corrupt or GPT changed); abort and ask the user to handle it;
+    ///   never silently treat it as "no checkpoint" and overwrite from the start — that would make the user think a resume happened.
     pub fn load_checked(
         file: &str,
         part: &str,
@@ -92,7 +91,7 @@ impl WriteCheckpoint {
             Some(v) => v,
             None => return Ok(None),
         };
-        // 指纹不匹配：这是"另一个任务"的断点，不是损坏，从头写即可。
+        // Fingerprint mismatch: this is another task's checkpoint, not corruption; just write from scratch.
         if cp.part != part
             || cp.addr != addr
             || cp.total != total
@@ -112,7 +111,7 @@ impl WriteCheckpoint {
                 path.display()
             ));
         }
-        // 结构自检：CRc 清单必须无空洞覆盖 [0, written)。
+        // Structural self-check: the CRC list must cover [0, written) without gaps.
         if !cp.chunks_cover_written() {
             return Err(format!(
                 "续传状态的 CRC 清单不完整（written={}，块数={}），无法确认已写数据；\
@@ -128,7 +127,7 @@ impl WriteCheckpoint {
         Ok(Some(cp))
     }
 
-    /// 解析 `.resume` 文本（损坏即视为无效）。
+    /// Parse `.resume` text (corrupt content is treated as invalid).
     pub fn parse(text: &str) -> Option<Self> {
         let mut version = 0u32;
         let mut part = String::new();
@@ -174,7 +173,7 @@ impl WriteCheckpoint {
         })
     }
 
-    /// CRC 清单是否无空洞、无重叠地覆盖 `[0, written)`。
+    /// Whether the CRC list covers `[0, written)` without gaps or overlaps.
     pub fn chunks_cover_written(&self) -> bool {
         let mut end = 0u64;
         for c in &self.chunks {
@@ -189,7 +188,7 @@ impl WriteCheckpoint {
         end == self.written
     }
 
-    /// 写出（原子替换：先写 `.tmp` 再 rename）。
+    /// Write out (atomic replace: write `.tmp` first, then rename).
     pub fn save(&self, file: &str) -> Result<(), String> {
         let path = Self::path_for(file);
         let tmp = path.with_extension("resume.tmp");
@@ -218,19 +217,19 @@ impl WriteCheckpoint {
         std::fs::rename(&tmp, &path).map_err(|e| format!("提交续传状态失败: {}", e))
     }
 
-    /// 删除续传文件（成功后调用）。
+    /// Delete the resume file (call on success).
     pub fn clear(file: &str) {
         let _ = std::fs::remove_file(Self::path_for(file));
     }
 
     #[cfg(test)]
-    /// 是否还有效（供测试/诊断）。
+    /// Whether it is still valid (for tests/diagnostics).
     pub fn exists(file: &str) -> bool {
         Path::new(&format!("{}{}", file, RESUME_SUFFIX)).exists()
     }
 }
 
-/// 解析 `offset:len:0xCRC`。
+/// Parse `offset:len:0xCRC`.
 fn parse_chunk(v: &str) -> Option<ChunkCrc> {
     let mut it = v.split(':');
     let offset = it.next()?.parse::<u64>().ok()?;
@@ -239,9 +238,9 @@ fn parse_chunk(v: &str) -> Option<ChunkCrc> {
     Some(ChunkCrc { offset, len, crc })
 }
 
-/// 增量 CRC32（IEEE 802.3，与 GPT 校验和一致）。
+/// Incremental CRC32 (IEEE 802.3, matching the GPT checksum).
 ///
-/// 用查表法：64 MiB 数据在 bitwise 实现下要跑 5 亿次循环，太慢。
+/// Uses a lookup table: a bitwise implementation would need about 500 million iterations for 64 MiB, too slow.
 #[derive(Debug, Clone)]
 pub struct Crc32 {
     state: u32,
@@ -280,7 +279,7 @@ impl Crc32 {
         Self { state: 0xFFFF_FFFF }
     }
 
-    /// 从已完成的 CRC 值继续累加（用于续传时接着算同一块）。
+    /// Continue accumulating from a completed CRC value (to keep hashing the same chunk on resume).
     pub fn from_crc(crc: u32) -> Self {
         Self { state: !crc }
     }
@@ -299,14 +298,14 @@ impl Crc32 {
     }
 }
 
-/// 一次性计算 CRC32。
+/// One-shot CRC32 calculation.
 pub fn crc32(data: &[u8]) -> u32 {
     let mut c = Crc32::new();
     c.update(data);
     c.finalize()
 }
 
-/// 源文件"指纹"：大小 + mtime 秒。
+/// Source file "fingerprint": size + mtime in seconds.
 pub fn file_signature(file: &str) -> Option<(u64, u64)> {
     let meta = std::fs::metadata(file).ok()?;
     let mtime = meta
@@ -318,9 +317,9 @@ pub fn file_signature(file: &str) -> Option<(u64, u64)> {
     Some((meta.len(), mtime))
 }
 
-/// 分块 CRC 追踪器：按 `chunk_size` 切块，随写入增量累积。
+/// Per-chunk CRC tracker: splits data by `chunk_size` and accumulates incrementally as writes proceed.
 ///
-/// 续传时用 [`CrcTracker::resume`] 从已有清单接着算，避免重读已写数据。
+/// On resume, use [`CrcTracker::resume`] to continue from the existing list and avoid re-reading written data.
 #[derive(Debug, Clone)]
 pub struct CrcTracker {
     chunk_size: u64,
@@ -341,12 +340,12 @@ impl CrcTracker {
         }
     }
 
-    /// 从已有清单恢复（最后一块若是"未填满的部分块"，会转为当前块继续累加）。
+    /// Restore from an existing list (if the last chunk is a partial, unfilled chunk, it becomes the current chunk and keeps accumulating).
     pub fn resume(chunk_size: u64, mut chunks: Vec<ChunkCrc>) -> Self {
         let chunk_size = chunk_size.max(1);
         let (cur_off, cur_len, hasher) = match chunks.last().copied() {
             Some(last) if last.len < chunk_size => {
-                // 部分块要从清单里摘掉，否则 snapshot 会重复计入同一块。
+                // Remove the partial chunk from the list, otherwise snapshot() would count the same chunk twice.
                 chunks.pop();
                 (last.offset, last.len, Crc32::from_crc(last.crc))
             }
@@ -362,7 +361,7 @@ impl CrcTracker {
         }
     }
 
-    /// 喂入一段已写入设备的数据（含补零）。
+    /// Feed a segment of data already written to the device (including zero padding).
     pub fn feed(&mut self, mut data: &[u8]) {
         while !data.is_empty() {
             let room = (self.chunk_size - self.cur_len) as usize;
@@ -384,15 +383,15 @@ impl CrcTracker {
         }
     }
 
-    /// 已累计的字节数（含当前未填满的块）。
+    /// Number of bytes accumulated so far (including the current partially filled chunk).
     pub fn fed(&self) -> u64 {
         self.cur_off + self.cur_len
     }
 
-    /// 从源文件把 `[fed(), to)` 追加进清单。
+    /// Append `[fed(), to)` from the source file into the list.
     ///
-    /// 刻意在"设备确认写入成功后"才调用：预读阶段的字节可能因中途掉线并没有
-    /// 真正落盘，提前计入会让清单比实际写入更长，续传时校验必然失败。
+    /// Called deliberately only after the device confirms a successful write: bytes in the pre-read stage may never actually
+    /// reach storage if the connection drops, and counting them early would make the list longer than the actual write, so resume-time verification would always fail.
     pub fn sync_from_file(&mut self, path: &str, to: u64) -> Result<(), String> {
         use std::io::{Read, Seek};
         let from = self.fed();
@@ -417,7 +416,7 @@ impl CrcTracker {
                 n += r;
             }
             if n < want {
-                // 源文件提前结束：与写入时一致，按零补齐。
+                // Source file ended early: pad with zeros, consistent with the write path.
                 buf[n..want].fill(0);
             }
             self.feed(&buf[..want]);
@@ -426,7 +425,7 @@ impl CrcTracker {
         Ok(())
     }
 
-    /// 当前快照（含未填满的部分块）。
+    /// Current snapshot (including the partially filled chunk).
     pub fn snapshot(&self) -> Vec<ChunkCrc> {
         let mut out = self.chunks.clone();
         if self.cur_len > 0 {
@@ -440,12 +439,12 @@ impl CrcTracker {
     }
 
     #[cfg(test)]
-    /// 已完成块数（诊断用）。
+    /// Number of completed chunks (for diagnostics).
     pub fn completed_chunks(&self) -> usize {
         self.chunks.len()
     }
 
-    /// 写入时使用的块大小。
+    /// Chunk size used at write time.
     pub fn chunk_size(&self) -> u64 {
         self.chunk_size
     }
@@ -591,11 +590,11 @@ mod tests {
     #[test]
     fn tracker_resume_continues_partial_chunk() {
         let data: Vec<u8> = (0..2000u32).map(|i| (i % 97) as u8).collect();
-        // 上次写到 1500（部分块）
+        // Last write ended at 1500 (partial chunk)
         let mut t1 = CrcTracker::new(1024);
         t1.feed(&data[..1500]);
         let saved = t1.snapshot();
-        // 续写：从 1500 开始，接着同一块继续算
+        // Resume: start at 1500 and keep hashing the same chunk
         let mut t2 = CrcTracker::resume(1024, saved.clone());
         t2.feed(&data[1500..]);
         let merged = t2.snapshot();
@@ -606,7 +605,7 @@ mod tests {
 
     #[test]
     fn crc_table_matches_bitwise_reference() {
-        // 与 gpt.rs 的 bitwise 实现交叉验证，确保查表没写错。
+        // Cross-check against the bitwise implementation in gpt.rs to ensure the lookup table is correct.
         let data = b"123456789";
         fn bitwise(d: &[u8]) -> u32 {
             let mut crc = 0xFFFF_FFFFu32;

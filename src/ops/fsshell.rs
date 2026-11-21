@@ -1,15 +1,15 @@
-//! `fs_shell`：只读地浏览镜像内的文件系统（能力驱动版本）。
+//! `fs_shell`: read-only browsing of file systems inside images (capability-driven).
 //!
-//! 声明 `StorageRead`（不做任何写操作），把"读分区"这一步交给 `Session`，
-//! 因此真机与仿真共用同一份解析逻辑。
+//! Declares `StorageRead` (performs no writes) and delegates "read partition" to `Session`,
+//! so real devices and simulation share the same parsing logic.
 //!
-//! 用法（非交互）：
-//! - `fs_shell boot ls [path]`   —— 列出 boot ramdisk（cpio）条目
-//! - `fs_shell boot cat <path>`  —— 输出 ramdisk 内某个文件
-//! - `fs_shell boot info`        —— boot 头信息
-//! - `fs_shell proinfo show`     —— 解析 proinfo NV 数据
+//! Usage (non-interactive):
+//! - `fs_shell boot ls [path]`   — list boot ramdisk (cpio) entries
+//! - `fs_shell boot cat <path>`  — print a file inside the ramdisk
+//! - `fs_shell boot info`        — boot header info
+//! - `fs_shell proinfo show`     — parse proinfo NV data
 //!
-//! 交互式 shell（`fs_shell boot` 不带参数）仍由 `cmd::io::cmd_imgshell` 提供。
+//! The interactive shell (`fs_shell boot` with no arguments) is still provided by `cmd::io::cmd_imgshell`.
 
 use log::info;
 
@@ -17,14 +17,14 @@ use super::{Op, OpCtx, OpOutcome};
 use crate::cmd::bootimg::{decompress, parse as parse_boot, parse_cpio};
 use crate::core::capability::{Capability, CapabilitySet};
 
-/// 浏览对象。
+/// Browse target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsTarget {
     Boot,
     Proinfo,
 }
 
-/// 只读浏览动作。
+/// Read-only browse action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FsAction {
     Info,
@@ -35,7 +35,7 @@ pub enum FsAction {
 
 pub struct FsShellOp {
     pub target: FsTarget,
-    /// 直接给镜像文件（离线），None 时从设备分区读取
+    /// Direct image file (offline); when None, read from the device partition
     pub file: Option<String>,
     pub action: FsAction,
 }
@@ -54,6 +54,7 @@ impl FsShellOp {
             "读取 {} 分区: 0x{:X}（{} 字节）",
             part, span.addr, span.size
         );
+        // Block reads start at partition offset 0
         ctx.session.read_flash(span.addr, span.size)
     }
 }

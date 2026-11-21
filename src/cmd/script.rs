@@ -1,12 +1,12 @@
-//! 脚本模式：从 JSON 文件读取命令列表并顺序执行
+//! Script mode: read a command list from a JSON file and run it sequentially
 //!
-//! 用法：mtkclient run <script.json>
+//! Usage: mtkclient run <script.json>
 //!
-//! JSON 格式：
+//! JSON format:
 //! ```json
 //! {
-//!   "name": "刷机脚本",
-//!   "description": "一键刷入全部分区",
+//!   "name": "flash script",
+//!   "description": "flash all partitions in one go",
 //!   "continue_on_error": true,
 //!   "commands": [
 //!     "w super super.img",
@@ -19,11 +19,11 @@
 //! }
 //! ```
 //!
-//! 字段说明：
-//! - `name`: 脚本名称（显示用）
-//! - `description`: 脚本描述（显示用）
-//! - `continue_on_error`: 单条命令失败后是否继续执行后续命令（默认 true）
-//! - `commands`: 命令数组，每个元素格式与命令行完全一致
+//! Field reference:
+//! - `name`: script name (for display)
+//! - `description`: script description (for display)
+//! - `continue_on_error`: whether to keep running after a command fails (default true)
+//! - `commands`: command array; each element uses the same syntax as the command line
 
 use crate::color::Colorize;
 use log::{error, info};
@@ -31,7 +31,7 @@ use log::{error, info};
 use crate::da::DAXFlash;
 use crate::system::config::AppConfig;
 
-/// 脚本 JSON 结构
+/// Script JSON structure
 struct ScriptFile {
     name: String,
     description: String,
@@ -39,22 +39,22 @@ struct ScriptFile {
     commands: Vec<String>,
 }
 
-/// 解析 JSON 脚本文件（手动解析，不依赖 serde_json）
+/// Parse a JSON script file (hand-rolled parser, no serde_json dependency)
 fn parse_script(path: &str) -> Result<ScriptFile, Box<dyn std::error::Error>> {
     let content =
         std::fs::read_to_string(path).map_err(|e| format!("无法读取脚本文件 '{}': {}", path, e))?;
 
-    // 去除 JSON 中的注释行（// 开头）和尾随逗号，方便手工编辑
+    // Strip comment lines (starting with //) and trailing commas to make hand editing easier
     let cleaned: String = content
         .lines()
         .filter(|line| {
             let trimmed = line.trim();
-            // 跳过 // 注释行（但不影响字符串内的 //）
+            // Skip // comment lines (but leave // inside strings alone)
             !trimmed.starts_with("//")
         })
         .map(|line| {
             let trimmed = line.trim_end();
-            // 去除尾随逗号（数组最后一项 ] 前的逗号）
+            // Drop trailing commas (the one before the closing ] of an array)
             if trimmed.ends_with(',') && !trimmed.contains('"') && trimmed.contains(']') {
                 trimmed[..trimmed.len() - 1].to_string()
             } else {
@@ -64,17 +64,17 @@ fn parse_script(path: &str) -> Result<ScriptFile, Box<dyn std::error::Error>> {
         .collect::<Vec<_>>()
         .join("\n");
 
-    // 提取 JSON 值的辅助函数
+    // Helpers for extracting JSON values
     fn extract_string_value(json: &str, key: &str) -> Option<String> {
         let pattern = format!("\"{}\"", key);
         let start = json.find(&pattern)?;
-        // 从 key 后找到冒号
+        // Find the colon after the key
         let after_key = &json[start + pattern.len()..];
         let colon_pos = after_key.find(':')?;
         let after_colon = after_key[colon_pos + 1..].trim_start();
 
         if after_colon.starts_with('"') {
-            // 字符串值
+            // String value
             let inner = &after_colon[1..];
             let end = inner.find('"')?;
             Some(inner[..end].to_string())
@@ -98,7 +98,7 @@ fn parse_script(path: &str) -> Result<ScriptFile, Box<dyn std::error::Error>> {
             return None;
         }
 
-        // 找到数组结束位置
+        // Find the end of the array
         let inner = &after_colon[1..];
         let end = inner.find(']')?;
         let array_content = &inner[..end];
@@ -106,7 +106,7 @@ fn parse_script(path: &str) -> Result<ScriptFile, Box<dyn std::error::Error>> {
         let mut result = Vec::new();
         let mut pos = 0;
         while pos < array_content.len() {
-            // 跳过空白和逗号
+            // Skip whitespace and commas
             while pos < array_content.len()
                 && (array_content[pos..].starts_with(' ')
                     || array_content[pos..].starts_with('\t')
@@ -121,9 +121,9 @@ fn parse_script(path: &str) -> Result<ScriptFile, Box<dyn std::error::Error>> {
             }
 
             if array_content[pos..].starts_with('"') {
-                // 提取字符串
+                // Extract the string
                 let s = &array_content[pos + 1..];
-                // 处理转义字符
+                // Handle escape sequences
                 let mut decoded = String::new();
                 let mut chars = s.chars();
                 while let Some(c) = chars.next() {
@@ -151,7 +151,7 @@ fn parse_script(path: &str) -> Result<ScriptFile, Box<dyn std::error::Error>> {
                 if !decoded.is_empty() {
                     result.push(decoded);
                 }
-                // 找到结束引号的位置继续
+                // Continue past the closing quote
                 let end_quote = array_content[pos + 1..].find('"').map(|i| pos + 1 + i + 1);
                 pos = end_quote.unwrap_or(pos + 1);
             } else {
@@ -182,7 +182,7 @@ fn parse_script(path: &str) -> Result<ScriptFile, Box<dyn std::error::Error>> {
     })
 }
 
-/// 执行脚本命令
+/// Execute a script
 pub fn cmd_run(
     da: &mut DAXFlash,
     args: &[String],
@@ -196,7 +196,7 @@ pub fn cmd_run(
     let script_path = &args[0];
     let script = parse_script(script_path)?;
 
-    // 显示脚本信息
+    // Show script information
     if !script.name.is_empty() {
         info!("{}", format!("═══ 脚本: {} ═══", script.name).cyan().bold());
     }
@@ -229,7 +229,7 @@ pub fn cmd_run(
             format!("[{}/{}] {}", i + 1, script.commands.len(), cmd_str.cyan())
         );
 
-        // 解析命令
+        // Parse the command
         let parts: Vec<String> = cmd_str.split_whitespace().map(String::from).collect();
         if parts.is_empty() {
             continue;
@@ -272,7 +272,7 @@ pub fn cmd_run(
         println!();
     }
 
-    // 输出执行摘要
+    // Print the execution summary
     info!(
         "{}",
         format!(

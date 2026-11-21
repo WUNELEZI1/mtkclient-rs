@@ -1,16 +1,17 @@
-//! `rpmb` 命令：RPMB 密钥烧写与分区读写
+//! `rpmb` command: RPMB key programming and partition read/write.
 //!
-//! 用法：
+//! Usage:
 //! ```text
-//! rpmb info                              显示 RPMB 容量与会话可用性
-//! rpmb init [--rpmbkey <hex>]            初始化 RPMB 会话（可选先烧写密钥）
-//! rpmb set-key <hex|random> --yes        烧写 32 字节 RPMB 密钥（不可逆）
-//! rpmb read <file> [--sector N] [--sectors N]
-//! rpmb write <file> [--sector N] --yes
+//! rpmb info                              show RPMB capacity and session availability
+//! rpmb init [--rpmbkey <hex>]            init RPMB session (optionally program key first)
+//! rpmb set-key <hex|random> --yes        program a 32-byte RPMB key (irreversible)
+//! rpmb read `<file>` [--sector N] [--sectors N]
+//! rpmb write `<file>` [--sector N] --yes
 //! ```
 //!
-//! 说明：RPMB 密钥一旦写入**无法读出**，也无法在不擦除 RPMB 分区的前提下更换，
-//! 因此 `set-key` / `write` 强制要求显式 `--yes` 才会真正下发命令。
+//! Note: once written, the RPMB key **cannot be read back**, and it cannot be changed
+//! without erasing the RPMB partition, so `set-key` / `write` require an explicit `--yes`
+//! before any command is actually sent.
 
 use crate::color::Colorize;
 use log::info;
@@ -18,7 +19,7 @@ use log::info;
 use crate::da::DAXFlash;
 use crate::da::xflash::protocol::rpmb as proto;
 
-/// 解析形如 `--key value` 的选项，返回 (值, 剩余参数)
+/// Parse an option of the form `--key value`, returning (value, remaining args)
 fn take_opt<'a>(args: &'a [String], name: &str) -> Option<(&'a str, Vec<String>)> {
     let mut out = Vec::with_capacity(args.len());
     let mut found = None;
@@ -51,7 +52,7 @@ fn parse_u32(v: &str, what: &str) -> Result<u32, String> {
     parsed.map_err(|_| format!("{} 不是合法整数: {}", what, v))
 }
 
-/// 处理 `rpmb` 子命令
+/// Handle `rpmb` subcommands
 pub fn cmd_rpmb(da: &mut DAXFlash, args: &[String]) -> Result<(), String> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("info");
     let rest = &args[1.min(args.len())..];
@@ -161,7 +162,7 @@ fn cmd_read(da: &mut DAXFlash, args: &[String]) -> Result<(), String> {
     let sectors = match sectors {
         Some(n) => n,
         None => {
-            // 未指定则整块读取
+            // Read the whole partition when not specified
             let size = da.rpmb_size().unwrap_or(0);
             if size == 0 {
                 return Err("无法获取 RPMB 容量，请用 --sectors 指定扇区数".to_string());

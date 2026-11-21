@@ -1,20 +1,22 @@
-//! Preloader 模式 BootMode Switch 协议 (Layer 1)
+//! Preloader-mode BootMode switch protocol (Layer 1).
 //!
-//! 对齐 Python mtkclient `META.init()` 的实现。
+//! Mirrors Python mtkclient's `META.init()`.
 //!
-//! 协议流程（CDC bulk transfer）：
-//! 1. 打开 Preloader VCOM 串口 (PID=0x2000)，**不做 BROM 握手**
-//! 2. 持续读取直到收到 "READY"
-//! 3. 发送 8 字节模式标识（如 FASTBOOT）
-//! 4. 持续读取直到收到非 READY 的响应（如 TOOBTSAF）
-//! 5. 发送 DISCONNECT
+//! Protocol flow (CDC bulk transfer):
+//! 1. Open the Preloader VCOM serial port (PID=0x2000), **without any BROM handshake**
+//! 2. Keep reading until "READY" arrives
+//! 3. Send the 8-byte mode identifier (e.g. FASTBOOT)
+//! 4. Keep reading until a non-READY response arrives (e.g. TOOBTSAF)
+//! 5. Send DISCONNECT
 //!
-//! 关键：Pattern 协议必须在 BROM 握手之前执行！
-//! Python mtkclient META.init() 直接操作 CDC USB endpoint，完全不做 handshake。
-//! 如果先做 BROM 握手，设备进入 BROM 协议状态，会把 Pattern 数据当作 BROM 命令回显。
+//! Key point: the pattern protocol must run BEFORE any BROM handshake!
+//! Python mtkclient META.init() drives the CDC USB endpoint directly and never handshakes.
+//! A prior BROM handshake puts the device into BROM protocol state, which echoes pattern data
+//! back as BROM commands.
 //!
-//! 另一个关键：扫描端口时不能用 verify_port_exists()（会打开再关闭 COM 口，清空缓冲区中的 READY），
-//! 必须直接枚举到 PID=0x2000 后立即用 SerialPortTransport::new() 打开。
+//! Also key: when scanning ports do not use verify_port_exists() (it opens and closes the COM
+//! port, draining the buffered READY); instead enumerate to PID=0x2000 and open immediately
+//! with SerialPortTransport::new().
 
 use std::time::Duration;
 
@@ -22,10 +24,10 @@ use log::{debug, info, warn};
 
 use crate::preloader::transport::BromTransport;
 
-/// DISCONNECT 命令
+/// DISCONNECT command
 const DISCONNECT_CMD: &[u8] = b"DISCONNECT";
 
-/// 支持的启动模式
+/// Supported boot modes
 #[derive(Debug, Clone, Copy)]
 pub enum BootMode {
     Fastboot,
@@ -55,11 +57,12 @@ impl BootMode {
     }
 }
 
-/// 读取一个 Preloader 数据片段
+/// Read one Preloader data fragment.
 ///
-/// 对齐 Python: bytearray(ep_in(maxinsize)) — CDC bulk 每次返回一个 USB 事务的数据。
-/// 串口是连续流，可能一次性返回多个逻辑消息（如 "READYREADYREADY..."）。
-/// 使用小 buffer（16 字节）+ 短超时，更接近 CDC bulk 的包边界行为。
+/// Matching Python: bytearray(ep_in(maxinsize)) — CDC bulk returns one USB transaction at a time.
+/// A serial port is a continuous stream and may deliver several logical messages at once
+/// (e.g. "READYREADYREADY..."). A small buffer (16 bytes) plus a short timeout approximates
+/// CDC bulk packet boundaries.
 fn read_packet(device: &mut dyn BromTransport, timeout: Duration) -> Result<Vec<u8>, String> {
     device.set_timeout(timeout);
     let mut buf = vec![0u8; 16];
@@ -74,7 +77,7 @@ fn read_packet(device: &mut dyn BromTransport, timeout: Duration) -> Result<Vec<
         if remaining.is_zero() {
             break;
         }
-        // 每次读取使用短超时（50ms），更接近 CDC bulk 的逐包行为
+        // Use a short timeout (50ms) per read to approximate CDC bulk per-packet behavior
         let read_timeout = std::cmp::min(Duration::from_millis(50), remaining);
         device.set_timeout(read_timeout);
         match device.read(&mut buf[total..]) {
@@ -92,21 +95,21 @@ fn read_packet(device: &mut dyn BromTransport, timeout: Duration) -> Result<Vec<
     Ok(buf)
 }
 
-/// 通过 Preloader Pattern 协议切换启动模式
+/// Switch boot mode through the Preloader pattern protocol.
 ///
-/// 对齐 Python mtkclient META.init():
-/// - 持续读取直到收到 "READY"
-/// - 发送 8 字节模式标识
-/// - 持续读取直到收到回传确认（非 READY）
-/// - 发送 DISCONNECT
+/// Mirrors Python mtkclient META.init():
+/// - keep reading until "READY"
+/// - send the 8-byte mode identifier
+/// - keep reading until an acknowledgement arrives (non-READY)
+/// - send DISCONNECT
 pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Result<(), String> {
     info!("[BootAs] Start Pattern protocol... mode={}", mode.name());
 
     let orig_timeout = device.get_timeout();
 
-    // Step 1: 持续读取直到收到 "READY"，收到后立即发送模式标识
-    // 对齐 Python: if resp == b"READY": ep_out(metamode, len(metamode))
-    // 关键：收到 READY 后必须立即发送，不能等待！Preloader 的 READY 窗口很短。
+    // Step 1: Keep reading until "READY" arrives, then send the mode identifier at once.
+    // Matching Python: if resp == b"READY": ep_out(metamode, len(metamode))
+    // Key: send immediately after READY; never delay — the Preloader READY window is short.
     let mut ready_received = false;
     let deadline = std::time::Instant::now();
     let max_wait = Duration::from_secs(10);
@@ -123,25 +126,25 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
             Err(_) => continue,
         };
 
-        // 检查是否包含 READY（串口模式下可能是 "READYREADYREADY..." 连续流）
+        // Check for READY (a serial stream may deliver "READYREADYREADY...")
         if resp.windows(5).any(|w| w == b"READY") {
             info!("[BootAs] Receive READY");
             ready_received = true;
 
-            // 收到 READY 后立即发送模式标识（对齐 Python: ep_out(metamode, len(metamode))）
+            // Send the mode identifier as soon as READY arrives (matching Python: ep_out(metamode, len(metamode)))
             let send_id = mode.send_id();
             info!(
                 "[BootAs] 发送模式标识: {} ({})",
                 mode.name(),
                 hex_str(send_id)
             );
-            // 发送模式标识后设备可能立即重启（COM 口断开），write 失败视为成功
+            // The device may reboot right after the identifier (COM port drops); treat a write failure as success
             if let Err(e) = device.write(send_id) {
                 warn!("[BootAs] 发送模式标识后设备可能已重启: {}", e);
                 device.set_timeout(orig_timeout);
                 return Ok(());
             }
-            break; // 发送完成，跳出循环
+            break; // sent; leave the loop
         }
 
         if resp.is_empty() {
@@ -153,7 +156,7 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
 
     if !ready_received {
         warn!("[BootAs] 未收到 READY，设备可能已处于就绪状态");
-        // 即使没收到 READY 也尝试发送
+        // Try sending even if READY was never received
         let send_id = mode.send_id();
         info!(
             "[BootAs] 尝试发送模式标识: {} ({})",
@@ -167,12 +170,13 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
         }
     }
 
-    // Step 2: 读取回传确认（设备可能立即重启，读错误视为成功）
+    // Step 2: Read the acknowledgement (the device may reboot immediately; read errors count as success).
     //
-    // 关键修正：设备的回传确认（如 FASTBOOT 的 "TOOBTSAF"）可能被拆成多个 USB/串口事务分片到达
-    // （例如首次读得 "TOOBT"、二次读得 "SAF"）。原先对每个独立 packet 做 windows() 匹配，8 字节的
-    // TOOBTSAF 永远无法在拆片中匹配，于是降级为误导性的"收到非预期回传: 53 41 46" + "等待回传确认超时"
-    // （设备其实已重启成功）。改为把多次读取累积到同一缓冲区，再在累积缓冲上做窗口匹配。
+    // Key fix: the acknowledgement (e.g. "TOOBTSAF" for FASTBOOT) may arrive split across several
+    // USB/serial transactions (first read "TOOBT", second read "SAF"). Matching windows() within each
+    // individual packet could never match the 8-byte TOOBTSAF, degrading into the misleading
+    // "unexpected response: 53 41 46" plus "acknowledgement timeout" (although the device had in fact
+    // rebooted successfully). Accumulate reads into one buffer and window-match on the accumulated buffer.
     let mut acc: Vec<u8> = Vec::new();
     let resp_deadline = std::time::Instant::now();
     let resp_max_wait = Duration::from_secs(3);
@@ -198,7 +202,7 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
         }
         acc.extend_from_slice(&chunk);
 
-        // 在累积缓冲区上检查预期的回传确认（目标标识可能和其他数据混排在一起）
+        // Check the expected acknowledgement on the accumulated buffer (the target ID may be interleaved with other data)
         let matched = mode
             .response_ids()
             .iter()
@@ -207,7 +211,7 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
         if matched {
             info!("[BootAs] 收到回传确认: {} ✓", String::from_utf8_lossy(&acc));
 
-            // ATEMATEM 流程处理（在累积缓冲上做子串匹配，避免拆片漏判）
+            // ATEMATEM flow (substring match on the accumulated buffer to avoid split-chunk misses)
             if acc.windows(8).any(|w| w == b"ATEM0001") {
                 device
                     .write(&[
@@ -227,11 +231,11 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
             break;
         }
 
-        // 未匹配时仅 trace，避免把拆片回传刷成噪音（设备已重启常见的非完整分片）
+        // Only trace on mismatch to avoid noisy logs from split fragments (common after a device reboot)
         log::trace!("[BootAs] 累积缓冲（未匹配）: {}", hex_str(&acc));
     }
 
-    // Step 4: 发送 DISCONNECT（设备可能已重启，失败忽略）
+    // Step 4: Send DISCONNECT (the device may already have rebooted; ignore failures)
     info!("[BootAs] 发送 DISCONNECT");
     let _ = device.write(DISCONNECT_CMD);
 
@@ -243,15 +247,18 @@ pub fn send_boot_pattern(device: &mut dyn BromTransport, mode: BootMode) -> Resu
     Ok(())
 }
 
-/// 枚举所有 Preloader COM 口（不使用 verify_port_exists，避免清空串口缓冲区）
+/// Enumerate all Preloader COM ports (no verify_port_exists, which would drain the serial buffer).
 ///
-/// 直接通过 serialport::available_ports() 枚举，返回所有 VID=0E8D PID=2000 的串口名。
-/// 不调用 verify_port_exists()，因为它会用 CreateFile 打开再关闭 COM 口，清空缓冲区中的 READY。
+/// Enumerates directly via serialport::available_ports() and returns every port with
+/// VID=0E8D PID=2000. verify_port_exists() is not used because it opens and closes the COM port
+/// with CreateFile, draining the buffered READY.
 ///
-/// 重要：Windows 注册表可能残留历史 COM 口条目（设备已拔出/重枚举但条目未清除），
-/// available_ports() 会把这些“幽灵端口”也枚举出来。因此返回**全部**候选而非首个，
-/// 由调用方对每个候选尝试 open_raw，打开失败即视为幽灵端口，跳过并继续尝试其余候选，
-/// 绝不能像旧实现那样“首个端口打开失败就退出轮询”（这正是 reboot --via preloader 偶发失败的元凶）。
+/// Important: the Windows registry may keep stale COM port entries (device unplugged or
+/// re-enumerated but the entry not cleared), and available_ports() also enumerates these
+/// "ghost ports". So return **all** candidates instead of the first one, and let the caller try
+/// open_raw on each: a failed open means a ghost port, which is skipped while the remaining
+/// candidates are still tried. Never exit the polling loop on the first open failure as the old
+/// implementation did (that was the cause of intermittent reboot --via preloader failures).
 pub(crate) fn scan_preloader_ports() -> Vec<String> {
     let ports = match serialport::available_ports() {
         Ok(p) => p,
@@ -269,9 +276,10 @@ pub(crate) fn scan_preloader_ports() -> Vec<String> {
     result
 }
 
-/// 尝试连接 Preloader 串口并发送 Pattern 协议
+/// Try to connect to the Preloader serial port and run the pattern protocol.
 ///
-/// 等待 Preloader VCOM (PID=0x2000) 出现，打开原始串口（不握手），执行 Pattern 协议。
+/// Waits for the Preloader VCOM (PID=0x2000), opens the raw serial port (no handshake) and runs
+/// the pattern protocol.
 pub(crate) fn try_preloader_pattern(boot_mode: BootMode) -> Result<(), String> {
     use crate::preloader::SerialPortTransport;
     use std::time::Duration;
@@ -289,9 +297,9 @@ pub(crate) fn try_preloader_pattern(boot_mode: BootMode) -> Result<(), String> {
             return Err("未在 15 秒内找到可用的 Preloader COM 口".into());
         }
 
-        // 枚举当前所有 Preloader VCOM（可能含 Windows 注册表残留的幽灵端口）。
-        // 对每个候选尝试打开：幽灵端口（注册表残留/设备尚未就绪）打开会失败，
-        // 此时跳过并继续尝试其余候选，而不是像旧实现那样直接退出轮询。
+        // Enumerate all current Preloader VCOMs (may include ghost ports left in the Windows registry).
+        // Try to open each candidate: ghost ports (registry leftovers / device not ready) fail to open,
+        // in which case skip them and try the rest instead of leaving the polling loop like the old code.
         let candidates = scan_preloader_ports();
         for port_name in &candidates {
             let mut transport = match SerialPortTransport::open_raw(port_name, 115200) {
@@ -305,8 +313,8 @@ pub(crate) fn try_preloader_pattern(boot_mode: BootMode) -> Result<(), String> {
                 }
             };
             debug!("发现并打开 Preloader COM 口: {}", port_name);
-            // 打开成功 → 执行 Pattern 协议（其内部已处理设备已重启导致的写/读失败）。
-            // 无论成功与否都按语义返回，不再因幽灵端口而提前退出。
+            // Opened successfully → run the pattern protocol (it already handles write/read failures
+            // caused by a device reboot). Return the result as-is; ghost ports no longer end the loop early.
             transport.set_timeout(Duration::from_millis(2000));
             return send_boot_pattern(&mut transport, boot_mode);
         }

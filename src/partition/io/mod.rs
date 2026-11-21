@@ -1,11 +1,11 @@
-//! DAXFlash 上的分区读写擦操作
+//! Partition read/write/erase operations over DAXFlash
 //!
-//! - `read_gpt`   — 读取并保存 GPT
-//! - `find_partition_addr` — 按名称查找分区地址
-//! - `read_partition` — 读分区到文件
-//! - `write_partition` — 写文件到分区
-//! - `erase_partition` — 擦除分区
-//! - `write_flash_data` / `cmd_write_data` / `get_packet_length` — 底层写入原语
+//! - `read_gpt`   — read and save the GPT
+//! - `find_partition_addr` — look up a partition address by name
+//! - `read_partition` — read a partition into a file
+//! - `write_partition` — write a file into a partition
+//! - `erase_partition` — erase a partition
+//! - `write_flash_data` / `cmd_write_data` / `get_packet_length` — low-level write primitives
 
 pub(crate) mod crc;
 pub(crate) mod gpt;
@@ -49,22 +49,22 @@ mod tests {
         let p = path.to_str().unwrap();
         let _ = std::fs::remove_file(p);
 
-        // 不存在 → 从头读取
+        // Missing → read from the start
         assert_eq!(compute_read_resume_offset(p, 1000), 0);
 
-        // 已完整 → 返回 size（调用方据此跳过，不再重读）
+        // Complete → return size (caller skips accordingly, no re-read)
         std::fs::write(p, vec![0u8; 1000]).unwrap();
         assert_eq!(compute_read_resume_offset(p, 1000), 1000);
 
-        // 偏大（极端情况）→ 仍返回 size
+        // Oversized (extreme case) → still return size
         std::fs::write(p, vec![0u8; 2000]).unwrap();
         assert_eq!(compute_read_resume_offset(p, 1000), 1000);
 
-        // 部分且 512 对齐 → 返回对齐偏移
+        // Partial and 512-aligned → return the aligned offset
         std::fs::write(p, vec![0u8; 1024]).unwrap();
         assert_eq!(compute_read_resume_offset(p, 2000), 1024);
 
-        // 部分且未对齐 → 截断到 512 对齐点并返回（rl 续传关键路径）
+        // Partial and unaligned → truncate to the 512 alignment point and return (critical rl resume path)
         std::fs::write(p, vec![0u8; 1500]).unwrap();
         assert_eq!(compute_read_resume_offset(p, 2000), 1024);
         assert_eq!(std::fs::metadata(p).unwrap().len(), 1024);

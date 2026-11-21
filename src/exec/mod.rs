@@ -1,12 +1,12 @@
-//! 执行器：**唯一执行入口**。
+//! Executor: the **single execution entry point**.
 //!
-//! 职责边界：
-//! - 决定做什么 → 交给 [`Orchestrator`]（Planner 的搜索 + 决策日志）；
-//! - 把 `PlanStep` 翻译成 [`Session`] 调用；
-//! - 每执行一步，**校验能力确实增加了**（防止"步骤跑了但没生效"）；
-//! - 收尾核对 `required ⊆ acquired`，不满足即报错，而不是继续往下跑。
+//! Responsibility boundaries:
+//! - decide what to do → delegated to [`Orchestrator`] (Planner search + decision logging);
+//! - translate `PlanStep` into [`crate::session::Session`] calls;
+//! - after each step, **verify the capability actually increased** (guarding against "step ran but had no effect");
+//! - at the end check `required ⊆ acquired`, error out if unsatisfied instead of continuing.
 //!
-//! 这样"能力驱动"是**可验证**的：日志里既能看到规划结论，也能看到每一步带来的能力增量。
+//! This makes "capability-driven" **verifiable**: logs show both the planning conclusion and each step's capability gain.
 
 use log::{info, trace};
 
@@ -20,21 +20,21 @@ use crate::exploit::registry::ExploitRegistry;
 use crate::ops::{Op, OpCtx, OpOutcome};
 use crate::session::Session;
 
-/// 执行错误。
+/// Execution error.
 #[derive(Debug)]
 pub enum ExecError {
-    /// 规划失败（无可行路径）
+    /// Planning failed (no feasible path)
     Plan(PlanError),
-    /// 某一步执行失败
+    /// A step failed to execute
     Step { step: String, msg: String },
-    /// 步骤执行完但能力没有增加（后端未真正生效）
+    /// Step finished but the capability did not increase (backend did not take effect)
     NoProgress {
         step: String,
         missing: Vec<&'static str>,
     },
-    /// 全部步骤跑完仍未满足目标能力
+    /// All steps finished but the target capability is still unsatisfied
     Incomplete { missing: Vec<&'static str> },
-    /// op 自身失败
+    /// The op itself failed
     Op(String),
 }
 
@@ -56,23 +56,23 @@ impl std::fmt::Display for ExecError {
 
 impl std::error::Error for ExecError {}
 
-/// 执行报告。
+/// Execution report.
 #[derive(Debug)]
 pub struct ExecReport {
     pub decision: DecisionLog,
-    /// 实际执行的步骤（label）
+    /// Steps actually executed (label)
     pub executed: Vec<String>,
-    /// 每步带来的新增能力
+    /// Capabilities newly gained by each step
     pub gains: Vec<(String, Vec<&'static str>)>,
-    /// op 的执行结果（summary / 产物 / 关键数量），供调用方展示与测试断言
+    /// Op execution result (summary / artifacts / key counts) for caller display and test assertions
     #[allow(dead_code)]
     pub outcome: OpOutcome,
 }
 
-/// 执行器。
+/// Executor.
 pub struct Executor {
     orch: Orchestrator,
-    /// 危险操作确认器（`--yes` / 交互式终端）
+    /// Danger-operation confirmer (`--yes` / interactive terminal)
     confirm: DangerConfirm,
 }
 
@@ -84,19 +84,19 @@ impl Executor {
         }
     }
 
-    /// `--yes`：跳过交互与警告，直接放行（给脚本/程序调用）。
+    /// `--yes`: skip interaction and warnings, pass through directly (for script/programmatic calls).
     pub fn with_assume_yes(mut self, yes: bool) -> Self {
         self.confirm = DangerConfirm::new(yes);
         self
     }
 
-    /// 允许交互式确认（stdin 为终端时由 CLI 打开）。
+    /// Allow interactive confirmation (enabled by the CLI when stdin is a terminal).
     pub fn with_interactive(mut self, on: bool) -> Self {
         self.confirm.set_interactive(on);
         self
     }
 
-    /// 打印决策（人类可读 + 单行 JSON），返回日志对象。
+    /// Print the decision (human-readable + single-line JSON) and return the log object.
     fn announce(
         &self,
         goal: &'static str,
@@ -132,10 +132,10 @@ impl Executor {
             })?;
 
         log::debug!("[exec] 执行后端: {}", session.label());
-        // 人类可读（含 gap / selected / alternatives / reason）
+        // Human-readable (includes gap / selected / alternatives / reason)
         print!("{}", decision.log.human());
-        // 结构化决策日志：--log 2 起输出（默认只保留人类可读的 selected/reason，
-        // 避免正常刷机输出里夹一整行 JSON）。`plan` 命令仍始终输出 JSON。
+        // Structured decision log: emitted from --log 2 (by default only the human-readable selected/reason is kept,
+        // to avoid a whole JSON line mixed into normal flashing output). The `plan` command still always emits JSON.
         if log_level >= 2 {
             println!("{}", decision.log.json());
         }
@@ -149,7 +149,7 @@ impl Executor {
         Ok(decision)
     }
 
-    /// 执行一个 op。
+    /// Execute an op.
     pub fn execute(
         &mut self,
         op: &dyn Op,
@@ -160,7 +160,7 @@ impl Executor {
         let required = op.required_caps();
         let decision = self.announce(op.name(), session, required, log_level)?;
         let log = decision.log.clone();
-        // 决策即执行计划：不重新规划，避免"日志说的"与"实际跑的"不一致
+        // The decision is the execution plan: do not re-plan, avoiding a mismatch between "what the log says" and "what actually runs"
         let steps = decision.selected.steps.clone();
 
         let mut acquired = session.caps();
@@ -243,7 +243,7 @@ impl Executor {
         })
     }
 
-    /// `PlanStep` → 具体后端调用。
+    /// `PlanStep` → concrete backend call.
     fn run_step(&self, step: &PlanStep, session: &mut dyn Session) -> Result<(), ExecError> {
         let label = step.label();
         let res = match step {
@@ -256,7 +256,7 @@ impl Executor {
         res.map_err(|msg| ExecError::Step { step: label, msg })
     }
 
-    /// 每一步"应得"的能力。
+    /// Capabilities "expected" from each step.
     fn effect_of(&self, step: &PlanStep) -> CapabilitySet {
         match step {
             PlanStep::Exploit(name) => self
@@ -314,10 +314,10 @@ mod tests {
                 "param_adjust(parse_gpt)"
             ]
         );
-        // 决策成本与手算一致：3 步 * 100 + 1 次 DA * 200 + 1900ms/10
+        // Decision cost matches manual calculation: 3 steps * 100 + 1 DA * 200 + 1900ms/10
         assert_eq!(r.decision.selected_cost, 690);
         assert!(!r.decision.alternatives.is_empty(), "至少给出两条路");
-        // 每步都真实提升了能力
+        // Every step genuinely increased capabilities
         let gained: Vec<&str> = r.gains.iter().flat_map(|(_, g)| g.clone()).collect();
         assert!(gained.contains(&"da_loaded"));
         assert!(gained.contains(&"storage_read"));
@@ -328,7 +328,7 @@ mod tests {
                 .iter()
                 .find(|(k, _)| k == "partitions")
                 .map(|(_, v)| v.as_str()),
-            // 默认布局：seccfg/misc/para + boot_a/boot_b/recovery/vbmeta_a/vbmeta_b/
+            // Default layout: seccfg/misc/para + boot_a/boot_b/recovery/vbmeta_a/vbmeta_b/
             // super/userdata/metadata = 11
             Some("11")
         );
@@ -377,8 +377,8 @@ mod tests {
         match err {
             ExecError::Step { step, msg } => {
                 assert!(step.contains("da_load"), "实际: {}", step);
-                // flaky 画像用 `fault=silent` 注入；静默 = 掉线，按"断开"上报
-                // （不可重试、立刻失败），不能再当作可重试的瞬时超时。
+                // The flaky profile injects via `fault=silent`; silent = disconnected, reported as "disconnected"
+                // (non-retryable, fails immediately), and must not be treated as a retryable transient timeout.
                 assert!(
                     msg.contains("断开") || msg.contains("超时"),
                     "实际: {}",
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn missing_emmc_info_does_not_block_printgpt() {
-        // 老 DA / 定制 DA 不支持 0x00040001 时，容量字段降级为 0，但读表仍须成功
+        // When an old/custom DA does not support 0x00040001, capacity fields degrade to 0, but reading the table must still succeed
         let mut s = sim("no-emmc-info");
         let r = Executor::new(Mode::Auto)
             .execute(&PrintGptOp, &mut s, false, 0)
@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn plan_failure_is_reported_without_panic() {
-        // 没有 DA 字节 → 无法规划出 StorageRead
+        // No DA bytes → cannot plan StorageRead
         let dev = VirtualDevice::from_preset("v5-clean").unwrap();
         let mut s = SimSession::new(dev);
         let err = Executor::new(Mode::Auto)

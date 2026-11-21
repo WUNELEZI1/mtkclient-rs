@@ -1,15 +1,16 @@
-//! XFlash 协议原语层
+//! XFlash protocol primitive layer.
 //!
-//! 本模块承载 XFlash 协议层最底层的数据包/状态机原语，被 DAXFlash 的所有
-//! 高层方法（setup/upload/read/erase/...）复用：
-//! - 常量定义（CMD_MAGIC、所有 CMD_* 命令码）
-//! - 包头打包（pack3）
-//! - 同步/状态读取（xflash_sync、status、xread、xread_data）
-//! - ACK 响应（ack、send_ack）
-//! - 设备控制命令（send_devctrl、get/set_*_devctrl 包装）
+//! This module holds the lowest-level packet/state-machine primitives of the XFlash
+//! protocol, reused by all high-level DAXFlash methods (setup/upload/read/erase/...):
+//! - constant definitions (CMD_MAGIC, all CMD_* command codes)
+//! - packet header packing (pack3)
+//! - sync/status reads (xflash_sync, status, xread, xread_data)
+//! - ACK responses (ack, send_ack)
+//! - device control commands (send_devctrl, get/set_*_devctrl wrappers)
 //!
-//! 设计原则：保持与 Python mtkclient xflash_lib.py 的协议层一一对应，
-//! 不依赖任何上层 DAXFlash 业务逻辑，方便单测与回溯。
+//! Design principle: keep a 1:1 mapping to the protocol layer of Python mtkclient
+//! xflash_lib.py, with no dependency on upper-layer DAXFlash business logic, so it
+//! stays easy to unit test and trace.
 
 pub(crate) mod ack;
 pub(crate) mod devctrl;
@@ -18,99 +19,106 @@ pub(crate) mod rpmb;
 pub(crate) mod shutdown;
 
 // =============================================================================
-// XFlash 命令常量
+// XFlash command constants
 // =============================================================================
 
-/// 所有 XFlash 包头的 magic 标识
+/// Magic identifier for all XFlash packet headers.
 pub const CMD_MAGIC: u32 = 0xFEEEEEEF;
-/// XFlash 包头 `data_type`：正常流程包（命令响应 / 数据）。
-/// 参考 penumbra `DataType::Flow`。
+/// XFlash header `data_type`: normal flow packet (command response / data).
+/// See penumbra `DataType::Flow`.
 pub const DATA_TYPE_FLOW: u32 = 0x1;
-/// XFlash 包头 `data_type`：设备异步消息包（DA 日志 / 状态通告）。
-/// 参考 penumbra `DataType::Message`。DA 可在任意时刻插入此类包，
-/// 若不消费其负载会导致后续包头错位（协议失步）。
+/// XFlash header `data_type`: device asynchronous message packet (DA log / status notice).
+/// See penumbra `DataType::Message`. The DA may inject such packets at any time; if
+/// their payload is not consumed, subsequent headers get misaligned (protocol desync).
 pub const DATA_TYPE_MESSAGE: u32 = 0x2;
 pub const CMD_SYNC_SIGNAL: u32 = 0x434E5953;
 pub const CMD_SETUP_ENVIRONMENT: u32 = 0x010100;
 pub const CMD_SETUP_HW_INIT_PARAMS: u32 = 0x010101;
 pub const CMD_INIT_EXT_RAM: u32 = 0x01000A;
 pub const CMD_BOOT_TO: u32 = 0x010008;
-pub const CMD_READ_DATA: u32 = 0x010005; // XFlash 读分区命令
-pub const CMD_WRITE_DATA: u32 = 0x010004; // 写入数据命令
+pub const CMD_READ_DATA: u32 = 0x010005; // XFlash read-partition command
+pub const CMD_WRITE_DATA: u32 = 0x010004; // write-data command
 
-pub const CMD_FORMAT: u32 = 0x010003; // 格式化命令
+pub const CMD_FORMAT: u32 = 0x010003; // format command
 
 // =============================================================================
-// XFlash DA 完整命令码表（对齐 MTKAuthPass.exe + mtkclient xflash_lib.py）
+// Full XFlash DA command code table (aligned with MTKAuthPass.exe + mtkclient xflash_lib.py)
 // =============================================================================
 
-// --- 基础命令 (0x01xxxx) ---
-pub const CMD_SHUTDOWN: u32 = 0x010007; // ★ 关机/reboot（含 bootmode 参数）
+// --- Basic commands (0x01xxxx) ---
+pub const CMD_SHUTDOWN: u32 = 0x010007; // * shutdown/reboot (with bootmode argument)
 
-// --- 设备控制子命令 (0x02xxxx) — 通过 CMD_DEVICE_CTRL 发送 ---
-pub const SET_META_BOOT_MODE: u32 = 0x020006; // ★ 设置 Meta Boot Mode
+// --- Device control subcommands (0x02xxxx) - sent via CMD_DEVICE_CTRL ---
+pub const SET_META_BOOT_MODE: u32 = 0x020006; // * set Meta Boot Mode
 
-// --- 信息获取子命令 (0x04xxxx) ---
-pub const GET_PKT_LEN: u32 = 0x040007; // 获取包长度
-/// 注意：0x040008 在 mtkclient 的 Cmd 表中实为 **GET_RANDOM_ID**，并不是"设置包长度"。
-/// 保留此名仅为兼容历史事件器与写路径中显式的实验性 `MTK_FORCE_PKT_LEN` 开关
-/// （见 `partition/write/cmd.rs`）；常规读/写路径**禁止**发送，否则等于"给一条 GET 带参数"，
-/// 会令 DA 状态机错位，紧随其后的 READ_DATA 返回 0xC0010003 (Unsupported command)。
+// --- Info query subcommands (0x04xxxx) ---
+pub const GET_PKT_LEN: u32 = 0x040007; // get packet length
+/// Note: in mtkclient's Cmd table, 0x040008 is actually **GET_RANDOM_ID**, not
+/// "set packet length". This name is kept only for compatibility with historical
+/// event handlers and the explicit experimental `MTK_FORCE_PKT_LEN` switch in the
+/// write path (see `partition/write/cmd.rs`); regular read/write paths **must not**
+/// send it, otherwise it is effectively "a GET with an argument" that desyncs the
+/// DA state machine, and the following READ_DATA returns 0xC0010003
+/// (Unsupported command).
 pub const SET_PKT_LEN: u32 = 0x040008;
 
-// --- 其他命令 ---
-pub const GET_DA_VER_CMD: u32 = 0x010106; // 获取 DA 版本/芯片信息
+// --- Other commands ---
+pub const GET_DA_VER_CMD: u32 = 0x010106; // get DA version/chip info
 
-// --- DA 扩展启动地址 ---
+// --- DA extended boot address ---
 pub const DA_EXT_BOOT_ADDR: u32 = 0x4FFF0000;
 
 // =============================================================================
-// 超时常量 (ms)
+// Timeout constants (ms)
 // =============================================================================
 
-/// DA 控制读（status / xread / xread_data）等待首字节的最长超时 (ms)。
-/// 串口默认读超时仅 `SERIAL_OPEN_TIMEOUT_MS`(1s)，而慢速 Preloader 串口 DA
-/// 在收到重命令（GET_PKT_LEN、setup_hw、send_devctrl、write status 等）后回包
-/// 可能超 1s，导致 status 读取 `Operation timed out` 而命令失败。故 DA 控制读统一
-/// 用较长超时等待首字节。USB 路径读为自建循环，长超时同样安全。
-/// 注意：与 `with_short_timeout` 的快速失败协同——若调用方已显式设更短的超时
-///（如可选查询 200ms/50ms），以 `max(当前, 本值)` 取较大者，避免覆盖快速失败语义。
+/// Maximum timeout (ms) for DA control reads (status / xread / xread_data) waiting
+/// for the first byte. The serial default read timeout is only
+/// `SERIAL_OPEN_TIMEOUT_MS` (1s), but a slow Preloader serial DA may take more than
+/// 1s to respond to heavy commands (GET_PKT_LEN, setup_hw, send_devctrl, write
+/// status, etc.), causing `Operation timed out` on status reads and command failure.
+/// DA control reads therefore use a longer first-byte timeout. USB reads use a
+/// self-built loop, where a long timeout is equally safe.
+/// Note: this cooperates with the fast-fail of `with_short_timeout` - if the caller
+/// has explicitly set a shorter timeout (e.g. 200ms/50ms for optional queries), take
+/// `max(current, this value)` so the fast-fail semantics are not overridden.
 const DA_CTRL_TIMEOUT_MS: u64 = 5000;
-/// 可选查询短超时 (ms)
+/// Short timeout for optional queries (ms)
 const SHORT_QUERY_TIMEOUT_MS: u64 = 200;
-/// SLA 查询超时 (ms)
+/// SLA query timeout (ms)
 const SLA_QUERY_TIMEOUT_MS: u64 = 50;
 
 // =============================================================================
-// Shutdown bootmode（对齐 xflash_lib.py ShutDownModes）
+// Shutdown bootmode (aligned with xflash_lib.py ShutDownModes)
 // =============================================================================
 
-/// DA SHUTDOWN 的 bootmode 取值（对齐 mtkclient xflash_lib.py ShutDownModes）。
+/// bootmode values for DA SHUTDOWN (aligned with mtkclient xflash_lib.py ShutDownModes).
 ///
-/// 本工程经 DA SHUTDOWN 重启时统一使用 HOME_SCREEN（=1，重启到系统）：
-/// fastboot / recovery / fastbootd / meta 等目标由调用方先写 misc/para 或改走
-/// XML SET-BOOT-MODE，再以 HOME_SCREEN 重新拉起系统由 LK 读取启动参数，无需
-/// DA 端的其它 bootmode。
+/// This project always uses HOME_SCREEN (=1, reboot into the system) when rebooting
+/// through DA SHUTDOWN: targets such as fastboot / recovery / fastbootd / meta are
+/// handled by the caller first writing misc/para or using XML SET-BOOT-MODE, then
+/// booting the system with HOME_SCREEN and letting LK read the boot arguments, so no
+/// other DA-side bootmode is needed.
 pub const SHUTDOWN_BOOTMODE_HOME_SCREEN: u32 = 1;
 
 // =============================================================================
-// ACK 响应枚举 — 替代裸 u32 返回值
+// ACK response enum - replaces raw u32 return values
 // =============================================================================
 
-/// ACK 响应枚举 — 替代裸 u32 返回值
+/// ACK response enum - replaces raw u32 return values.
 #[derive(Debug, PartialEq)]
 pub enum AckResult {
-    /// status == 0，设备就绪，继续传输
+    /// status == 0, device ready, continue transfer
     Continue,
-    /// status != 0，传输终止或设备报错
+    /// status != 0, transfer aborted or device error
     Terminated(u32),
 }
 
 // =============================================================================
-// 包头工具
+// Header helpers
 // =============================================================================
 
-/// pack3: 生成 XFlash 参数包头 (magic(4) + data_type(4) + length(4))
+/// pack3: builds an XFlash argument header (magic(4) + data_type(4) + length(4)).
 pub fn pack3(magic: u32, data_type: u32, length: u32) -> [u8; 12] {
     let mut buf = [0u8; 12];
     buf[0..4].copy_from_slice(&magic.to_le_bytes());
@@ -119,11 +127,13 @@ pub fn pack3(magic: u32, data_type: u32, length: u32) -> [u8; 12] {
     buf
 }
 
-/// 写入分块的 16-bit additive checksum（对齐 penumbra `download_data`）。
+/// 16-bit additive checksum of a write chunk (aligned with penumbra `download_data`).
 ///
-/// DA 在每块数据前期望一个 16 位累加和：分块所有字节按 u32 累加后取低 16 位。
-/// `& 0xFFFF` 是关键——旧实现用未截断的 32 位 wrapping sum，DA 端只比对低 16 位，
-/// 当累加和高位非零时会被判定为校验失败。按 8 字节批量累加以减少循环次数。
+/// The DA expects a 16-bit additive sum before each block: sum all bytes as u32 and
+/// keep the low 16 bits. `& 0xFFFF` is essential - the old implementation used an
+/// untruncated 32-bit wrapping sum while the DA only compares the low 16 bits, so a
+/// nonzero high part made the DA report a checksum failure. Bytes are accumulated in
+/// batches of 8 to reduce loop iterations.
 pub fn chunk_checksum(data: &[u8]) -> u32 {
     let mut sum: u32 = 0;
     let mut i = 0;
@@ -147,7 +157,7 @@ pub fn chunk_checksum(data: &[u8]) -> u32 {
 }
 
 // =============================================================================
-// 私有工具
+// Private helpers
 // =============================================================================
 
 fn hex_str(data: &[u8]) -> String {
@@ -155,11 +165,11 @@ fn hex_str(data: &[u8]) -> String {
 }
 
 // =============================================================================
-// 对外再导出（保持 crate::da::xflash::protocol::* 可达性）
+// Public re-exports (keeps crate::da::xflash::protocol::* reachable)
 // =============================================================================
 
 // =============================================================================
-// 单元测试 — 协议原语回归验证
+// Unit tests - protocol primitive regression checks
 // =============================================================================
 #[cfg(test)]
 mod tests {
@@ -187,18 +197,18 @@ mod tests {
         assert_eq!(chunk_checksum(&[]), 0);
         assert_eq!(chunk_checksum(&[0x01]), 0x01);
         assert_eq!(chunk_checksum(&[0xFF, 0x01]), 0x100);
-        // 与朴素实现一致（含跨越 8 字节批量边界的样本）
+        // Matches the naive implementation (including samples crossing the 8-byte batch boundary)
         let naive = |d: &[u8]| d.iter().map(|&b| b as u32).sum::<u32>() & 0xFFFF;
         let sample: Vec<u8> = (0..=255u8).cycle().take(1000).collect();
         assert_eq!(chunk_checksum(&sample), naive(&sample));
-        // 长度不是 8 的整数倍时尾部也要计入
+        // The tail must also be counted when length is not a multiple of 8
         assert_eq!(chunk_checksum(&[0u8; 17]), 0);
         assert_eq!(chunk_checksum(&[0u8; 16]), 0);
     }
 
     #[test]
     fn chunk_checksum_truncates_to_16_bits() {
-        // 255 * 300 = 76500 = 0x12AD4 → 低 16 位 0x2AD4（旧实现会返回 0x12AD4）
+        // 255 * 300 = 76500 = 0x12AD4 -> low 16 bits 0x2AD4 (the old implementation returned 0x12AD4)
         let data = vec![0xFFu8; 300];
         assert_eq!(chunk_checksum(&data), 0x2AD4);
         assert!(chunk_checksum(&data) <= 0xFFFF);

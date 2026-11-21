@@ -1,13 +1,13 @@
-//! 自研 SHA-256 实现（FIPS 180-4），替代 sha2 crate。
+//! In-house SHA-256 implementation (FIPS 180-4), replacing the sha2 crate.
 //!
-//! 仅实现项目实际用到的 API：`Sha256::{new, update, finalize, digest}`。
-//! `digest` 接受 `impl AsRef<[u8]>`（兼容 `&[u8]` 与 `Vec<u8>` 调用点），
-//! `finalize` 返回 `[u8; 32]`，可直接 `copy_from_slice` 或按 `&[u8]` 使用。
+//! Only the API actually used by the project: `Sha256::{new, update, finalize, digest}`.
+//! `digest` takes `impl AsRef<[u8]>` (works with both `&[u8]` and `Vec<u8>` call sites),
+//! `finalize` returns `[u8; 32]`, usable directly with `copy_from_slice` or as `&[u8]`.
 //!
-//! SHA-256 为标准算法，错误会表现为哈希值不匹配而非静默数据损坏；
-//! 模块内含回归测试向量（`test_sha256_vectors`），可由 `cargo test` 验证。
+//! SHA-256 is a standard algorithm; bugs surface as hash mismatches rather than silent corruption.
+//! Regression test vectors (`test_sha256_vectors`) are included and verified by `cargo test`.
 
-/// SHA-256 轮常量（FIPS 180-4 §4.2.2）。
+/// SHA-256 round constants (FIPS 180-4 §4.2.2).
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -19,17 +19,17 @@ const K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-/// SHA-256 初始哈希值（FIPS 180-4 §5.3.3）。
+/// SHA-256 initial hash values (FIPS 180-4 §5.3.3).
 const H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
-/// SHA-256 流式哈希器。
+/// Streaming SHA-256 hasher.
 pub struct Sha256 {
     state: [u32; 8],
     buffer: [u8; 64],
     buf_len: usize,
-    /// 已处理的消息总字节数（用于填充阶段的长度域）。
+    /// Total message bytes processed (used for the length field during padding).
     total_len: u64,
 }
 
@@ -46,7 +46,7 @@ impl Sha256 {
     pub fn update(&mut self, mut data: &[u8]) {
         self.total_len = self.total_len.wrapping_add(data.len() as u64);
 
-        // 先填满已有缓冲
+        // Fill the existing buffer first
         if self.buf_len > 0 {
             let need = 64 - self.buf_len;
             let take = need.min(data.len());
@@ -60,7 +60,7 @@ impl Sha256 {
             }
         }
 
-        // 以 64 字节为块处理对齐部分
+        // Process the aligned part in 64-byte blocks
         while data.len() >= 64 {
             let mut block = [0u8; 64];
             block.copy_from_slice(&data[..64]);
@@ -68,28 +68,28 @@ impl Sha256 {
             data = &data[64..];
         }
 
-        // 剩余不足一块，暂存缓冲
+        // Stash the remaining sub-block bytes in the buffer
         if !data.is_empty() {
             self.buffer[..data.len()].copy_from_slice(data);
             self.buf_len = data.len();
         }
     }
 
-    /// 填充并输出 32 字节摘要（消费 hasher）。
+    /// Pad and output the 32-byte digest (consumes the hasher).
     pub fn finalize(mut self) -> [u8; 32] {
         let bit_len = self.total_len.wrapping_mul(8);
-        // 1. 追加 0x80
+        // 1. Append 0x80
         self.pad_byte(0x80);
-        // 2. 补 0 直到长度 mod 64 == 56（为 64 位长度预留空间）
+        // 2. Pad with zeros until length mod 64 == 56 (reserving room for the 64-bit length)
         while self.buf_len != 56 {
             self.pad_byte(0x00);
         }
-        // 3. 追加 64 位大端比特长度
+        // 3. Append the 64-bit big-endian bit length
         for b in bit_len.to_be_bytes() {
             self.pad_byte(b);
         }
 
-        // 4. 状态转为大端字节序列
+        // 4. Serialize the state to big-endian bytes
         let mut out = [0u8; 32];
         for (i, word) in self.state.iter().enumerate() {
             out[4 * i..4 * i + 4].copy_from_slice(&word.to_be_bytes());
@@ -97,14 +97,14 @@ impl Sha256 {
         out
     }
 
-    /// 一次性计算 `data` 的 SHA-256 摘要。
+    /// Compute the SHA-256 digest of `data` in one shot.
     pub fn digest(data: impl AsRef<[u8]>) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update(data.as_ref());
         h.finalize()
     }
 
-    /// 追加单个填充字节；若缓冲满则压缩并清空。不计入 `total_len`。
+    /// Append one padding byte; compress and clear when the buffer fills. Not counted in `total_len`.
     fn pad_byte(&mut self, byte: u8) {
         self.buffer[self.buf_len] = byte;
         self.buf_len += 1;
@@ -116,7 +116,7 @@ impl Sha256 {
     }
 }
 
-/// 对单个 64 字节块执行压缩函数（FIPS 180-4 §6.2.2）。
+/// Compression function for a single 64-byte block (FIPS 180-4 §6.2.2).
 fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
     for i in 0..16 {
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn test_sha256_vectors() {
-        // FIPS 180-4 附录 C 测试向量
+        // FIPS 180-4 Appendix C test vectors
         assert_eq!(
             hex(&Sha256::digest(b"")),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -206,14 +206,14 @@ mod tests {
 
     #[test]
     fn test_sha256_streaming_matches_one_shot() {
-        // 流式 update 应与一次性 digest 结果一致（覆盖缓冲跨块边界路径）
-        let data = vec![0xABu8; 1000]; // 非 64 对齐长度
+        // Streaming update must match one-shot digest (covers buffer straddling block boundaries)
+        let data = vec![0xABu8; 1000]; // Non-64-aligned length
         let mut h = Sha256::new();
         h.update(&data[..500]);
         h.update(&data[500..]);
         let streamed = h.finalize();
         assert_eq!(streamed, Sha256::digest(&data[..]));
-        // 摘要长度固定 32 字节
+        // Digest length is always 32 bytes
         assert_eq!(streamed.len(), 32);
     }
 }

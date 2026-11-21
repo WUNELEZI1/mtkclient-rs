@@ -13,6 +13,23 @@
 
 程序运行时通过 USB（WinUSB）与设备的 BROM 或 Preloader 模式通信，支持 DA（Download Agent）会话复用与断点续传，可大幅缩短大分区读写的耗时。
 
+### 架构图
+
+```mermaid
+flowchart LR
+    CLI[cmd / CLI] --> Exec[exec: Planner + Executor]
+    Exec --> Ops[ops: capability-driven operations]
+    Exec --> Core[core: Plan / Capability / Device]
+    Ops --> Session[session: Real / Sim]
+    Session --> Engine[da::engine: BROM / DA state machine]
+    Engine --> Transport[transport: WinUSB / Serial / Virtual]
+    Ops --> Fs[fs: ext4 / f2fs]
+    Ops --> Sec[security: seccfg / AVB]
+    CLI --> I18n[i18n: 6 languages]
+```
+
+分层依赖方向：`core ← transport ← da ← exec/ops ← cmd`。所有操作都能通过 `--sim` 走同一套执行器离线回归。
+
 ### 特性
 
 - **分区读写擦**：`r` / `w` / `e` 对任意分区进行读取、刷写、擦除。
@@ -37,6 +54,30 @@
 | MT8183 / MT8385 / MT8666 | Helio P60/P70/G80 系 | ✅ 已支持 |
 
 此外通过 `sdata.json` 的动态芯片表支持 **6 种** MediaTek 芯片。具体以 `data/sdata.json` 中 `support_chip` 字段为准。
+
+### API 文档
+
+```bash
+cargo doc --no-deps --open
+```
+
+生成的文档位于 `target/doc/mtkclient_rs/`，CI 会检查文档构建。
+
+### 发布校验
+
+每个 tag 发布都会附带：
+
+- `SHA256SUMS.txt`：所有产物的 SHA-256；
+- `sbom.cdx.json`：CycloneDX 1.5 SBOM；
+- 配置了代码签名证书时，`mtkclient-rs.exe` 会带 Authenticode 签名。
+
+校验方法：
+
+```bash
+sha256sum -c SHA256SUMS.txt
+```
+
+更多说明见 [SECURITY.md](SECURITY.md)，贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ### 下载与安装
 
@@ -116,8 +157,8 @@ data/
 ### 从源码构建
 
 ```bash
-# 需要 Rust 工具链（stable）
-git clone https://gitee.com/WUNELEZI1/mtkclient-rs.git
+# 需要 Rust 工具链（nightly，见 rust-toolchain.toml）
+git clone https://github.com/WUNELEZI1/mtkclient-rs.git
 cd mtkclient-rs
 cargo build --release
 
@@ -134,4 +175,4 @@ cargo build --release
 
 ### 许可证
 
-[Apache-2.0](LICENSE)
+[GPL-3.0-or-later](LICENSE)

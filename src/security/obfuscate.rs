@@ -1,44 +1,54 @@
-//! 反逆向工程：编译期字符串混淆 + 运行时反调试原语
+//! Anti-reverse engineering: compile-time string obfuscation + runtime anti-debug primitives
 //!
-//! 目标是在**不牺牲源码可读性**的前提下，抬高三方静态/动态分析的成本：
+//! The goal is to raise the cost of third-party static/dynamic analysis **without
+//! sacrificing source readability**:
 //!
-//! - **编译期字符串混淆**：`obf!("明文")` 里的明文只参与 `const` 常量求值，
-//!   只有异或后的字节数组会进入二进制；运行时再由 [`decode`] 还原。这样用
-//!   `strings`/IDA 直接搜索协议命令名、安全关键字等“指纹串”将一无所获。
-//! - **反调试**：Windows 下通过 `IsDebuggerPresent` / `CheckRemoteDebuggerPresent`
-//!   探测调试器附加；其它平台无此系统调用，恒返回 `false`。
+//! - **Compile-time string obfuscation**: the plaintext in `obf!("plaintext")` only
+//!   participates in `const` evaluation, so only the XORed byte array enters the
+//!   binary; [`decode`] restores it at runtime. Searching protocol command names,
+//!   security keywords and other "fingerprint strings" with `strings`/IDA therefore
+//!   yields nothing.
+//! - **Anti-debug**: on Windows, debugger attachment is detected via
+//!   `IsDebuggerPresent` / `CheckRemoteDebuggerPresent`; other platforms lack these
+//!   syscalls and always return `false`.
 //!
-//! ## 为什么不用 proc-macro / 第三方库
-//! `encode` 是 `const fn`，`obf!` 用普通 `macro_rules!` 即可在编译期完成异或，
-//! 无需引入 proc-macro crate 或额外依赖，保持构建链简单、跨平台可编译。
+//! ## Why not a proc-macro / third-party crate
+//! `encode` is a `const fn`, so a plain `macro_rules!` suffices for the compile-time
+//! XOR, avoiding a proc-macro crate or extra dependency and keeping the build chain
+//! simple and cross-platform compilable.
 //!
-//! ## 用法
+//! ## Usage
 //! ```ignore
 //! use crate::security::obfuscate::obf;
-//! // 需要 String：直接 obf!("SENSITIVE")
-//! // 需要 &str ：&obf!("SENSITIVE")
+//! // Need String: use obf!("SENSITIVE") directly
+//! // Need &str   : use &obf!("SENSITIVE")
 //! let cmd = obf!("SECURITY-SET-FLASH-POLICY");
 //! ```
 //!
-//! 注意：混淆只针对**敏感指纹串**（协议命令名、安全关键字等）。普通日志、
-//! 用户提示、分区名等功能性文本保持明文，避免无谓地降低可读性与可维护性。
+//! Note: obfuscation only targets **sensitive fingerprint strings** (protocol command
+//! names, security keywords, etc.). Ordinary logs, user prompts, partition names and
+//! other functional text stay plaintext to avoid needlessly hurting readability and
+//! maintainability.
 
-/// 编译期字符串混淆的根密钥。
+/// Root key for compile-time string obfuscation.
 ///
-/// 运行期还会与字节位置混入，故单一常量泄露不足以还原全部字符串。
+/// It is mixed with the byte position at runtime, so leaking this single constant is
+/// not enough to recover all strings.
 pub const XOR_KEY: u8 = 0x5B;
 
-/// 位置相关的伪密钥序列（乘法步进弱化固定密钥的统计特征）。
+/// Position-dependent pseudo-key stream (multiplicative stepping weakens the
+/// statistical signature of a fixed key).
 #[inline]
 const fn keystream(key: u8, i: usize) -> u8 {
     key.wrapping_add((i as u8).wrapping_mul(31))
         .wrapping_add(0x9D)
 }
 
-/// 编译期把明文字节逐字节异或为混淆字节数组。
+/// XORs plaintext bytes into an obfuscated byte array at compile time.
 ///
-/// 该函数只在 `const` 上下文求值：明文是常量折叠的中间值，不会作为
-/// 独立常量写入最终二进制。
+/// This function is evaluated only in `const` context: the plaintext is a constant-
+/// folded intermediate value and is not written to the final binary as a separate
+/// constant.
 pub const fn encode<const N: usize>(src: &[u8], key: u8) -> [u8; N] {
     let mut out = [0u8; N];
     let mut i = 0;
@@ -49,10 +59,12 @@ pub const fn encode<const N: usize>(src: &[u8], key: u8) -> [u8; N] {
     out
 }
 
-/// 运行时把混淆字节还原为 `String`。
+/// Restores obfuscated bytes into a `String` at runtime.
 ///
-/// 混淆源来自合法 UTF-8 字面量，还原结果必然合法；若字节数组被外部篡改导致
-/// 非法 UTF-8，则回退为空串而不是 panic（避免给分析者提供崩溃断点）。
+/// The obfuscated source comes from a valid UTF-8 literal, so the result is always
+/// valid; if the byte array is tampered with externally and becomes invalid UTF-8,
+/// it falls back to an empty string instead of panicking (avoiding a crash
+/// breakpoint for the analyst).
 pub fn decode(bytes: &[u8], key: u8) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     for (i, &b) in bytes.iter().enumerate() {
@@ -61,9 +73,10 @@ pub fn decode(bytes: &[u8], key: u8) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-/// 编译期字符串混淆宏：`obf!("明文")` → 运行时还原出的 `String`。
+/// Compile-time string obfuscation macro: `obf!("plaintext")` -> `String` restored at runtime.
 ///
-/// 明文字面量只出现在 `const` 求值中，最终二进制仅保留混淆字节。
+/// The plaintext literal appears only in `const` evaluation; the final binary keeps
+/// only the obfuscated bytes.
 #[macro_export]
 macro_rules! obf {
     ($s:literal) => {{
@@ -76,11 +89,11 @@ macro_rules! obf {
     }};
 }
 
-/// 探测当前进程是否被调试器附加。
+/// Detects whether a debugger is attached to the current process.
 ///
-/// Windows 下组合 `IsDebuggerPresent`（本地调试器）与
-/// `CheckRemoteDebuggerPresent`（远程/内核调试器），任一命中即返回 `true`；
-/// 其它平台无对应系统调用，恒返回 `false`。
+/// On Windows it combines `IsDebuggerPresent` (local debugger) with
+/// `CheckRemoteDebuggerPresent` (remote/kernel debugger); either hit returns `true`.
+/// Other platforms lack the corresponding syscalls and always return `false`.
 #[cfg(target_os = "windows")]
 pub fn debugger_present() -> bool {
     unsafe extern "system" {
@@ -92,8 +105,8 @@ pub fn debugger_present() -> bool {
         fn GetCurrentProcess() -> *mut std::ffi::c_void;
     }
 
-    // SAFETY: 两个 API 均为无副作用的只读查询；句柄由 GetCurrentProcess 返回，
-    // 是当前进程的伪句柄，无需释放。
+    // SAFETY: both APIs are side-effect-free read-only queries; the handle returned by
+    // GetCurrentProcess is a pseudo handle for the current process and needs no release.
     unsafe {
         if IsDebuggerPresent() != 0 {
             return true;
@@ -108,7 +121,7 @@ pub fn debugger_present() -> bool {
     false
 }
 
-/// 非 Windows 平台的占位：不存在对应的系统调用，恒为 `false`。
+/// Placeholder for non-Windows platforms: the syscall does not exist, always `false`.
 #[cfg(not(target_os = "windows"))]
 pub fn debugger_present() -> bool {
     false
@@ -134,7 +147,7 @@ mod tests {
 
     #[test]
     fn encoded_bytes_differ_from_plaintext() {
-        // 混淆后不应等于明文（否则等于没混淆）
+        // Obfuscated output must not equal the plaintext (otherwise it is not obfuscated)
         let plain = b"CMD:START";
         let obf: [u8; 9] = encode(plain, XOR_KEY);
         assert_ne!(&obf[..], &plain[..]);
@@ -143,14 +156,14 @@ mod tests {
 
     #[test]
     fn decode_rejects_tampered_bytes_without_panic() {
-        // 人为构造非法 UTF-8 序列，验证回退为空串而非 panic
+        // Deliberately construct an invalid UTF-8 sequence to verify the empty-string fallback instead of panic
         let junk = [0xFFu8, 0xFE, 0xFD];
         assert_eq!(decode(&junk, XOR_KEY), "");
     }
 
     #[test]
     fn debugger_probe_is_callable() {
-        // 仅验证探测函数可安全调用且不 panic（结果依赖运行环境）
+        // Only verifies the probe can be called safely without panic (result depends on the runtime environment)
         let _ = debugger_present();
     }
 }

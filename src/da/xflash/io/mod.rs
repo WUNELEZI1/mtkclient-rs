@@ -1,14 +1,14 @@
-//! DA 设备 IO 与控制命令
+//! DA device IO and control commands
 //!
-//! 包含 DAXFlash 的设备读写、复位、关闭命令：
-//! - `readflash_data`：通过 XFlash 协议读取 flash 原始字节
-//! - `ack_silent`：发送 ACK 不读响应（避免偷吃下一个包）
-//! - `reset_device`：通过 DA 重启设备（CMD_RESET）
-//! - `close_device`：关闭设备（可选 jump_bl 重启）
-//! - `patch_vbmeta`：vbmeta 修补占位
+//! DAXFlash commands for device read/write, reset, and close:
+//! - `readflash_data`: read raw flash bytes via the XFlash protocol
+//! - `ack_silent`: send ACK without reading a response (avoid consuming the next packet)
+//! - `reset_device`: reboot the device via DA (CMD_RESET)
+//! - `close_device`: close the device (optionally reboot via jump_bl)
+//! - `patch_vbmeta`: vbmeta patch placeholder
 //!
-//! 拆分动机：这些是"已加载 DA 之后"与设备交互的命令，与 DA 加载主流程
-//! 完全解耦，独立成模块便于审查和单元测试。
+//! Split rationale: these commands interact with the device after DA is loaded and are fully
+//! decoupled from the DA loading main flow; a separate module eases review and unit testing.
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -29,31 +29,31 @@ impl Drop for UsbReadQuietGuard {
     }
 }
 
-/// 串口读超时 RAII guard。
+/// RAII guard for the serial read timeout.
 ///
-/// 串口 crate 的 `read_exact` 语义是"单次 `read` 在超时内填满整个 buffer"，
-/// 而本工具串口默认超时仅 `SERIAL_OPEN_TIMEOUT_MS`(1s)。readflash 读取 GPT/分区
-/// 是持续数秒的流式传输，数据流中途任何超过 1s 的包间隔（设备处理/ACK 等待）
-/// 都会让 `read_exact` 报 `Operation timed out` —— 典型表现即
-/// "readflash final status header: serial read_exact: Operation timed out"。
-/// 故在 readflash 数据阶段用较长读超时覆盖整包最大间隔。USB 路径的 read_exact
-/// 为自建循环，长超时同样安全。
+/// The `read_exact` semantics of the serial crate require a single `read` to fill the entire buffer
+/// within the timeout, while the default serial timeout of this tool is only `SERIAL_OPEN_TIMEOUT_MS` (1s).
+/// Reading GPT/partitions via readflash is a stream lasting several seconds; any packet gap over 1s mid-stream
+/// (device processing/ACK wait) makes `read_exact` report `Operation timed out` — typically
+/// "readflash final status header: serial read_exact: Operation timed out".
+/// So a longer read timeout is used during the readflash data phase to cover the max inter-packet gap. The USB
+/// path uses a self-built read_exact loop, where a long timeout is likewise safe.
 ///
-/// （实现见下方 `with_read_timeout`：RAII 风格包裹整个读取逻辑，自动恢复原超时。）
+/// (Implementation: `with_read_timeout` below; an RAII-style wrapper around the whole read logic that restores the original timeout.)
 const READFLASH_READ_TIMEOUT_MS: u64 = 10_000;
 
-/// DA 对每个读数据块在末尾附加的尾帧长度（字节）。
+/// Length in bytes of the trailer DA appends to the end of each read data chunk.
 ///
-/// 实测 MT6768 / MT6771 的 DA（含 Preloader 与 BROM 模式）在 XFlash 读响应中，
-/// 每个数据块 = `12 字节头(magic/type/len)` + `slen` 字节，其中 `slen = 真实数据 + 尾帧`。
-/// 尾帧为 8 字节状态/校验。**无论该块是否为最后一块，尾帧都必须剥离**——否则中间块的
-/// 尾帧会被当作数据写入 buffer，导致整段数据按 8 字节/块错位，表现为 GPT 分区条目 CRC
-/// 失败、printgpt 读空（commit 03071dd 仅修正了最后一块，多块传输仍错位）。
-/// 见 `read_ex.rs` / `read.rs` 数据循环。
+/// Measured on MT6768 / MT6771 DA (Preloader and BROM modes) in XFlash read responses:
+/// each chunk = `12-byte header (magic/type/len)` + `slen` bytes, where `slen = real data + trailer`.
+/// The trailer is 8 bytes of status/checksum. **The trailer must be stripped from every chunk, last or not** —
+/// otherwise middle-chunk trailers get written as data, shifting the stream by 8 bytes per chunk, which shows up as
+/// GPT entry CRC failures and empty printgpt output (commit 03071dd only fixed the last chunk; multi-chunk transfers were still misaligned).
+/// See the data loops in `read_ex.rs` / `read.rs`.
 pub(crate) const DA_READ_PER_CHUNK_TRAILER: usize = 8;
 
-/// 临时设置较长读超时执行回调，完成后恢复原超时（RAII，覆盖所有提前 return）。
-/// 用于 readflash 数据读取阶段：串口默认超时仅 1s，流式读取持续数秒会超时失败。
+/// Temporarily set a longer read timeout to run a callback, then restore it (RAII covers all early returns).
+/// Used in the readflash data phase: the default serial timeout is only 1s, so a multi-second streaming read would time out.
 fn with_read_timeout<T>(
     da: &mut DAXFlash,
     ms: u64,
@@ -128,7 +128,7 @@ fn remove_resume_file(output_file: &str) {
 }
 
 fn active_resume_matches(output_file: &str, start_offset: u64) -> bool {
-    // 检查输出文件是否存在
+    // Check that the output file exists
     let file_size = match std::fs::metadata(output_file) {
         Ok(m) => m.len(),
         Err(_) => return false,
@@ -143,7 +143,7 @@ fn active_resume_matches(output_file: &str, start_offset: u64) -> bool {
 
     match resume_written {
         Some(written) => {
-            // 允许 512 字节容差：实际文件大小和 resume 记录可能因对齐有微小差异
+            // Allow 512-byte tolerance: the file size and resume record may differ slightly due to alignment
             let size_match = file_size.abs_diff(written) <= 512;
             let offset_match = start_offset.abs_diff(written) <= 512;
             has_active_read && size_match && offset_match
@@ -206,7 +206,7 @@ fn spawn_dump_writer(
                 written += data.len() as u64;
                 let mut data = data;
                 data.clear();
-                let _ = recycle_tx.try_send(data); // 非阻塞：fast 路径主循环不消费 recycle 池，阻塞会死锁
+                let _ = recycle_tx.try_send(data); // non-blocking: the fast-path main loop never drains the recycle pool, so blocking would deadlock
 
                 if written - last_flush_pos >= FLUSH_INTERVAL || written >= size {
                     file.flush().map_err(|e| format!("flush 文件失败: {}", e))?;
@@ -337,8 +337,8 @@ mod tests {
 
     #[test]
     fn set_packet_length_16_byte_response_is_not_a_length() {
-        // 0x040008 = GET_RANDOM_ID：DA 会回 16 字节随机数（真机 printgpt 日志中
-        // 曾被误当作 "SET_PKT_LEN 的 flow payload"）。它绝不是包长度，不可解析为长度。
+        // 0x040008 = GET_RANDOM_ID: DA returns 16 random bytes (on real-device printgpt logs it
+        // was once mistaken for a "SET_PKT_LEN flow payload"). It is never a packet length and must not be parsed as one.
         let mut response = Vec::new();
         response.extend_from_slice(&0u32.to_le_bytes());
         response.extend_from_slice(&0u32.to_le_bytes());
@@ -350,9 +350,9 @@ mod tests {
 
     #[test]
     fn get_packet_length_uses_da_reported_read_length() {
-        // 真机 GET_PKT_LEN (0x040007) 响应：[写包长度=2MiB][读包长度=64KiB]。
-        // 读路径必须取第 2 个 u32（读包长度），而不是把写包长度当成读包长度。
-        // 读路径只 GET 不 SET；0x040008(GET_RANDOM_ID) 不可作为 SET_PKT_LEN 发送。
+        // Real-device GET_PKT_LEN (0x040007) response: [write packet length=2MiB][read packet length=64KiB].
+        // The read path must take the second u32 (read packet length), not mistake the write length for the read length.
+        // The read path only GETs, never SETs; 0x040008 (GET_RANDOM_ID) must not be sent as SET_PKT_LEN.
         let response = [0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x01, 0x00];
         assert_eq!(parse_packet_length(&response), Some(0x1_0000));
     }
@@ -365,7 +365,7 @@ mod tests {
         let _ = std::fs::remove_file(&output);
         remove_resume_file(&output);
 
-        // 创建与 written=0x2000 匹配的输出文件（active_resume_matches 需要文件存在且大小匹配）
+        // Create an output file matching written=0x2000 (active_resume_matches requires the file to exist with a matching size)
         std::fs::write(&output, vec![0u8; 0x2000]).unwrap();
         write_resume_file(&output, 0x1000, 0x4000, 8, 0x2000, true, Some(0x1000)).unwrap();
 

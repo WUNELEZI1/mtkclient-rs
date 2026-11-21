@@ -10,7 +10,7 @@ pub(crate) struct Ext4Superblock {
     pub(crate) block_size: u32,
     pub(crate) inodes_per_group: u32,
     pub(crate) inode_size: u16,
-    pub(crate) bgd_entry_size: u16, // 32 或 64，取决于 INCOMPAT_64BIT
+    pub(crate) bgd_entry_size: u16, // 32 or 64, depending on INCOMPAT_64BIT
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +43,7 @@ where
     let inodes_per_group = u32::from_le_bytes(data[40..44].try_into().unwrap());
     let inode_size = u16::from_le_bytes(data[88..90].try_into().unwrap());
     let feature_incompat = u32::from_le_bytes(data[96..100].try_into().unwrap());
-    // INCOMPAT_64BIT (bit 5 = 0x20) 表示 64 字节 BGD 条目
+    // INCOMPAT_64BIT (bit 5 = 0x20) means 64-byte BGD entries
     let bgd_entry_size: u16 = if (feature_incompat & 0x20) != 0 {
         64
     } else {
@@ -57,7 +57,7 @@ where
     })
 }
 
-/// 读取指定 inode 的原始数据
+/// Read the raw data of the given inode
 pub(crate) fn read_inode<F>(
     read_fn: &mut F,
     lp: &LpTranslator,
@@ -69,7 +69,7 @@ where
 {
     let group = (inode_num - 1) / sb.inodes_per_group;
 
-    // BGD 表位于 block 1 (block_size > 1024 时) 或 block 2
+    // The BGD table is at block 1 (when block_size > 1024) or block 2
     let bgd_base = if sb.block_size > 1024 {
         sb.block_size as u64
     } else {
@@ -86,17 +86,17 @@ where
     }
     let inode_table_block = u32::from_le_bytes(bgd_data[8..12].try_into().unwrap());
 
-    // 计算 inode 在分区内的逻辑偏移
+    // Compute the inode's logical offset within the partition
     let inode_logical_offset = inode_table_block as u64 * sb.block_size as u64
         + (inode_num - 1) as u64 * sb.inode_size as u64;
 
-    // 通过 LP 翻译
+    // Translate via LP
     let abs_offset = lp.logical_to_abs(inode_logical_offset)?;
     let inode_data = read_fn(abs_offset, sb.inode_size as u64)?;
     Ok(inode_data)
 }
 
-/// 获取 inode 文件大小 (i_size_lo | i_size_hi << 32)
+/// Get the inode file size (i_size_lo | i_size_hi << 32)
 pub(crate) fn get_inode_size(inode_data: &[u8]) -> u64 {
     if inode_data.len() < 8 {
         return 0;
@@ -110,7 +110,7 @@ pub(crate) fn get_inode_size(inode_data: &[u8]) -> u64 {
     (size_lo as u64) | ((size_hi as u64) << 32)
 }
 
-/// 获取 inode mode (u16 @ offset 0)
+/// Get the inode mode (u16 @ offset 0)
 pub(crate) fn get_inode_mode(inode_data: &[u8]) -> u16 {
     if inode_data.len() < 2 {
         return 0;
@@ -118,7 +118,7 @@ pub(crate) fn get_inode_mode(inode_data: &[u8]) -> u16 {
     u16::from_le_bytes(inode_data[0..2].try_into().unwrap())
 }
 
-/// 获取 inode flags (u32 @ offset 32)
+/// Get the inode flags (u32 @ offset 32)
 pub(crate) fn get_inode_flags(inode_data: &[u8]) -> u32 {
     if inode_data.len() < 36 {
         return 0;
@@ -126,15 +126,15 @@ pub(crate) fn get_inode_flags(inode_data: &[u8]) -> u32 {
     u32::from_le_bytes(inode_data[32..36].try_into().unwrap())
 }
 
-/// 判断 inode 是否为 symlink（mode & 0xF000 == 0xA000）
+/// Whether the inode is a symlink (mode & 0xF000 == 0xA000)
 fn is_symlink_mode(mode: u16) -> bool {
     (mode & 0xF000) == 0xA000
 }
 
-/// 递归解析 extent 树，返回所有叶子节点的 (物理起始, 物理结束) 范围列表
+/// Recursively parse the extent tree, returning the (physical start, physical end) range list of all leaf nodes
 ///
-/// 支持 depth=0（叶子节点）和 depth>=1（索引节点）。
-/// 对于索引节点，递归读取子块并解析其 extent entries。
+/// Supports depth=0 (leaf nodes) and depth>=1 (index nodes).
+/// For index nodes, child blocks are read recursively and their extent entries parsed.
 fn parse_extent_tree<F>(
     read_fn: &mut F,
     lp: &LpTranslator,
@@ -169,12 +169,12 @@ where
         let pblock = ((start_hi as u64) << 32) | (start_lo as u64);
 
         if depth == 0 {
-            // 叶子节点：直接收集物理范围
+            // Leaf node: collect the physical range directly
             let start = pblock * block_size;
             let end = (pblock + len as u64) * block_size;
             ranges.push((start, end));
         } else {
-            // 索引节点：读取子块并递归解析
+            // Index node: read the child block and parse it recursively
             let child_offset = pblock * block_size;
             let fragments = lp.translate_range(child_offset, block_size);
             let mut child_data = Vec::new();
@@ -189,11 +189,11 @@ where
     Ok(ranges)
 }
 
-/// 读取 inode 的所有数据块（通过 extent + LP 翻译）
-/// 支持三种情况：
-///   1. EXT4_INODE_FLAG_EXTENTS → 标准 extent 树读取（支持 depth=0/1）
-///   2. symlink（无 EXTENTS）→ 内联数据（i_block 区域，最大 60 字节）
-///   3. 空目录/空文件（无 EXTENTS，size=0）→ 返回空
+/// Read all data blocks of an inode (via extent + LP translation)
+/// Handles three cases:
+///   1. EXT4_INODE_FLAG_EXTENTS → standard extent-tree read (supports depth=0/1)
+///   2. symlink (no EXTENTS) → inline data (i_block area, up to 60 bytes)
+///   3. empty directory/file (no EXTENTS, size=0) → returns empty
 pub(crate) fn read_inode_data<F>(
     read_fn: &mut F,
     lp: &LpTranslator,
@@ -207,12 +207,12 @@ where
     let mode = get_inode_mode(inode_data);
     let file_size = get_inode_size(inode_data);
 
-    // 空文件/空目录
+    // Empty file/empty directory
     if file_size == 0 {
         return Ok(Vec::new());
     }
 
-    // i_block 区域至少需要 2 字节以读取 extent header magic（offset 40..42）
+    // The i_block area needs at least 2 bytes to read the extent header magic (offset 40..42)
     if inode_data.len() < 42 {
         return Err(format!(
             "短读：inode 数据不足 42 字节，实际 {}",
@@ -220,14 +220,14 @@ where
         ));
     }
 
-    // symlink 内联数据：目标路径直接存储在 i_block 区域（最大 60 字节）
+    // symlink inline data: the target path is stored directly in the i_block area (up to 60 bytes)
     if is_symlink_mode(mode) && (flags & EXT4_INODE_FLAG_EXTENTS) == 0 {
         let i_block = &inode_data[40..100.min(inode_data.len())];
         let symlink_len = (file_size as usize).min(60).min(i_block.len());
         return Ok(i_block[..symlink_len].to_vec());
     }
 
-    // 非 symlink 且无 extents：旧式 block map（间接块），暂不支持
+    // Non-symlink without extents: legacy block map (indirect blocks), not supported yet
     if (flags & EXT4_INODE_FLAG_EXTENTS) == 0 {
         return Err("inode 不使用 extents（不支持旧版 ext 格式）".into());
     }
@@ -236,8 +236,8 @@ where
     let i_block = &inode_data[40..100.min(inode_data.len())];
     let magic = u16::from_le_bytes(i_block[0..2].try_into().unwrap());
     if magic != EXTENT_HEADER_MAGIC {
-        // vendor/overlay 等 COW (copy-on-write) 分区的 inode 可能含有非标准 magic
-        // 返回空数据而非报错，让 ls/cat 优雅处理
+        // Inodes of vendor/overlay COW (copy-on-write) partitions may hold a non-standard magic;
+        // return empty data instead of an error so ls/cat can handle it gracefully
         return Ok(Vec::new());
     }
 
@@ -259,7 +259,7 @@ where
     Ok(data)
 }
 
-/// 解析目录条目
+/// Parse directory entries
 pub(crate) fn parse_dir(data: &[u8]) -> Vec<DirEntry> {
     let mut entries = Vec::new();
     let mut offset = 0usize;
@@ -286,7 +286,7 @@ pub(crate) fn parse_dir(data: &[u8]) -> Vec<DirEntry> {
     entries
 }
 
-/// 按路径逐级解析到目标 inode
+/// Resolve segment by segment down a path to the target inode
 pub(crate) fn resolve_path<F>(
     read_fn: &mut F,
     lp: &LpTranslator,

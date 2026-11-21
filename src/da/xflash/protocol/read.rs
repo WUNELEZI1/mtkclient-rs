@@ -1,4 +1,4 @@
-//! 协议原语 — 块 1: 状态 / 数据读取
+//! Protocol primitives — block 1: status / data reads
 
 use super::{CMD_MAGIC, DA_CTRL_TIMEOUT_MS, DATA_TYPE_MESSAGE};
 use log::{debug, trace};
@@ -6,34 +6,34 @@ use std::time::Duration;
 
 use crate::da::xflash::DAXFlash;
 
-/// XFlash 包头长度：magic(4) + data_type(4) + length(4)
+/// XFlash header length: magic(4) + data_type(4) + length(4)
 const XFLASH_HEADER_LEN: usize = 12;
-/// 单次响应读取中最多跳过的 Message 包数量。
-/// 防御性上限：正常 DA 不会连续吐这么多日志包，超出即视为协议失步，
-/// 避免设备异常时陷入无界循环。
+/// Maximum number of Message packets skipped in a single response read.
+/// Defensive limit: a healthy DA never emits this many log packets in a row, so exceeding it
+/// means the protocol is out of sync; this prevents an unbounded loop on a faulty device.
 const MAX_MESSAGE_PACKETS_PER_READ: u32 = 64;
 
-/// 单包长度的合理上限（64 MiB）。仅作防御性 sanity check：
-/// DA 正常单包远小于此值（协商后 2~4 MiB），若包头被错位解析出
-/// 0xFFFFFFFF 之类的长度，直接分配会 OOM/panic，故先拒收。
+/// Reasonable upper bound for a single packet length (64 MiB). A defensive sanity check only:
+/// normal DA packets are far smaller (2~4 MiB after negotiation); a misparsed header could
+/// yield a length such as 0xFFFFFFFF, and allocating it would OOM/panic, so reject it up front.
 const MAX_XFLASH_PACKET_LEN: u32 = 64 * 1024 * 1024;
 
-/// 包头声明长度是否在合理范围内（纯函数，便于单测）
+/// Whether the header-declared length is within a sane range (pure function, easy to unit test)
 pub(crate) fn packet_length_is_valid(length: u32) -> bool {
     length <= MAX_XFLASH_PACKET_LEN
 }
 
-/// 收到一个包后应如何处理
+/// What to do after receiving one packet
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PacketAction {
-    /// 设备异步消息包：消费负载并记录，然后继续读下一个包
+    /// Device asynchronous message packet: consume and log the payload, then keep reading
     SkipMessage,
-    /// 流程包（或未知类型）：作为本次响应返回（对未知类型保持宽容，
-    /// 与旧实现一致，避免误伤新固件的扩展类型）
+    /// Flow packet (or unknown type): return it as the response (stay lenient with unknown types,
+    /// as the old implementation did, to avoid breaking extension types from newer firmware)
     Deliver,
 }
 
-/// 根据包头 `data_type` 决定处理方式（纯函数，便于单测）
+/// Decide the action from the header `data_type` (pure function, easy to unit test)
 pub(crate) fn classify_packet(data_type: u32) -> PacketAction {
     if data_type == DATA_TYPE_MESSAGE {
         PacketAction::SkipMessage
@@ -42,19 +42,19 @@ pub(crate) fn classify_packet(data_type: u32) -> PacketAction {
     }
 }
 
-/// 将设备异步消息负载渲染为可读文本（纯函数，便于单测）
+/// Render a device asynchronous message payload as readable text (pure function, easy to unit test)
 pub(crate) fn format_device_message(payload: &[u8]) -> String {
     String::from_utf8_lossy(payload)
         .trim_end_matches(['\0', '\r', '\n'])
         .to_string()
 }
 
-/// 处理一个已读入的包：
-/// - Message 包：记录日志、`skipped` 计数 +1，返回 `Ok(None)`（表示继续读下一个包）
-/// - 流程包：返回 `Ok(Some(payload))`（作为本次响应）
-/// - 连续 Message 包超过上限：返回 `Err`（协议失步）
+/// Handle one already-read packet:
+/// - Message packet: log it, increment `skipped`, return `Ok(None)` (keep reading)
+/// - Flow packet: return `Ok(Some(payload))` (the response)
+/// - Too many consecutive Message packets: return `Err` (protocol out of sync)
 ///
-/// 纯函数（不碰 I/O），便于单测覆盖跳包与上限逻辑。
+/// Pure function (no I/O), so packet skipping and the limit are easy to unit test.
 fn handle_packet(
     data_type: u32,
     payload: Vec<u8>,
@@ -80,13 +80,13 @@ fn handle_packet(
 }
 
 impl<'a> DAXFlash<'a> {
-    /// 读取 XFlash 协议数据
-    /// 流程：读取 12 字节头（magic + type + length）→ 验证 magic → 读取数据
-    /// 返回：读取到的数据长度（如果是 4 字节则返回 u32 值）
+    /// Read XFlash protocol data.
+    /// Flow: read the 12-byte header (magic + type + length) → validate magic → read the data
+    /// Returns: length of the data read (a u32 value when the payload is 4 bytes)
     pub(crate) fn xread(&mut self) -> Result<u32, String> {
-        // 设备处理 setup_hw_init 后可能需要数百毫秒才返回响应。
-        // 用 max(当前超时, DA_CTRL_TIMEOUT_MS) 等待首字节，避免慢速串口 status 超时；
-        // 若调用方已设更短超时（with_short_timeout 快速失败），保留之。
+        // The device may need hundreds of milliseconds after setup_hw_init before responding.
+        // Wait for the first byte using max(current timeout, DA_CTRL_TIMEOUT_MS) to avoid status
+        // timeouts on slow serial links; keep a shorter caller timeout (with_short_timeout fast fail).
         let orig_timeout = self.preloader.device.get_timeout();
         let eff = orig_timeout.max(Duration::from_millis(DA_CTRL_TIMEOUT_MS));
         self.preloader.device.set_timeout(eff);
@@ -98,7 +98,7 @@ impl<'a> DAXFlash<'a> {
 
     fn xread_inner(&mut self) -> Result<u32, String> {
         let payload = self.read_flow_packet()?;
-        // 如果数据是 4 字节，返回 u32 值
+        // If the payload is 4 bytes, return it as a u32 value
         if payload.len() == 4 {
             let val = u32::from_le_bytes(payload[0..4].try_into().unwrap());
             trace!("[xread] val=0x{:08X}", val);
@@ -107,7 +107,7 @@ impl<'a> DAXFlash<'a> {
         Ok(0)
     }
 
-    /// 读取单个 XFlash 包，返回 (data_type, payload)
+    /// Read a single XFlash packet and return (data_type, payload)
     fn read_packet(&mut self) -> Result<(u32, Vec<u8>), String> {
         let mut header = [0u8; XFLASH_HEADER_LEN];
         self.preloader.device.read_exact(&mut header)?;
@@ -139,12 +139,12 @@ impl<'a> DAXFlash<'a> {
         Ok((data_type, payload))
     }
 
-    /// 读取下一个流程包，途中自动跳过并记录设备异步 Message 包（data_type=2）。
+    /// Read the next flow packet, skipping and logging device asynchronous Message packets (data_type=2).
     ///
-    /// DA 可在任意时刻插入日志/状态消息包；旧实现把这些消息的负载当成
-    /// 命令响应消费，导致后续包头错位（协议失步）。此处在包头解析后判断
-    /// `data_type`，遇到 Message 先消费其负载并记录，直到拿到流程包才返回。
-    /// 参考 penumbra `read_next_flow_header()` + `drain_message()`。
+    /// The DA may inject log/status message packets at any time; the old implementation consumed
+    /// their payload as the command response, misaligning later headers (protocol desync). Here
+    /// `data_type` is checked after header parsing: Message packets are consumed and logged until a flow packet arrives.
+    /// Mirrors penumbra `read_next_flow_header()` + `drain_message()`.
     fn read_flow_packet(&mut self) -> Result<Vec<u8>, String> {
         let mut skipped = 0u32;
         loop {
@@ -155,21 +155,21 @@ impl<'a> DAXFlash<'a> {
         }
     }
 
-    /// 读取 status (4 字节小端)
+    /// Read the status (4-byte little-endian)
     pub(crate) fn status(&mut self) -> Result<u32, String> {
-        // DA 控制读：慢速串口下 DA 回 status 可能超默认 1s，用 max(当前, DA_CTRL_TIMEOUT_MS)
-        // 等待首字节，避免 status 读取 Operation timed out。调用方已设更短超时时保留之。
+        // DA control read: on slow serial links the DA may take longer than the default 1s to return status;
+        // wait using max(current, DA_CTRL_TIMEOUT_MS) to avoid "Operation timed out". A shorter caller timeout is kept.
         let orig_timeout = self.preloader.device.get_timeout();
         let eff = orig_timeout.max(Duration::from_millis(DA_CTRL_TIMEOUT_MS));
         self.preloader.device.set_timeout(eff);
 
         let result = (|| {
-            // 跳过 DA 异步消息包后再取流程包（避免消息负载被当成 status 解析）
+            // Skip DA asynchronous message packets before taking the flow packet (so their payload is not parsed as status)
             let payload = self.read_flow_packet()?;
             match payload.len() {
                 4 => {
                     let val = u32::from_le_bytes(payload[0..4].try_into().unwrap());
-                    // Python 特殊情况：如果 status == 0xFEEEEEEF，返回 0
+                    // Python special case: return 0 if status == 0xFEEEEEEF
                     if val == 0xFEEEEEEF {
                         trace!("[status] 0xFEEEEEEF → 0");
                         return Ok(0);
@@ -193,15 +193,15 @@ impl<'a> DAXFlash<'a> {
         result
     }
 
-    /// 读取 XFlash 数据并返回 Vec
+    /// Read XFlash data and return a Vec
     pub(crate) fn xread_data(&mut self) -> Result<Vec<u8>, String> {
-        // DA 控制读：同 status()，用 max(当前, DA_CTRL_TIMEOUT_MS) 避免慢速串口超时
+        // DA control read: same as status(); use max(current, DA_CTRL_TIMEOUT_MS) to avoid slow-serial timeouts
         let orig_timeout = self.preloader.device.get_timeout();
         let eff = orig_timeout.max(Duration::from_millis(DA_CTRL_TIMEOUT_MS));
         self.preloader.device.set_timeout(eff);
 
         let result = (|| {
-            // 跳过 DA 异步消息包后再取流程包
+            // Skip DA asynchronous message packets before taking the flow packet
             let payload = self.read_flow_packet()?;
             trace!("[xread_data] len={}", payload.len());
             Ok(payload)
@@ -213,7 +213,7 @@ impl<'a> DAXFlash<'a> {
 }
 
 // =============================================================================
-// 单元测试 — Message 包处理（P0-1）
+// Unit tests — Message packet handling (P0-1)
 // =============================================================================
 
 #[cfg(test)]
@@ -228,7 +228,7 @@ mod tests {
             PacketAction::SkipMessage
         );
         assert_eq!(classify_packet(DATA_TYPE_FLOW), PacketAction::Deliver);
-        // 未知类型保持宽容，按流程包处理（与旧行为一致）
+        // Unknown types stay lenient and are treated as flow packets (same as the old behavior)
         assert_eq!(classify_packet(0x55), PacketAction::Deliver);
         assert_eq!(classify_packet(0), PacketAction::Deliver);
     }
@@ -239,14 +239,14 @@ mod tests {
         assert_eq!(format_device_message(b"hello\0"), "hello");
         assert_eq!(format_device_message(b"hello\r\n"), "hello");
         assert_eq!(format_device_message(b""), "");
-        // 非 UTF-8 也能安全降级（lossy）
+        // Non-UTF-8 input degrades safely (lossy)
         assert_eq!(format_device_message(&[0xFF, b'o', b'k']), "\u{FFFD}ok");
     }
 
     #[test]
     fn handle_packet_skips_message_then_delivers_flow() {
         let mut skipped = 0u32;
-        // 两个消息包 → 返回 None（继续读）
+        // Two message packets → returns None (keep reading)
         assert!(
             handle_packet(DATA_TYPE_MESSAGE, b"log1".to_vec(), &mut skipped)
                 .unwrap()
@@ -258,7 +258,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(skipped, 2);
-        // 流程包 → 返回负载，且 skipped 不再增长
+        // Flow packet → returns the payload, and skipped stops growing
         let delivered = handle_packet(DATA_TYPE_FLOW, vec![1, 2, 3, 4], &mut skipped)
             .unwrap()
             .unwrap();
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn handle_packet_errors_on_message_flood() {
         let mut skipped = 0u32;
-        // 连续 MAX-1 个消息包仍应正常跳过
+        // MAX-1 consecutive message packets should still be skipped normally
         for _ in 0..(MAX_MESSAGE_PACKETS_PER_READ - 1) {
             assert!(
                 handle_packet(DATA_TYPE_MESSAGE, vec![], &mut skipped)
@@ -277,7 +277,7 @@ mod tests {
                     .is_none()
             );
         }
-        // 第 MAX 个触发协议失步错误
+        // The MAX-th packet triggers the protocol desync error
         let err = handle_packet(DATA_TYPE_MESSAGE, vec![], &mut skipped).unwrap_err();
         assert!(err.contains("Message"), "unexpected error: {}", err);
     }
@@ -285,16 +285,16 @@ mod tests {
     #[test]
     fn packet_length_guard_rejects_absurd_lengths() {
         assert!(packet_length_is_valid(0));
-        assert!(packet_length_is_valid(0x200000)); // 2MiB 正常值
+        assert!(packet_length_is_valid(0x200000)); // 2MiB is a normal value
         assert!(packet_length_is_valid(MAX_XFLASH_PACKET_LEN));
-        // 错位解析出的荒谬长度被拒收，避免 vec![0u8; 4GiB] 直接 OOM
+        // Absurd lengths from misparsed headers are rejected, avoiding a vec![0u8; 4GiB] OOM
         assert!(!packet_length_is_valid(MAX_XFLASH_PACKET_LEN + 1));
         assert!(!packet_length_is_valid(0xFFFFFFFF));
     }
 
     #[test]
     fn read_packet_header_layout_matches_pack3() {
-        // 用 pack3 生成的头应与读包逻辑的字段偏移一致（回归保护）
+        // Headers produced by pack3 must match the field offsets used when reading (regression guard)
         let pkt = crate::da::xflash::protocol::pack3(CMD_MAGIC, DATA_TYPE_MESSAGE, 5);
         let magic = u32::from_le_bytes(pkt[0..4].try_into().unwrap());
         let data_type = u32::from_le_bytes(pkt[4..8].try_into().unwrap());

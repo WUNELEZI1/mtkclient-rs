@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/mtkclient-rs.exe dist/
+          Copy-Item LICENSE, README.md, README_EN.md, CONTRIBUTING.md dist/
+          Compress-Archive -Path dist/mtkclient-rs.exe, dist/LICENSE, dist/README.md -DestinationPath dist/mtkclient-rs-windows-x86_64.zip -Force
+
+      - name: Generate SBOM (CycloneDX)
+        run: python scripts/generate_sbom.py --output dist/sbom.cdx.json
+
+      - name: Generate SHA256 checksums
+        run: python scripts/checksums.py dist --output dist/SHA256SUMS.txt
+
+      - name: Authenticode sign (optional)
+        if: ${{ secrets.SIGN_CERT_BASE64 != '' }}
+        shell: pwsh
+        env:
+          SIGN_CERT_BASE64: ${{ secrets.SIGN_CERT_BASE64 }}
+          SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+        run: ./scripts/sign.ps1 -CertificateBase64 $env:SIGN_CERT_BASE64 -Password $env:SIGN_CERT_PASSWORD -Path dist/mtkclient-rs.exe
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/mtkclient-rs-windows-x86_64.zip
+            dist/SHA256SUMS.txt
+            dist/sbom.cdx.json
+          generate_release_notes: true

@@ -1,11 +1,11 @@
-//! BROM 寄存器访问（DA 注入核心操作）
+//! BROM register access (core operation for DA injection)
 //!
-//! - `brom_register_access` — 通用 0xDA 协议（read/write）
-//! - 重试 / clear_halt 容错逻辑
+//! - `brom_register_access` — generic 0xDA protocol (read/write)
+//! - retry / clear_halt fault-tolerance logic
 //!
-//! 协议：cmd(D1/DA) → mode(4B) → address(4B) → length_dwords(4B) → status(2B) → data → status(2B)
+//! Protocol: cmd(D1/DA) → mode(4B) → address(4B) → length_dwords(4B) → status(2B) → data → status(2B)
 //! mode: 0=read, 1=write
-//! length_dwords: DWORD 数（设备期望的单位）
+//! length_dwords: number of DWORDs (the unit the device expects)
 
 use super::core::Preloader;
 use log::trace;
@@ -16,17 +16,17 @@ const BROM_REG_RETRY_ATTEMPTS: usize = 4;
 const BROM_REG_RETRY_DELAY_MS: u64 = 100;
 
 impl Preloader {
-    /// BROM 寄存器访问（DA 注入核心操作）
+    /// BROM register access (core operation for DA injection)
     pub fn brom_register_access(
         &mut self,
-        mode: u32, // 0=读，1=写
+        mode: u32, // 0=read, 1=write
         address: u32,
-        length_bytes: u32, // 字节数，对齐 Python brom_register_access
+        length_bytes: u32, // byte count, matching Python brom_register_access
         data: Option<&[u8]>,
         check_status: bool,
     ) -> Result<Option<Vec<u8>>, String> {
-        // 命令字节 0xDA：使用 echo 协议（对齐 Python Cmd.brom_register_access.value）
-        // 注意：Python 不检查 echo 返回值，这里也只记录警告不返回错误
+        // Command byte 0xDA: use the echo protocol (matches Python Cmd.brom_register_access.value)
+        // Note: Python does not check the echo return value, so here we only log a warning instead of returning an error
         if !self.echo_1byte(0xDA)? {
             trace!("brom_reg: echo 0xDA 不匹配（继续执行）");
         }
@@ -40,7 +40,7 @@ impl Preloader {
             trace!("brom_reg: echo len 不匹配（继续执行）");
         }
 
-        // 读状态 2 字节（容错模式，对齐 Python 的宽松风格）
+        // Read 2 status bytes (tolerant mode, matching Python's lenient style)
         let mut st = [0u8; 2];
         if let Err(e) = self.device.read_exact(&mut st) {
             trace!("brom_reg status1 read failed: {}, continue", e);
@@ -49,7 +49,7 @@ impl Preloader {
         }
 
         if let Some(wdata) = data {
-            // Write mode: 发送 length_bytes 字节数据后读 status2
+            // Write mode: send length_bytes of data, then read status2
             let byte_count = length_bytes as usize;
             self.device
                 .write(&wdata[..byte_count])
@@ -63,15 +63,15 @@ impl Preloader {
             }
             Ok(None)
         } else {
-            // Read mode: 读取 length_bytes 字节
+            // Read mode: read length_bytes bytes
             let byte_count = length_bytes as usize;
             let mut buf = vec![0u8; byte_count];
 
             trace!("brom_reg 准备读 {} 字节数据", byte_count);
 
-            // WinUSB/nusb 下不要在正常读取前 clear_halt。
-            // clear_halt 会发标准 CLEAR_FEATURE control transfer，可能打断 BROM
-            // 当前的 data/status 返回流；Python 成功路径也没有这一步。
+            // Do not clear_halt before a normal read under WinUSB/nusb.
+            // clear_halt issues a standard CLEAR_FEATURE control transfer that may interrupt BROM's
+            // current data/status return stream; Python's success path also skips this step.
             self.device
                 .set_timeout(Duration::from_millis(BROM_REG_READ_TIMEOUT_MS));
 
@@ -95,7 +95,7 @@ impl Preloader {
                 return Err("brom_reg read data timeout after retries".into());
             }
 
-            // 读 status2
+            // Read status2
             let mut st2 = [0u8; 2];
             let _ = self.device.read_exact(&mut st2);
             trace!("brom_reg status2: {:02X?}", st2);

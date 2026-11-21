@@ -1,11 +1,11 @@
-//! BROM 协议核心：握手、关看门狗、同步序列、HW code 读取等
+//! BROM protocol core: handshake, watchdog disable, sync sequence, HW code read, etc.
 //!
-//! 包含 `Preloader` 初始化流程中需要的所有原语：
-//! - `init` 完整流程（握手 + HW code + 关看门狗 + sync）
-//! - `sync_brom` 同步序列 FE/FF/FC
-//! - `echo_1byte` / `echo_4byte` / `sendcmd` BROM echo 协议
+//! Provides all primitives needed by the `Preloader` init flow:
+//! - `init` full flow (handshake + HW code + watchdog off + sync)
+//! - `sync_brom` sync sequence FE/FF/FC
+//! - `echo_1byte` / `echo_4byte` / `sendcmd` BROM echo protocol
 //! - `get_hw_code` / `get_target_config` / `get_hw_subcode`
-//! - `flush_input` / `rword` / `rdword` / `rbyte` 基础读工具
+//! - `flush_input` / `rword` / `rdword` / `rbyte` basic read helpers
 
 use super::core::Preloader;
 use crate::color::Colorize;
@@ -15,14 +15,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const WATCHDOG_TIMEOUT_SECS: u64 = 3;
-// USB 设备响应极快（微秒级），200ms 超时过于保守
-// 50ms 足以覆盖最慢的 USB 控制传输（串口模式下实际超时会被设备驱动覆盖）
+// USB devices respond very fast (microseconds), so a 200ms timeout is too conservative
+// 50ms covers the slowest USB control transfer (serial mode overrides the timeout in the driver)
 const ECHO_TIMEOUT_MS: u64 = 50;
-// 常规 flush: 100ms 超时，最大 10KB（比原来快 2 倍）
+// Normal flush: 100ms timeout, 10KB max (2x faster than before)
 const FLUSH_INPUT_TIMEOUT_MS: u64 = 100;
 const FLUSH_INPUT_CHUNK: usize = 1024;
 const FLUSH_INPUT_MAX_ITER: usize = 10;
-// 快速 flush: 20ms 超时，最大 2KB（比原来快 2.5 倍）
+// Quick flush: 20ms timeout, 2KB max (2.5x faster than before)
 const FLUSH_INPUT_QUICK_TIMEOUT_MS: u64 = 20;
 const FLUSH_INPUT_QUICK_CHUNK: usize = 512;
 const FLUSH_INPUT_QUICK_MAX_ITER: usize = 4;
@@ -32,12 +32,12 @@ const WDT_MAGIC: u32 = 0x22000000;
 pub(crate) mod init;
 
 impl Preloader {
-    /// BROM 同步序列 (FE, FF, FC)
-    /// 用于在握手或漏洞利用后让设备进入就绪状态
+    /// BROM sync sequence (FE, FF, FC)
+    /// Brings the device to a ready state after a handshake or exploit
     pub fn sync_brom(&mut self) -> Result<(), String> {
         trace!("开始 BROM 同步序列...");
 
-        // 1. BROM sync: FE 不做同字节回显（刷机匣日志：写 FE → 读 0x03）
+        // 1. BROM sync: FE is not echoed verbatim (reference log: write FE → read 0x03)
         self.device
             .write(&[0xFE])
             .map_err(|e| format!("BROM sync FE write: {}", e))?;
@@ -47,7 +47,7 @@ impl Preloader {
             .map_err(|e| format!("BROM sync FE read: {}", e))?;
         trace!("BROM sync FE 响应: 0x{:02X}", fe_resp[0]);
 
-        // 2. BROM FF: echo(0xFF) -> 读响应
+        // 2. BROM FF: echo(0xFF) -> read the response
         self.device
             .write(&[0xFF])
             .map_err(|e| format!("BROM FF write: {}", e))?;
@@ -57,7 +57,7 @@ impl Preloader {
             .map_err(|e| format!("BROM FF read: {}", e))?;
         trace!("BROM FF 响应: 0x{:02X}", ff_resp[0]);
 
-        // 3. BROM FC: echo(0xFC) -> 读 8 字节 HW info
+        // 3. BROM FC: echo(0xFC) -> read 8 bytes of HW info
         if !self.echo_1byte(0xFC)? {
             return Err("BROM FC echo 不匹配".into());
         }
@@ -70,14 +70,14 @@ impl Preloader {
         Ok(())
     }
 
-    /// 完整初始化：握手 + 关闭看门狗 + 读取设备信息（BROM 模式）
+    /// Full init: handshake + disable watchdog + read device info (BROM mode)
     pub fn init(&mut self) -> Result<bool, String> {
-        // 1. 握手
+        // 1. Handshake
         if !self.device.do_handshake()? {
             return Ok(false);
         }
 
-        // 2. 先获取 HW code 来匹配芯片配置
+        // 2. Read the HW code first to match the chip config
         let hw = self.get_hw_code()?;
         let chip = CHIP_CONFIGS
             .iter()
@@ -85,21 +85,21 @@ impl Preloader {
             .ok_or_else(|| format!("未知芯片: HW code 0x{:04X}", hw))?;
         self.chip = Some(*chip);
 
-        // 2.4 读取 HW Subcode：部分芯片用它与 hw_code 组合区分同族变体。
-        // 失败不阻断初始化（个别老芯片不支持 0xDB），随后清空输入缓冲避免残留干扰后续命令。
+        // 2.4 Read the HW Subcode: some chips combine it with hw_code to tell same-family variants apart.
+        // Failure does not block init (some old chips lack 0xDB); the input buffer is then flushed to avoid stale data.
         match self.get_hw_subcode() {
             Ok(subcode) => trace!("HW subcode: {:04X}", subcode),
             Err(e) => trace!("HW subcode 读取失败（忽略）: {}", e),
         }
         self.flush_input();
 
-        // 2.5 启动后台线程预读取并解析 DA 文件：bypass / 发送 DA 期间并行完成，
-        // 节省文件 I/O + header 解析的 2~4 秒
-        // 注意：使用 chip.da_code（0x6768）而非 hw_code（0x0707）来匹配 DA 文件内条目
+        // 2.5 Spawn a background thread to preload and parse the DA file in parallel with
+        // bypass / DA sending, saving the 2-4 seconds of file I/O + header parsing
+        // Note: match entries inside the DA file with chip.da_code (0x6768), not hw_code (0x0707)
         let da_code_for_parse = chip.da_code;
         let da_parsed = Arc::new(Mutex::new(None));
         let da_parsed_clone = Arc::clone(&da_parsed);
-        // 提前复制 da_path 到闭包中，避免借用 self
+        // Copy da_path into the closure up front to avoid borrowing self
         let da_path_for_thread = if !self.da_path.is_empty() {
             self.da_path.clone()
         } else {
@@ -137,10 +137,10 @@ impl Preloader {
         });
         self.da_parsed = Some(da_parsed);
 
-        // 3. 关闭看门狗
+        // 3. Disable the watchdog
         self.disable_watchdog()?;
 
-        // 4. get_target_config — 对齐刷机匣第 101-108 行
+        // 4. get_target_config — matches reference log lines 101-108
         let _ = self.get_target_config();
 
         // 5-7. BROM sync (FE, FF, FC)
@@ -151,10 +151,10 @@ impl Preloader {
         Ok(true)
     }
 
-    /// 关闭看门狗（Preloader 和 BROM 模式都需要）
+    /// Disable the watchdog (needed in both Preloader and BROM mode)
     ///
-    /// 使用 BROM write32 协议将 watchdog 寄存器写入 WDT_MAGIC (0x22000000)。
-    /// Preloader 模式下如果不关看门狗，设备会在约 3 秒后自动重启。
+    /// Writes WDT_MAGIC (0x22000000) to the watchdog register via the BROM write32 protocol.
+    /// In Preloader mode the device reboots after about 3 seconds unless the watchdog is disabled.
     fn disable_watchdog(&mut self) -> Result<(), String> {
         let chip = self
             .chip
@@ -198,14 +198,14 @@ impl Preloader {
         Ok(())
     }
 
-    /// Preloader 模式初始化：握手 + 获取 HW code + 关看门狗
+    /// Preloader mode init: handshake + read HW code + disable watchdog
     pub fn init_preloader(&mut self) -> Result<bool, String> {
-        // 1. 握手
+        // 1. Handshake
         if !self.device.do_handshake()? {
             return Ok(false);
         }
 
-        // 2. 获取 HW code 来匹配芯片配置
+        // 2. Read the HW code to match the chip config
         let hw = self.get_hw_code()?;
         let chip = CHIP_CONFIGS
             .iter()
@@ -213,7 +213,7 @@ impl Preloader {
             .ok_or_else(|| format!("未知芯片: HW code 0x{:04X}", hw))?;
         self.chip = Some(*chip);
 
-        // 3. 关闭看门狗（Preloader 模式也需要，否则 3 秒后设备自动重启）
+        // 3. Disable the watchdog (needed in Preloader mode too, or the device reboots after 3 seconds)
         self.disable_watchdog()?;
 
         trace!("Preloader 模式初始化成功, chip={}", chip.name);
@@ -222,15 +222,15 @@ impl Preloader {
         Ok(true)
     }
 
-    /// 触发看门狗重启（用于 Preloader Pattern 协议前）
+    /// Trigger a watchdog reboot (used before the Preloader Pattern protocol)
     ///
-    /// 串口模式下 brom_register_access(0xDA) 不被设备支持（echo 正常但无 status 响应），
-    /// 直接使用 BROM WRITE32 写看门狗 WDT_RESTART 寄存器触发重启。
+    /// In serial mode the device does not support brom_register_access(0xDA) (echo works but no status),
+    /// so the watchdog WDT_RESTART register is written directly via BROM WRITE32.
     ///
-    /// 设备重启后 Preloader 发送 READY 信号，Pattern 协议收到后立即发送 FASTBOOT。
+    /// After the reboot Preloader signals READY; the Pattern protocol then sends FASTBOOT immediately.
     ///
-    /// 若看门狗 WRITE32 任一步失败，回退到 `jump_bl`（BROM 0xD6）直接命令 BROM
-    /// 跳转到 Bootloader，达到与看门狗复位等价的“离开 BROM 进入 Preloader”效果。
+    /// If any watchdog WRITE32 step fails, fall back to `jump_bl` (BROM 0xD6) to command BROM
+    /// to jump to the Bootloader, matching the "leave BROM into Preloader" effect of a watchdog reset.
     pub fn trigger_meta_reboot(&mut self) -> Result<(), String> {
         match self.reboot_via_watchdog() {
             Ok(()) => Ok(()),
@@ -245,7 +245,7 @@ impl Preloader {
         }
     }
 
-    /// 通过 BROM WRITE32 写看门狗 WDT_RESTART 寄存器触发重启
+    /// Trigger a reboot by writing the watchdog WDT_RESTART register via BROM WRITE32
     fn reboot_via_watchdog(&mut self) -> Result<(), String> {
         let chip = self
             .chip
@@ -255,13 +255,13 @@ impl Preloader {
         let reboot_addr = chip.watchdog + 0x14;
         let reboot_value: u32 = 0x00001209;
 
-        // 直接 write32 触发看门狗重启（跳过 brom_register_access，串口不支持）
+        // Trigger the watchdog reboot with a direct write32 (skips brom_register_access; serial unsupported)
         trace!(
             "[META] write32(0x{:08X}, 0x{:08X}) 触发看门狗重启",
             reboot_addr, reboot_value
         );
 
-        // BROM WRITE32 协议: echo_1byte(0xD4) → echo_4byte(addr) → echo_4byte(count) → echo_4byte(value) → rword()
+        // BROM WRITE32 protocol: echo_1byte(0xD4) → echo_4byte(addr) → echo_4byte(count) → echo_4byte(value) → rword()
         trace!("[META] write32: echo_1byte(0xD4)");
         if !self.echo_1byte(0xD4)? {
             return Err("meta_reset: echo 0xD4 不匹配".into());
@@ -292,9 +292,9 @@ impl Preloader {
         Ok(())
     }
 
-    /// BROM echo 协议：完全对齐 Python Port.echo() (Port.py:210-229)
-    /// 设备在上传 DA 后可能输出调试信息，echo 读取时会遇到残留数据。
-    /// 这里容忍最多 32 字节的残留数据，继续读取直到找到真正的 echo。
+    /// BROM echo protocol: fully matches Python Port.echo() (Port.py:210-229)
+    /// After a DA upload the device may emit debug output, leaving residual data on echo reads.
+    /// Up to 32 residual bytes are tolerated; reading continues until the real echo shows up.
     pub fn echo_1byte(&mut self, cmd: u8) -> Result<bool, String> {
         let orig_timeout = self.device.get_timeout();
         self.device
@@ -306,7 +306,7 @@ impl Preloader {
 
     fn echo_1byte_impl(&mut self, cmd: u8) -> Result<bool, String> {
         if let Err(e) = self.device.write(&[cmd]) {
-            // PIPE 错误（端点 STALL）：clear_halt 后重试一次
+            // PIPE error (endpoint STALL): clear_halt then retry once
             if e.contains("err -7") {
                 trace!("[ECHO_1] write PIPE error, clear_halt_out + retry...");
                 let _ = self.device.clear_halt_out();
@@ -356,9 +356,9 @@ impl Preloader {
         Ok(false)
     }
 
-    /// 发送 4 字节大端参数并校验回显（对齐 Python pack(">I", val)）
-    /// 支持残余数据容错：逐字节读取并维护 4 字节滑动窗口环缓冲区，
-    /// 跳过残余字节后匹配期望回显（与 echo_1byte 跳过机制一致）。
+    /// Send a 4-byte big-endian value and verify the echo (matches Python pack(">I", val))
+    /// Tolerates residual data: reads byte by byte through a 4-byte sliding-window ring buffer
+    /// and skips residuals to match the expected echo (same mechanism as echo_1byte).
     pub fn echo_4byte(&mut self, val: u32) -> Result<bool, String> {
         let be = val.to_be_bytes();
         trace!("[ECHO_4] 发送: {:02X?} (值=0x{:08X})", be, val);
@@ -375,7 +375,7 @@ impl Preloader {
             }
         }
 
-        // 逐字节读取，维护 4 字节滑动窗口环缓冲区
+        // Read byte by byte, maintaining the 4-byte sliding-window ring buffer
         let mut ring = [0u8; 4];
         let mut ring_pos = 0usize;
         let mut ring_filled = 0usize;
@@ -391,7 +391,7 @@ impl Preloader {
                     }
 
                     if ring_filled >= 4 {
-                        // 按写入顺序重组环缓冲区为连续 4 字节
+                        // Reassemble the ring buffer into 4 contiguous bytes in write order
                         let window = [
                             ring[(ring_pos) % 4],
                             ring[(ring_pos + 1) % 4],
@@ -408,7 +408,7 @@ impl Preloader {
                             }
                             return Ok(true);
                         } else if i < 3 {
-                            // 还在填充环缓冲区阶段，记录残余字节
+                            // Still filling the ring buffer; log the residual byte
                             trace!(
                                 "[ECHO_4] 跳过残余字节 0x{:02X} (第 {} 次)，等待 {:02X?}",
                                 buf[0],
@@ -440,8 +440,8 @@ impl Preloader {
         Ok(false)
     }
 
-    /// 发送 4 字节大端参数，校验回显后再读取 2 字节 status。
-    /// 对齐刷机匣 watchdog 关闭流程：write 4B -> read 4B echo -> read 2B status。
+    /// Send a 4-byte big-endian value, verify the echo, then read the 2-byte status.
+    /// Matches the reference watchdog flow: write 4B -> read 4B echo -> read 2B status.
     pub fn echo_4byte_then_status(&mut self, val: u32) -> Result<u16, String> {
         if !self.echo_4byte(val)? {
             return Err(format!("4-byte echo mismatch: 0x{:08X}", val));
@@ -451,12 +451,12 @@ impl Preloader {
         Ok(status)
     }
 
-    /// 发送 1 字节命令（对应 Python echo(Cmd.XXX.value)）
+    /// Send a 1-byte command (equivalent to Python echo(Cmd.XXX.value))
     pub fn sendcmd(&mut self, cmd: u8) -> Result<bool, String> {
         self.echo_1byte(cmd)
     }
 
-    /// 获取硬件代码
+    /// Read the hardware code
     /// Python: echo(Cmd.GET_HW_CODE.value) → rbyte(4) → unpack(">HH")
     pub fn get_hw_code(&mut self) -> Result<u16, String> {
         if !self.sendcmd(0xFD)? {
@@ -471,7 +471,7 @@ impl Preloader {
         Ok(hw)
     }
 
-    /// 获取目标设备安全配置
+    /// Read the target device security config
     /// Python mtk_preloader.py:517-542: echo(0xD8) → rbyte(6) → unpack(">IH")
     pub fn get_target_config(&mut self) -> Result<TargetConfig, String> {
         if !self.sendcmd(0xD8)? {
@@ -492,7 +492,7 @@ impl Preloader {
             return Err(format!("Get Target Config Error: status=0x{:04X}", status));
         }
 
-        // chip 已在 init() step 2 设置，不再重复调用
+        // chip is already set in init() step 2, so do not call it again
         Ok(TargetConfig::from_raw(target_config))
     }
 }

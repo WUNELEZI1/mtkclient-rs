@@ -1,11 +1,11 @@
-//! USB 设备构造与生命周期（open / close / reopen）
+//! USB device construction and lifecycle (open / close / reopen)
 //!
-//! - `USB设备::新建`        — 按 SUPPORTED_DEVICES 顺序查找第一个可用设备
-//! - `USB设备::按VID_PID打开` — 按指定 VID/PID 打开
-//! - `USB设备::关闭`      — 释放接口 + 关闭句柄
-//! - `USB设备::重新打开`     — 重新打开设备（用于 BROM↔DA 切换后恢复）
+//! - `UsbDevice::new`            — find the first available device in SUPPORTED_DEVICES order
+//! - `UsbDevice::open_by_vid_pid` — open by the given VID/PID
+//! - `UsbDevice::close`          — release interfaces + close handles
+//! - `UsbDevice::reopen`         — reopen the device (to recover after a BROM↔DA switch)
 //!
-//! 底层使用 nusb 纯 Rust USB 库，Windows 上通过 WinUSB 后端通信。
+//! Uses the pure-Rust nusb library, communicating via the WinUSB backend on Windows.
 
 use super::context::UsbContext;
 use super::context::UsbStage;
@@ -16,40 +16,40 @@ use nusb::MaybeFuture;
 use nusb::descriptors::TransferType;
 use std::time::Duration;
 
-/// USB bulk 端点默认值（找不到时回退）
+/// Default USB bulk endpoints (used when discovery fails)
 const DEFAULT_OUT_EP: u8 = 0x01;
 const DEFAULT_IN_EP: u8 = 0x81;
 const DEFAULT_MAX_PACKET_SIZE: u16 = 512;
-// 默认 bulk 读/写超时：从 5000ms 收紧到 1500ms。
-// DA/BROM 的 status 与数据响应通常在毫秒级到达；此超时仅作"单笔传输未达首字节"的上限。
-// 收紧后可把"缓冲区污染导致读 miss"的空等代价从 5s 降到 1.5s（写超时已由 drain_pending 修复，
-// miss 本应趋零，此处为兜底保险）。EMI/BOOT_TO 等确需长耗时的步骤会在调用处显式 set_timeout(5000)。
+// Default bulk read/write timeout: tightened from 5000ms to 1500ms.
+// DA/BROM status and data responses usually arrive within milliseconds; this timeout only caps "no first byte for a transfer".
+// Tightening cuts the idle cost of a read miss caused by buffer pollution from 5s to 1.5s (write timeouts were fixed by drain_pending,
+// so misses should approach zero; this is a safety net). Steps that genuinely need longer, such as EMI/BOOT_TO, call set_timeout(5000) explicitly.
 const DEFAULT_TIMEOUT_MS: u64 = 1500;
-/// 重连轮询间隔 (ms)：设备 DA 重启后 USB 重新枚举通常需要 1~3s，
-/// 固定单次等待容易在设备尚未就绪时失败。改为按此间隔轮询重试。
-/// 参考 penumbra `reenumerate`（200ms 间隔 / 10s 总超时）。
+/// Reconnect poll interval (ms): after a DA reboot, USB re-enumeration usually takes 1~3s,
+/// and a single fixed wait tends to fail before the device is ready. Poll and retry at this interval instead.
+/// Follows penumbra `reenumerate` (200ms interval / 10s total timeout).
 const REOPEN_POLL_INTERVAL_MS: u64 = 200;
-/// 重连总超时 (ms)：超过此时长仍未枚举到设备即判定失败。
+/// Total reconnect timeout (ms): fail if the device is still not enumerated after this.
 const REOPEN_TIMEOUT_MS: u64 = 10_000;
 
-/// 重连轮询是否应继续：累计耗时未达总超时则继续重试。
+/// Whether reconnect polling should continue: retry while elapsed time is below the total timeout.
 ///
-/// 抽成纯函数便于单测（I/O 无关）。对齐 penumbra `reenumerate` 的
-/// "200ms 间隔 + 10s 总超时" 语义。
+/// Extracted as a pure function for easy unit testing (I/O-free). Matches penumbra `reenumerate`'s
+/// "200ms interval + 10s total timeout" semantics.
 pub(crate) fn reopen_should_retry(elapsed_ms: u64) -> bool {
     elapsed_ms < REOPEN_TIMEOUT_MS
 }
 
 pub struct UsbDevice {
-    /// nusb 设备接口（持有 claim 的 interface）
+    /// nusb device interface (the claimed interface)
     interface: Option<nusb::Interface>,
-    /// CDC/WinUSB 控制传输接口
+    /// CDC/WinUSB control transfer interface
     control_interface: Option<nusb::Interface>,
-    /// 缓存的 bulk IN 端点句柄
+    /// Cached bulk IN endpoint handle
     in_ep_handle: Option<nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::In>>,
-    /// 缓存的 bulk OUT 端点句柄
+    /// Cached bulk OUT endpoint handle
     out_ep_handle: Option<nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::Out>>,
-    /// nusb 设备句柄（用于 reopen 时 drop + reopen）
+    /// nusb device handle (dropped and reopened on reopen)
     device: Option<nusb::Device>,
     pub vid: u16,
     pub pid: u16,
@@ -63,12 +63,12 @@ pub struct UsbDevice {
     pub in_ep_max_packet_size: u16,
     pub(crate) in_buf: Vec<u8>,
     pub(crate) timeout: Duration,
-    /// 是否已关闭（防止 drop 后重复关闭）
+    /// Whether already closed (prevents double close after drop)
     closed: bool,
 }
 
 impl UsbDevice {
-    /// 查找并打开第一个支持的设备
+    /// Find and open the first supported device
     pub fn new(_context: &UsbContext) -> Result<Self, String> {
         let devices = nusb::list_devices()
             .wait()
@@ -96,17 +96,17 @@ impl UsbDevice {
 
         let dev_info = target_dev_info.ok_or_else(|| UsbError::NotFound.to_string())?;
 
-        // 从 DeviceInfo 获取 vid/pid（nusb::Device 上没有这些方法）
+        // Get vid/pid from DeviceInfo (nusb::Device does not expose these)
         let vid = dev_info.vendor_id();
         let pid = dev_info.product_id();
 
-        // 打开设备并 claim interface
+        // Open the device and claim its interface
         let device = dev_info
             .open()
             .wait()
             .map_err(|e| UsbError::OpenFailed(e.to_string()).to_string())?;
 
-        // 扫描端点（从 active_configuration 获取）
+        // Scan endpoints (from the active_configuration)
         let (out_ep_addr, in_ep_addr, out_ep_max_packet, in_ep_max_packet, bulk_iface_num) =
             Self::scan_endpoints_from_device(&device);
 
@@ -144,7 +144,7 @@ impl UsbDevice {
         })
     }
 
-    /// 按指定 VID/PID 打开设备
+    /// Open the device with the given VID/PID
     pub fn open_by_vid_pid(_context: &UsbContext, vid: u16, pid: u16) -> Result<Self, String> {
         let devices = nusb::list_devices()
             .wait()
@@ -160,7 +160,7 @@ impl UsbDevice {
             .wait()
             .map_err(|e| UsbError::OpenFailed(e.to_string()).to_string())?;
 
-        // 扫描端点
+        // Scan endpoints
         let (out_ep_addr, in_ep_addr, out_ep_max_packet, in_ep_max_packet, bulk_iface_num) =
             Self::scan_endpoints_from_device(&device);
 
@@ -197,7 +197,7 @@ impl UsbDevice {
         })
     }
 
-    /// 从 Device 的 active_configuration 扫描 bulk 端点
+    /// Scan bulk endpoints from the Device's active_configuration
     fn scan_endpoints_from_device(device: &nusb::Device) -> (u8, u8, u16, u16, u8) {
         let mut out_ep_addr: u8 = DEFAULT_OUT_EP;
         let mut in_ep_addr: u8 = DEFAULT_IN_EP;
@@ -322,7 +322,7 @@ impl UsbDevice {
         Ok((in_ep_handle, out_ep_handle))
     }
 
-    /// 获取 EP_OUT 的最大包大小
+    /// Get the max packet size of EP_OUT
     pub fn out_ep_max_packet_size(&self) -> u16 {
         self.out_ep_max_packet
     }
@@ -340,7 +340,7 @@ impl UsbDevice {
             return;
         }
         self.cancel_pending_transfers();
-        // nusb: drop interface 会自动 release，drop device 会自动 close
+        // nusb: dropping the interface releases it; dropping the device closes it
         self.in_ep_handle = None;
         self.out_ep_handle = None;
         self.interface = None;
@@ -371,7 +371,7 @@ impl UsbDevice {
         }
     }
 
-    /// 清空 IN pending data，防止读取操作残留数据干扰后续写入操作
+    /// Clear pending IN data so leftovers from reads do not disturb later writes
     pub fn drain_pending(&mut self) {
         self.in_buf.clear();
         if let Some(ep_in) = self.in_ep_handle.as_mut() {
@@ -386,7 +386,7 @@ impl UsbDevice {
                 }
             }
         }
-        // 用短超时读取一次，清除可能的残留 IN 数据
+        // Read once with a short timeout to clear possible leftover IN data
         let orig_timeout = self.timeout;
         self.timeout = Duration::from_millis(50);
         let mut tmp = [0u8; 512];
@@ -394,13 +394,13 @@ impl UsbDevice {
         self.timeout = orig_timeout;
     }
 
-    /// 循环排空 IN 管道残留数据（不 reset HALT，不破坏 USB data toggle 序列）
-    /// 用于 DA 会话复用时：新进程打开 USB 后需要排空上一个进程留下的残留数据，
-    /// 但不能 clear_halt（会重置 data toggle 导致后续读取错位）。
+    /// Drain leftover IN pipe data in a loop (without resetting HALT, preserving the USB data toggle sequence)
+    /// For DA session reuse: a new process must drain leftovers from the previous process after opening USB,
+    /// but must not clear_halt (it resets the data toggle and misaligns later reads).
     pub fn drain_pipes(&mut self) {
         self.in_buf.clear();
 
-        // 先取消挂起的 IN transfer
+        // First cancel pending IN transfers
         if let Some(ep_in) = self.in_ep_handle.as_mut() {
             if ep_in.pending() > 0 {
                 trace!("[USB] drain_pipes: 取消 {} 个挂起 IN 传输", ep_in.pending());
@@ -411,7 +411,7 @@ impl UsbDevice {
             }
         }
 
-        // 循环排空 IN 管道残留数据（500ms 超时，循环直到无数据）
+        // Drain leftover IN pipe data in a loop (500ms timeout, until no data remains)
         let orig_timeout = self.timeout;
         self.timeout = Duration::from_millis(500);
         let mut drain_count = 0;
@@ -419,7 +419,7 @@ impl UsbDevice {
             let mut tmp = [0u8; 512];
             match self.read(&mut tmp) {
                 Ok(0) => {
-                    break; // 超时无数据，排空完毕
+                    break; // timeout with no data: drained
                 }
                 Ok(n) => {
                     drain_count += 1;
@@ -441,37 +441,37 @@ impl UsbDevice {
         }
     }
 
-    /// USB 总线复位（对齐 Python device.reset()）
-    /// 注意：nusb 目前没有直接的 reset_device API，
-    /// 这里通过关闭并重新打开来模拟
+    /// USB bus reset (matching Python device.reset())
+    /// Note: nusb has no direct reset_device API,
+    /// so this is emulated by closing and reopening
     pub fn reset_device(&mut self) -> Result<(), String> {
-        // nusb 不提供 libusb_reset_device 等价操作
-        // USB 复位通常由 DA reinit 中的 set_usb_speed + close + reopen 处理
+        // nusb has no libusb_reset_device equivalent
+        // USB reset is usually handled by set_usb_speed + close + reopen in DA reinit
         warn!("[USB] nusb 不支持 USB 总线复位，跳过（由 reinit 流程处理）");
         Ok(())
     }
 
-    /// 重新打开 USB 设备：关闭旧句柄，按 200ms 间隔轮询重枚举设备（总超时 10s），
-    /// 重新打开并 claim interface。
+    /// Reopen the USB device: close old handles, then poll for re-enumeration every 200ms (10s total timeout),
+    /// reopening and claiming the interface.
     ///
-    /// DA 重启后 USB 总线重新枚举通常需要 1~3s，旧实现只等一次 200ms 便直接
-    /// `new()`，设备尚未就绪时必然失败。改为轮询：每 `REOPEN_POLL_INTERVAL_MS`
-    /// 尝试一次，直到成功或累计耗时超过 `REOPEN_TIMEOUT_MS`。
-    /// 参考 penumbra `reenumerate()`。
+    /// After a DA reboot, USB re-enumeration usually takes 1~3s; the old implementation waited 200ms once and then called
+    /// `new()`, which inevitably failed while the device was not ready. Now it polls every `REOPEN_POLL_INTERVAL_MS`
+    /// until it succeeds or the elapsed time exceeds `REOPEN_TIMEOUT_MS`.
+    /// Follows penumbra `reenumerate()`.
     pub fn reopen(&mut self, context: &UsbContext) -> Result<(), String> {
         self.close();
 
         let start = std::time::Instant::now();
-        // 由循环内唯一 break 分支赋值，故无需初始化（避免 unused_assignments）
+        // Assigned by the loop's single break branch, hence no initializer (avoids unused_assignments)
         let last_err: String;
 
         loop {
-            // 等待设备稳定 / 重新枚举
+            // Wait for the device to settle / re-enumerate
             std::thread::sleep(Duration::from_millis(REOPEN_POLL_INTERVAL_MS));
 
             match UsbDevice::new(context) {
                 Ok(mut new_device) => {
-                    // 交换字段
+                    // Swap fields
                     self.in_ep_handle = new_device.in_ep_handle.take();
                     self.out_ep_handle = new_device.out_ep_handle.take();
                     self.interface = new_device.interface.take();
@@ -512,26 +512,26 @@ impl UsbDevice {
         ))
     }
 
-    /// 获取 nusb Interface 可变引用
+    /// Get a mutable reference to the nusb Interface
     pub(crate) fn interface_mut(&mut self) -> Option<&mut nusb::Interface> {
         self.interface.as_mut()
     }
 
-    /// 获取缓存的 bulk IN 端点
+    /// Get the cached bulk IN endpoint
     pub(crate) fn in_endpoint_mut(
         &mut self,
     ) -> Option<&mut nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::In>> {
         self.in_ep_handle.as_mut()
     }
 
-    /// 获取缓存的 bulk OUT 端点
+    /// Get the cached bulk OUT endpoint
     pub(crate) fn out_endpoint_mut(
         &mut self,
     ) -> Option<&mut nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::Out>> {
         self.out_ep_handle.as_mut()
     }
 
-    /// 获取控制传输 Interface 引用
+    /// Get a reference to the control transfer Interface
     pub(crate) fn control_iface(&self) -> Option<&nusb::Interface> {
         self.control_interface.as_ref()
     }
@@ -544,7 +544,7 @@ impl Drop for UsbDevice {
 }
 
 // =============================================================================
-// 单元测试 — reopen 轮询策略（P1-1）
+// Unit tests — reopen polling policy (P1-1)
 // =============================================================================
 
 #[cfg(test)]
@@ -566,11 +566,11 @@ mod tests {
 
     #[test]
     fn reopen_constants_match_penumbra_policy() {
-        // 200ms 轮询、10s 总超时（对齐 penumbra reenumerate）
+        // 200ms polling, 10s total timeout (matching penumbra reenumerate)
         assert_eq!(REOPEN_POLL_INTERVAL_MS, 200);
         assert_eq!(REOPEN_TIMEOUT_MS, 10_000);
     }
 
-    // 编译期校验：总超时至少允许 10 次轮询，否则轮询退化回"只等一次"
+    // Compile-time check: the total timeout must allow at least 10 polls, otherwise polling degenerates to "wait once"
     const _: () = assert!(REOPEN_TIMEOUT_MS / REOPEN_POLL_INTERVAL_MS >= 10);
 }

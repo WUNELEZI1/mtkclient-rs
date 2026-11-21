@@ -1,12 +1,12 @@
-//! `--sim` / `--port mock://...`：离线仿真入口。
+//! `--sim` / `--port mock://...`: offline simulation entry point.
 //!
-//! 流程：加载设备画像 → 构建虚拟设备 → 构建会话 → 交给 Executor 走
-//! Orchestrator → 打印决策链 → 逐步执行 → op 输出。
+//! Flow: load device profile → build virtual device → build session → hand to Executor through
+//! Orchestrator → print decision chain → step-by-step execute → op output.
 //!
-//! 支持的命令（与真机同一份 ops 代码）：
+//! Supported commands (same ops code as on a real device):
 //! `printgpt` / `r` / `w` / `e` / `seccfg unlock|lock` / `vbmeta <mode>` / `unlock`
 //!
-//! 例：
+//! Examples:
 //! ```text
 //! mtkclient-rs --sim v5-clean printgpt
 //! mtkclient-rs --sim v5-clean r boot_a boot.img --yes
@@ -30,7 +30,7 @@ use crate::system::config::AppConfig;
 use crate::transport::RetryPolicy;
 use crate::transport::vdev::{ChaosConfig, DeviceProfile, VirtualDevice};
 
-/// 仿真入口。
+/// Simulation entry point.
 pub fn run_sim(
     app_config: &AppConfig,
     spec: &str,
@@ -75,7 +75,7 @@ pub fn run_sim(
         }
     };
 
-    // Phase 1.1b：瞬时超时有界重试（只作用于读方向；断开/静默立刻失败）。
+    // Phase 1.1b: bounded retry on transient timeouts (applies only to the read direction; disconnects/silence fail immediately).
     let retry = RetryPolicy::with_max_retries(app_config.max_retries);
     if app_config.max_retries > 0 {
         println!(
@@ -96,7 +96,7 @@ pub fn run_sim(
         crate::system::config::WorkMode::Preloader => Mode::Preloader,
         crate::system::config::WorkMode::Auto => Mode::Auto,
     };
-    // 仿真默认 auto：没人会在仿真里要求"只准走 BROM"（除非显式给 --mode）
+    // Simulation defaults to auto: nobody asks for "BROM only" in simulation (unless --mode is explicit)
     let explicit_mode = std::env::args().any(|a| a == "--mode");
     let mode = if explicit_mode { mode } else { Mode::Auto };
 
@@ -216,11 +216,11 @@ pub fn run_sim(
         }
     }
     .map_err(|e| {
-        // 失败也要把设备侧状态落盘，便于"重连后续传"
+        // On failure, still persist device-side state to disk for "resume after reconnect"
         if let Some(state) = app_config.sim_state.as_deref() {
             let _ = session.save_state(state);
         }
-        // 失败也要把已获得的设备侧线索带出来，便于定位
+        // On failure, still surface the gathered device-side clues for diagnosis
         format!("{}\n[sim] 设备事件:\n{}", e, dump_events(&session))
     })?;
 
@@ -291,19 +291,20 @@ fn load_profile(spec: &str) -> Result<DeviceProfile, Box<dyn std::error::Error>>
     .into())
 }
 
-/// 合成一个最小 DA：头部含 `MTK_DA_v5` / `v6` 标识 + 0x6C 处 da_code。
+/// Synthesize a minimal DA: header with an `MTK_DA_v5` / `v6` marker + da_code at 0x6C.
 ///
-/// 仿真设备不校验签名，但协议版本判定（`ProtocolVersion::from_da_header`）
-/// 与 `da_code` 解析都会真实执行，因此合成 DA 必须带上这些字段。
+/// The simulated device does not verify signatures, but protocol-version detection
+/// (`ProtocolVersion::from_da_header`) and `da_code` parsing run for real, so the
+/// synthetic DA must carry these fields.
 fn synthetic_da(da_code: u16, v6: bool, hardened: bool) -> Vec<u8> {
     let mut da = vec![0u8; 4096];
     let tag = if v6 { b"MTK_DA_v6" } else { b"MTK_DA_v5" };
     da[..9].copy_from_slice(tag);
-    // load table 首项：base 0x6C，entry 内 [2..4] 为 da_code
+    // First load-table entry: base 0x6C, da_code at [2..4] within the entry
     da[0x6C + 2..0x6C + 4].copy_from_slice(&da_code.to_le_bytes());
     if hardened {
-        // 模拟"已应用 mitigation 的 DA1"：写入 Carbonara V5 补丁特征，
-        // 以及强制 DA2 加载地址 0x40000000 的常量。
+        // Simulate a "DA1 with mitigation applied": write the Carbonara V5 patch signature,
+        // plus a constant forcing the DA2 load address 0x40000000.
         let pat = b"\x06\x9B\x4F\xF0\x80\x40\x02\xA9";
         da[0x800..0x800 + pat.len()].copy_from_slice(pat);
         da[0x820..0x824].copy_from_slice(&0x4000_0000u32.to_le_bytes());

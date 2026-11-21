@@ -9,14 +9,14 @@ use crate::color::Colorize;
 use std::fs;
 
 impl Explorer {
-    /// cp [-r] [--depth N] <partition/path> <local_path> — 提取到本地
-    ///   -r          递归复制目录（默认只复制文件，目录会报错）
-    ///   --depth N   限制递归深度（1=只复制当前目录文件，2=包含子目录，等）
+    /// cp [-r] [--depth N] <partition/path> <local_path> — extract to a local path
+    ///   -r          recursively copy directories (by default only files are copied; a directory raises an error)
+    ///   --depth N   limit recursion depth (1=current directory files only, 2=include subdirectories, etc.)
     fn cmd_cp<F>(&self, read_fn: &mut F, arg: &str) -> Result<(), String>
     where
         F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
     {
-        // 解析参数
+        // parse arguments
         let tokens: Vec<&str> = arg.split_whitespace().collect();
         let mut recursive = false;
         let mut max_depth: Option<usize> = None;
@@ -68,9 +68,9 @@ impl Explorer {
         let inode_data = read_inode(read_fn, &lp, &sb, inode_num)?;
         let mode = get_inode_mode(&inode_data);
 
-        // 构造目标路径
+        // construct the destination path
         let dst = if dst_raw.ends_with('\\') || dst_raw.ends_with('/') {
-            // 目标是目录
+            // the destination is a directory
             let file_name = sub_path.rsplit('/').next().unwrap_or("unknown");
             let sep = if dst_raw.ends_with('\\') { "\\" } else { "/" };
             format!("{}{}{}", dst_raw, sep, file_name)
@@ -82,7 +82,7 @@ impl Explorer {
             if !recursive {
                 return Err(format!("{} 是目录，请使用 -r 选项递归复制", src_raw));
             }
-            // 递归复制目录，应用 max_depth
+            // recursively copy the directory, applying max_depth
             let effective_max = max_depth.unwrap_or(usize::MAX);
             println!(
                 "递归复制: {} → {} (max_depth={})",
@@ -99,7 +99,7 @@ impl Explorer {
                 effective_max,
             )?;
         } else {
-            // 复制文件
+            // copy a file
             println!("提取: {} → {}", src_raw, dst);
             let file_data = read_inode_data(read_fn, &lp, &sb, &inode_data)?;
             fs::write(&dst, &file_data).map_err(|e| format!("写入失败: {}", e))?;
@@ -123,7 +123,7 @@ impl Explorer {
     where
         F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
     {
-        // 达到用户指定的最大深度时停止递归，创建空目录作为占位
+        // stop recursion when the user-specified max depth is reached; create an empty directory as a placeholder
         if depth >= max_depth {
             if max_depth < usize::MAX {
                 println!(
@@ -135,7 +135,7 @@ impl Explorer {
             return Ok(());
         }
 
-        // 硬编码安全上限：ext4 最大深度约 4000+
+        // hardcoded safety limit: ext4 max depth is about 4000+
         const MAX_DEPTH_HARD: usize = 256;
         if depth > MAX_DEPTH_HARD {
             eprintln!(
@@ -184,7 +184,7 @@ impl Explorer {
                         "  [跳过] 无法读取 {} (inode={}): {}",
                         entry_path, entry.inode, e
                     );
-                    // 创建空文件作为占位
+                    // create an empty file as a placeholder
                     let _ = fs::write(&dst_path, b"");
                     continue;
                 }
@@ -210,7 +210,7 @@ impl Explorer {
                     Ok(file_data) => {
                         if let Err(e) = fs::write(&dst_path, &file_data) {
                             eprintln!("  [跳过] 写入失败 {}: {}", dst_path, e);
-                            // 创建空文件作为占位
+                            // create an empty file as a placeholder
                             let _ = fs::write(&dst_path, b"");
                         } else {
                             println!("  提取: {} ({} bytes)", entry_path, file_data.len());
@@ -218,7 +218,7 @@ impl Explorer {
                     }
                     Err(e) => {
                         eprintln!("  [跳过] 读取文件失败 {}: {}", entry_path, e);
-                        // 创建空文件作为占位
+                        // create an empty file as a placeholder
                         let _ = fs::write(&dst_path, b"");
                     }
                 }
@@ -228,7 +228,7 @@ impl Explorer {
         Ok(())
     }
 
-    /// 帮助
+    /// help
     fn print_help() {
         println!("命令:");
         println!("  ls [super]                 列出 super 分区表");
@@ -255,7 +255,7 @@ impl Explorer {
         println!("输入 'help' 查看命令\n");
 
         loop {
-            // 检查 Ctrl+C 状态
+            // check the Ctrl+C status
             if crate::cancel::force_requested() {
                 println!("\n强制退出 fs_shell。");
                 crate::cancel::reset();
@@ -267,7 +267,7 @@ impl Explorer {
                 continue;
             }
 
-            // 提示符
+            // prompt
             match &self.current_partition {
                 None => print!("{}", "zyb> ".cyan()),
                 Some(part) => {
@@ -298,7 +298,7 @@ impl Explorer {
                 }
             }
 
-            // read_line 之后也检查 cancel
+            // also check cancel after read_line
             if crate::cancel::force_requested() {
                 println!("\n强制退出 fs_shell。");
                 crate::cancel::reset();
@@ -314,7 +314,7 @@ impl Explorer {
                 continue;
             }
 
-            // 拆分命令和参数
+            // split the command and arguments
             let (cmd, arg) = if let Some(pos) = line.find(' ') {
                 (&line[..pos], line[pos + 1..].trim())
             } else {

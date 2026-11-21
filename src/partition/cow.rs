@@ -1,25 +1,25 @@
-//! Android Virtual A/B COW (Copy-on-Write) 格式解析器
+//! Android Virtual A/B COW (Copy-on-Write) format parser
 //!
-//! 支持两种 COW 格式：
-//! 1. AOSP libsnapshot COW v2/v3（Android 12+，magic = 0xb5f0e642 / 0x94f09377）
-//! 2. Linux Kernel dm-snapshot persistent（Android 11 VAB，magic = "SnAp" = 0x70416E53）
+//! Supports two COW formats:
+//! 1. AOSP libsnapshot COW v2/v3 (Android 12+, magic = 0xb5f0e642 / 0x94f09377)
+//! 2. Linux Kernel dm-snapshot persistent (Android 11 VAB, magic = "SnAp" = 0x70416E53)
 //!
-//! 参考源码：
+//! Reference sources:
 //! - AOSP: system/core/fs_mgr/libsnapshot/cow_format.h
 //! - Linux Kernel: drivers/md/dm-snap-persistent.c
 
 // ============================================================================
-// 格式检测
+// Format detection
 // ============================================================================
 
 // ============================================================================
-// dm-snapshot persistent 格式
+// dm-snapshot persistent format
 // ============================================================================
 
 // ============================================================================
-// AOSP COW v2/v3 格式（保留原有实现）
+// AOSP COW v2/v3 format (original implementation retained)
 // ============================================================================
 
 // ============================================================================
-// 统一合并入口
+// Unified merge entry point
 // ============================================================================

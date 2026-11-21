@@ -1,9 +1,9 @@
-//! GPT 分区表数据结构与解析
+//! GPT partition table data structures and parsing
 //!
-//! - `PartitionEntry` — 单个分区条目
-//! - `GptInfo`       — 整个 GPT 头 + 分区表解析器
+//! - `PartitionEntry` — single partition entry
+//! - `GptInfo`       — full GPT header + partition table parser
 
-/// 分区条目信息
+/// Partition entry information
 #[derive(Debug, Clone)]
 pub struct PartitionEntry {
     pub name: String,
@@ -11,7 +11,7 @@ pub struct PartitionEntry {
     pub size: u64,
 }
 
-/// GPT 分区表信息
+/// GPT partition table information
 pub struct GptInfo<'a> {
     pub num_part_entries: u32,
     pub part_entry_size: u32,
@@ -57,7 +57,7 @@ pub(crate) fn crc32_ieee(data: &[u8]) -> u32 {
 }
 
 impl<'a> GptInfo<'a> {
-    /// 从 GPT 数据解析 GPT 信息
+    /// Parse GPT information from GPT data
     pub fn parse(data: &'a [u8]) -> Result<Self, String> {
         let base_offset = data
             .windows(8)
@@ -124,17 +124,17 @@ impl<'a> GptInfo<'a> {
         }
         let entry = &self.data[entry_offset..entry_offset + self.part_entry_size as usize];
 
-        // GPT 分区项结构 (128 字节):
-        // offset  0: type GUID (16 字节)
-        // offset 16: unique GUID (16 字节)
-        // offset 32: first_lba (8 字节, u64 LE)
-        // offset 40: last_lba (8 字节, u64 LE)
-        // offset 48: flags (8 字节)
-        // offset 56: name (72 字节, UTF-16LE)
+        // GPT partition entry layout (128 bytes):
+        // offset  0: type GUID (16 bytes)
+        // offset 16: unique GUID (16 bytes)
+        // offset 32: first_lba (8 bytes, u64 LE)
+        // offset 40: last_lba (8 bytes, u64 LE)
+        // offset 48: flags (8 bytes)
+        // offset 56: name (72 bytes, UTF-16LE)
         let first_lba = u64::from_le_bytes(entry[32..40].try_into().unwrap());
         let last_lba = u64::from_le_bytes(entry[40..48].try_into().unwrap());
 
-        // 解析分区名 (offset 56, 72 字节, UTF-16LE, 以 0 结尾)
+        // Parse partition name (offset 56, 72 bytes, UTF-16LE, NUL-terminated)
         let name_offset = 56;
         let name_len = 72;
         let mut name_bytes = [0u8; 72];
@@ -163,7 +163,7 @@ impl<'a> GptInfo<'a> {
         })
     }
 
-    /// 遍历所有分区
+    /// Iterate over all partitions
     pub fn iter_partitions(&self) -> impl Iterator<Item = PartitionEntry> + '_ {
         let part_entry_start_byte = (self.part_entry_start_lba * 512) as usize;
         let entry_size = self.part_entry_size as usize;
@@ -175,7 +175,7 @@ impl<'a> GptInfo<'a> {
             if entry_offset + entry_size > data_len {
                 return None;
             }
-            // 检查 type GUID 是否全零（空条目）
+            // Skip entries whose type GUID is all zeros (empty entry)
             if self.data[entry_offset..entry_offset + 16]
                 .iter()
                 .all(|&b| b == 0)
@@ -186,13 +186,13 @@ impl<'a> GptInfo<'a> {
         })
     }
 
-    /// 按名称查找分区（不区分大小写）
+    /// Find a partition by name (case-insensitive)
     pub fn find_partition(&self, name: &str) -> Option<PartitionEntry> {
         self.iter_partitions()
             .find(|entry| entry.name.eq_ignore_ascii_case(name))
     }
 
-    /// 获取所有分区列表
+    /// Get the full partition list
     pub fn partitions(&self) -> Vec<PartitionEntry> {
         self.iter_partitions().collect()
     }

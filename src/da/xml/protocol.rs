@@ -1,19 +1,19 @@
-//! XML (V6) DA 协议会话层
+//! XML (V6) DA protocol session layer
 //!
-//! 对齐 penumbra `core/src/da/xml/protocol.rs`：在底层传输（[`BromTransport`]）
-//! 之上实现 XML DA 的帧编解码与会话状态机。
+//! Mirrors penumbra `core/src/da/xml/protocol.rs`: on top of the low-level transport ([`BromTransport`])
+//! it implements XML DA frame encoding/decoding and the session state machine.
 //!
-//! # 帧格式
-//! 与 XFlash 相同：`magic(4) | data_type(4) | length(4)`，小端。
-//! - `data_type = 1`（Flow）→ 正常流程包；
-//! - `data_type = 2`（Message）→ DA 异步日志包，必须消费其负载，否则后续包头错位。
+//! # Frame format
+//! Same as XFlash: `magic(4) | data_type(4) | length(4)`, little-endian.
+//! - `data_type = 1` (Flow) → normal flow packet;
+//! - `data_type = 2` (Message) → DA async log packet; its payload must be consumed or later headers desync.
 //!
-//! # 命令生命周期
-//! 每条命令前设备回发 `CMD:START`，命令执行后回发 `CMD:END`：
-//! 1. 主机读取 `CMD:START` 并回 `OK\0`；
-//! 2. 主机发送命令 XML（自带结尾 `\0`）；
-//! 3. 设备回 `OK\0`（或 `ERR!...` 文本）；
-//! 4. 需要时主机读 `CMD:END` 并回 `OK\0`。
+//! # Command lifecycle
+//! The device sends `CMD:START` before each command and `CMD:END` after it completes:
+//! 1. The host reads `CMD:START` and replies `OK\0`;
+//! 2. the host sends the command XML (with its trailing `\0`);
+//! 3. the device replies `OK\0` (or `ERR!...` text);
+//! 4. when required, the host reads `CMD:END` and replies `OK\0`.
 
 use std::fmt;
 use std::io::{Read, Write};
@@ -26,25 +26,25 @@ use crate::da::xml::cmd::{self, FileSystemOp, XmlCmdLifetime};
 use crate::error::{XmlError, XmlErrorKind};
 use crate::preloader::transport::BromTransport;
 
-/// 会话操作期间的长超时（与 penumbra `MAX_TIMEOUT` 一致）
+/// Long timeout used during session operations (same as penumbra `MAX_TIMEOUT`)
 pub const MAX_TIMEOUT: Duration = Duration::from_millis(10000);
-/// 读取 flow 头时最多连续跳过多少个 Message 包（防止 DA 刷屏导致死循环）
+/// Max consecutive Message packets skipped while reading a flow header (prevents an endless loop from DA log spam)
 const MAX_MESSAGE_DRAINS: u32 = 64;
-/// 未协商包长前的发送分块上限
+/// Send chunk limit before the packet length is negotiated
 const DEFAULT_WRITE_CHUNK: usize = 0x8000;
 
 // =============================================================================
-// 错误
+// Errors
 // =============================================================================
 
-/// XML 协议会话错误
+/// XML protocol session error
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum XmlProtoError {
-    /// 传输层（端口读写超时/失败）
+    /// Transport layer (port read/write timeout or failure)
     Transport(String),
-    /// 协议层（帧头非法 / ACK 非法 / XML 解析失败）
+    /// Protocol layer (bad frame header / bad ACK / XML parse failure)
     Protocol(String),
-    /// 设备返回的 XML 错误
+    /// XML error returned by the device
     Xml(XmlError),
 }
 
@@ -53,7 +53,7 @@ impl XmlProtoError {
         XmlProtoError::Protocol(msg.into())
     }
 
-    /// 是否为"命令不支持"错误
+    /// Whether this is a "command not supported" error
     pub fn is_unsupported(&self) -> bool {
         matches!(self, XmlProtoError::Xml(e) if e.kind == XmlErrorKind::UnsupportedCmd)
     }
@@ -90,25 +90,25 @@ impl From<XmlErrorKind> for XmlProtoError {
 }
 
 // =============================================================================
-// 帧头
+// Frame header
 // =============================================================================
 
-/// XML/XFlash 通用包头（12 字节 LE）
+/// Common XML/XFlash packet header (12 bytes LE)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct XmlPacketHeader {
-    /// 固定 magic（[`CMD_MAGIC`]）
+    /// Fixed magic ([`CMD_MAGIC`])
     pub magic: u32,
-    /// 包类型（Flow / Message）
+    /// Packet type (Flow / Message)
     pub data_type: u32,
-    /// 负载长度
+    /// Payload length
     pub length: u32,
 }
 
 impl XmlPacketHeader {
-    /// 包头固定长度
+    /// Fixed header length
     pub const SIZE: usize = 12;
 
-    /// Flow 包（正常流程）
+    /// Flow packet (normal flow)
     pub fn flow(length: u32) -> Self {
         XmlPacketHeader {
             magic: CMD_MAGIC,
@@ -117,7 +117,7 @@ impl XmlPacketHeader {
         }
     }
 
-    /// 解析包头；magic 不匹配或长度非法返回 `None`
+    /// Parse a header; returns `None` if magic mismatches or the length is invalid
     pub fn parse(buf: &[u8]) -> Option<Self> {
         if buf.len() < Self::SIZE {
             return None;
@@ -135,7 +135,7 @@ impl XmlPacketHeader {
         })
     }
 
-    /// 序列化为 12 字节 LE
+    /// Serialize to 12 bytes LE
     pub fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         buf[0..4].copy_from_slice(&self.magic.to_le_bytes());
@@ -144,17 +144,17 @@ impl XmlPacketHeader {
         buf
     }
 
-    /// 是否为设备异步消息包
+    /// Whether this is a device async message packet
     pub fn is_message(&self) -> bool {
         self.data_type == DATA_TYPE_MESSAGE
     }
 }
 
 // =============================================================================
-// XML 轻量解析
+// Lightweight XML parsing
 // =============================================================================
 
-/// 取标签路径对应的文本内容（如 `"arg/message"`）
+/// Get the text content at a tag path (e.g. `"arg/message"`)
 pub fn get_tag(xml: &str, path: &str) -> Result<String, String> {
     let mut current = xml.to_string();
     for seg in path.split('/') {
@@ -163,7 +163,7 @@ pub fn get_tag(xml: &str, path: &str) -> Result<String, String> {
     Ok(current.trim().to_string())
 }
 
-/// 取标签路径并按十六进制解析（支持 `0x` 前缀），如 `"arg/packet_length"`
+/// Get a tag path and parse it as hex (accepts a `0x` prefix), e.g. `"arg/packet_length"`
 pub fn get_tag_usize(xml: &str, path: &str) -> Result<usize, String> {
     let raw = get_tag(xml, path)?;
     let trimmed = raw.trim_start_matches("0x");
@@ -171,7 +171,7 @@ pub fn get_tag_usize(xml: &str, path: &str) -> Result<usize, String> {
         .map_err(|_| format!("XML 标签 `{}` 不是合法十六进制: {}", path, raw))
 }
 
-/// 提取第一个 `<tag>...</tag>` 的内部文本
+/// Extract the inner text of the first `<tag>...</tag>`
 fn extract_tag(content: &str, tag: &str) -> Option<String> {
     let open = format!("<{}>", tag);
     let close = format!("</{}>", tag);
@@ -181,18 +181,18 @@ fn extract_tag(content: &str, tag: &str) -> Option<String> {
 }
 
 // =============================================================================
-// 会话
+// Session
 // =============================================================================
 
-/// XML DA 协议会话
+/// XML DA protocol session
 pub struct XmlProtocol<'a> {
     pub(crate) port: &'a mut dyn BromTransport,
-    /// `CMD:DOWNLOAD-FILE` 协商出的包长；设置后发送按此分块
+    /// Packet length negotiated by `CMD:DOWNLOAD-FILE`; sends are chunked by it once set
     pub write_packed_length: Option<usize>,
 }
 
 impl<'a> XmlProtocol<'a> {
-    /// 绑定到一条已打开的传输端口
+    /// Bind to an already opened transport port
     pub fn new(port: &'a mut dyn BromTransport) -> Self {
         XmlProtocol {
             port,
@@ -200,7 +200,7 @@ impl<'a> XmlProtocol<'a> {
         }
     }
 
-    // --- 传输原语 ---
+    // --- Transport primitives ---
 
     fn write_all(&mut self, data: &[u8]) -> Result<(), XmlProtoError> {
         let mut pos = 0;
@@ -214,7 +214,7 @@ impl<'a> XmlProtocol<'a> {
         Ok(())
     }
 
-    /// 读取下一帧 Flow 包头（跳过并消费途中的 Message 包）
+    /// Read the next Flow packet header (skipping and consuming any Message packets on the way)
     pub fn read_next_flow_header(&mut self) -> Result<XmlPacketHeader, XmlProtoError> {
         let mut drains = 0u32;
         loop {
@@ -239,14 +239,14 @@ impl<'a> XmlProtocol<'a> {
         }
     }
 
-    /// 消费一个 Message 包的负载（DA 异步日志）
+    /// Consume the payload of one Message packet (DA async log)
     fn drain_message(&mut self, length: u32) -> Result<(), XmlProtoError> {
         if length == 0 {
             return Ok(());
         }
         let mut payload = vec![0u8; length as usize];
         self.port.read_exact(&mut payload)?;
-        // 前 4 字节为长度头，其余为日志文本
+        // The first 4 bytes are a length prefix; the rest is log text
         if payload.len() > 4 {
             trace!(
                 "[XML DA Message] {}",
@@ -256,7 +256,7 @@ impl<'a> XmlProtocol<'a> {
         Ok(())
     }
 
-    /// 读取一个完整 Flow 包的负载
+    /// Read the payload of one complete Flow packet
     pub fn read_data(&mut self) -> Result<Vec<u8>, XmlProtoError> {
         let hdr = self.read_next_flow_header()?;
         let mut data = vec![0u8; hdr.length as usize];
@@ -264,12 +264,12 @@ impl<'a> XmlProtocol<'a> {
         Ok(data)
     }
 
-    /// 发送一段数据（自动加 Flow 包头并按协商包长分块）
+    /// Send one data segment (adds a Flow header and chunks by the negotiated packet length)
     pub fn send(&mut self, data: &[u8]) -> Result<(), XmlProtoError> {
         self.send_data(&[data])
     }
 
-    /// 发送多段数据，每段各带一个 Flow 包头
+    /// Send multiple segments, each with its own Flow header
     pub fn send_data(&mut self, parts: &[&[u8]]) -> Result<(), XmlProtoError> {
         let chunk_size = self.write_packed_length.unwrap_or(DEFAULT_WRITE_CHUNK);
         for part in parts {
@@ -285,9 +285,9 @@ impl<'a> XmlProtocol<'a> {
         Ok(())
     }
 
-    // --- ACK / 生命周期 ---
+    // --- ACK / lifecycle ---
 
-    /// 发送 ACK：无值发 `OK\0`，有值发 `OK@<v>\0`
+    /// Send an ACK: `OK\0` without a value, `OK@<v>\0` with one
     pub fn ack(&mut self, value: Option<usize>) -> Result<(), XmlProtoError> {
         match value {
             Some(v) => self.send(format!("OK@{}\0", v).as_bytes()),
@@ -295,7 +295,7 @@ impl<'a> XmlProtocol<'a> {
         }
     }
 
-    /// 读取设备 ACK（`OK\0` / `OK@0x0\0` 视为成功）
+    /// Read the device ACK (`OK\0` / `OK@0x0\0` count as success)
     pub fn read_ack(&mut self) -> Result<(), XmlProtoError> {
         let resp = self.read_data()?;
         let s = String::from_utf8_lossy(&resp);
@@ -310,11 +310,11 @@ impl<'a> XmlProtocol<'a> {
         Err(XmlProtoError::proto(format!("非法 ACK: {:?}", trimmed)))
     }
 
-    /// 校验命令生命周期标记（`CMD:START` / `CMD:END`）
+    /// Verify the command lifecycle marker (`CMD:START` / `CMD:END`)
     pub fn check_lifetime(&mut self, lifetime: XmlCmdLifetime) -> Result<(), XmlProtoError> {
         let data = match self.read_data() {
             Ok(d) => d,
-            // 复用既有会话时设备可能已发过 CMD:END，超时视为可接受
+            // When reusing an existing session the device may have already sent CMD:END, so a timeout is acceptable
             Err(XmlProtoError::Transport(_)) => return Ok(()),
             Err(e) => return Err(e),
         };
@@ -330,16 +330,16 @@ impl<'a> XmlProtocol<'a> {
         Ok(())
     }
 
-    /// 校验生命周期标记并回 ACK
+    /// Verify the lifecycle marker and send the ACK
     pub fn lifetime_ack(&mut self, lifetime: XmlCmdLifetime) -> Result<(), XmlProtoError> {
         let resp = self.check_lifetime(lifetime);
         self.ack(None)?;
         resp
     }
 
-    /// 发送一条 XML 命令并读取设备 ACK
+    /// Send one XML command and read the device ACK
     ///
-    /// 返回 `Ok(false)` 表示设备返回"不支持"（此时已消费 `CMD:END`）。
+    /// `Ok(false)` means the device reported "unsupported" (the `CMD:END` has been consumed).
     pub fn send_cmd(&mut self, xml_cmd: &str) -> Result<bool, XmlProtoError> {
         self.lifetime_ack(XmlCmdLifetime::CmdStart)?;
         self.send(xml_cmd.as_bytes())?;
@@ -348,7 +348,7 @@ impl<'a> XmlProtocol<'a> {
         match self.read_ack() {
             Ok(()) => Ok(true),
             Err(e) if e.is_unsupported() => {
-                // 不支持的命令：消费 CMD:END 保持状态机同步
+                // Unsupported command: consume CMD:END to keep the state machine in sync
                 self.lifetime_ack(XmlCmdLifetime::CmdEnd)?;
                 Err(e)
             }
@@ -356,9 +356,9 @@ impl<'a> XmlProtocol<'a> {
         }
     }
 
-    // --- 数据收发 ---
+    // --- Data transfer ---
 
-    /// 接收设备上传的数据（先读取 `CMD:UPLOAD-FILE` 命令包）
+    /// Receive data uploaded by the device (reads the `CMD:UPLOAD-FILE` command packet first)
     pub fn upload_data<W: Write, F: FnMut(usize, usize)>(
         &mut self,
         writer: &mut W,
@@ -369,14 +369,14 @@ impl<'a> XmlProtocol<'a> {
         self.process_upload_data(&resp, writer, progress)
     }
 
-    /// 读取 `CMD:UPLOAD-FILE` 的完整文本响应（用于 GET-HW-INFO 等）
+    /// Read the full text response of `CMD:UPLOAD-FILE` (for GET-HW-INFO and similar)
     pub fn get_upload_file_resp(&mut self) -> Result<String, XmlProtoError> {
         let mut buf: Vec<u8> = Vec::new();
         self.upload_data(&mut buf, &mut |_, _| {})?;
         Ok(String::from_utf8_lossy(&buf).into_owned())
     }
 
-    /// 处理 `CMD:UPLOAD-FILE` 数据流
+    /// Handle the `CMD:UPLOAD-FILE` data stream
     pub fn process_upload_data<W: Write, F: FnMut(usize, usize)>(
         &mut self,
         resp: &str,
@@ -390,13 +390,13 @@ impl<'a> XmlProtocol<'a> {
         let packet_length =
             get_tag_usize(resp, "arg/packet_length").map_err(XmlProtoError::proto)?;
 
-        // 1) 确认收到命令
+        // 1) Acknowledge receipt of the command
         self.ack(None)?;
-        // 2) 设备回报总大小 `OK@0x<size>\0`
+        // 2) The device reports the total size as `OK@0x`<size>`\0`
         let size_resp = self.read_data()?;
         let size_text = String::from_utf8_lossy(&size_resp).into_owned();
         let size = parse_ok_hex(&size_text)?;
-        // 3) 再次确认
+        // 3) Acknowledge again
         self.ack(None)?;
 
         let mut received = 0usize;
@@ -434,7 +434,7 @@ impl<'a> XmlProtocol<'a> {
         Ok(received)
     }
 
-    /// 发送数据给设备（先读取 `CMD:DOWNLOAD-FILE` 命令包）
+    /// Send data to the device (reads the `CMD:DOWNLOAD-FILE` command packet first)
     pub fn download_data<R: Read, F: FnMut(usize, usize)>(
         &mut self,
         size: usize,
@@ -446,7 +446,7 @@ impl<'a> XmlProtocol<'a> {
         self.process_download_data(&resp, size, MAX_TIMEOUT, reader, progress)
     }
 
-    /// 处理 `CMD:DOWNLOAD-FILE` 数据流
+    /// Handle the `CMD:DOWNLOAD-FILE` data stream
     pub fn process_download_data<R: Read, F: FnMut(usize, usize)>(
         &mut self,
         resp: &str,
@@ -459,16 +459,16 @@ impl<'a> XmlProtocol<'a> {
             XmlErrorKind::ExpectedCmdDownloadFile
         })?;
 
-        // 1) 确认收到命令
+        // 1) Acknowledge receipt of the command
         self.ack(None)?;
-        // 2) 告知要发送的大小
+        // 2) Tell the device the size to be sent
         self.ack(Some(size))?;
-        // 3) 读取设备就绪 ACK
+        // 3) Read the device ready ACK
         self.read_ack()?;
 
         let packet_length =
             get_tag_usize(resp, "arg/packet_length").map_err(XmlProtoError::proto)?;
-        // 协商包长后，send 不再拆成更小块
+        // After negotiation, send no longer splits into smaller chunks
         self.write_packed_length = Some(packet_length);
 
         let mut chunk = vec![0u8; packet_length];
@@ -482,7 +482,7 @@ impl<'a> XmlProtocol<'a> {
                 if let Err(e) = reader.read_exact(&mut chunk[..to_read]) {
                     break 'download Err(XmlProtoError::Transport(e.to_string()));
                 }
-                // 分块 status 握手：ack(0) → read_ack → 数据 → read_ack
+                // Per-chunk status handshake: ack(0) → read_ack → data → read_ack
                 if let Err(e) = self.ack(Some(0)) {
                     break 'download Err(e);
                 }
@@ -507,7 +507,7 @@ impl<'a> XmlProtocol<'a> {
         Ok(sent)
     }
 
-    /// 处理 `CMD:PROGRESS-REPORT`（擦除/写入进度，直到设备回 `OK!EOT`）
+    /// Handle `CMD:PROGRESS-REPORT` (erase/write progress until the device replies `OK!EOT`)
     pub fn progress_report<F: FnMut(usize, usize)>(
         &mut self,
         progress: &mut F,
@@ -517,7 +517,7 @@ impl<'a> XmlProtocol<'a> {
         self.process_progress_report(&resp, progress)
     }
 
-    /// 处理 `CMD:PROGRESS-REPORT` 数据流
+    /// Handle the `CMD:PROGRESS-REPORT` data stream
     pub fn process_progress_report<F: FnMut(usize, usize)>(
         &mut self,
         resp: &str,
@@ -566,14 +566,14 @@ impl<'a> XmlProtocol<'a> {
         Ok(())
     }
 
-    /// 处理 `CMD:FILE-SYS-OPERATION`（读取设备请求并回 `OK@<op>\0`）
+    /// Handle `CMD:FILE-SYS-OPERATION` (read the device request and reply `OK@<op>\0`)
     pub fn file_system_op(&mut self, op: FileSystemOp) -> Result<(), XmlProtoError> {
         let resp = self.read_data()?;
         let resp = String::from_utf8_lossy(&resp).into_owned();
         self.process_file_sys_op(&resp, op)
     }
 
-    /// 处理 `CMD:FILE-SYS-OPERATION` 响应
+    /// Handle the `CMD:FILE-SYS-OPERATION` response
     pub fn process_file_sys_op(
         &mut self,
         resp: &str,
@@ -593,9 +593,9 @@ impl<'a> XmlProtocol<'a> {
         self.send(payload.as_bytes())
     }
 
-    // --- 内部工具 ---
+    // --- Internal helpers ---
 
-    /// 校验响应命令名；不符时按 `arg/message` 给出更具体的错误
+    /// Verify the response command name; on mismatch, report a more specific error from `arg/message`
     fn expect_command<C: FnOnce() -> XmlErrorKind>(
         &self,
         resp: &str,
@@ -616,13 +616,13 @@ impl<'a> XmlProtocol<'a> {
 }
 
 impl XmlErrorKind {
-    /// 便捷构造（供 `XmlProtoError` 的 `into()` 使用）
+    /// Convenience constructor (for `XmlProtoError`'s `into()`)
     fn from_kind_fallback(kind: XmlErrorKind) -> XmlError {
         XmlError::from_kind(kind)
     }
 }
 
-/// 解析 `OK@0x<hex>\0` 形式的大小回报
+/// Parse a size report of the form `OK@0x<hex>\0`
 fn parse_ok_hex(text: &str) -> Result<usize, XmlProtoError> {
     let trimmed = text.trim_end_matches('\0').trim();
     let hex = trimmed
@@ -632,7 +632,7 @@ fn parse_ok_hex(text: &str) -> Result<usize, XmlProtoError> {
         .map_err(|_| XmlProtoError::proto(format!("大小解析失败: {:?}", hex)))
 }
 
-/// 子串查找（避免额外依赖）
+/// Substring search (to avoid extra dependencies)
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() || haystack.len() < needle.len() {
         return false;
@@ -641,7 +641,7 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 // =============================================================================
-// 单元测试
+// Unit tests
 // =============================================================================
 
 #[cfg(test)]
@@ -651,7 +651,7 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
 
-    /// 可脚本化的模拟端口
+    /// Scriptable mock port
     struct MockPort {
         read_buf: Vec<u8>,
         pos: usize,
@@ -669,7 +669,7 @@ mod tests {
             }
         }
 
-        /// 共享写缓冲句柄；在借用端口前取得，便于事后断言
+        /// Shared write-buffer handle; take it before borrowing the port so it can be asserted on later
         fn written_handle(&self) -> Rc<RefCell<Vec<u8>>> {
             Rc::clone(&self.written)
         }
@@ -708,7 +708,7 @@ mod tests {
         }
     }
 
-    /// 构造一个 Framed Flow 包（头 + 负载）
+    /// Build a framed Flow packet (header + payload)
     fn flow_packet(payload: &[u8]) -> Vec<u8> {
         let mut v = XmlPacketHeader::flow(payload.len() as u32)
             .to_bytes()
@@ -767,17 +767,17 @@ mod tests {
         let handle = port.written_handle();
         let mut xml = XmlProtocol::new(&mut port);
         xml.ack(Some(4096)).unwrap();
-        // 写入内容 = 帧头(12) + "OK@4096\0"
+        // Written bytes = header (12) + "OK@4096\0"
         let written = handle.borrow().clone();
         assert!(written.ends_with(b"OK@4096\0"));
-        // 帧头长度正确
+        // Header length is correct
         let hdr = XmlPacketHeader::parse(&written[..12]).unwrap();
         assert_eq!(hdr.length as usize, b"OK@4096\0".len());
     }
 
     #[test]
     fn send_cmd_performs_lifetime_handshake() {
-        // 脚本：CMD:START 包 → (主机回 OK) → 命令 ACK "OK\0"
+        // Script: CMD:START packet → (host replies OK) → command ACK "OK\0"
         let mut scripted = flow_packet(b"<command>CMD:START</command>");
         scripted.extend_from_slice(&flow_packet(b"OK\0"));
         let mut port = MockPort::new(scripted);
@@ -787,14 +787,14 @@ mod tests {
         let ok = xml.send_cmd(&cmd::reboot(false)).unwrap();
         assert!(ok, "设备应接受命令");
         let written = handle.borrow().clone();
-        // 先回 CMD:START 的 OK（带 12 字节帧头），再发送 XML 命令本体
+        // First reply OK to CMD:START (with a 12-byte header), then send the XML command body
         assert!(written.windows(3).any(|w| w == b"OK\0"));
         assert!(written.windows(9).any(|w| w == b"CMD:REBOO"));
     }
 
     #[test]
     fn read_next_flow_header_skips_message_packets() {
-        // Message 包（前 4 字节长度头 + 文本）后跟一个 Flow 包
+        // A Message packet (4-byte length prefix + text) followed by a Flow packet
         let mut msg_payload = vec![0u8, 0, 0, 0];
         msg_payload.extend_from_slice(b"da log");
         let mut scripted = XmlPacketHeader {

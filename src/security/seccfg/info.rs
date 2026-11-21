@@ -1,10 +1,10 @@
-//! `zyb seccfg info` 报告输出（离线文件 / 在线设备共用）
+//! `zyb seccfg info` report output (shared by offline files and live devices)
 //!
-//! 输出内容：
-//! - 格式判定（V3 / V4）
-//! - hwtype 细分（SW / V2 / V3 / V4）与明文可信度
-//! - 锁状态（由 attr 解码，而不是只看 magic）
-//! - imginfo 名称列表与元数据
+//! Output contents:
+//! - format detection (V3 / V4)
+//! - hwtype breakdown (SW / V2 / V3 / V4) and plaintext confidence
+//! - lock state (decoded from attr, not just the magic)
+//! - imginfo name list and metadata
 
 use std::fmt::Write as _;
 
@@ -14,7 +14,7 @@ use super::plain::LockState;
 use super::v3::SecCfgV3;
 use super::v4::SecCfgV4;
 
-/// V3 的 16 字节 info_header
+/// 16-byte V3 info_header
 const V3_HEADER: &[u8; 16] = b"AND_SECCFG_v\x00\x00\x00\x00";
 
 fn decode_v4_lock(state: u32) -> (&'static str, &'static str) {
@@ -26,7 +26,7 @@ fn decode_v4_lock(state: u32) -> (&'static str, &'static str) {
     }
 }
 
-/// 生成 seccfg 分析报告文本（便于单测）。`data` 为整个 seccfg 分区内容。
+/// Build the seccfg analysis report text (unit-test friendly). `data` is the whole seccfg partition.
 pub fn seccfg_report(data: &[u8]) -> Result<String, String> {
     if data.is_empty() {
         return Err("seccfg 数据为空".to_string());
@@ -49,7 +49,7 @@ pub fn seccfg_report(data: &[u8]) -> Result<String, String> {
     Ok(out)
 }
 
-/// 打印 seccfg 分析报告
+/// Print the seccfg analysis report
 pub fn print_seccfg_report(data: &[u8]) -> Result<(), String> {
     print!("{}", seccfg_report(data)?);
     Ok(())

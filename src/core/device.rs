@@ -1,17 +1,17 @@
-//! 设备状态：Planner 的输入之一。
+//! Device state: one of the Planner's inputs.
 //!
-//! 这里只放**规划需要**的字段，不放连接句柄、不放大缓冲区。
+//! Only fields **needed for planning** live here; no connection handles, no large buffers.
 
 use super::safety::SafetyFlags;
 
-/// DA 协议版本。
+/// DA protocol version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolVersion {
-    /// XFlash，DA 包头部不含 `MTK_DA_v6`
+    /// XFlash; the DA package header does not contain `MTK_DA_v6`
     V5,
-    /// XML，DA 包头部含 `MTK_DA_v6`
+    /// XML; the DA package header contains `MTK_DA_v6`
     V6,
-    /// 尚未解析 DA（`--loader` 未提供或解析失败）
+    /// DA not parsed yet (`--loader` absent or failed to parse)
     Unknown,
 }
 
@@ -24,10 +24,10 @@ impl ProtocolVersion {
         }
     }
 
-    /// DA 文件头 0x68 字节内是否含 `MTK_DA_v6`。
+    /// Whether the first 0x68 bytes of the DA file contain `MTK_DA_v6`.
     ///
-    /// 依据 `mtkclient/Library/DA/daconfig.py`：`v6 = b"MTK_DA_v6" in hdr`。
-    /// 这是**权威来源**；芯片型号表只用于未提供 DA 时的低置信度预判。
+    /// Based on `mtkclient/Library/DA/daconfig.py`: `v6 = b"MTK_DA_v6" in hdr`.
+    /// This is the **authoritative source**; the chip table is only a low-confidence guess when no DA is provided.
     pub fn from_da_header(header: &[u8]) -> Self {
         if header.len() >= 0x68 {
             if header[..0x68].windows(9).any(|w| w == b"MTK_DA_v6") {
@@ -43,10 +43,10 @@ impl ProtocolVersion {
     }
 }
 
-/// README 明确“BootROM 已修复、必须 `--loader`”的 V6 芯片（DA code）。
+/// V6 chips (DA codes) for which the README explicitly states "BootROM is patched; `--loader` required".
 ///
-/// 来源：mtkclient README 中文版。**未在源码表中二次验证**，
-/// 因此 Planner 只把它当“低置信度预判”，并与 DA 头解析结果取或。
+/// Source: the Chinese mtkclient README. **Not re-verified against the source tables**,
+/// so the Planner treats it as a low-confidence guess and ORs it with the DA header result.
 pub const KNOWN_V6_DA_CODES: [u16; 7] = [
     0x6781, // MT6781
     0x6789, // MT6789
@@ -57,35 +57,36 @@ pub const KNOWN_V6_DA_CODES: [u16; 7] = [
     0x8985, // MT8985
 ];
 
-/// 规划所需的设备状态快照。
+/// Snapshot of the device state needed for planning.
 #[derive(Debug, Clone)]
 pub struct DeviceState {
-    /// BROM 返回的 hw_code（通常是 0x0707 之类）
+    /// hw_code returned by BROM (usually something like 0x0707)
     pub hw_code: u16,
-    /// DA 文件内使用的 da_code（如 0x6768）
+    /// da_code used inside the DA file (e.g. 0x6768)
     pub da_code: u16,
-    /// 芯片名（展示用）
+    /// Chip name (for display)
     pub name: String,
-    /// 协议版本（来自 DA 头，权威）
+    /// Protocol version (from the DA header; authoritative)
     pub protocol: ProtocolVersion,
-    /// 安全标志
+    /// Safety flags
     pub safety: SafetyFlags,
-    /// BROM 要求认证（拿到 auth 前 BROM 路径不可达）
+    /// BROM requires authentication (BROM path unreachable until auth is obtained)
     pub brom_auth_required: bool,
-    /// Preloader 已修补（DA 签名验证失败）
+    /// Preloader already patched (DA signature verification fails)
     pub preloader_patched: bool,
-    /// DA 签名验证失败
+    /// DA signature verification failed
     pub da_signature_failed: bool,
-    /// 当前活动槽（A/B）
+    /// Current active slot (A/B)
     pub current_slot: Option<char>,
-    /// 是否受 **CVE-2022-20069** 影响（Preloader USB 整数溢出导致 OOB write，
-    /// 物理接触即可提权，可绕过 SLA/DAA）。
+    /// Whether affected by **CVE-2022-20069** (Preloader USB integer overflow causing an OOB write;
+    /// physical access alone grants privilege escalation and bypasses SLA/DAA).
     ///
-    /// 兼容别名：早期资料把它误记为 `CVE-2022-20435`（那个实际是 Android
-    /// 系统服务的未授权/EoP，与 download-mode 无关）。为兼容既有调用方，
-    /// 保留 `cve_20435_*` 的语义别名（见 `DeviceProfile` 的文本解析）。
+    /// Compatibility alias: early material mislabeled it as `CVE-2022-20435` (that one is an
+    /// unauthenticated/EoP issue in an Android system service, unrelated to download mode).
+    /// To keep existing callers working, the semantic alias `cve_20435_*` is kept
+    /// (see the text parsing in `DeviceProfile`).
     pub cve_20069_affected: bool,
-    /// CVE-2022-20069 是否已被厂商补丁修复。
+    /// Whether CVE-2022-20069 has been fixed by a vendor patch.
     pub cve_20069_patched: bool,
 }
 
@@ -108,7 +109,7 @@ impl Default for DeviceState {
 }
 
 impl DeviceState {
-    /// 是否 V6：DA 头优先；未解析时用芯片名单低置信度预判。
+    /// Whether V6: the DA header wins; when unparsed, fall back to the chip list guess.
     pub fn is_v6(&self) -> bool {
         match self.protocol {
             ProtocolVersion::V6 => true,
@@ -117,12 +118,12 @@ impl DeviceState {
         }
     }
 
-    /// BROM 路径是否可达。
+    /// Whether the BROM path is reachable.
     ///
-    /// 三条排除条件：
-    /// 1. V6 芯片（BROM 漏洞已修复）；
-    /// 2. BROM 要求认证且尚未通过；
-    /// 3. Preloader 已修补且 DA 签名失败（说明 BROM 侧已无绕过）。
+    /// Three exclusions:
+    /// 1. V6 chips (BROM exploit already patched);
+    /// 2. BROM requires auth that has not been obtained yet;
+    /// 3. Preloader patched and DA signature fails (no bypass left on the BROM side).
     pub fn brom_reachable(&self) -> bool {
         if self.is_v6() {
             return false;
@@ -133,12 +134,12 @@ impl DeviceState {
         !(self.preloader_patched && self.da_signature_failed)
     }
 
-    /// 加载 DA 前是否必须先绕过校验。
+    /// Whether signature checks must be bypassed before loading the DA.
     pub fn needs_da_bypass(&self) -> bool {
         self.safety.requires_da_bypass() || self.da_signature_failed
     }
 
-    /// 简要描述（决策日志用）。
+    /// Short description (for the decision log).
     pub fn summary(&self) -> String {
         format!(
             "chip={}(0x{:04X}) proto={} safety=[{}] brom_reachable={}",

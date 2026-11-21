@@ -1,57 +1,57 @@
-//! 能力格（Capability lattice）。
+//! Capability lattice.
 //!
-//! 每个 `Capability` 表示“系统当前具备的一项可执行能力”，而不是“某个动作做过”。
-//! 能力之间存在**偏序**：具备强能力即隐含具备弱能力（见 [`Capability::implies`]）。
+//! Each `Capability` represents "an executable ability the system currently has", not "an action that was performed".
+//! Capabilities form a **partial order**: holding a strong capability implies holding weaker ones (see [`Capability::implies`]).
 //!
-//! 这个偏序是 Planner 正确性的关键：BROM 拿到 `BromControlXfer` 后，
-//! 不必再规划一步“获取 BromRead”；DA 拿到 `DaPatched` 后不必再要 `DaLoaded`。
+//! This order is key to Planner correctness: once BROM has `BromControlXfer`,
+//! it need not plan a separate "acquire BromRead" step; once DA has `DaPatched` it no longer needs `DaLoaded`.
 
-/// 单项能力。
+/// A single capability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Capability {
-    /// BROM 层控制传输（linecode / register access 通道可用）
+    /// BROM control transfer (linecode / register access channel available)
     BromControlXfer,
-    /// BROM 层内存读
+    /// BROM memory read
     BromRead,
-    /// BROM 层内存写
+    /// BROM memory write
     BromWrite,
-    /// 硬件加密引擎访问（SEJ / DXCC 等）
+    /// Hardware crypto engine access (SEJ / DXCC, etc.)
     CryptoAccess,
-    /// DA 已加载并完成握手
+    /// DA loaded and handshake completed
     DaLoaded,
-    /// DA 认证已绕过（签名校验不再阻塞）
+    /// DA authentication bypassed (signature checks no longer block)
     DaAuthBypass,
-    /// XFlash（V5）协议可用
+    /// XFlash (V5) protocol available
     DaXFlash,
-    /// XML（V6）协议可用
+    /// XML (V6) protocol available
     DaXml,
-    /// DA 已被 patch（可跳过 SLA/DAA/SBC 校验）
+    /// DA patched (SLA/DAA/SBC checks can be skipped)
     DaPatched,
-    /// BROM 安全标志已被绕过（一次绕过可覆盖后续 DA 校验）
+    /// BROM security flags bypassed (one bypass covers later DA checks)
     SafetyBypassed,
-    /// 分区表可读
+    /// Partition table readable
     StorageRead,
-    /// 分区可写
+    /// Partition writable
     StorageWrite,
-    /// GPT 已解析（含未分区区域计算）
+    /// GPT parsed (including unpartitioned-region calculation)
     GptParsed,
-    /// RPMB 可访问
+    /// RPMB accessible
     RpmbAccess,
 }
 
 impl Capability {
-    /// 能力的位序号（用于 [`CapabilitySet`]）。
+    /// Bit index of the capability (used by [`CapabilitySet`]).
     pub const fn bit(self) -> u32 {
         1 << (self as u32)
     }
 
-    /// 偏序：`self` 是否隐含 `other`。
+    /// Partial order: whether `self` implies `other`.
     ///
-    /// 规则（与 docs/ 中的能力表一致）：
+    /// Rules (matching the capability table in docs/):
     /// - `BromControlXfer` → `BromRead`
     /// - `DaXFlash` / `DaXml` → `DaLoaded`
     /// - `DaPatched` → `DaLoaded` + `DaAuthBypass`
-    /// - `SafetyBypassed` → `DaAuthBypass`（一次 BROM 绕过使后续 DA 校验不再阻塞）
+    /// - `SafetyBypassed` → `DaAuthBypass` (one BROM bypass unblocks later DA checks)
     /// - `GptParsed` → `StorageRead`
     pub const fn implies(self, other: Capability) -> bool {
         use Capability::*;
@@ -70,7 +70,7 @@ impl Capability {
         )
     }
 
-    /// 人类可读名（用于决策日志）。
+    /// Human-readable name (used in decision logs).
     pub const fn label(self) -> &'static str {
         use Capability::*;
         match self {
@@ -91,7 +91,7 @@ impl Capability {
         }
     }
 
-    /// 全部能力（按位序），供遍历与调试输出。
+    /// All capabilities in bit order, for iteration and debug output.
     pub const ALL: [Capability; 14] = {
         use Capability::*;
         [
@@ -113,7 +113,7 @@ impl Capability {
     };
 }
 
-/// 能力集合。自研 bitset，避免为 14 个位引入 bitflags 依赖。
+/// Capability set. A hand-rolled bitset to avoid pulling in bitflags for 14 bits.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CapabilitySet(u32);
 
@@ -124,7 +124,7 @@ impl CapabilitySet {
         CapabilitySet(cap.bit())
     }
 
-    /// 直接置位（不做偏序展开）。
+    /// Set the bit directly (no partial-order expansion).
     pub fn insert(&mut self, cap: Capability) {
         self.0 |= cap.bit();
     }
@@ -138,7 +138,7 @@ impl CapabilitySet {
         CapabilitySet(self.0 | other.0)
     }
 
-    /// 是否具备某能力（考虑偏序）。
+    /// Whether a capability is held (taking the partial order into account).
     pub fn contains(self, cap: Capability) -> bool {
         Capability::ALL
             .iter()
@@ -146,12 +146,12 @@ impl CapabilitySet {
             .any(|c| c.implies(cap))
     }
 
-    /// 是否直接置位（不考虑偏序），用于日志“实际获得”。
+    /// Whether the bit is set directly (ignoring the partial order), for "actually acquired" logs.
     pub fn has_direct(self, cap: Capability) -> bool {
         self.0 & cap.bit() != 0
     }
 
-    /// 缺失的能力（`required` 中不被满足的部分）。
+    /// Missing capabilities (the parts of `required` that are not satisfied).
     pub fn missing_from(self, required: CapabilitySet) -> CapabilitySet {
         let mut out = CapabilitySet::EMPTY;
         for cap in Capability::ALL {
@@ -162,7 +162,7 @@ impl CapabilitySet {
         out
     }
 
-    /// 是否满足需求集。
+    /// Whether the requirement set is satisfied.
     pub fn satisfies(self, required: CapabilitySet) -> bool {
         Capability::ALL
             .iter()
@@ -177,12 +177,12 @@ impl CapabilitySet {
         self.0
     }
 
-    /// 直接由位模式构造（供 `const` 注册表使用，不做偏序校验）。
+    /// Build directly from a bit pattern (for `const` registries, no partial-order validation).
     pub const fn from_bits(bits: u32) -> Self {
         CapabilitySet(bits)
     }
 
-    /// 直接置位的名称列表（稳定顺序）。
+    /// Names of directly set bits (stable order).
     pub fn names(self) -> Vec<&'static str> {
         Capability::ALL
             .iter()
@@ -192,7 +192,7 @@ impl CapabilitySet {
     }
 
     #[cfg(test)]
-    /// 从名称列表构造（测试与外部资源包用）。
+    /// Build from a name list (for tests and external resource packs).
     pub fn from_names(names: &[&str]) -> Option<Self> {
         let mut set = CapabilitySet::EMPTY;
         for n in names {

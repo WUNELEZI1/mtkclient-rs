@@ -6,18 +6,18 @@ use std::fs;
 use crate::error::SessionError;
 use crate::system::paths::get_tmp_path;
 
-/// 获取 DA 会话状态文件路径（位于 tmp/ 目录）
+/// Path of the DA session state file (under tmp/)
 fn state_file_path() -> std::path::PathBuf {
     get_tmp_path(".state")
 }
 
-/// DA 初始化模式：记录 DA 是通过哪种路径加载的，
-/// 会话复用时根据此字段选择对应的重握手方案
+/// DA init mode: records which path loaded the DA;
+/// session reuse picks the matching re-handshake plan from this field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitMode {
-    /// BROM 模式加载：握手 → 关看门狗 → bypass → send_da → setup_env → setup_hw_init
+    /// Loaded via BROM: handshake → disable watchdog → bypass → send_da → setup_env → setup_hw_init
     Brom,
-    /// Preloader 模式加载：跳过 bypass，直接 send_da → setup_env → setup_hw_init
+    /// Loaded via Preloader: skip bypass, send_da → setup_env → setup_hw_init directly
     Preloader,
 }
 
@@ -38,7 +38,7 @@ impl InitMode {
     }
 }
 
-/// 会话状态（对齐 Python .state 文件机制）
+/// Session state (mirrors Python's .state file mechanism)
 #[derive(Debug, Clone)]
 pub struct SessionState {
     pub usb_vid: u16,
@@ -46,17 +46,17 @@ pub struct SessionState {
     pub hw_code: u16,
     pub target_config: u32,
     pub da_loaded: bool,
-    /// 设备指纹：由 VID/PID、HW code、target_config、preloader 文件内容摘要组成
+    /// Device fingerprint: VID/PID, HW code, target_config, and a digest of the preloader file
     pub device_fingerprint: Option<String>,
-    /// 上次成功 dump 的 preloader 文件路径，避免重复 dump
+    /// Path of the last successfully dumped preloader, avoiding a repeat dump
     pub preloader_path: Option<String>,
-    /// GPT 缓存文件路径，DA 会话复用时可避免重复读取 GPT
+    /// GPT cache file path; avoids re-reading the GPT when a DA session is reused
     pub gpt_cache_path: Option<String>,
-    /// 当前 DA 会话中已知失败的可选查询，避免每次命令重复等待 timeout
+    /// Optional queries known to fail in this DA session, avoiding a timeout wait on every command
     pub optional_query_failures: Vec<String>,
-    /// 会话创建的 unix 时间戳（秒）
+    /// Session creation time as a Unix timestamp (seconds)
     pub created_at: u64,
-    /// DA 初始化模式（brom/preloader），会话复用时决定重握手方案
+    /// DA init mode (brom/preloader); determines the re-handshake plan on session reuse
     pub init_mode: InitMode,
 }
 
@@ -94,7 +94,7 @@ impl fmt::Display for SessionState {
 }
 
 impl SessionState {
-    /// 从 key=value 格式反序列化
+    /// Deserialize from key=value format
     pub fn from_string(s: &str) -> Option<Self> {
         let mut map = HashMap::new();
         for line in s.lines() {
@@ -128,15 +128,15 @@ impl SessionState {
             created_at: map
                 .get("created_at")
                 .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(0), // 兼容旧版无此字段的 .state 文件
+                .unwrap_or(0), // compatible with older .state files lacking this field
             init_mode: map
                 .get("init_mode")
                 .and_then(|v| InitMode::from_str(v))
-                .unwrap_or(InitMode::Brom), // 兼容旧版无此字段的 .state 文件
+                .unwrap_or(InitMode::Brom), // compatible with older .state files lacking this field
         })
     }
 
-    /// 写入 .state 文件（原子写入：先写临时文件再 rename）
+    /// Write the .state file (atomic: write a temp file, then rename)
     pub fn save(&self) -> Result<(), String> {
         let state_path = state_file_path();
         let tmp = format!("{}.tmp", state_path.display());
@@ -145,7 +145,7 @@ impl SessionState {
         Ok(())
     }
 
-    /// 读取 .state 文件
+    /// Read the .state file
     pub fn load() -> Option<Self> {
         let state_path = state_file_path();
         if !state_path.exists() {
@@ -176,7 +176,7 @@ impl SessionState {
         }
     }
 
-    /// 删除 .state 文件
+    /// Delete the .state file
     pub fn remove() {
         let state_path = state_file_path();
         if state_path.exists() {
@@ -227,7 +227,7 @@ where
     }
 }
 
-/// 保存 DA 会话状态（在 DA 加载成功后调用）
+/// Save DA session state (call after the DA has loaded successfully)
 pub fn save_da_session(
     vid: u16,
     pid: u16,
@@ -244,7 +244,7 @@ pub fn save_da_session(
         .and_then(|state| state.device_fingerprint.as_ref())
         .map(|fingerprint| fingerprint == &device_fingerprint)
         .unwrap_or(false);
-    // 已有旧会话但指纹变化 → 换了设备，旧缓存（GPT 缓存等）必须丢弃
+    // Old session exists but the fingerprint changed → different device; old caches (GPT cache etc.) must be dropped
     if previous.is_some() && !same_device {
         warn!(
             "[session] {}（旧设备缓存将失效）",
@@ -270,8 +270,8 @@ pub fn save_da_session(
         } else {
             None
         },
-        // optional_query_failures 只根据 hw_code 判断，不区分 BROM/Preloader 模式
-        // 因为同一台设备的可选查询失败情况不会因为模式切换而改变
+        // optional_query_failures depends only on hw_code, not on BROM/Preloader mode,
+        // because a device's optional-query failures do not change when the mode switches
         optional_query_failures: previous
             .filter(|state| state.hw_code == hw_code)
             .map(|state| state.optional_query_failures)
@@ -323,7 +323,7 @@ pub fn mark_optional_query_failed(name: &str) {
     });
 }
 
-/// 重置设备并清除 .state
+/// Reset the device and clear .state
 pub fn reset_session() {
     SessionState::remove();
     info!("[session] 会话已重置");
@@ -359,12 +359,14 @@ mod tests {
         assert!(
             parsed
                 .optional_query_failures
-                .contains(&"get_connection_agent".to_string())
+                .iter()
+                .any(|item| item == "get_connection_agent")
         );
         assert!(
             parsed
                 .optional_query_failures
-                .contains(&"get_sla_status".to_string())
+                .iter()
+                .any(|item| item == "get_sla_status")
         );
     }
 

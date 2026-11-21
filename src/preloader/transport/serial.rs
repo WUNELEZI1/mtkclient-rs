@@ -6,10 +6,10 @@ use log::trace;
 use std::fs::OpenOptions;
 use std::time::Duration;
 
-/// 验证 COM 口是否真实存在
+/// Verify whether the COM port really exists
 ///
-/// serialport 的 available_ports() 可能返回注册表残留的无效端口，
-/// 通过 CreateFile 打开 \\.\COMx 来验证端口是否真的可用。
+/// serialport's available_ports() may return invalid ports left over in the registry;
+/// open \\.\COMx via CreateFile to verify the port is actually usable.
 pub(crate) fn verify_port_exists(port_name: &str) -> bool {
     let path = format!("\\\\.\\{}", port_name);
     OpenOptions::new()
@@ -19,7 +19,7 @@ pub(crate) fn verify_port_exists(port_name: &str) -> bool {
         .is_ok()
 }
 
-/// serialport 实现 BROM 传输
+/// BROM transport implemented via serialport
 pub struct SerialPortTransport {
     port: Option<Box<dyn serialport::SerialPort>>,
     timeout: Duration,
@@ -33,12 +33,12 @@ impl SerialPortTransport {
         Self::open_raw(port_name, baud_rate)
     }
 
-    /// 直接打开串口，不做 verify_port_exists 验证
+    /// Open the serial port directly without verify_port_exists validation
     ///
-    /// Pattern 协议必须使用此方法！verify_port_exists 会打开再关闭 COM 口，
-    /// 清空串口接收缓冲区中 Preloader 发送的 READY 信号。
+    /// The Pattern protocol must use this path! verify_port_exists opens and then closes the COM port,
+    /// wiping the READY signal sent by the Preloader from the serial receive buffer.
     ///
-    /// 对齐 Python SerialClass.connect(): dsrdtr=False, rtscts=False
+    /// Matches Python SerialClass.connect(): dsrdtr=False, rtscts=False
     pub fn open_raw(port_name: &str, baud_rate: u32) -> Result<Self, String> {
         let mut port = serialport::new(port_name, baud_rate)
             .timeout(Duration::from_millis(SERIAL_OPEN_TIMEOUT_MS))
@@ -48,16 +48,17 @@ impl SerialPortTransport {
             .flow_control(serialport::FlowControl::None)
             .open()
             .map_err(|e| format!("无法打开串口 {}: {}", port_name, e))?;
-        // 对齐 Python: dsrdtr=False — 禁用 DTR 信号
-        // DTR 信号会触发设备进入 BROM 握手模式
+        // Match Python: dsrdtr=False — disable the DTR signal
+        // The DTR signal causes the device to enter BROM handshake mode
         let _ = port.write_data_terminal_ready(false);
         trace!(
             "[SERIAL] {} 已打开(raw, DTR=off): baud={}, 8N1, no_flow_control",
             port_name, baud_rate
         );
-        // 打开后等待设备固件/驱动就绪的短延时，降低弱连接下“端口刚出现即握手”
-        // 的竞态（设备枚举后需要数十毫秒稳定）。仅 sleep，不清空接收缓冲区，
-        // 故不影响 Pattern 协议的 READY 信号。
+        // Brief delay after opening to let the device firmware/driver settle, reducing the race where
+        // "the port appears and the handshake starts immediately" on weak connections (the device needs
+        // tens of ms to stabilize after enumeration). Sleep only, without clearing the receive buffer,
+        // so the Pattern protocol's READY signal is unaffected.
         std::thread::sleep(Duration::from_millis(150));
         Ok(SerialPortTransport {
             port: Some(port),
@@ -65,14 +66,14 @@ impl SerialPortTransport {
         })
     }
 
-    /// 枚举所有 COM 口，找到 MediaTek BROM/Preloader 设备
-    /// 无限轮询，每 200ms 扫描一次，直到找到为止
+    /// Enumerate all COM ports and find a MediaTek BROM/Preloader device
+    /// Polls indefinitely, scanning every 200ms until found
     pub fn find_brom_port() -> Option<BromPortResult> {
         Self::find_brom_port_with_timeout(u64::MAX)
     }
 
-    /// 枚举所有 COM 口，找到 MediaTek BROM/Preloader 设备
-    /// 带超时的版本，超时返回 None
+    /// Enumerate all COM ports and find a MediaTek BROM/Preloader device
+    /// Timeout variant; returns None on timeout
     pub fn find_brom_port_with_timeout(timeout_ms: u64) -> Option<BromPortResult> {
         let max_retries = if timeout_ms == u64::MAX || timeout_ms == 0 {
             usize::MAX
@@ -110,8 +111,8 @@ impl SerialPortTransport {
 
             for p in &ports {
                 if let serialport::SerialPortType::UsbPort(ref info) = p.port_type {
-                    // BROM 模式: VID=0E8D PID=0003
-                    // Preloader 模式: VID=0E8D PID=2000
+                    // BROM mode: VID=0E8D PID=0003
+                    // Preloader mode: VID=0E8D PID=2000
                     if info.vid == 0x0E8D && (info.pid == 0x0003 || info.pid == 0x2000) {
                         if !verify_port_exists(&p.port_name) {
                             trace!("端口 {} 注册表残留但设备已拔出，跳过", p.port_name);
@@ -172,14 +173,15 @@ impl SerialPortTransport {
     }
 }
 
-/// 串口握手内核：逐字节发送 [A0,0A,50,05]，期望逐字节取反回复。
+/// Serial handshake core: send `A0,0A,50,05` byte by byte, expecting a bytewise inverted reply.
 ///
-/// 与 usb/device_handshake.rs 的 USB 握手保持一致的健壮性：
-/// 多次重试 + 间隔 + 排空 + 错位计数重置(i=0) + 残留DA流检测。
-/// 设备进入握手态前可能持续发出杂散字节/文本（典型：期望 0x5F 却读到 0x52 'R'），
-/// 故需容忍错位并在最终失败时回显原始字节，便于定位根因：
-///   - 连续 0x52('R') 等文本字节 → 设备未在握手态（可能阶段/驱动/DTR 问题）
-///   - 收到 0x5F 0x0F 0xA0 0x0A → 表明是 MTK 标准同步变体（非逐字节取反）
+/// Matches the robustness of the USB handshake in usb/device_handshake.rs:
+/// several retries + spacing + drain + mismatch counter reset (i=0) + residual-DA stream detection.
+/// Before entering the handshake state the device may keep emitting stray bytes/text (typical: 0x5F
+/// expected but 0x52 'R' read), so misalignment must be tolerated and, on final failure, the raw bytes
+/// echoed for diagnosis:
+///   - continuous text bytes like 0x52('R') → device not in handshake state (likely stage/driver/DTR issue)
+///   - received 0x5F 0x0F 0xA0 0x0A → indicates the MTK standard sync variant (non bytewise inversion)
 fn serial_do_handshake(
     transport: &mut SerialPortTransport,
     max_attempts: u32,
@@ -197,10 +199,11 @@ fn serial_do_handshake(
             std::thread::sleep(Duration::from_millis(retry_delay_ms));
         }
 
-        // 仅在重试时排空残留；首次 attempt 必须保留接收缓冲中的 Preloader "READY" 同步
-        // 信号（设备进入握手态时配合主机节奏逐字节输出 READY，刷机匣成功日志
-        // 0x52/45/41/44/59 = "READY"）。若首 attempt 即 drain，会清掉这些字节，
-        // 导致后续握手"未收到任何响应字节"。
+        // Drain leftovers only on retries; the first attempt must preserve the Preloader "READY" sync
+        // signal in the receive buffer (as the device enters the handshake state it emits READY byte by
+        // byte in step with the host; a successful flashing-box log shows 0x52/45/41/44/59 = "READY").
+        // Draining on the first attempt would wipe these bytes and cause the subsequent handshake to
+        // "receive no response bytes at all".
         if attempt > 0 {
             transport.drain_pipes();
         }
@@ -210,10 +213,12 @@ fn serial_do_handshake(
         let mut residual: Vec<u8> = Vec::with_capacity(residual_window);
         last_received.clear();
         let mut i = 0usize;
-        // 对齐刷机匣行为：设备进入握手态前，写 A0 可能暂时无响应（Preloader 设备在输出
-        // READY 前不响应 A0，需持续写 A0 试探）。对"字节 0 同步试探"阶段的连续无响应设上限，
-        // 防止死循环；上限内持续写 A0，直到设备开始输出 READY/取反响应。
-        const SYNC_PROBE_LIMIT: u32 = 25; // 25 次无响应 = 25 * 500ms ≈ 12.5s（设备输出 READY 前的试探期）
+        // Match flashing-box behavior: before the device enters the handshake state, writing A0 may get
+        // no response temporarily (a Preloader device does not respond to A0 before emitting READY, so
+        // A0 must be written repeatedly as a probe). Cap consecutive no-response during the "byte 0 sync
+        // probe" phase to avoid an infinite loop; within the cap keep writing A0 until the device starts
+        // emitting READY / inverted responses.
+        const SYNC_PROBE_LIMIT: u32 = 25; // 25 no-responses = 25 * 500ms ≈ 12.5s (probe window before the device emits READY)
         let mut sync_probe = 0u32;
         while i < SERIAL_HANDSHAKE_BYTES.len() {
             if let Err(e) = transport.write(&[SERIAL_HANDSHAKE_BYTES[i]]) {
@@ -234,11 +239,13 @@ fn serial_do_handshake(
                         mismatch = 0;
                         i += 1;
                     } else {
-                        // Preloader 设备在正式响应前会逐字节输出 "READY"（0x52/45/41/44/59）
-                        // 同步文本（刷机匣日志：完整两遍 R E A D Y R E A D Y 后才进入取反握手）。
-                        // 这些是设备的正常同步输出，不应计入 mismatch（否则两遍 READY=10 字节
-                        // 会超过 max_mismatch=8 导致误判失败），也不应触发残留DA流检测。
-                        // 注：字节已在上面统一 push 进 last_received，这里无需重复。
+                        // Before its formal response, a Preloader device emits the "READY" (0x52/45/41/44/59)
+                        // sync text byte by byte (flashing-box log: two full R E A D Y R E A D Y passes
+                        // before the inverted handshake begins). These are normal device sync output and
+                        // must not count toward mismatch (otherwise two READY passes = 10 bytes would exceed
+                        // max_mismatch=8 and cause a false failure), nor trigger residual-DA stream
+                        // detection. Note: the byte was already pushed into last_received above; no need to
+                        // repeat it here.
                         if matches!(b, b'R' | b'E' | b'A' | b'D' | b'Y') {
                             trace!(
                                 "[SERIAL] 读到 READY 同步文本字节 0x{:02X}('{}')，忽略",
@@ -251,7 +258,7 @@ fn serial_do_handshake(
                         if residual.len() > residual_window {
                             residual.remove(0);
                         }
-                        // 残留DA流检测（A1/0B 模式）
+                        // Residual-DA stream detection (A1/0B pattern)
                         if residual.len() >= residual_window
                             && residual.iter().all(|x| *x == 0xA1 || *x == 0x0B)
                         {
@@ -264,13 +271,14 @@ fn serial_do_handshake(
                             ok = false;
                             break;
                         }
-                        // 容忍错位：重置到字节 0 继续寻找真正的同步序列
+                        // Tolerate misalignment: reset to byte 0 and keep looking for the real sync sequence
                         i = 0;
                     }
                 }
                 Err(e) => {
-                    // 仅在"仍处于字节 0 同步试探阶段"容忍无响应（设备输出 READY 前不响应 A0，
-                    // 需持续写 A0 试探，对齐刷机匣）；进入正式握手(i>0)后才失败。
+                    // Tolerate no-response only while "still in the byte 0 sync probe phase" (the device
+                    // does not respond to A0 before emitting READY, so A0 must keep being written as a
+                    // probe, matching the flashing box); only fail once the formal handshake has begun (i>0).
                     if i == 0 {
                         sync_probe += 1;
                         if sync_probe >= SYNC_PROBE_LIMIT {
@@ -297,7 +305,7 @@ fn serial_do_handshake(
         }
     }
 
-    // 最终失败：回显最近收到的原始字节，便于定位（如 0x52='R' 表示设备未进入握手态）
+    // Final failure: echo the most recently received raw bytes for diagnosis (e.g. 0x52='R' means the device is not in handshake state)
     let hex: Vec<String> = last_received
         .iter()
         .map(|b| format!("0x{:02X}", b))
@@ -347,21 +355,21 @@ impl BromTransport for SerialPortTransport {
     }
 
     fn do_handshake(&mut self) -> Result<bool, String> {
-        // BROM/Preloader 握手协议: 逐字节发送 [A0, 0A, 50, 05]，每字节期望取反回复。
-        // 与 usb/device_handshake.rs 的 USB 握手保持一致的健壮性：
-        // 多次重试 + 间隔 + 排空 + 错位计数重置(i=0) + 残留DA流检测。
+        // BROM/Preloader handshake protocol: send [A0, 0A, 50, 05] byte by byte, expecting an inverted reply per byte.
+        // Matches the robustness of the USB handshake in usb/device_handshake.rs:
+        // several retries + spacing + drain + mismatch counter reset (i=0) + residual-DA stream detection.
         //
-        // 设备进入握手态前可能持续发出杂散字节/文本（典型：期望 0x5F 却读到 0x52 'R'），
-        // 故需容忍错位并在最终失败时回显原始字节，便于定位根因：
-        //   - 连续 0x52('R') 等文本字节 → 设备未在握手态（可能阶段/驱动/DTR 问题）
-        //   - 收到 0x5F 0x0F 0xA0 0x0A → 表明是 MTK 标准同步变体（非逐字节取反）
+        // Before entering the handshake state the device may keep emitting stray bytes/text (typical: 0x5F expected but 0x52 'R' read),
+        // so misalignment must be tolerated and, on final failure, the raw bytes echoed for diagnosis:
+        //   - continuous text bytes like 0x52('R') → device not in handshake state (likely stage/driver/DTR issue)
+        //   - received 0x5F 0x0F 0xA0 0x0A → indicates the MTK standard sync variant (non bytewise inversion)
         const MAX_ATTEMPTS: u32 = 10;
         const RETRY_DELAY_MS: u64 = 300;
         const MAX_MISMATCH: u32 = 8;
         const RESIDUAL_WINDOW: usize = 4;
         const HANDSHAKE_TIMEOUT_MS: u64 = 500;
 
-        // 缩短每字节响应超时，避免弱连接下 10 次重试累积成几十秒空等
+        // Shorten the per-byte response timeout to avoid 10 retries accumulating into tens of seconds of idle waiting on weak connections
         let orig_timeout = self.get_timeout();
         self.set_timeout(Duration::from_millis(HANDSHAKE_TIMEOUT_MS));
         let result = serial_do_handshake(
@@ -379,11 +387,11 @@ impl BromTransport for SerialPortTransport {
         false
     }
 
-    /// 串口模式下排空残留数据：循环读取直到超时，防止 FORMAT 等命令后的残留干扰后续操作
+    /// Drain leftover data in serial mode: read in a loop until timeout, preventing residue after commands like FORMAT from interfering with later operations
     fn drain_pipes(&mut self) {
         let original_timeout = self.timeout;
         if let Some(port) = self.port.as_mut() {
-            // 设置短超时（50ms），快速轮询排空
+            // Use a short timeout (50ms) for fast polling drain
             let _ = port.set_timeout(Duration::from_millis(50));
             let mut buf = [0u8; 512];
             let mut total = 0usize;
@@ -396,13 +404,13 @@ impl BromTransport for SerialPortTransport {
             if total > 0 {
                 trace!("[SERIAL] drain_pipes 排空 {} 字节残留数据", total);
             }
-            // 恢复原始超时
+            // Restore the original timeout
             let _ = port.set_timeout(original_timeout);
         }
     }
 
     fn close_device(&mut self) -> Result<(), String> {
-        // 关闭串口：drop port 即可释放 COM 口资源
+        // Close the serial port: dropping port releases the COM port resources
         self.port.take();
         trace!("[SERIAL] 串口已关闭");
         Ok(())

@@ -1,7 +1,7 @@
-//! SecCfg V4 头构建与 HACC 签名辅助
+//! SecCfg V4 header construction and HACC signing helpers
 //!
-//! - `build_v4_header` — 修改 lock_state + dm_verity_state，构造 28 字节头
-//! - `sign_v4_digest` — 按 hwtype 对摘要签名（SW/V2/V3/V4），供 RealSession 与单测共用
+//! - `build_v4_header` — modify lock_state + dm_verity_state, build a 28-byte header
+//! - `sign_v4_digest` — sign the digest according to hwtype (SW/V2/V3/V4), shared by RealSession and unit tests
 
 use log::info;
 
@@ -16,21 +16,21 @@ pub(crate) fn build_v4_header(
     v4: &SecCfgV4,
     lockflag: &str,
 ) -> Result<([u8; 28], u32, u32, u32), String> {
-    // seccfg V4 头部字段（基于 libsec.a 逆向分析）:
-    //   偏移 0x00 magic        = 0x4D4D4D4D
-    //   偏移 0x04 seccfg_ver   = 0x4
-    //   偏移 0x08 seccfg_size  = 0x3C
-    //   偏移 0x0C lock_state   = LKS_UNLOCK(3) / LKS_DEFAULT(1)
-    //   偏移 0x10 dm_verity_state = 0 表示正常（非0值如 0x01=DM_VERITY_GENERAL_ERROR 会触发 dm 校验错误）
-    //   偏移 0x14 sboot_runtime = 0（对齐 mtkclient stage2.py）
-    //   偏移 0x18 endflag      = 0x45454545
+    // seccfg V4 header fields (based on reverse engineering of libsec.a):
+    //   offset 0x00 magic        = 0x4D4D4D4D
+    //   offset 0x04 seccfg_ver   = 0x4
+    //   offset 0x08 seccfg_size  = 0x3C
+    //   offset 0x0C lock_state   = LKS_UNLOCK(3) / LKS_DEFAULT(1)
+    //   offset 0x10 dm_verity_state = 0 means normal (non-zero such as 0x01=DM_VERITY_GENERAL_ERROR triggers a dm verification error)
+    //   offset 0x14 sboot_runtime = 0 (aligned with mtkclient stage2.py)
+    //   offset 0x18 endflag      = 0x45454545
     //
-    // 参考: https://m.book118.com/html/2022/1208/6022204135005024.shtm
-    // seccfg_get_lock_state()     读取 g_seccfg_major[0] + 12 → lock_state
-    // seccfg_get_dm_verity_state() 读取 g_seccfg_major[0] + 16 → dm_verity_state
+    // Reference: https://m.book118.com/html/2022/1208/6022204135005024.shtm
+    // seccfg_get_lock_state()      reads g_seccfg_major`0` + 12 → lock_state
+    // seccfg_get_dm_verity_state() reads g_seccfg_major`0` + 16 → dm_verity_state
     //
-    // 旧版 mtkclient 错误地将偏移16视为 critical_lock_state，unlock时写入 0x01（DM_VERITY_GENERAL_ERROR）
-    // 导致 dm-verity 校验错误。正确做法是 unlock/lock 时都保持 dm_verity_state = 0
+    // Old mtkclient mistakenly treats offset 16 as critical_lock_state and writes 0x01 (DM_VERITY_GENERAL_ERROR) when unlocking,
+    // causing dm-verity verification errors. The correct behavior is to keep dm_verity_state = 0 on both unlock and lock.
     let (new_lock, new_dm_verity, new_sboot) = match lockflag {
         "unlock" => {
             if v4.lock_state == 3 {
@@ -73,7 +73,7 @@ pub(crate) fn build_v4_header(
         new_sboot.to_le_bytes()[1],
         new_sboot.to_le_bytes()[2],
         new_sboot.to_le_bytes()[3],
-        // 对齐 Python: endflag 固定 0x45454545（parse 已校验，此处回写解析到的原值）
+        // Align with Python: endflag is fixed at 0x45454545 (already validated by parse; write back the parsed original value here)
         endflag[0],
         endflag[1],
         endflag[2],
@@ -83,18 +83,18 @@ pub(crate) fn build_v4_header(
     Ok((header, new_lock, new_dm_verity, new_sboot))
 }
 
-/// 按 hwtype 对 28 字节头的 SHA256 摘要做签名/加密。
+/// Sign/encrypt the SHA256 digest of the 28-byte header according to hwtype.
 ///
-/// 抽出来供 `session::RealSession`（能力驱动路径）与既有 `unlock_bootloader`
-/// 共用同一份实现，避免两条路径的签名方式漂移。
+/// Extracted so `session::RealSession` (capability-driven path) and the existing `unlock_bootloader`
+/// share a single implementation, avoiding signing drift between the two paths.
 pub(crate) fn sign_v4_digest(
     da: &mut DAXFlash,
     hwtype: &str,
     digest: &[u8; 32],
     hw_code: u16,
 ) -> Result<Vec<u8>, String> {
-    // 对齐 Python SecCfgV4.create()：根据 hwtype 选择加密方式
-    // hwtype 在 parse() 时通过 SW→V3→V4(legacy)→V2 顺序解密验证确定
+    // Align with Python SecCfgV4.create(): choose the encryption method by hwtype
+    // hwtype is determined during parse() by trying decryption in SW→V3→V4(legacy)→V2 order
     let enc_hash = match hwtype {
         "SW" => {
             let enc = sej_sec_cfg_sw_encrypt(digest)?;
@@ -103,7 +103,7 @@ pub(crate) fn sign_v4_digest(
             out.to_vec()
         }
         "V2" => {
-            // V2: 尝试 HACC，失败回退到 V2 软件加密
+            // V2: try HACC, fall back to V2 software encryption on failure
             match with_backend(da, || sej_hacc_sign(digest, hw_code, false)) {
                 Ok(sig) => sig,
                 Err(_) => {
@@ -116,11 +116,11 @@ pub(crate) fn sign_v4_digest(
             }
         }
         "V3" => {
-            // V3: HACC 是唯一正确路径（密钥来自芯片 HUID/HUK）
+            // V3: HACC is the only correct path (keys come from the chip HUID/HUK)
             with_backend(da, || sej_hacc_sign(digest, hw_code, false))?
         }
         "V4" => {
-            // V4(legacy): HACC 是唯一正确路径
+            // V4(legacy): HACC is the only correct path
             with_backend(da, || sej_hacc_sign(digest, hw_code, true))?
         }
         other => return Err(format!("不支持的 hwtype: {}", other)),
@@ -128,7 +128,7 @@ pub(crate) fn sign_v4_digest(
     Ok(enc_hash)
 }
 
-/// 把头部 + 签名哈希补零到分区大小（供能力驱动路径复用）。
+/// Pad the header + signature hash with zeros up to the partition size (for reuse by the capability-driven path).
 pub(crate) fn pad_seccfg_image(
     header: &[u8; 28],
     enc_hash: &[u8],
@@ -149,7 +149,7 @@ pub(crate) fn pad_seccfg_image(
 mod tests {
     use super::*;
 
-    /// 构造一个仅用于头部改写测试的 V4 描述（不涉及加密/HACC）。
+    /// Build a V4 descriptor used only for header rewrite tests (no encryption/HACC involved).
     fn v4(lock_state: u32, dm_verity_state: u32) -> SecCfgV4 {
         SecCfgV4 {
             magic: SecCfgV4::MAGIC,
@@ -169,8 +169,8 @@ mod tests {
 
     #[test]
     fn unlock_writes_lock_state_3_and_dm_verity_0() {
-        // 输入里 dm_verity_state 故意置 1（DM_VERITY_GENERAL_ERROR），
-        // unlock 必须把它清回 0，否则强解 BL 后开机会报 dm-verity error。
+        // dm_verity_state is deliberately set to 1 (DM_VERITY_GENERAL_ERROR) in the input;
+        // unlock must clear it back to 0, otherwise booting after a forced BL unlock reports a dm-verity error.
         let (header, lock, dm, sboot) = build_v4_header(&v4(1, 1), "unlock").unwrap();
         assert_eq!(lock, 3, "LKS_UNLOCK");
         assert_eq!(dm, 0, "dm_verity_state 必须为 0");

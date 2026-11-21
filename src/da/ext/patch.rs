@@ -1,24 +1,24 @@
-//! DA1 / DA2 patches 模块
+//! DA1 / DA2 patches module
 //!
-//! - `find_binary`         — 支持 `.` 0x2E 通配符的字节搜索
-//! - `apply_patches`       — 应用一系列 (pattern, replacement, name) patches
-//! - `COMMON_PATCHES`      — DA1/DA2 共用 patch 表
-//! - `DAXFlash::patch_da1` — DA1 单独 patches
-//! - `DAXFlash::patch_da2` — DA2 单独 patches
+//! - `find_binary`         — byte search supporting `.` (0x2E) wildcards
+//! - `apply_patches`       — applies a series of (pattern, replacement, name) patches
+//! - `COMMON_PATCHES`      — patch table shared by DA1/DA2
+//! - `DAXFlash::patch_da1` — DA1-specific patches
+//! - `DAXFlash::patch_da2` — DA2-specific patches
 
 use log::{debug, info, warn};
 
 use crate::da::DAXFlash;
 
-/// 在二进制数据中搜索模式（支持 `.` 0x2E 作为单字节通配符）
-/// 对齐 Python utils.py find_binary()
+/// Search for a pattern in the binary data (supports `.` 0x2E as a single-byte wildcard)
+/// Matches Python utils.py find_binary()
 pub fn find_binary(data: &[u8], pattern: &[u8], start_pos: usize) -> Option<usize> {
     if pattern.is_empty() || start_pos >= data.len() {
         return None;
     }
     let search_data = &data[start_pos..];
 
-    // 按 0x2E ('.') 分割为多段（. 是通配符）
+    // Split into segments on 0x2E ('.') ('.' is the wildcard)
     let mut segments: Vec<&[u8]> = Vec::new();
     let mut last = 0;
     for (i, &b) in pattern.iter().enumerate() {
@@ -33,7 +33,7 @@ pub fn find_binary(data: &[u8], pattern: &[u8], start_pos: usize) -> Option<usiz
         segments.push(&pattern[last..]);
     }
 
-    // 如果没有通配符，直接精确匹配
+    // If there is no wildcard, match exactly
     if segments.len() <= 1 {
         return search_data
             .windows(pattern.len())
@@ -41,7 +41,7 @@ pub fn find_binary(data: &[u8], pattern: &[u8], start_pos: usize) -> Option<usiz
             .map(|p| p + start_pos);
     }
 
-    // 搜索第一段，对每个位置检查后续段（跳过通配符字节）
+    // Search the first segment, and at each position check the following segments (skipping wildcard bytes)
     let seg0 = segments[0];
     let mut search_start = 0;
     while search_start + seg0.len() <= search_data.len() {
@@ -75,7 +75,7 @@ pub fn find_binary(data: &[u8], pattern: &[u8], start_pos: usize) -> Option<usiz
     None
 }
 
-/// DA1/DA2 公共修补 patches（8 个相同）
+/// Patches common to DA1/DA2 (the same 8 patches)
 const COMMON_PATCHES: &[(&[u8], &[u8], &str)] = &[
     (
         b"\xA3\x68\x7B\xB1\x28\x46",
@@ -115,8 +115,8 @@ const COMMON_PATCHES: &[(&[u8], &[u8], &str)] = &[
     ),
 ];
 
-/// 应用修补 patches，返回成功应用的补丁数量
-/// `log_individual` = true 时每条补丁输出 info!，否则仅输出 debug!
+/// Apply patches, returning the number of successfully applied patches
+/// With `log_individual` = true each patch logs via info!, otherwise via debug!
 fn apply_patches(
     data: &mut [u8],
     patches: &[(&[u8], &[u8], &str)],
@@ -141,11 +141,11 @@ fn apply_patches(
     count
 }
 
-/// DA1 patch：对齐 Python patch_da1 + patch_preloader_security_da1
+/// DA1 patch: matches Python patch_da1 + patch_preloader_security_da1
 pub fn patch_da1(data: &mut [u8]) {
     let mut patch_count = apply_patches(data, COMMON_PATCHES, "DA1", false);
 
-    // DA1 独有：hash_check3
+    // DA1-specific: hash_check3
     let hash3_pattern = b"\x14\x2C\xF6\x2E\xFE\xE7";
     if let Some(idx) = find_binary(data, hash3_pattern, 0) {
         let replacement = b"\x00\x00\x00\x00\x00\x00";
@@ -157,7 +157,7 @@ pub fn patch_da1(data: &mut [u8]) {
         }
     }
 
-    // DA1 独有：da_version_check
+    // DA1-specific: da_version_check
     if let Some(idx) = find_binary(data, b"\x1F\xB5\x00\x23\x01\xA8\x00\x93\x00\xF0", 0) {
         data[idx..idx + 4].copy_from_slice(b"\x00\x20\x70\x47");
         debug!("已修补 DA1: 版本检查");
@@ -166,7 +166,7 @@ pub fn patch_da1(data: &mut [u8]) {
         warn!("DA1 version check 模式未找到");
     }
 
-    // DA1 独有：hash_check
+    // DA1-specific: hash_check
     if let Some(idx) = find_binary(data, b"\x04\x00\x07\xC0", 0) {
         let end = idx + 4;
         if end <= data.len() {
@@ -176,7 +176,7 @@ pub fn patch_da1(data: &mut [u8]) {
         }
     }
 
-    // DA1 独有：hash_check2
+    // DA1-specific: hash_check2
     if let Some(idx) = find_binary(data, b"\xCC\xF2\x07\x09", 0) {
         let replacement = b"\x4F\xF0\x00\x09";
         let end = idx + replacement.len();
@@ -194,18 +194,18 @@ pub fn patch_da1(data: &mut [u8]) {
     }
 }
 
-/// DA2 patch：对齐 Python patch_da2 + patch_preloader_security_da2
+/// DA2 patch: matches Python patch_da2 + patch_preloader_security_da2
 pub fn patch_da2(data: &mut [u8]) {
     let mut patch_count = apply_patches(data, COMMON_PATCHES, "DA2", true);
 
-    // DA2 独有：huawei security
+    // DA2-specific: huawei security
     if let Some(idx) = find_binary(data, b"\x01\x2B\x03\xD1\x01\x23", 0) {
         data[idx..idx + 4].copy_from_slice(b"\x00\x00\x00\x00");
         info!("已修补 DA2: huawei security");
         patch_count += 1;
     }
 
-    // DA2 独有：oppo security（复杂逻辑）
+    // DA2-specific: oppo security (complex logic)
     if find_binary(data, b"[oplus]", 0).is_some() || find_binary(data, b"[OPPO]", 0).is_some() {
         if let Some(oppo) = find_binary(data, b"\x0A\x00\x00\xE0.\x00\x00\xE0", 0)
             && oppo >= 4
@@ -239,14 +239,14 @@ pub fn patch_da2(data: &mut [u8]) {
         }
     }
 
-    // DA2 独有：hash binding
+    // DA2-specific: hash binding
     if let Some(idx) = find_binary(data, b"\x01\x23\x03\x60\x00\x20\x70\x47\x70\xB5", 0) {
         data[idx..idx + 1].copy_from_slice(b"\x00");
         info!("已修补 DA2: hash binding");
         patch_count += 1;
     }
 
-    // DA2 独有：hash check
+    // DA2-specific: hash check
     if let Some(idx) = find_binary(data, &0xC0070004u32.to_le_bytes(), 0) {
         data[idx..idx + 4].copy_from_slice(&0u32.to_le_bytes());
         info!("已修补 DA2: hash check (0xC0070004)");
@@ -268,35 +268,35 @@ pub fn patch_da2(data: &mut [u8]) {
         warn!("DA2 hash check 未找到");
     }
 
-    // DA2 独有：security check
+    // DA2-specific: security check
     if let Some(idx) = find_binary(data, b"\x01\x23\x03\x60\x00\x20\x70\x47\x70\xB5", 0) {
         data[idx..idx + 2].copy_from_slice(b"\x00\x23");
         info!("已修补 DA2: security check");
         patch_count += 1;
     }
 
-    // DA2 独有：anti-rollback
+    // DA2-specific: anti-rollback
     if let Some(idx) = find_binary(data, &0xC0020053u32.to_le_bytes(), 0) {
         data[idx..idx + 4].copy_from_slice(&0u32.to_le_bytes());
         info!("已修补 DA2: DA version anti-rollback");
         patch_count += 1;
     }
 
-    // DA2 独有：SBC
+    // DA2-specific: SBC
     if let Some(idx) = find_binary(data, b"\x02\x4B\x18\x68\xC0\xF3\x40\x00\x70\x47", 0) {
         data[idx + 4..idx + 8].copy_from_slice(b"\x4F\xF0\x00\x00");
         info!("已修补 DA2: SBC");
         patch_count += 1;
     }
 
-    // DA2 独有：register read/write
+    // DA2-specific: register read/write
     if let Some(idx) = find_binary(data, &0xC004000Du32.to_le_bytes(), 0) {
         data[idx..idx + 4].copy_from_slice(&0u32.to_le_bytes());
         info!("已修补 DA2: register read/write");
         patch_count += 1;
     }
 
-    // DA2 独有：write not allowed pattern 1
+    // DA2-specific: write not allowed pattern 1
     let mut idx = 0;
     let mut write_patched = false;
     while let Some(pos) = data[idx..]
@@ -313,7 +313,7 @@ pub fn patch_da2(data: &mut [u8]) {
         patch_count += 1;
     }
 
-    // DA2 独有：write not allowed pattern 2
+    // DA2-specific: write not allowed pattern 2
     if let Some(idx) = find_binary(data, b"\x0C\x23\xCC\xF2\x02\x03", 0) {
         data[idx..idx + 6].copy_from_slice(b"\x00\x23\x00\x23\x00\x23");
         if let Some(idx2) = find_binary(data, b"\x2A\x23\xCC\xF2\x02\x03", 0) {
@@ -331,16 +331,16 @@ pub fn patch_da2(data: &mut [u8]) {
 }
 
 // =============================================================================
-// impl DAXFlash — 让 upload.rs 用 Self::patch_da1 / Self::patch_da2 调用
+// impl DAXFlash — lets upload.rs call via Self::patch_da1 / Self::patch_da2
 // =============================================================================
 
 impl<'a> DAXFlash<'a> {
-    /// DA1 patch：对齐 Python patch_da1 + patch_preloader_security_da1
+    /// DA1 patch: matches Python patch_da1 + patch_preloader_security_da1
     pub(crate) fn patch_da1(data: &mut [u8]) {
         patch_da1(data);
     }
 
-    /// DA2 patch：对齐 Python patch_da2 + patch_preloader_security_da2
+    /// DA2 patch: matches Python patch_da2 + patch_preloader_security_da2
     pub(crate) fn patch_da2(data: &mut [u8]) {
         patch_da2(data);
     }

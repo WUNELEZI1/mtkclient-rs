@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [master, windows]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit tests
+        run: cargo test --bin mtkclient-rs
+
+      - name: Integration tests
+        run: cargo test --test integration
+
+      - name: API docs
+        run: cargo doc --no-deps
+        continue-on-error: false
+
+      - name: Release build
+        run: cargo build --release

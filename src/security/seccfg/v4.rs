@@ -1,20 +1,20 @@
-//! SecCfg V4 结构（28 字节头 + 32 字节 SHA256/AES 哈希尾部）
+//! SecCfg V4 structure (28-byte header + 32-byte SHA256/AES hash tail)
 //!
-//! - 解析：识别 SW / V2 / V3 / V4 加密类型
-//! - 构建：修改 lock_state + dm_verity_state，对齐 Python mtkclient
+//! - Parse: detect the SW / V2 / V3 / V4 encryption type
+//! - Build: modify lock_state + dm_verity_state, matching Python mtkclient
 
 use crate::sha::Sha256;
 use log::info;
 
 use crate::security::sej::sej_sec_cfg_sw_decrypt;
 
-/// SecCfg V4 解析和修改
+/// SecCfg V4 parsing and modification
 pub(crate) struct SecCfgV4 {
     pub(crate) magic: u32,
     pub(crate) seccfg_ver: u32,
     pub(crate) seccfg_size: u32,
     pub(crate) lock_state: u32,
-    pub(crate) dm_verity_state: u32, // 偏移 0x10: dm-verity 状态（0=正常）
+    pub(crate) dm_verity_state: u32, // offset 0x10: dm-verity state (0 = normal)
     pub(crate) sboot_runtime: u32,
     pub(crate) endflag: u32,
     pub(crate) hwtype: String, // "SW", "V2", "V3", "V4"
@@ -24,7 +24,7 @@ impl SecCfgV4 {
     pub(crate) const MAGIC: u32 = 0x4D4D4D4D;
     pub(crate) const ENDFLAG: u32 = 0x45454545;
 
-    /// 解析 seccfg V4 数据
+    /// Parse seccfg V4 data
     pub(crate) fn parse(data: &[u8]) -> Result<SecCfgV4, String> {
         if data.len() < 28 {
             return Err("seccfg 数据太小，无法解析 V4 头部".to_string());
@@ -34,8 +34,8 @@ impl SecCfgV4 {
         let ver = u32::from_le_bytes(data[4..8].try_into().unwrap());
         let size = u32::from_le_bytes(data[8..12].try_into().unwrap());
         let lock = u32::from_le_bytes(data[12..16].try_into().unwrap());
-        // 偏移 0x10 是 dm-verity 状态（历史命名 critical_lock_state 是 mtkclient 的误读，
-        // 写入非 0 值会触发 dm-verity error，见 build.rs 注释）
+        // Offset 0x10 is the dm-verity state (the historical name critical_lock_state was mtkclient's
+        // misreading; a non-zero value triggers a dm-verity error, see the comment in build.rs)
         let dm_verity_state = u32::from_le_bytes(data[16..20].try_into().unwrap());
         let sboot = u32::from_le_bytes(data[20..24].try_into().unwrap());
         let endflag = u32::from_le_bytes(data[24..28].try_into().unwrap());
@@ -47,8 +47,8 @@ impl SecCfgV4 {
             ));
         }
 
-        // 对齐 mtkclient: hash = data[seccfg_size - 0x20 : seccfg_size]
-        // seccfg_size 通常为 0x3C，即 data[0x1C..0x3C]
+        // Mirrors mtkclient: hash = data[seccfg_size - 0x20 : seccfg_size]
+        // seccfg_size is usually 0x3C, i.e. data[0x1C..0x3C]
         let seccfg_size = size as usize;
         let enc_hash = if seccfg_size >= 0x20 && data.len() >= seccfg_size {
             data[seccfg_size - 0x20..seccfg_size].to_vec()
@@ -89,21 +89,21 @@ impl SecCfgV4 {
 
         let expected_hash = Sha256::digest(seccfg_header);
 
-        // 对齐 C# 移植版行为：V4 格式（magic=0x4D4D4D4D）直接判定 hwtype=V4
-        // 不做软件解密验证（HACC 密钥来自芯片 HUID/HUK，软件模拟无法匹配）
-        // SW 类型极少见，如果存在可在后续版本通过 HACC 硬件解密来识别
+        // Mirrors the C# port: treat the V4 format (magic=0x4D4D4D4D) as hwtype=V4
+        // without software decryption verification (the HACC key comes from the chip HUID/HUK, which software cannot match)
+        // The SW type is very rare; if present it can later be identified via HACC hardware decryption
         //
-        // Python 原版通过逐一尝试 sej_sec_cfg_sw/v3/v2 解密验证来确定类型，
-        // 但前提是 custom_sej_hw（HACC 硬件后端）可用。
-        // 我们在 parse 阶段没有 HACC 后端（此时 DA Extensions 尚未初始化），
-        // 所以按格式直接判定即可，写入时再用 HACC 硬件签名。
+        // The original Python tried sej_sec_cfg_sw/v3/v2 decryption one by one to determine the type,
+        // but only when custom_sej_hw (the HACC hardware backend) is available.
+        // At parse time we have no HACC backend (DA Extensions are not initialized yet),
+        // so decide by format alone and sign with HACC hardware later on write.
         let hwtype = if let Ok(dec) = sej_sec_cfg_sw_decrypt(&enc_hash)
             && dec[..32] == expected_hash[..]
         {
             "SW".to_string()
         } else {
-            // 非 SW 类型均需要 HACC 硬件验证，在 parse 阶段按 V4 格式默认
-            // 写入时 sign_v4_digest 会用 HACC 硬件签名（legacy=true）
+            // Non-SW types all require HACC hardware verification, so default to the V4 format at parse time
+            // sign_v4_digest uses HACC hardware signing (legacy=true) on write
             "V4".to_string()
         };
 
@@ -118,7 +118,7 @@ impl SecCfgV4 {
             hwtype,
         };
 
-        // 输出解析结果（dm_verity_state/sboot_runtime 供排查 dm-verity 与 sboot 运行态）
+        // Log the parse result (dm_verity_state/sboot_runtime help diagnose dm-verity and sboot runtime)
         info!(
             "seccfg V4 解析成功: hwtype={}, lock_state=0x{:08X}, dm_verity_state=0x{:08X}, sboot_runtime=0x{:08X}",
             v4.hwtype, v4.lock_state, v4.dm_verity_state, v4.sboot_runtime

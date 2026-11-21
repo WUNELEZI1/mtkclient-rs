@@ -1,13 +1,13 @@
-//! 最小 f2fs 文件系统镜像生成
+//! Minimal f2fs filesystem image generation
 //!
-//! 生成一个可被 Linux 内核挂载的最小 f2fs 文件系统镜像，
-//! 包含有效的 superblock、checkpoint、NAT、SIT、SSA、根 inode 和根目录。
-//! 支持 4096 字节块大小，2MB segment 大小。
+//! Generates a minimal f2fs image that the Linux kernel can mount,
+//! containing a valid superblock, checkpoint, NAT, SIT, SSA, root inode and root directory.
+//! Supports a 4096-byte block size and a 2MB segment size.
 
 #![allow(clippy::too_many_arguments)]
 use super::*;
 
-// ==================== Superblock 写入 ====================
+// ==================== Superblock writing ====================
 
 pub(crate) fn write_superblock(
     image: &mut [u8],
@@ -66,31 +66,31 @@ pub(crate) fn write_superblock(
     ];
     image[sb + SB_UUID..sb + SB_UUID + 16].copy_from_slice(&uuid);
 
-    // 卷标
+    // Volume label
     for (i, &b) in VOLUME_LABEL.iter().take(16).enumerate() {
         write_u16_le(image, sb + SB_VOLUME_NAME + i * 2, b as u16);
     }
 
-    // 扩展名
+    // Extensions
     write_u32_le(image, sb + SB_EXTENSION_COUNT, 0);
 
     // CP payload
     write_u32_le(image, sb + SB_CP_PAYLOAD, 0);
 
-    // 版本字符串
+    // Version string
     let ver = b"fastboot-rs v0.1.0\0";
     let ver_len = ver.len().min(256);
     image[sb + SB_VERSION..sb + SB_VERSION + ver_len].copy_from_slice(ver);
     image[sb + SB_INIT_VERSION..sb + SB_INIT_VERSION + ver_len].copy_from_slice(ver);
 
-    // 特性标志
+    // Feature flags
     write_u32_le(image, sb + SB_FEATURE, 0);
 
-    // 校验和
+    // Checksum
     write_u32_le(image, sb + SB_CRC, 0);
 }
 
-// ==================== Checkpoint 写入 ====================
+// ==================== Checkpoint writing ====================
 
 pub(crate) fn write_checkpoint(
     image: &mut [u8],
@@ -122,13 +122,13 @@ pub(crate) fn write_checkpoint(
     write_u32_le(image, cp + CP_OVERPROV_SEGMENT_COUNT, 0);
     // free_segment_count = main_segments - 1 (1 segment used for root)
     write_u32_le(image, cp + CP_FREE_SEGMENT_COUNT, main_segments - 1);
-    // cur_node_segno[0] = 0 (main segment 0)
+    // cur_node_segno`0` = 0 (main segment 0)
     write_u32_le(image, cp + CP_CUR_NODE_SEGNO, 0);
-    // cur_node_blkoff[0] = 1 (next write at block 1)
+    // cur_node_blkoff`0` = 1 (next write at block 1)
     write_u16_le(image, cp + CP_CUR_NODE_BLKOFF, 1);
-    // cur_data_segno[0] = 0
+    // cur_data_segno`0` = 0
     write_u32_le(image, cp + CP_CUR_DATA_SEGNO, 0);
-    // cur_data_blkoff[0] = 2 (next write at block 2, after root data)
+    // cur_data_blkoff`0` = 2 (next write at block 2, after root data)
     write_u16_le(image, cp + CP_CUR_DATA_BLKOFF, 2);
     // ckpt_flags = CP_UMOUNT_FLAG (clean unmount)
     write_u32_le(image, cp + CP_CKPT_FLAGS, 0x00000001);
@@ -161,37 +161,42 @@ pub(crate) fn write_checkpoint(
     // elapsed_time = 0
     write_u64_le(image, cp + CP_ELAPSED_TIME, 0);
 
-    // alloc_type: 所有日志类型为 CUR_LOG_ALIVE (0)
+    // alloc_type: every log type is CUR_LOG_ALIVE (0)
     for i in 0..16 {
         write_u8(image, cp + CP_ALLOC_TYPE + i, 0);
     }
 
-    // SIT bitmap: 标记前 2 个 SIT block 为已用
+    // SIT bitmap: mark the first 2 SIT blocks as used
     let sit_bitmap_offset = cp + CP_SIT_NAT_BITMAP;
     // 2 SIT segments = 2 blocks, 2 bits
-    // 实际需要: ceil(1+2+2+2+1+1 / 55) = ceil(9/55) = 1 block
-    // 标记 bit 0 为 1 (第一个 SIT block 已用)
+    // Actually needed: ceil(1+2+2+2+1+1 / 55) = ceil(9/55) = 1 block
+    // Set bit 0 to 1 (the first SIT block is in use)
     for i in 0..2 {
         image[sit_bitmap_offset + i] = 0xFF;
     }
 
-    // NAT bitmap: 标记前 1 个 NAT block 为已用
+    // NAT bitmap: mark the first NAT block as used
     let nat_bitmap_offset = sit_bitmap_offset + sit_ver_bitmap_bytesize as usize;
     image[nat_bitmap_offset] = 0x01;
 
-    // 校验和 (在块末尾 4 字节)
-    // 对于最小实现，直接使用固定校验和 0
+    // Checksum (last 4 bytes of the block)
+    // For the minimal implementation, use a fixed checksum of 0
     write_u32_le(image, cp + BLOCK_SIZE - 4, 0);
 }
 
-// ==================== SIT 条目写入 ====================
+// ==================== SIT entry writing ====================
 
-pub(crate) fn write_sit_entry(image: &mut [u8], block_offset: usize, entry_idx: usize, vblocks: u16) {
+pub(crate) fn write_sit_entry(
+    image: &mut [u8],
+    block_offset: usize,
+    entry_idx: usize,
+    vblocks: u16,
+) {
     let entry_offset = block_offset + entry_idx * 74;
-    // vblocks: 低 10 位为有效块数，高 6 位为分配类型
-    let vblocks_val = vblocks; // 分配类型 0 (CUR_LOG_ALIVE)
+    // vblocks: low 10 bits hold the valid block count, high 6 bits the allocation type
+    let vblocks_val = vblocks; // allocation type 0 (CUR_LOG_ALIVE)
     write_u16_le(image, entry_offset, vblocks_val);
-    // valid_map: 标记前 vblocks 个块为有效
+    // valid_map: mark the first vblocks blocks as valid
     for i in 0..vblocks as usize {
         let byte_idx = entry_offset + 2 + i / 8;
         let bit_idx = i % 8;
@@ -201,9 +206,9 @@ pub(crate) fn write_sit_entry(image: &mut [u8], block_offset: usize, entry_idx: 
     write_u64_le(image, entry_offset + 66, 0);
 }
 
-// ==================== f2fs 目录哈希函数 ====================
+// ==================== f2fs directory hash function ====================
 
-/// 计算 f2fs 文件名哈希值
+/// Compute the f2fs filename hash
 pub(crate) fn hash_filename(name: &[u8]) -> u32 {
     let mut hash: u32 = 0;
     for &c in name {
@@ -212,7 +217,7 @@ pub(crate) fn hash_filename(name: &[u8]) -> u32 {
     hash
 }
 
-// ==================== 小端写入辅助函数 ====================
+// ==================== Little-endian write helpers ====================
 
 pub(crate) fn write_u8(buf: &mut [u8], offset: usize, val: u8) {
     buf[offset] = val;

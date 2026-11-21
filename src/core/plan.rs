@@ -1,40 +1,40 @@
-//! 规划模型：步骤、成本、计划。
+//! Planning model: steps, cost, plan.
 //!
-//! ## Cost 定义（验收项 27）
+//! ## Cost definition (acceptance item 27)
 //!
-//! 加权是**字典序式**的手工权重，越小越好：
+//! Weights are manual and **lexicographic**; smaller is better:
 //!
-//! | 项 | 权重 | 理由 |
+//! | Item | Weight | Rationale |
 //! |---|---|---|
-//! | 每个步骤 | 100 | 步骤越多，失败面越大 |
-//! | 每次模式切换（重插/重启） | 300 | 需要用户物理操作，体验成本最高 |
-//! | 每次 DA 加载 | 200 | 耗时数百 ms 到数秒，且可能失败 |
-//! | 预计耗时 | `est_ms / 10` | 同一层级内做微调 |
+//! | Per step | 100 | More steps mean more failure surface |
+//! | Per mode switch (replug/reboot) | 300 | Requires physical user action, highest UX cost |
+//! | Per DA load | 200 | Takes hundreds of ms to seconds and may fail |
+//! | Estimated time | `est_ms / 10` | Fine-tuning within the same tier |
 //!
-//! 因此“步骤数”优先于“是否重启”，再优先于“是否加载 DA”，最后才是耗时。
-//! 平局时用 `preferred_caps` 打破（见 Planner）。
+//! So "step count" outranks "reboot", which outranks "DA load", with time last.
+//! Ties are broken by `preferred_caps` (see Planner).
 
 use super::capability::CapabilitySet;
 
-/// exploit 所处阶段。定义在 core，避免 `core` 反向依赖 `exploit`。
+/// Exploit stage. Defined in core to avoid `core` depending on `exploit`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
-    /// BootROM 层（linecode / BROM 内存读写）
+    /// BootROM layer (linecode / BROM memory access)
     Brom,
-    /// Preloader 层（2nd DA bypass、镜像签名伪造）
+    /// Preloader layer (2nd DA bypass, image signature forgery)
     Preloader,
-    /// DA 层（Carbonara / Heapbait 等 DA patch）
+    /// DA layer (Carbonara / Heapbait and other DA patches)
     Da,
 }
 
-/// 工作模式：约束 Planner 搜索空间。
+/// Work mode: constrains the Planner search space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// 只走 BROM（不搜 Preloader exploit）
+    /// BROM only (no Preloader exploit search)
     Brom,
-    /// 只走 Preloader / DA 加载（不搜 BROM exploit）
+    /// Preloader / DA load only (no BROM exploit search)
     Preloader,
-    /// 全搜，BROM 优先（步骤少）
+    /// Search everything, BROM first (fewer steps)
     Auto,
 }
 
@@ -56,7 +56,7 @@ impl Mode {
         }
     }
 
-    /// 该模式是否允许某类 exploit 阶段。
+    /// Whether this mode allows a given exploit stage.
     pub const fn allows(self, stage: Stage) -> bool {
         match self {
             Mode::Brom => matches!(stage, Stage::Brom),
@@ -66,17 +66,17 @@ impl Mode {
     }
 }
 
-/// 计划中的一步。
+/// One step in a plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanStep {
-    /// 切换工作模式（需要重插 / 重启）；当前仅用于成本权重测试
+    /// Switch work mode (requires replug / reboot); currently only used by cost weight tests
     #[cfg(test)]
     ModeSwitch(Mode),
-    /// 施加一个 exploit（名字取自注册表）
+    /// Apply one exploit (name from the registry)
     Exploit(&'static str),
-    /// 加载 DA
+    /// Load DA
     DaLoad(super::device::ProtocolVersion),
-    /// 参数调整（例如降低 DA 波特率）
+    /// Parameter tweak (e.g. lower DA baud rate)
     ParamAdjust(&'static str),
 }
 
@@ -92,7 +92,7 @@ impl PlanStep {
     }
 }
 
-/// 成本（见模块注释的权重表）。
+/// Cost (see the weight table in the module docs).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Cost {
     pub steps: u32,
@@ -113,7 +113,7 @@ impl Cost {
             + self.est_ms / 10
     }
 
-    /// 累加一步。
+    /// Accumulate one step.
     pub fn add_step(&mut self, step: &PlanStep) {
         self.steps += 1;
         match step {
@@ -132,14 +132,14 @@ impl Cost {
     }
 }
 
-/// 一条完整计划。
+/// A complete plan.
 #[derive(Debug, Clone)]
 pub struct Plan {
     pub steps: Vec<PlanStep>,
     pub cost: Cost,
-    /// 执行完可获得的全部能力（含偏序展开前的直接位）
+    /// All capabilities gained after execution (including direct bits before partial-order expansion)
     pub acquired: CapabilitySet,
-    /// 为什么选它（人类可读，进决策日志）
+    /// Why this plan was chosen (human-readable, goes into the decision log)
     pub reason: String,
 }
 

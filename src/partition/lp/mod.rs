@@ -1,47 +1,49 @@
-//! Android Dynamic Partition (liblp) 解析器
+//! Android Dynamic Partition (liblp) parser.
 //!
-//! 严格按照 AOSP system/core/fs_mgr/liblp/include/liblp/metadata_format.h 标准实现。
+//! Follows AOSP system/core/fs_mgr/liblp/include/liblp/metadata_format.h exactly.
 //!
-//! 数据布局（super 分区或 metadata 分区）：
+//! Data layout (super partition or metadata partition):
 //!   0x0000  reserved (LP_PARTITION_RESERVED_BYTES = 4096)
-//!   0x1000  primary Geometry   (LpMetadataGeometry, 固定 4096 字节)
-//!   0x2000  backup Geometry    (LpMetadataGeometry, 固定 4096 字节)
+//!   0x1000  primary Geometry   (LpMetadataGeometry, fixed 4096 bytes)
+//!   0x2000  backup Geometry    (LpMetadataGeometry, fixed 4096 bytes)
 //!   0x3000  primary Metadata   (Header + Tables)
 //!   ...     backup Metadata(s)
 //!   ...     logical partition data
 //!
-//! Metadata 内部：
-//!   Header (固定 256 字节，含 4 个 LpMetadataTableDescriptor)
+//! Inside Metadata:
+//!   Header (fixed 256 bytes, holding 4 LpMetadataTableDescriptor entries)
 //!   Partition table
 //!   Extent table
 //!   Group table
 //!   Block device table
 //!
-//! 注意：MTK Virtual A/B 设备（如 MT6768）可能将 metadata 存储在独立的
-//! metadata 分区（32MB）中，而非 super 分区头部。此时 super 分区可能全零。
+//! Note: MTK Virtual A/B devices (e.g. MT6768) may store metadata in a standalone
+//! metadata partition (32MB) instead of the super partition header; the super
+//! partition may then be entirely zero.
 
 pub(crate) mod parse;
 pub(crate) mod types;
 
 // ============================================================================
-// AOSP 标准 Magic 值
+// AOSP standard magic values
 // ============================================================================
 
 /// LP_METADATA_GEOMETRY_MAGIC = 0x616C4467 ("gDla" in LE)
-/// 注：AOSP metadata_format.h 定义为小端 0x616C4467。此前误写为 0x674C4164
-/// （那是 "gDla" 的大端表示），而扫描用 from_le_bytes 小端读取，导致永远匹配不上。
+/// Note: AOSP metadata_format.h defines this as little-endian 0x616C4467. It was
+/// previously miswritten as 0x674C4164 (the big-endian form of "gDla"), while the
+/// scan compares with from_le_bytes, so it never matched.
 const GEOMETRY_MAGIC: u32 = 0x616C4467;
 /// LP_METADATA_HEADER_MAGIC = 0x414C5030 ("0PLA" in LE)
 const HEADER_MAGIC: u32 = 0x414C5030;
 
-/// LpMetadataPartitionGroup (变长，默认 entry_size = 0x30 = 48 字节)
+/// LpMetadataPartitionGroup (variable length, default entry_size = 0x30 = 48 bytes)
 ///
-/// AOSP 布局：
-///   offset 0:  name(char[36])
+/// AOSP layout:
+///   offset 0:  name(char`36`)
 ///   offset 36: flags(u32)
 ///   offset 40: maximum_size(u64)
 #[derive(Debug, Clone)]
 pub struct LpMetadataGroup {}
 
-// 重新导出子模块中的 pub 项，确保通过 crate::partition::lp::Item 仍可访问
+// Re-export pub items from submodules so they stay reachable via crate::partition::lp::Item
 pub use parse::SuperMetadata;

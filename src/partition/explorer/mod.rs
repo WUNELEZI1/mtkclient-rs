@@ -1,13 +1,13 @@
-//! super.img 文件系统浏览器（fs_shell）
+//! super.img filesystem browser (fs_shell)
 //!
-//! 惰性分层读取，不将整个 super 分区读入内存：
-//!   LP metadata(32KB) → ext4 superblock(4KB) → BGD(64B) → inode(256B) → 目录/文件数据块
+//! Lazy layered reads; never load the whole super partition into memory:
+//!   LP metadata(32KB) → ext4 superblock(4KB) → BGD(64B) → inode(256B) → dir/file data blocks
 //!
-//! 三层架构：
-//!   用户命令 → Explorer (命令解析)
-//!            → ext4 读取函数 (只关心分区逻辑偏移)
-//!            → LpTranslator (逻辑偏移 → super.img 物理偏移)
-//!            → FnMut(u64,u64) 回调读取
+//! Three-layer architecture:
+//!   user command → Explorer (command parsing)
+//!                → ext4 read functions (care only about partition logical offsets)
+//!                → LpTranslator (logical offset → super.img physical offset)
+//!                → FnMut(u64,u64) callback reads
 
 pub(crate) mod ext4;
 pub(crate) mod lp;
@@ -20,20 +20,20 @@ pub use read::{read_file_by_path, read_file_via_lp, run_explorer};
 pub use shell::Explorer;
 
 // ============================================================================
-// 共享 LP 常量
+// Shared LP constants
 // ============================================================================
 
-/// LP magic 值
-const LP_GEOMETRY_MAGIC: u32 = 0x674C4164; // AOSP 标准 "gDla"
-const LP_GEOMETRY_MAGIC_ALT: u32 = 0x616C4467; // 本设备 "gDla" 变体
+/// LP magic values
+const LP_GEOMETRY_MAGIC: u32 = 0x674C4164; // AOSP standard "gDla"
+const LP_GEOMETRY_MAGIC_ALT: u32 = 0x616C4467; // this device's "gDla" variant
 const LP_HEADER_MAGIC: u32 = 0x414C5030; // "0PLA"
 
-/// LP 属性位
+/// LP attribute bits
 const LP_ATTR_READONLY: u32 = 0x00000001;
 const LP_ATTR_SLOT_SUFFIXED: u32 = 0x00000002;
 
 // ============================================================================
-// 工具函数
+// Helpers
 // ============================================================================
 
 fn fmt_size(n: u64) -> String {

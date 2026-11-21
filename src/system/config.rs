@@ -1,7 +1,7 @@
-/// MediaTek USB 厂商 ID
+/// MediaTek USB vendor ID
 pub const MEDIATEK_VID: u16 = 0x0E8D;
 
-/// 设备类型（用于判断握手策略和模式识别）
+/// Device type (drives the handshake strategy and mode detection)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceType {
     Brom,
@@ -11,7 +11,7 @@ pub enum DeviceType {
 }
 
 impl DeviceType {
-    /// 根据 VID/PID 判断设备类型
+    /// Determine the device type from VID/PID
     pub fn from_vid_pid(vid: u16, pid: u16) -> Self {
         if vid != MEDIATEK_VID {
             return DeviceType::Unknown;
@@ -24,13 +24,13 @@ impl DeviceType {
         }
     }
 
-    /// 判断是否为 BROM 设备（影响握手协议）
+    /// Whether this is a BROM device (affects the handshake protocol)
     pub fn is_brom(&self) -> bool {
         matches!(self, DeviceType::Brom)
     }
 }
 
-/// USB 设备配置（VID/PID 集中管理）
+/// USB device configuration (centralizes VID/PID)
 #[derive(Debug, Clone)]
 pub struct DeviceConfig {
     pub vid: u16,
@@ -40,7 +40,7 @@ pub struct DeviceConfig {
     pub description: &'static str,
 }
 
-/// 支持的设备配置表（按尝试顺序排列）
+/// Supported device table (in probe order)
 pub const SUPPORTED_DEVICES: &[DeviceConfig] = &[
     DeviceConfig {
         vid: MEDIATEK_VID,
@@ -65,14 +65,14 @@ pub const SUPPORTED_DEVICES: &[DeviceConfig] = &[
     },
 ];
 
-/// 用户指定的工作模式
+/// User-selected work mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkMode {
-    /// BROM 模式：完整流程（握手 → 关看门狗 → bypass → send_da）
+    /// BROM mode: full flow (handshake → disable watchdog → bypass → send_da)
     Brom,
-    /// Preloader 模式：跳过 bypass，直接 send_da
+    /// Preloader mode: skip bypass and call send_da directly
     Preloader,
-    /// 自动检测（预留）
+    /// Auto-detect (reserved)
     Auto,
 }
 
@@ -98,24 +98,24 @@ pub struct AppConfig {
     pub verify: bool,
     pub command: Option<String>,
     pub cmd_args: Vec<String>,
-    /// 危险操作直接放行（`--yes`）
+    /// Skip confirmation for dangerous operations (`--yes`)
     pub assume_yes: bool,
-    /// 仿真 flash 状态文件（`--sim-state`）
+    /// Simulated flash state file (`--sim-state`)
     pub sim_state: Option<String>,
-    /// 混沌仿真（`--sim-chaos`）：随机丢包 / 静默 / 瞬时超时 / 位翻转
+    /// Chaos simulation (`--sim-chaos`): random packet loss / silence / transient timeouts / bit flips
     pub sim_chaos: bool,
-    /// 混沌随机种子（`--sim-chaos-seed`）；固定种子可复现故障序列
+    /// Chaos RNG seed (`--sim-chaos-seed`); a fixed seed reproduces the failure sequence
     pub sim_chaos_seed: Option<u64>,
-    /// 瞬时超时重试次数（`--max-retries`，默认 3；只作用于读方向）
+    /// Transient-timeout retry count (`--max-retries`, default 3; read direction only)
     pub max_retries: u32,
 }
 
-/// 在位置参数里查找布尔开关（`--flag`）。
+/// Look up a boolean switch (`--flag`) among the positional arguments.
 fn has_flag(args: &[String], flag: &str) -> bool {
     args.iter().any(|a| a == flag)
 }
 
-/// 在位置参数里查找 `--flag value` 或 `--flag=value` 的取值。
+/// Look up the value of `--flag value` or `--flag=value` among the positional arguments.
 fn arg_value(args: &[String], flag: &str) -> Option<String> {
     let eq = format!("{}=", flag);
     let mut it = args.iter();
@@ -150,12 +150,12 @@ impl AppConfig {
             verify: cli.verify,
             command: cli.command.clone(),
             cmd_args: cli.args.clone(),
-            // `args` 是 `allow_hyphen_values` 的位置参数，写在命令之后的
-            // `--yes` 会被它吞掉，这里两种位置都认。
+            // `args` is an `allow_hyphen_values` positional argument, so a `--yes` written
+            // after the command is swallowed by it; accept both positions here.
             assume_yes: cli.yes || has_flag(&cli.args, "--yes"),
-            // `args` 是 `allow_hyphen_values` 的位置参数：写在命令之后的全局开关
-            // （`--yes` / `--sim-state` / `--sim-chaos` …）会被它吞掉。
-            // 这里两种位置都认，避免"参数静默失效"这种最难排查的坑。
+            // `args` is an `allow_hyphen_values` positional argument: global switches placed
+            // after the command (`--yes` / `--sim-state` / `--sim-chaos` …) are swallowed by it.
+            // Accept both positions so flags never fail silently — the hardest bug class to trace.
             sim_state: cli
                 .sim_state
                 .clone()
@@ -171,48 +171,48 @@ impl AppConfig {
     }
 }
 
-/// 芯片完整配置（对齐 Python ChipConfig + Mt6768Config）
+/// Full chip configuration (mirrors Python ChipConfig + Mt6768Config)
 #[derive(Debug, Clone, Copy)]
 pub struct ChipConfig {
     pub hw_code: u16,
-    /// DA 文件内部使用的 hw_code（对齐 Python Chipconfig.dacode）
-    /// BROM 返回 0x0707 但 DA 文件内匹配 0x6768，两者不同
+    /// hw_code used inside the DA file (mirrors Python Chipconfig.dacode)
+    /// BROM returns 0x0707 but the DA file matches 0x6768, so the two differ
     pub da_code: u16,
     pub name: &'static str,
     pub loader: &'static str,
     pub watchdog: u32,
     pub brom_payload_addr: u32,
     pub sej_base: u32,
-    pub send_ptr: (u32, u32),             // (地址, 偏移)
-    pub brom_register_access: (u32, u32), // (地址1, 地址2)
-    /// Kamakiri2 基准地址（da_read/da_write 内部 kamakiri2 步骤使用）
-    /// Python 用 brom_register_access[0][1]，但某些芯片需要特殊值
-    /// None 时自动使用 brom_register_access.1
+    pub send_ptr: (u32, u32),             // (address, offset)
+    pub brom_register_access: (u32, u32), // (address1, address2)
+    /// Kamakiri2 base address (used by the kamakiri2 step inside da_read/da_write)
+    /// Python uses brom_register_access`0``1`, but some chips need a special value
+    /// When None, brom_register_access.1 is used automatically
     pub ptr_da_bra: Option<u32>,
-    /// da_read 读取 ptr_send 的地址
-    /// None 时自动使用 send_ptr.1
+    /// Address from which da_read reads ptr_send
+    /// When None, send_ptr.1 is used automatically
     pub ptr_send_addr: Option<u32>,
 }
 
-/// 芯片配置表（按 hw_code 索引）
-/// 从 mtkclient brom_config.py 自动提取，包含 67 种芯片配置
+/// Chip configuration table (indexed by hw_code)
+/// Auto-extracted from mtkclient brom_config.py; covers 67 chip configurations
 pub use crate::system::chips_generated::CHIP_CONFIGS;
 
-/// 设备安全配置（对齐 penumbra `Preloader::get_target_config` 位域文档）
+/// Device security configuration (mirrors penumbra `Preloader::get_target_config` bitfield docs)
 ///
-/// 位定义（`target_config` 低 9 位，逐位独立）：
+/// Bit definitions (low 9 bits of `target_config`, each independent):
 /// - `0x001` SBC          — Secure Boot Control
 /// - `0x002` SLA          — Serial Link Authentication
 /// - `0x004` DAA          — Download Agent Authentication
-/// - `0x008` EppParam     — EPP 参数
-/// - `0x010` RootCert     — 需要根证书
-/// - `0x020` MemReadAuth  — 内存读取鉴权
-/// - `0x040` MemWriteAuth — 内存写入鉴权
-/// - `0x080` CacheOpAuth  — Cache 操作鉴权
-/// - `0x100` SctrlCert    — Sctrl 证书
+/// - `0x008` EppParam     — EPP parameters
+/// - `0x010` RootCert     — requires a root certificate
+/// - `0x020` MemReadAuth  — memory read authentication
+/// - `0x040` MemWriteAuth — memory write authentication
+/// - `0x080` CacheOpAuth  — cache operation authentication
+/// - `0x100` SctrlCert    — Sctrl certificate
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetConfig {
-    /// 原始 32 位配置值
+    /// Raw 32-bit configuration value
     pub raw: u32,
     /// Secure Boot Control
     pub sbc: bool,
@@ -220,17 +220,17 @@ pub struct TargetConfig {
     pub sla: bool,
     /// Download Agent Authentication
     pub daa: bool,
-    /// EPP 参数
+    /// EPP parameters
     pub epp_param: bool,
-    /// 需要根证书
+    /// Requires a root certificate
     pub root_cert: bool,
-    /// 内存读取鉴权
+    /// Memory read authentication
     pub mem_read_auth: bool,
-    /// 内存写入鉴权
+    /// Memory write authentication
     pub mem_write_auth: bool,
-    /// Cache 操作鉴权
+    /// Cache operation authentication
     pub cache_op_auth: bool,
-    /// Sctrl 证书
+    /// Sctrl certificate
     pub sctrl_cert: bool,
 }
 
@@ -245,7 +245,7 @@ impl TargetConfig {
     pub const BIT_CACHE_OP_AUTH: u32 = 0x080;
     pub const BIT_SCTRL_CERT: u32 = 0x100;
 
-    /// 由原始 32 位配置解析各安全标志位
+    /// Parse the security flags from the raw 32-bit configuration
     pub fn from_raw(raw: u32) -> Self {
         TargetConfig {
             raw,
@@ -261,13 +261,13 @@ impl TargetConfig {
         }
     }
 
-    /// 是否需要执行 Kamakiri2 bypass
-    /// 除了 SBC/SLA/DAA 外，Mem Read/Write Auth 也会阻止 BROM 的内存读写命令
+    /// Whether a Kamakiri2 bypass is required
+    /// Besides SBC/SLA/DAA, Mem Read/Write Auth also blocks BROM memory read/write commands
     pub fn needs_bypass(&self) -> bool {
         self.sbc || self.sla || self.daa || self.mem_read_auth || self.mem_write_auth
     }
 
-    /// 是否需要 SLA 认证（SLA 或 DAA 任一置位）
+    /// Whether SLA authentication is required (SLA or DAA set)
     pub fn requires_auth(&self) -> bool {
         self.sla || self.daa
     }
@@ -293,7 +293,7 @@ impl TargetConfig {
 }
 
 // =============================================================================
-// 单元测试 — target_config 位域解析（P1-2）
+// Unit tests — target_config bitfield parsing (P1-2)
 // =============================================================================
 
 #[cfg(test)]
@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn flags_after_command_are_recognised() {
-        // 位置参数会吞掉写在命令之后的全局开关，必须两种位置都认。
+        // Positional arguments swallow global switches written after the command; accept both positions.
         let args: Vec<String> = ["w", "boot_a", "x.img", "--yes", "--sim-state", "/tmp/s.bin"]
             .iter()
             .map(|s| s.to_string())
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn target_config_each_bit_is_independent() {
-        // 逐位独立：每个掩码只置位自身对应的字段
+        // Bits are independent: each mask sets only its own field
         let sbc = TargetConfig::from_raw(TargetConfig::BIT_SBC);
         assert!(sbc.sbc && !sbc.sla && !sbc.daa && !sbc.mem_read_auth);
 
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn target_config_bit_masks_match_penumbra() {
-        // 对齐 penumbra 文档：SBC..SctrlCert 共 9 位
+        // Mirrors the penumbra docs: SBC..SctrlCert, 9 bits in total
         assert_eq!(TargetConfig::BIT_SBC, 0x001);
         assert_eq!(TargetConfig::BIT_SLA, 0x002);
         assert_eq!(TargetConfig::BIT_DAA, 0x004);
@@ -381,7 +381,7 @@ mod tests {
         assert!(TargetConfig::from_raw(TargetConfig::BIT_SBC).needs_bypass());
         assert!(TargetConfig::from_raw(TargetConfig::BIT_MEM_READ_AUTH).needs_bypass());
         assert!(TargetConfig::from_raw(TargetConfig::BIT_MEM_WRITE_AUTH).needs_bypass());
-        // 仅高位（CacheOpAuth/SctrlCert/RootCert/EppParam）不触发 bypass
+        // High bits alone (CacheOpAuth/SctrlCert/RootCert/EppParam) do not trigger the bypass
         assert!(!TargetConfig::from_raw(TargetConfig::BIT_CACHE_OP_AUTH).needs_bypass());
         assert!(!TargetConfig::from_raw(TargetConfig::BIT_SCTRL_CERT).needs_bypass());
     }

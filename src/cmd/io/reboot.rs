@@ -4,69 +4,70 @@ use crate::da::DAXFlash;
 use log::{info, warn};
 use std::time::Duration;
 
-/// 重启设备
+/// Reboot the device
 ///
-/// 用法:
-///   reboot                          → 正常重启到系统
-///   reboot fastboot                 → 重启到 Bootloader（lk fastboot）
-///   reboot recovery                 → 重启到 Recovery
-///   reboot fastbootd                → 重启到 fastbootd（userspace fastboot）
-///   reboot meta                     → 重启到 META 模式
-///   reboot <mode> --via <method>    → 指定重启方式
+/// Usage:
+///   reboot                          → normal reboot into the system
+///   reboot fastboot                 → reboot to Bootloader (lk fastboot)
+///   reboot recovery                 → reboot to Recovery
+///   reboot fastbootd                → reboot to fastbootd (userspace fastboot)
+///   reboot meta                     → reboot to META mode
+///   reboot `<mode>` --via `<method>`    → specify the reboot method
 ///
-/// --via 参数:
-///   para      (默认) 通过 para 分区设置 boot_mode（最稳定，需 DA）
-///   misc      通过 misc 分区设置 bootloader_message（需 DA）
-///   da        通过 DA SHUTDOWN 命令直接重启（需 DA）
-///   xml       通过 XML DA SET-BOOT-MODE 重启（新平台，需 DA）
-///   preloader 通过 Preloader Pattern 协议（fastboot/meta，纯 Preloader，不加载 DA）
+/// --via options:
+///   para      (default) set boot_mode via the para partition (most reliable, needs DA)
+///   misc      set bootloader_message via the misc partition (needs DA)
+///   da        reboot directly via the DA SHUTDOWN command (needs DA)
+///   xml       reboot via XML DA SET-BOOT-MODE (new platforms, needs DA)
+///   preloader reboot via the Preloader Pattern protocol (fastboot/meta, pure Preloader, no DA)
 ///
-/// 设计原则（唯一纯 Preloader 路径）:
-///   —— 只有 `reboot <mode> --via preloader` 才是纯 Preloader 路径：在 DA 加载之前拦截，
-///       直接走 Preloader Pattern 协议（fastboot/meta）/ Preloader 看门狗（system），
-///       全程不加载 DA、不写任何分区。
-///   —— 其余所有 reboot（默认 system、fastboot/recovery/fastbootd/meta，以及
-///       --via para/misc/da/xml）：
-///       一律经过 bypass→upload_da，最终由 DA SHUTDOWN / DA 命令完成重启，绝不走纯 Preloader。
-///   —— 例外（降级）：若设备已处于 DA 模式（daext=true，含 DA 复用 / --mode preloader 的
-///       DA fallback），则 `--via preloader` 的 Pattern 协议因依赖原始握手态而不可用，
-///       自动降级为 DA 默认重启（写 para/misc + DA SHUTDOWN）并提示，不再走必败的 Pattern 路径。
+/// Design principle (the only pure-Preloader path):
+///   -- Only `reboot <mode> --via preloader` is a pure Preloader path: it intercepts before DA load,
+///      going straight through the Preloader Pattern protocol (fastboot/meta) / Preloader watchdog (system),
+///      without loading DA or writing any partition.
+///   -- All other reboots (default system, fastboot/recovery/fastbootd/meta, and
+///      --via para/misc/da/xml):
+///      always go through bypass→upload_da and finish via DA SHUTDOWN / DA commands; never pure Preloader.
+///   -- Exception (fallback): if the device is already in DA mode (daext=true, including DA reuse / --mode preloader
+///      DA fallback), the `--via preloader` Pattern protocol is unavailable because it depends on the original
+///      handshake state, so it automatically degrades to the default DA reboot (write para/misc + DA SHUTDOWN)
+///      with a notice, instead of taking the doomed Pattern path.
 ///
-/// system 重启说明（reboot / reboot system，默认路径，属于“其余路径”→ 走 DA）:
-///   实测（本设备 MT6768）两种原语行为：
-///     - 裸看门狗（BROM WRITE32 wdt）在「无 DA 活跃」时可靠重启进系统；
-///     - DA SHUTDOWN(bootmode=HOME_SCREEN) 在「DA 活跃」时使用，且**成功发送后必须
-///       立即关闭设备端口**（对齐 mtkclient shutdown 末尾的 port.close(reset=True)），
-///       否则 DA 软跳回 preloader 后设备因主机仍挂着 USB/串口而停在下载态，表现为
-///       “日志显示重启成功但设备没进系统 / 没效果”。
-///   分流：daext=false（DA 未加载，防御性兜底）→ 裸看门狗硬复位；daext=true（DA 活跃，含复用会话
-///   或刚 upload_da）→ DA SHUTDOWN + close_device。命令仅在 DA 活跃时加载/复用 DA，
-///   不写任何分区。
+/// system reboot notes (reboot / reboot system, default path, part of "all other paths" → uses DA):
+///   Measured on this device (MT6768), behavior of the two primitives:
+///     - raw watchdog (BROM WRITE32 wdt) reliably reboots into the system when "no DA is active";
+///     - DA SHUTDOWN(bootmode=HOME_SCREEN) is used when "DA is active", and **after a successful send the
+///       device port must be closed immediately** (matching port.close(reset=True) at the end of mtkclient shutdown),
+///       otherwise, after DA soft-jumps back to preloader, the device stays in download mode because the host
+///       still holds USB/serial, showing "log says reboot succeeded but the device did not enter the system / no effect".
+///   Branching: daext=false (DA not loaded, defensive fallback) → raw watchdog hard reset; daext=true (DA active, including reused session
+///   or fresh upload_da) → DA SHUTDOWN + close_device. The command only loads/reuses DA when DA is active,
+///   and writes no partition.
 ///
-/// --via preloader 支持的模式（纯 Preloader，不看 DA）:
-///   fastboot  → Pattern FASTBOOT（BROM: 先 reset 到 Preloader，再 Pattern）
-///   meta      → Pattern METAMETA（同上）
-///   system    → Preloader watchdog 硬复位（同样不加载 DA）
-///   recovery/fastbootd → 不支持 Pattern，回退到 para（此时会加载 DA）
+/// Modes supported by --via preloader (pure Preloader, ignores DA):
+///   fastboot  → Pattern FASTBOOT (BROM: reset to Preloader first, then Pattern)
+///   meta      → Pattern METAMETA (same as above)
+///   system    → Preloader watchdog hard reset (also no DA load)
+///   recovery/fastbootd → Pattern unsupported, fall back to para (DA will be loaded then)
 ///
-/// 模式与工作模式的关系:
-///   --mode brom / --mode preloader（reboot system，默认，非 --via preloader）:
-///     加载 DA → DA SHUTDOWN(bootmode=HOME_SCREEN) → 重启进系统
+/// Relationship between mode and working mode:
+///   --mode brom / --mode preloader (reboot system, default, not --via preloader):
+///     load DA → DA SHUTDOWN(bootmode=HOME_SCREEN) → reboot into the system
 ///   --mode brom:
-///     --via preloader: 纯 Preloader（BROM write32 触发看门狗 → 等 Preloader → 握手 → Pattern）
-///     --via para/m,isc/da/xml: 加载 DA → 写分区 → 重启
+///     --via preloader: pure Preloader (BROM write32 triggers watchdog → wait for Preloader → handshake → Pattern)
+///     --via para/misc/da/xml: load DA → write partition → reboot
 ///   --mode preloader:
-///     --via preloader: 纯 Preloader（trigger_meta_reboot → Pattern）
-///     --via para/misc: 加载 DA → 写分区 → 重启
+///     --via preloader: pure Preloader (trigger_meta_reboot → Pattern)
+///     --via para/misc: load DA → write partition → reboot
 pub fn cmd_reboot(
     da: &mut DAXFlash,
     args: &[String],
     is_brom: bool,
     is_preloader: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 解析参数：reboot [mode] [--via misc/para/da/xml/preloader]
+    // Parse args: reboot [mode] [--via misc/para/da/xml/preloader]
     let mut mode = "system";
-    let mut via = "para"; // 默认 para（最稳定）
+    let mut via = "para"; // default to para (most reliable)
 
     let mut i = 0;
     while i < args.len() {
@@ -89,10 +90,10 @@ pub fn cmd_reboot(
         }
     }
 
-    // 未完成读取保护：若存在活跃读取续传（Ctrl+C 中断但未完成的分区读取），
-    // reboot 会销毁 DA 会话，导致已读取进度无法续传，且复用会话下 DA SHUTDOWN
-    // 常返回 0x00010007 而失败。此时保持会话，提示用户先完成分区读取，
-    // 而非尝试 DA SHUTDOWN。
+    // Pending-read guard: if there is an active resumable read (interrupted by Ctrl+C before completion),
+    // reboot would destroy the DA session, losing the read progress; with a reused session DA SHUTDOWN
+    // also often fails with 0x00010007. Keep the session and ask the user to finish the read first
+    // instead of attempting DA SHUTDOWN.
     let pending = crate::cmd::pending_read_resume_cwd();
     if !pending.is_empty() {
         warn!(
@@ -127,10 +128,11 @@ pub fn cmd_reboot(
         return Ok(());
     }
 
-    // --via preloader: Pattern 协议路径（支持 fastboot 和 meta）
-    // 注意：若设备已处于 DA 模式（daext=true，DA 复用/fallback 后），Pattern 协议依赖的
-    // 原始 Preloader/BROM 握手态已不存在，无法执行。此时降级为 DA 默认重启方式
-    // （写 para/misc + DA SHUTDOWN），并明确提示，避免静默走必败的 Pattern 路径。
+    // --via preloader: Pattern protocol path (supports fastboot and meta)
+    // Note: if the device is already in DA mode (daext=true, after DA reuse/fallback), the original
+    // Preloader/BROM handshake state required by the Pattern protocol is gone, so it cannot run.
+    // Degrade to the default DA reboot (write para/misc + DA SHUTDOWN) with an explicit notice,
+    // avoiding a silent attempt on the doomed Pattern path.
     if via == "preloader" {
         if da.daext {
             warn!(
@@ -146,8 +148,8 @@ pub fn cmd_reboot(
         }
     }
 
-    // 非 preloader 路径：需要加载 DA
-    // Preloader 模式下 via 限制：仅支持 misc、para
+    // Non-preloader path: DA must be loaded
+    // via restrictions in Preloader mode: only misc and para are supported
     if is_preloader && !matches!(via, "misc" | "para") {
         warn!(
             "Preloader 模式下 via={} 不支持（仅支持 misc/para/preloader），已回退到 para",
@@ -158,35 +160,38 @@ pub fn cmd_reboot(
 
     match mode {
         "system" => {
-            // system 重启：优先 DA SHUTDOWN(bootmode=HOME_SCREEN) —— 这是 MTK 在 USB
-            // 连接下能可靠重启进系统的唯一方式。裸看门狗硬件复位会让设备重新掉回下载模式
-            // （表现为"日志显示重启成功但设备没进系统"），故仅作为 DA 不可用时的兜底。
+            // system reboot: prefer DA SHUTDOWN(bootmode=HOME_SCREEN) — the only way MTK can
+            // reliably reboot into the system over USB. A raw watchdog hard reset makes the device
+            // drop back to download mode ("log says reboot succeeded but the device did not boot"),
+            // so it is only a fallback when DA is unavailable.
             //
-            // daext=true（DA 已加载，含本次刚 upload_da 或复用既有会话）：直接 DA SHUTDOWN。
-            // daext=false（极端：DA 未能加载）：退化为裸看门狗硬复位并明确提示风险。
+            // daext=true (DA loaded, either just uploaded or a reused session): DA SHUTDOWN directly.
+            // daext=false (extreme: DA failed to load): degrade to raw watchdog hard reset with a clear warning.
             if da.daext {
                 info!("通过 DA SHUTDOWN 触发重启到系统（bootmode=HOME_SCREEN）...");
                 match da.reset_device() {
                     Ok(_) => {
                         info!("{}", "设备正在重启进入系统...".green());
-                        // 关键：DA SHUTDOWN 是软跳转，DA 跳回 preloader 后设备若发现主机仍
-                        // 挂着 USB/串口（且启动原因为下载模式）会停在下载态，表现为“没效果”。
-                        // 必须显式关闭设备端口（对齐 mtkclient shutdown 末尾的
-                        // port.close(reset=True)），释放句柄让设备干净重枚举并启动到系统。
+                        // Critical: DA SHUTDOWN is a soft jump. After DA jumps back to preloader,
+                        // if the host still holds USB/serial (and the boot reason is download mode)
+                        // the device stalls in download mode, appearing as "no effect".
+                        // Explicitly close the device port (matching port.close(reset=True) at the end
+                        // of mtkclient shutdown) to release the handle so the device re-enumerates cleanly and boots.
                         let _ = da.preloader.device.close_device();
-                        // 等待设备物理复位重枚举：MTK DA 收到 SHUTDOWN 后会跳回 preloader
-                        // 再启动到系统，主机必须让出 USB 总线足够长时间（对齐 mtkclient
-                        // shutdown 末尾的 close + time.sleep）。500ms 过短会导致操作系统侧
-                        // 句柄残留、设备停在下载态（日志显示成功但设备不重启）。
+                        // Wait for the physical reset and re-enumeration: after MTK DA receives SHUTDOWN it jumps
+                        // back to preloader and then boots into the system; the host must yield the USB bus long
+                        // enough (matching close + time.sleep at the end of mtkclient shutdown). 500ms is too short:
+                        // the OS keeps a stale handle and the device stalls in download mode (log shows success but no reboot).
                         std::thread::sleep(Duration::from_millis(2000));
                         crate::connection::reset_session();
                         info!("{}", "请保持或断开 USB，等待设备启动到系统".cyan());
                     }
                     Err(e) => {
-                        // DA 模式下裸看门狗不可用——BROM echo 协议已随 DA 接管而失效，
-                        // 必报 meta_reset: echo 0xD4 不匹配，走裸看门狗只会输出误导性日志。
-                        // 直接报告失败并重置会话，请用户重新运行本命令：届时 manager 会重新
-                        // Preloader 握手 + 重载 DA，绝大多数情况下可恢复正常重启。
+                        // The raw watchdog is unusable in DA mode: the BROM echo protocol is gone once DA
+                        // takes over, so it always fails with meta_reset: echo 0xD4 mismatch; using the raw
+                        // watchdog only produces misleading logs. Report the failure and reset the session so the
+                        // user can rerun this command: the manager will re-handshake with Preloader and reload DA,
+                        // which restores normal reboot in most cases.
                         warn!("DA SHUTDOWN 失败: {}", e);
                         crate::connection::reset_session();
                         info!(
@@ -214,7 +219,7 @@ pub fn cmd_reboot(
                         da.da_xml_reboot_fastboot()
                             .map_err(|e| format!("XML DA fastboot 失败: {}", e))?;
                         info!("{}", "设备已通过 XML DA 重启到 fastboot".green());
-                        // 关闭设备端口（对齐 mtkclient shutdown 末尾 close）
+                        // Close the device port (matching close at the end of mtkclient shutdown)
                         let _ = da.preloader.device.close_device();
                         std::thread::sleep(Duration::from_millis(2000));
                         crate::connection::reset_session();
@@ -225,7 +230,7 @@ pub fn cmd_reboot(
                 }
                 do_reboot(da, mode)?;
             } else {
-                // Preloader 模式非 preloader via：需要加载 DA
+                // Preloader mode with a non-preloader via: DA must be loaded
                 match via {
                     "para" => set_boot_mode_via_para(da, mode)?,
                     _ => set_bootloader_message(da, mode)?,
@@ -262,7 +267,7 @@ pub fn cmd_reboot(
                     da.da_xml_reboot_meta()
                         .map_err(|e| format!("XML DA meta 失败: {}", e))?;
                     info!("{}", "设备已通过 XML DA 重启到 meta".green());
-                    // 关闭设备端口（对齐 mtkclient shutdown 末尾 close）
+                    // Close the device port (matching close at the end of mtkclient shutdown)
                     let _ = da.preloader.device.close_device();
                     std::thread::sleep(Duration::from_millis(500));
                     crate::connection::reset_session();
@@ -279,17 +284,17 @@ pub fn cmd_reboot(
     Ok(())
 }
 
-/// --via preloader: 通过 Pattern 协议重启设备
+/// --via preloader: reboot the device via the Pattern protocol
 ///
-/// 支持的 mode: fastboot, meta
-/// 不支持的 mode (recovery/fastbootd/system): 回退到 para
+/// Supported modes: fastboot, meta
+/// Unsupported modes (recovery/fastbootd/system): fall back to para
 ///
-/// BROM 模式流程（DA 加载前拦截，设备仍在 BROM 握手状态）:
-/// 1. trigger_meta_reboot: write32(wdt+0x14, 0x00001209) 触发看门狗重启
-/// 2. 关闭串口 → 等待设备重枚举为 Preloader VCOM
-/// 3. open_raw → 读 READY → 发送模式标识 → DISCONNECT
+/// BROM flow (intercepted before DA load, device still in BROM handshake state):
+/// 1. trigger_meta_reboot: write32(wdt+0x14, 0x00001209) triggers a watchdog reboot
+/// 2. close the serial port → wait for the device to re-enumerate as Preloader VCOM
+/// 3. open_raw → read READY → send the mode identifier → DISCONNECT
 ///
-/// Preloader 模式流程（同上）
+/// Preloader flow (same as above)
 fn cmd_reboot_via_preloader(
     da: &mut DAXFlash,
     mode: &str,
@@ -298,19 +303,19 @@ fn cmd_reboot_via_preloader(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::cmd::preloader_boot_mode::{self, BootMode};
 
-    // Pattern 协议支持的模式映射
+    // Mode mapping supported by the Pattern protocol
     let boot_mode = match mode {
         "fastboot" => BootMode::Fastboot,
         "meta" => BootMode::Meta,
         _ => {
-            // recovery/fastbootd/system 不支持 Pattern，回退到 para
+            // recovery/fastbootd/system do not support Pattern; fall back to para
             warn!(
                 "{} 模式不支持 --via preloader（Pattern 协议无对应标识），回退到 --via para",
                 mode
             );
             match mode {
                 "system" => {
-                    // system 模式：统一走硬件看门狗硬复位（与默认 reboot system 一致）
+                    // system mode: always use the hardware watchdog hard reset (same as default reboot system)
                     info!("通过看门狗硬复位重启到系统...");
                     if da.preloader.chip.is_none() {
                         if let Err(e) = da.preloader.get_hw_code() {
@@ -346,7 +351,7 @@ fn cmd_reboot_via_preloader(
     let tag = if is_brom { "BROM" } else { "Preloader" };
     info!("通过 Preloader Pattern 协议重启到 {}...", mode_name);
 
-    // 步骤 1: trigger_meta_reboot 触发看门狗重启
+    // Step 1: trigger_meta_reboot triggers a watchdog reboot
     info!("  [{}] 步骤 1/2: 触发看门狗重启...", tag);
     match da.preloader.trigger_meta_reboot() {
         Ok(_) => info!("  看门狗已触发，设备正在重启..."),
@@ -356,7 +361,7 @@ fn cmd_reboot_via_preloader(
     crate::connection::reset_session();
     std::thread::sleep(Duration::from_millis(1000));
 
-    // 步骤 2: 等待 Preloader VCOM → Pattern 协议
+    // Step 2: wait for Preloader VCOM → Pattern protocol
     info!(
         "  [{}] 步骤 2/2: 等待 Preloader VCOM → Pattern 协议...",
         tag
@@ -378,10 +383,11 @@ fn cmd_reboot_via_preloader(
     }
 }
 
-/// 裸看门狗硬复位兜底（MTK BROM WRITE32 wdt+0x14 = 0x1209）。
+/// Raw watchdog hard-reset fallback (MTK BROM WRITE32 wdt+0x14 = 0x1209).
 ///
-/// 注意：USB 连接下裸看门狗会让设备重新掉回 Preloader/BROM 下载模式而非进系统，
-/// 因此仅作为 DA SHUTDOWN 不可用时的最后兜底，并明确提示用户该风险。
+/// Note: over USB the raw watchdog makes the device drop back to Preloader/BROM download mode
+/// instead of booting the system, so use it only as a last resort when DA SHUTDOWN is unavailable,
+/// and warn the user about this risk.
 fn watchdog_reboot(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error>> {
     if da.preloader.chip.is_none() {
         if let Err(e) = da.preloader.get_hw_code() {
@@ -415,14 +421,15 @@ fn watchdog_reboot(da: &mut DAXFlash) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// 执行实际重启
-/// 使用刷机匣协议（SYNC + CMD_SHUTDOWN），失败则提示用户手动重启
+/// Perform the actual reboot
+/// Uses the flasher protocol (SYNC + CMD_SHUTDOWN); on failure, ask the user to reboot manually
 fn do_reboot(da: &mut DAXFlash, mode: &str) -> Result<(), Box<dyn std::error::Error>> {
     match da.reset_device() {
         Ok(()) => {
             info!("{}", format!("设备已重启到 {} 模式", mode).green());
-            // 同 reboot system：DA SHUTDOWN 为软跳转，必须关闭设备端口释放句柄，
-            // 否则设备停在下载态（主机仍挂 USB），表现为“没效果”。对齐 mtkclient close。
+            // Same as reboot system: DA SHUTDOWN is a soft jump, so the device port must be closed
+            // to release the handle; otherwise the device stalls in download mode (host still holds USB),
+            // appearing as "no effect". Matching mtkclient close.
             let _ = da.preloader.device.close_device();
             std::thread::sleep(Duration::from_millis(500));
             info!("{}", "请断开 USB 连接，等待设备自动重启".cyan());

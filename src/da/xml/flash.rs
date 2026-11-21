@@ -1,11 +1,11 @@
-//! 基于 XML 协议的分区读 / 写 / 擦 / 格式化
+//! XML-protocol based partition read / write / erase / format
 //!
-//! 对齐 penumbra `core/src/da/xml/flash.rs`：把 [`XmlProtocol`] 的收发原语编排
-//! 成完整的闪存操作。与 penumbra 的差异是会话对象 [`XmlProtocol`] 内部持有
-//! 传输端口，因此这里不再额外传 `port`。
+//! Mirrors penumbra `core/src/da/xml/flash.rs`: composes the [`XmlProtocol`] send/receive
+//! primitives into complete flash operations. Unlike penumbra, the session object
+//! [`XmlProtocol`] owns the transport, so no `port` is passed in here.
 //!
-//! 每个操作都遵循 XML 命令生命周期：`CMD:START` → 命令 → 数据交互 →
-//! `CMD:END`（由 [`XmlProtocol::send_cmd`] 与 `lifetime_ack` 内部处理）。
+//! Every operation follows the XML command lifecycle: `CMD:START` → command → data exchange →
+//! `CMD:END` (handled internally by [`XmlProtocol::send_cmd`] and `lifetime_ack`).
 
 use std::io::{Read, Write};
 
@@ -14,9 +14,9 @@ use log::{debug, warn};
 use crate::da::xml::cmd::{self, FileSystemOp, XmlCmdLifetime};
 use crate::da::xml::protocol::{XmlProtoError, XmlProtocol, get_tag};
 
-/// `READ-FLASH`：按地址/长度读取，数据回写到 `writer`
+/// `READ-FLASH`: read by address/length and write the data into `writer`
 ///
-/// 返回实际接收的字节数。
+/// Returns the number of bytes actually received.
 pub fn read_flash<W, F>(
     xml: &mut XmlProtocol<'_>,
     section: &str,
@@ -42,7 +42,7 @@ where
     Ok(read)
 }
 
-/// `WRITE-FLASH`：按地址/长度写入，数据来自 `reader`
+/// `WRITE-FLASH`: write by address/length with data from `reader`
 pub fn write_flash<R, F>(
     xml: &mut XmlProtocol<'_>,
     section: &str,
@@ -61,9 +61,9 @@ where
     );
 
     xml.send_cmd(&cmd::write_flash(section, size, offset))?;
-    // DA 先询问目标文件大小
+    // The DA first asks for the target file size
     xml.file_system_op(FileSystemOp::FileSize(size))?;
-    // 写入前的预擦除进度上报
+    // Pre-erase progress report before writing
     let mut noop = |_: usize, _: usize| {};
     xml.progress_report(&mut noop)?;
     let sent = xml.download_data(size, reader, progress)?;
@@ -73,7 +73,7 @@ where
     Ok(sent)
 }
 
-/// `ERASE-FLASH`：按地址/长度擦除
+/// `ERASE-FLASH`: erase by address/length
 pub fn erase_flash<F>(
     xml: &mut XmlProtocol<'_>,
     section: &str,
@@ -97,7 +97,7 @@ where
     Ok(())
 }
 
-/// `READ-PARTITION`：整分区回读
+/// `READ-PARTITION`: read back a whole partition
 pub fn read_partition<W, F>(
     xml: &mut XmlProtocol<'_>,
     part_name: &str,
@@ -118,7 +118,7 @@ where
     Ok(read)
 }
 
-/// `FORMAT-PARTITION`（ERASE-PARTITION）：格式化整个分区
+/// `FORMAT-PARTITION` (ERASE-PARTITION): format a whole partition
 pub fn format_partition<F>(
     xml: &mut XmlProtocol<'_>,
     part_name: &str,
@@ -137,11 +137,11 @@ where
     Ok(())
 }
 
-/// `WRITE-PARTITION`：整分区写入
+/// `WRITE-PARTITION`: write a whole partition
 ///
-/// `WRITE-PARTITION` 是一段持续交互：设备会依次下发 `PROGRESS-REPORT`（预擦除）、
-/// `FILE-SYS-OPERATION`（询问文件大小）、`DOWNLOAD-FILE`（索要数据），最后以
-/// `CMD:END` 结束。本函数按此状态机循环，直到收到 `CMD:END`。
+/// `WRITE-PARTITION` is a continuous exchange: the device sends `PROGRESS-REPORT` (pre-erase),
+/// `FILE-SYS-OPERATION` (file size query) and `DOWNLOAD-FILE` (data request), ending with
+/// `CMD:END`. This function loops over that state machine until `CMD:END` arrives.
 pub fn write_partition<R, F>(
     xml: &mut XmlProtocol<'_>,
     part_name: &str,
@@ -161,7 +161,7 @@ where
     loop {
         let resp = xml.read_data()?;
 
-        // 收到 CMD:END：回 ACK 并校验最终结果
+        // On CMD:END: reply with an ACK and check the final result
         if contains(&resp, &cmd::cmd_end()) {
             xml.ack(None)?;
             check_end_result(&resp)?;
@@ -203,7 +203,7 @@ where
     Ok(())
 }
 
-/// 校验 `CMD:END` 报文中的 `arg/result`；非 `OK` 时抛出设备错误
+/// Check `arg/result` in the `CMD:END` packet; raise a device error when it is not `OK`
 fn check_end_result(resp: &[u8]) -> Result<(), XmlProtoError> {
     let text = String::from_utf8_lossy(resp);
     let result = get_tag(&text, "arg/result").unwrap_or_default();
@@ -216,7 +216,7 @@ fn check_end_result(resp: &[u8]) -> Result<(), XmlProtoError> {
     Err(crate::error::XmlError::from_message(message.as_bytes()).into())
 }
 
-/// 子串查找（避免额外依赖）
+/// Substring search (avoids extra dependencies)
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() || haystack.len() < needle.len() {
         return false;
@@ -225,7 +225,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 // =============================================================================
-// 单元测试
+// Unit tests
 // =============================================================================
 
 #[cfg(test)]
@@ -238,7 +238,7 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
 
-    /// 可脚本化的模拟端口（读脚本 + 记录写入）
+    /// Scriptable mock port (scripted reads + recorded writes)
     struct MockPort {
         read_buf: Vec<u8>,
         pos: usize,
@@ -256,7 +256,7 @@ mod tests {
             }
         }
 
-        /// 共享写缓冲句柄；在借用端口前取得，便于事后断言
+        /// Shared write-buffer handle; take it before borrowing the port for later assertions
         fn written_handle(&self) -> Rc<RefCell<Vec<u8>>> {
             Rc::clone(&self.written)
         }
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn read_flash_drives_upload_and_end() {
-        // 脚本：CMD:START → 命令 ACK → UPLOAD-FILE 命令 → OK@size → 数据 → CMD:END
+        // Script: CMD:START → command ACK → UPLOAD-FILE → OK@size → data → CMD:END
         let mut scripted = Vec::new();
         scripted.extend_from_slice(&flow(b"<command>CMD:START</command>"));
         scripted.extend_from_slice(&flow(b"OK\0"));
@@ -317,7 +317,7 @@ mod tests {
               <arg><packet_length>0x4</packet_length></arg></da>",
         ));
         scripted.extend_from_slice(&flow(b"OK@0x4\0"));
-        scripted.extend_from_slice(&flow(b"OK\0")); // 分块前 ACK
+        scripted.extend_from_slice(&flow(b"OK\0")); // ACK before the chunk
         scripted.extend_from_slice(&flow(b"DATA"));
         scripted.extend_from_slice(&flow(b"<command>CMD:END</command>"));
 
@@ -330,7 +330,7 @@ mod tests {
         let n = read_flash(&mut xml, "boot", 0x0, 4, &mut out, &mut progress).unwrap();
         assert_eq!(n, 4);
         assert_eq!(out, b"DATA");
-        // 命令体应为 READ-FLASH
+        // The command body should be READ-FLASH
         assert!(contains(&handle.borrow(), b"CMD:READ-FLASH"));
     }
 
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn write_flash_runs_prescribed_sequence() {
-        // WRITE-FLASH：CMD:START/ACK → FILE-SYS-OP → PROGRESS-REPORT → DOWNLOAD-FILE → CMD:END
+        // WRITE-FLASH: CMD:START/ACK → FILE-SYS-OP → PROGRESS-REPORT → DOWNLOAD-FILE → CMD:END
         let mut scripted = Vec::new();
         scripted.extend_from_slice(&flow(b"<command>CMD:START</command>"));
         scripted.extend_from_slice(&flow(b"OK\0"));
@@ -380,7 +380,7 @@ mod tests {
             b"<da><command>CMD:DOWNLOAD-FILE</command>\
               <arg><packet_length>0x4</packet_length></arg></da>",
         ));
-        // 分块握手：主机 ack(size) → 设备 OK → 主机 ack(0) → 设备 OK → 数据 → 设备 OK
+        // Chunk handshake: host ack(size) → device OK → host ack(0) → device OK → data → device OK
         scripted.extend_from_slice(&flow(b"OK\0"));
         scripted.extend_from_slice(&flow(b"OK\0"));
         scripted.extend_from_slice(&flow(b"OK\0"));
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn write_partition_loop_handles_download_then_end() {
-        // 先 DOWNLOAD-FILE 再 CMD:END
+        // DOWNLOAD-FILE first, then CMD:END
         let mut scripted = Vec::new();
         scripted.extend_from_slice(&flow(b"<command>CMD:START</command>"));
         scripted.extend_from_slice(&flow(b"OK\0"));
@@ -408,9 +408,9 @@ mod tests {
             b"<da><command>CMD:DOWNLOAD-FILE</command>\
               <arg><packet_length>0x2</packet_length></arg></da>",
         ));
-        scripted.extend_from_slice(&flow(b"OK\0")); // 回 size
-        scripted.extend_from_slice(&flow(b"OK\0")); // 回 ack(0)
-        scripted.extend_from_slice(&flow(b"OK\0")); // 数据后确认
+        scripted.extend_from_slice(&flow(b"OK\0")); // reply size
+        scripted.extend_from_slice(&flow(b"OK\0")); // reply ack(0)
+        scripted.extend_from_slice(&flow(b"OK\0")); // confirm after data
         scripted.extend_from_slice(&flow(
             b"<arg><result>OK</result></arg><command>CMD:END</command>",
         ));

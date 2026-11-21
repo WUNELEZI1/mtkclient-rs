@@ -1,16 +1,16 @@
-//! 设备控制命令（复位 / 关闭 / vbmeta 修补占位）
+//! Device control commands (reset / shutdown / vbmeta patch placeholder)
 //!
-//! 见 [`crate::da::xflash::io`] 模块文档。
+//! See the [`crate::da::xflash::io`] module docs.
 
 use crate::da::xflash::DAXFlash;
 
 impl<'a> DAXFlash<'a> {
-    /// 通过 DA 重启设备（reboot 到系统）。
+    /// Reboot the device through the DA (reboot into the system).
     ///
-    /// 内部调用 `da_shutdown()`（bootmode=1 = HOME_SCREEN）；重启由 DA 收到
-    /// SHUTDOWN 后直接跳转到 preloader → system 完成（详见 `da_shutdown`，enablewdt=0）。
-    /// 注意：设备须处于可下发 SHUTDOWN 的 idle 状态（不在 mid-read 数据流态），
-    /// 否则 DA 会拒绝该命令 —— 调用方（cmd_reboot）已对“未完成的读取”做拦截。
+    /// Internally calls `da_shutdown()` (bootmode=1 = HOME_SCREEN); after receiving SHUTDOWN the DA
+    /// jumps to preloader → system directly (see `da_shutdown`, enablewdt=0).
+    /// Note: the device must be in an idle state that accepts SHUTDOWN (not in a mid-read data stream),
+    /// otherwise the DA rejects the command — callers (cmd_reboot) already block "unfinished reads".
     pub fn reset_device(&mut self) -> Result<(), String> {
         self.da_shutdown()
     }

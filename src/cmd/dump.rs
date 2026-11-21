@@ -1,11 +1,12 @@
-//! 镜像提取命令
+//! Image extraction commands.
 //!
-//! - `cmd_dumppreloader`— 提取 Preloader
-//!   - DA 模式（Preloader 模式已加载 DA / BROM 已 bypass 并 upload_da）：
-//!     直接通过 XFlash `read_data` 从设备内存（preloader 分区 addr=0）一次性读出 512KB，
-//!     无需 Kamakiri BROM exploit —— 更快、更稳，且不受 BROM 内存读锁限制。
-//!     对齐刷机匣（GeekFlashTool）的「尝试DA模式下导出Preloader」行为。
-//!   - 纯 BROM 模式（DA 未加载）：回退到 Exploit 注入 payload 提取（原有路径）。
+//! - `cmd_dumppreloader` — extract the Preloader
+//!   - DA mode (Preloader mode has loaded DA / BROM bypassed and upload_da done):
+//!     read 512KB in one shot from device memory (preloader partition addr=0) via XFlash
+//!     `read_data`; no Kamakiri BROM exploit needed — faster, more stable, and not
+//!     subject to BROM memory read locks.
+//!     Matches GeekFlashTool's "export Preloader in DA mode" behavior.
+//!   - Pure BROM mode (DA not loaded): fall back to exploit payload injection (legacy path).
 
 use crate::color::Colorize;
 use log::{info, warn};
@@ -13,21 +14,21 @@ use log::{info, warn};
 use crate::da::DAXFlash;
 use crate::usb::UsbContext;
 
-/// Preloader 在设备内存中的读出长度（512KB，足以覆盖 preloader 镜像 + BRLYT 头）
+/// Bytes read from device memory for the Preloader (512KB, enough to cover the preloader image + BRLYT header)
 const PRELOADER_DUMP_SIZE: u64 = 0x80000;
-/// 刷机匣实测：DA 模式读 preloader 用 parttype=1、addr=0，内容以 "EMMC_BOOT" 开头
+/// Measured on GeekFlashTool: DA-mode preloader read uses parttype=1, addr=0, and content starts with "EMMC_BOOT"
 const PRELOADER_DUMP_ADDR: u64 = 0x0;
 const PRELOADER_DUMP_PARTTYPE: u32 = 0x1;
 const PRELOADER_MAGIC: &[u8] = b"EMMC_BOOT";
 
-/// 提取 Preloader
+/// Extract the Preloader.
 ///
-/// 优先走 DA 模式直接从设备内存读出（快、稳、无需 exploit）；
-/// 仅当 DA 未加载（纯 BROM）或 DA 读出校验失败时，回退到 BROM Exploit 路径。
+/// Prefer DA mode, reading directly from device memory (fast, stable, no exploit);
+/// fall back to the BROM exploit path only when DA is not loaded (pure BROM) or the DA read fails validation.
 ///
-/// `context` 仅 BROM Exploit 回退路径需要（DA 直接读不依赖它）。DA 模式会话下
-/// 设备已不在 BROM 态，无法走 exploit，故传 `None` 即可；若 DA 读出失败且
-/// `context` 为 `None`，会明确报错而非静默失败。
+/// `context` is only needed by the BROM exploit fallback (a direct DA read does not use it). In a DA-mode
+/// session the device is no longer in BROM state, so exploits cannot run — pass `None`; if the DA read fails
+/// and `context` is `None`, this returns a clear error instead of failing silently.
 pub fn cmd_dumppreloader(
     da: &mut DAXFlash,
     context: Option<&UsbContext>,
@@ -39,9 +40,9 @@ pub fn cmd_dumppreloader(
         }
     }
 
-    // 回退：BROM Exploit 注入 payload 提取（原有路径）
-    // 直接调用 dump_preloader_payload，不先 bypass_security，
-    // 因为 dump_preloader_payload 内部会注入 payload，bypass 会改变 BROM 状态
+    // Fallback: extract via BROM exploit payload injection (legacy path).
+    // Call dump_preloader_payload directly without bypass_security first, because
+    // dump_preloader_payload injects the payload internally and bypass would change the BROM state
     let ctx = context.ok_or(
         "DUMPPRELOADER 在 DA 模式下读取失败，且无法回退到 BROM exploit（设备已在 DA 模式）",
     )?;
@@ -52,7 +53,7 @@ pub fn cmd_dumppreloader(
     save_preloader(data, filename)
 }
 
-/// DA 模式：用 XFlash read_data 从设备内存直接读出 preloader
+/// DA mode: read the preloader straight from device memory via XFlash read_data
 fn read_preloader_via_da(da: &mut DAXFlash) -> Result<(Vec<u8>, String), String> {
     let data = da.readflash_data_ex(
         PRELOADER_DUMP_ADDR,
@@ -66,7 +67,7 @@ fn read_preloader_via_da(da: &mut DAXFlash) -> Result<(Vec<u8>, String), String>
     Ok((data, filename))
 }
 
-/// 从 preloader 二进制中推测文件名（找第一个以 .bin 结尾且含 "preloader" 的可打印片段）
+/// Guess the filename from the preloader binary (first printable run ending in .bin and containing "preloader")
 fn extract_preloader_name(data: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(data) {
         for w in s.split(|c: char| !(c.is_ascii_graphic() || c == ' ')) {
@@ -78,7 +79,7 @@ fn extract_preloader_name(data: &[u8]) -> String {
     "preloader_dumped.bin".to_string()
 }
 
-/// 保存提取结果
+/// Save the extracted result
 fn save_preloader(data: Vec<u8>, filename: String) -> Result<(), Box<dyn std::error::Error>> {
     if data.is_empty() {
         warn!("提取完成但未收到有效数据");

@@ -1,13 +1,13 @@
-//! USB设备::执行握手 — BROM 握手协议
+//! UsbDevice::do_handshake — BROM handshake protocol
 //!
-//! 协议：逐字节发送 [A0, 0A, 50, 05]。
-//! 兼容两种已知的 MTK 响应模式（不同传输介质/芯片存在差异）：
-//! - 取反模式（UART/串口典型）：设备返回每个发送字节的按位取反，如发 A0 → 收 5F。
-//! - 回显模式（USB bulk 典型）：设备原样回显发送的字节，如发 A0 → 收 A0。
+//! Protocol: send [A0, 0A, 50, 05] byte by byte.
+//! Tolerates two known MTK response modes (they differ per transport medium/chip):
+//! - Inverted mode (typical for UART/serial): the device returns the bitwise complement of each byte, e.g. send A0 → receive 5F.
+//! - Echo mode (typical for USB bulk): the device echoes each byte unchanged, e.g. send A0 → receive A0.
 //!
-//! 匹配时同时容忍两者，任一命中即推进，避免 "expected 0x5F got 0xA0" 的介质差异误判。
+//! Both are accepted while matching, so either hit advances and no medium difference triggers "expected 0x5F got 0xA0".
 //!
-//! Python 风格：失败计数器重置，最多 10 次重试，每次间隔 300ms。
+//! Python style: the failure counter resets; at most 10 retries with 300ms between attempts.
 
 use super::device::UsbDevice;
 use super::log::usb_trace;
@@ -32,7 +32,7 @@ fn looks_like_da_residual_stream(bytes: &[u8]) -> bool {
 
 impl UsbDevice {
     pub fn do_handshake(&mut self) -> Result<bool, String> {
-        // 使用缓存的设备类型判断握手策略
+        // Use the cached device type to pick the handshake strategy
         if !self.device_type.is_brom() {
             info!(
                 "[USB] non-BROM PID (0x{:04X}), sending 0xA0 first",
@@ -44,7 +44,7 @@ impl UsbDevice {
 
         // Python retries handshakes with delays between attempts
         for attempt_count in 0..HANDSHAKE_MAX_ATTEMPTS {
-            // 用户取消（Ctrl+C）时立即退出，避免跑完所有重试才停止
+            // Exit immediately on user cancel (Ctrl+C) instead of running through all retries
             if crate::cancel::force_requested() || crate::cancel::requested() {
                 return Err("握手已取消".to_string());
             }
@@ -86,14 +86,14 @@ impl UsbDevice {
                     "USB设备::执行握手 echo_write",
                     &[HANDSHAKE_BYTE_SEQ[i]],
                 );
-                let mut r = [0u8; 1]; // 握手 echo 每次只读 1 字节
+                let mut r = [0u8; 1]; // the handshake echo reads only 1 byte at a time
                 match self.read(&mut r) {
                     Ok(n) if n > 0 => {
                         // echo read trace
                         usb_trace("RX", "USB设备::执行握手 echo_read", &r[..n]);
                         let last_byte = r[n - 1];
-                        // 兼容取反（!发送字节，如 A0→5F）与回显（发送字节原样，如 A0→A0）两种
-                        // MTK 响应模式：不同传输介质/设备存在差异，任一命中即推进。
+                        // Accept both the inverted form (!sent byte, e.g. A0→5F) and the echo form (e.g. A0→A0)
+                        // MTK response modes differ per transport medium/device; either hit advances.
                         if last_byte == !HANDSHAKE_BYTE_SEQ[i] || last_byte == HANDSHAKE_BYTE_SEQ[i]
                         {
                             mismatch_count = 0;
@@ -126,7 +126,7 @@ impl UsbDevice {
                                 success = false;
                                 break;
                             }
-                            i = 0; // Python 重置计数器
+                            i = 0; // Python resets the counter
                         }
                     }
                     _ => {

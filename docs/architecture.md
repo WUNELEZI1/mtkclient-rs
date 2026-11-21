@@ -3,7 +3,7 @@
 ## 一、本轮实际落地范围
 
 规划要求的目标目录是 `core / transport / da / exploit / ops / fs / slot / logging / confirm` 的分层结构。
-当前仓库已有 35k 行、219 个测试，**一次性整体搬迁会同时破坏现有实现与测试基线**，因此本轮采用
+当前仓库已有 35k 行、324 个单测 + 4 个集成测试，**一次性整体搬迁会同时破坏现有实现与测试基线**，因此本轮采用
 「**新增单向依赖层 + 渐进迁移**」：
 
 | 规划层 | 当前状态 | 位置 |
@@ -18,10 +18,13 @@
 | `ops/` | ✅ **全部迁完**：`printgpt` / `read` / `write` / `erase` / `seccfg` / `vbmeta` / `unlock` / `fs_shell`，每个只声明能力 + 实现 `run` | `src/ops/*.rs`（契约见 [`ops.md`](ops.md)） |
 | `exec/`（唯一执行入口） | ✅ 新建：决策 → 逐步执行 → **每步校验能力真实增长** | `src/exec/mod.rs` |
 | `session/`（执行后端抽象） | ✅ 新建：`RealSession`（DAXFlash）/ `SimSession`（虚拟设备） | `src/session/{mod,real}.rs` |
-| `da/engine`（StreamPort 协议引擎） | ✅ 新建：握手 → DA 上传 → 开存储 → 读 flash，全走 `&mut dyn StreamPort` | `src/da/engine.rs` |
+| `da/engine`（StreamPort 协议引擎） | ✅ 已拆为子模块：`types` / `protocol` / `flash` / `sim` / `util` | `src/da/engine/{mod,types,protocol,flash,sim,util}.rs` |
 | `transport/vdev`（虚拟设备） | ✅ 新建：BROM + XFlash 设备侧状态机，画像驱动，含故障注入 | `src/transport/{vdev,wire}.rs` |
 | `fs/` | ✅ 已从 `system/fsimg/` 迁出并拆为 `fs/f2fs/{mod,layout}.rs`、`fs/ext4/{mod,tests}.rs`，全部 ≤500 行（2026-11-20） | `src/fs/` |
 | `slot/` | ✅ 2026-11-20 从 `partition/slot.rs` 提升为顶层 `slot/mod.rs`；命令层 `cmd/io/slot.rs` 保留 | `src/slot/mod.rs` |
+| `i18n/` | ✅ 按语言拆分（en / zh_cn / fr / ru / es / ar），消息表与 help 分离 | `src/i18n/{mod,messages/*}.rs` |
+| `tests/` | ✅ 黑盒集成测试 + 设备画像 fixture + mock_device 助手 | `tests/{integration,fixtures,mock_device.rs}` |
+| CI/CD | ✅ fmt / clippy -D warnings / 单测 / 集成测试 / cargo doc / release 构建 | `.github/workflows/{ci,release}.yml` |
 | `logging/` `cli/` | ⏳ 复用现有 `progress`+`i18n` / `cmd::cli` | — |
 
 依赖方向：`core ← transport ← da ← exploit ← cmd`，`core` 不引用任何内部模块（`Stage` 定义在 core，避免反向依赖）。

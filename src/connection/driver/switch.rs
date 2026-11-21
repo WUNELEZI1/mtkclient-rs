@@ -1,16 +1,16 @@
-//! WinUSB 驱动切换核心流程
+//! WinUSB driver switch core flow
 //!
-//! 流程（Zadig 风格，不卸载设备、不需要重新插拔）：
-//! 1. libusb 已经能打开设备  → 直接返回 OK
-//! 2. wdi-rs create_list      → 找到 BROM 设备
-//! 3. wdi-rs prepare_driver   → 生成/签名 WinUSB INF
+//! Flow (Zadig-style; no device uninstall, no replug required):
+//! 1. libusb can already open the device  → return OK immediately
+//! 2. wdi-rs create_list      → find the BROM device
+//! 3. wdi-rs prepare_driver   → generate/sign the WinUSB INF
 //! 4. UpdateDriverForPlugAndPlayDevicesW(INSTALLFLAG_FORCE)
-//!    → 强制覆盖 wdm_usb
-//! 5. 轮询 libusb 验证        → 最多 N 秒
+//!    → force overwrite wdm_usb
+//! 5. poll libusb to verify    → up to N seconds
 //!
-//! 本文件仅在 Windows 且启用 `winusb-driver` 特性时编译：依赖 wdi-rs（仅支持
-//! Windows，且需 libwdi 原生库）。其他情况由 `switch_stub.rs` 提供同签名占位实现，
-//! 保证 crate 可在非 Windows / 无 libwdi 工具链时编译与跑测试。
+//! This file is compiled only on Windows with the `winusb-driver` feature: it depends on wdi-rs
+//! (Windows only, requires the libwdi native library). Otherwise `switch_stub.rs` provides stub
+//! implementations with the same signatures, so the crate compiles and tests run without Windows / libwdi toolchain.
 
 #![cfg(all(target_os = "windows", feature = "winusb-driver"))]
 
@@ -27,22 +27,22 @@ use super::setupapi::{
 
 const MTKCLIENT_TEMP_DIR: &str = "mtkclient_winusb";
 const POLL_INTERVAL_MS: u64 = 500;
-/// 首次安装时设备（关掉 COM 口后）重枚举较慢，多给几次查找机会
+/// On first install the device (after closing the COM port) re-enumerates slowly; allow extra lookup attempts
 const RETRY_COUNT: u32 = 5;
 const RETRY_DELAY_MS: u64 = 700;
-/// 首次安装前等待设备稳定的时间（关掉 COM 口后设备可能正在重枚举，
-/// 太短会导致 create_list 找不到设备而误判失败）
+/// Wait for the device to stabilize before the first install (it may be re-enumerating after the COM port closes;
+/// too short a wait makes create_list miss the device and falsely report failure)
 const STABILIZE_DELAY_MS: u64 = 700;
-/// 验证轮询时长：首次安装 WinUSB 目录签名 + 驱动绑定可能较慢
+/// Verification polling duration: first WinUSB install (catalog signing + driver binding) may be slow
 const POLL_TIMEOUT_SEC: u32 = 15;
-/// 整段安装流程重试次数（prepare → 强制安装 → 重枚举 → 验证）
+/// Retry count for the whole install flow (prepare → force install → re-enumerate → verify)
 const INSTALL_RETRY_COUNT: u32 = 4;
-/// 指数退避基数：800ms → 1600ms → 3200ms → 6400ms
+/// Exponential backoff base: 800ms → 1600ms → 3200ms → 6400ms
 const INSTALL_BACKOFF_BASE_MS: u64 = 800;
-/// 主动重枚举后等待设备重新出现的时长（首次安装驱动绑定较慢，给足时间）
+/// Wait time after an active re-enumeration for the device to reappear (first install binding is slow; allow enough time)
 const REENUM_WAIT_MS: u64 = 2500;
 
-/// 切换 BROM 设备到 WinUSB 驱动（Zadig 风格）
+/// Switch the BROM device to the WinUSB driver (Zadig-style)
 pub fn switch_to_winusb() -> Result<(), String> {
     info!(
         "[DRIVER] 切换 BROM 设备 (0x{:04X}:0x{:04X}) 到 WinUSB 驱动（Zadig 风格）...",
@@ -53,7 +53,7 @@ pub fn switch_to_winusb() -> Result<(), String> {
         return Err("需要管理员权限才能切换驱动".to_string());
     }
 
-    // 步骤 1：快速路径 — 只有 SetupAPI 确认当前服务是 WinUSB/libwdi 才跳过
+    // Step 1: fast path — skip only when SetupAPI confirms the current service is WinUSB/libwdi
     if current_driver_is_winusb() {
         info!("[DRIVER] SetupAPI 确认设备已是 WinUSB，无需切换");
         return Ok(());
@@ -66,7 +66,7 @@ pub fn switch_to_winusb() -> Result<(), String> {
             attempt, INSTALL_RETRY_COUNT
         );
 
-        // 步骤 2：wdi-rs create_list 找设备
+        // Step 2: find the device with wdi-rs create_list
         let device = match find_brom_device() {
             Ok(d) => d,
             Err(e) => {
@@ -80,7 +80,7 @@ pub fn switch_to_winusb() -> Result<(), String> {
             }
         };
 
-        // 步骤 3：wdi-rs prepare_driver 生成 WinUSB INF
+        // Step 3: generate the WinUSB INF with wdi-rs prepare_driver
         let inf_dir = get_inf_dir();
         std::fs::create_dir_all(&inf_dir).map_err(|e| format!("创建 INF 目录失败: {}", e))?;
 
@@ -116,7 +116,7 @@ pub fn switch_to_winusb() -> Result<(), String> {
         }
         info!("[DRIVER] WinUSB INF 已生成、签名、并注册到驱动商店");
 
-        // 步骤 4：调用 Windows API 强制安装
+        // Step 4: force-install via the Windows API
         info!("[DRIVER] 调用 UpdateDriverForPlugAndPlayDevicesW (INSTALLFLAG_FORCE)...");
         if let Err(e) = force_install_via_api(&device, &inf_dir) {
             last_err = format!("强制安装失败: {}", e);
@@ -128,8 +128,8 @@ pub fn switch_to_winusb() -> Result<(), String> {
             continue;
         }
 
-        // 步骤 5：主动重枚举设备，使新驱动立即生效（免去手动重新插拔）。
-        // 部分机器首次安装后设备仍绑定旧驱动，必须触发一次重枚举才能稳定切换到 WinUSB。
+        // Step 5: actively re-enumerate the device so the new driver takes effect immediately (no manual replug).
+        // On some machines the device stays bound to the old driver after the first install; a re-enumeration is required to switch to WinUSB reliably.
         match unsafe { super::setupapi::find_and_restart_brom_device() } {
             Ok(()) => {
                 info!("[DRIVER] 已触发设备重枚举，等待 WinUSB 驱动生效...");
@@ -138,15 +138,15 @@ pub fn switch_to_winusb() -> Result<(), String> {
             Err(e) => warn!("[DRIVER] 主动重枚举失败（依赖轮询兜底）: {}", e),
         }
 
-        // 步骤 6：SetupAPI 验证（设备重枚举后驱动变为 WinUSB）
+        // Step 6: SetupAPI verification (the driver becomes WinUSB after device re-enumeration)
         if poll_libusb_ready(POLL_TIMEOUT_SEC) {
             info!("[DRIVER] 设备已切换到 WinUSB（验证通过）");
             return Ok(());
         }
         last_err = "WinUSB 强制安装后设备驱动未变为 WinUSB（轮询超时）".to_string();
         warn!("[DRIVER] 第 {} 次验证失败: {}", attempt, last_err);
-        // 轮询超时但设备可能仍在线、只是卡在旧驱动上：再触发一次重枚举尝试推它一把，
-        // 避免直接进入下一轮完整 prepare（节省时间、提高首次安装成功率）。
+        // Polling timed out but the device may still be online, merely stuck on the old driver: trigger one more
+        // re-enumeration to nudge it, avoiding a full prepare cycle (saves time, improves first-install success).
         if attempt < INSTALL_RETRY_COUNT {
             if unsafe { super::setupapi::find_and_restart_brom_device() }.is_ok() {
                 std::thread::sleep(Duration::from_millis(REENUM_WAIT_MS));
@@ -168,9 +168,9 @@ pub fn switch_to_winusb() -> Result<(), String> {
     ))
 }
 
-/// 用 wdi-rs create_list 找到 BROM 设备（带重试，等设备稳定）
+/// Find the BROM device with wdi-rs create_list (with retries, waiting for the device to stabilize)
 fn find_brom_device() -> Result<wdi_rs::Device, String> {
-    // 关掉 COM 口后设备可能正在重枚举，给它一点时间
+    // The device may be re-enumerating after the COM port closes; give it some time
     info!("[DRIVER] 等待设备稳定 ({}ms)...", STABILIZE_DELAY_MS);
     std::thread::sleep(Duration::from_millis(STABILIZE_DELAY_MS));
 
@@ -224,15 +224,15 @@ fn current_driver_is_winusb() -> bool {
         .unwrap_or(false)
 }
 
-/// INF 输出目录
+/// INF output directory
 fn get_inf_dir() -> PathBuf {
     std::env::temp_dir().join(MTKCLIENT_TEMP_DIR)
 }
 
-/// 通过 Windows API 强制安装驱动（绕开 libwdi 预检）
+/// Force-install the driver via the Windows API (bypassing the libwdi precheck)
 ///
-/// 关键：HardwareId 参数**不能为 NULL**，否则会返回 ERROR_INVALID_PARAMETER (87)。
-/// libwdi 内部就是把 `device.hardware_id`（如 `USB\VID_0E8D&PID_0003`）传过去。
+/// Key: the HardwareId parameter **must not be NULL**, otherwise it returns ERROR_INVALID_PARAMETER (87).
+/// libwdi internally passes `device.hardware_id` (e.g. `USB\VID_0E8D&PID_0003`).
 fn force_install_via_api(device: &wdi_rs::Device, inf_dir: &std::path::Path) -> Result<(), String> {
     let inf_path = inf_dir.join(INF_NAME);
     if !inf_path.exists() {
@@ -292,7 +292,7 @@ fn force_install_via_api(device: &wdi_rs::Device, inf_dir: &std::path::Path) -> 
     }
 }
 
-/// 轮询 libusb 设备是否就绪
+/// Poll whether the libusb device is ready
 fn poll_libusb_ready(max_seconds: u32) -> bool {
     for i in 1..=(max_seconds * 2) {
         std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));

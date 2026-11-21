@@ -1,16 +1,18 @@
-//! 管理员权限检测与提权
+//! Administrator privilege detection and elevation.
 //!
-//! - `is_admin()` — 当前进程是否以管理员身份运行
-//! - `restart_as_admin()` — 通过 PowerShell Start-Process -Verb RunAs 触发 UAC 提权，
-//!   并设置 `MTKCLIENT_ELEVATED=1` 环境变量避免子进程再次提权造成死循环
+//! - `is_admin()` - whether the current process runs as administrator
+//! - `restart_as_admin()` - triggers UAC elevation via PowerShell
+//!   Start-Process -Verb RunAs, and sets `MTKCLIENT_ELEVATED=1` so the child
+//!   process does not try to elevate again and loop forever
 
 #[cfg(target_os = "windows")]
 use log::info;
 
-/// 检查当前进程是否以管理员身份运行
+/// Checks whether the current process runs as administrator.
 ///
-/// 自研实现：通过 Windows API `OpenProcessToken` + `GetTokenInformation(TokenElevation)`
-/// 查询当前进程令牌的提升状态，替代第三方 `is_elevated` crate（纯 FFI，无额外依赖）。
+/// Self-contained implementation: queries the process token elevation via the
+/// Windows APIs `OpenProcessToken` + `GetTokenInformation(TokenElevation)`,
+/// replacing the third-party `is_elevated` crate (pure FFI, no extra dependency).
 #[cfg(target_os = "windows")]
 pub fn is_admin() -> bool {
     #[link(name = "advapi32")]
@@ -54,14 +56,16 @@ pub fn is_admin() -> bool {
     }
 }
 
-// 非 Windows 平台不存在 `is_admin` / `restart_as_admin`：两者均为 Windows 专属实现
-// （is_admin 走 Win32 令牌查询，restart_as_admin 走 PowerShell UAC 提权），且全平台没有
-// 非 Windows 调用点（main.rs 的调用亦在 `#[cfg(target_os = "windows")]` 分支内），
-// 故按“占位桩无真实调用点即删除”的原则移除，避免 dead_code。
+// `is_admin` / `restart_as_admin` do not exist on non-Windows platforms: both are
+// Windows-only (is_admin uses Win32 token queries, restart_as_admin uses PowerShell
+// UAC elevation), and there are no non-Windows call sites (the call in main.rs is
+// also inside a `#[cfg(target_os = "windows")]` branch). They were therefore removed
+// per the "delete placeholder stubs without real call sites" rule to avoid dead_code.
 
-/// 以管理员权限重启当前进程
+/// Restarts the current process with administrator privileges.
 ///
-/// 设置环境变量 `MTKCLIENT_ELEVATED=1` 给子进程，避免子进程再次触发提权造成死循环。
+/// Sets the `MTKCLIENT_ELEVATED=1` environment variable for the child process so it
+/// does not trigger elevation again and loop forever.
 #[cfg(target_os = "windows")]
 pub fn restart_as_admin() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("获取 exe 路径失败: {}", e))?;

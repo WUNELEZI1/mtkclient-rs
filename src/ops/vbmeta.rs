@@ -1,9 +1,9 @@
-//! `vbmeta`：槽位感知的 vbmeta 校验禁用。
+//! `vbmeta`: slot-aware disabling of vbmeta verification.
 //!
-//! 复用既有的纯函数 [`decide_action`] 与三级降级 [`Session::active_slot`]：
-//! - 共享 `vbmeta`（无 `_a/_b` 后缀）：总是处理；
-//! - `vbmeta_*_a/_b`：只处理活动槽，另一槽 `[SKIP]` 并记录原因；
-//! - 槽位不可判定（A/B 但 bootctrl 读失败）：**直接报错，不写任何分区**。
+//! Reuses the existing pure function [`decide_action`] and the three-tier `Session::active_slot` fallback:
+//! - shared `vbmeta` (no `_a/_b` suffix): always processed;
+//! - `vbmeta_*_a/_b`: only the active slot is processed; the other slot is `[SKIP]` with a logged reason;
+//! - slot undeterminable (A/B but bootctrl read failed): **fail immediately, write no partition**.
 
 use log::{info, warn};
 
@@ -13,7 +13,7 @@ use crate::core::capability::{Capability, CapabilitySet};
 use crate::security::vbmeta::{SlotState, VBMETA_CANDIDATES, VbAction, decide_action};
 
 pub struct VbmetaOp {
-    /// flags：3 = hashtree + verification 全关（刷机场景推荐）
+    /// flags: 3 = disable both hashtree and verification (recommended for flashing)
     pub mode: u32,
 }
 
@@ -29,7 +29,7 @@ impl Op for VbmetaOp {
     }
 
     fn run(&self, ctx: &mut OpCtx<'_>) -> Result<OpOutcome, String> {
-        // 先定槽位：失败就整体放弃（绝不能在"槽位未知"时写）
+        // Determine the slot first: abort entirely on failure (never write with an unknown slot)
         let slot = match ctx.session.active_slot() {
             Ok(Some(c)) => {
                 info!("活动槽位: {}（只改该槽 + 共享 vbmeta）", c);
@@ -57,7 +57,7 @@ impl Op for VbmetaOp {
         for name in VBMETA_CANDIDATES {
             match decide_action(name, slot) {
                 VbAction::Skip(reason) => {
-                    // 只在分区确实存在时提示，避免刷一屏"不存在"
+                    // Report only when the partition actually exists, to avoid a wall of "missing" lines
                     if ctx.session.find_partition(name).is_ok() {
                         info!("  [SKIP] {}（{}）", name, reason);
                         skipped.push(name);

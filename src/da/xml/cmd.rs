@@ -1,55 +1,55 @@
-//! XML (V6) DA 命令构造
+//! XML (V6) DA command construction
 //!
-//! 对齐 penumbra `core/src/da/xml/cmd.rs`：把每条命令序列化为 DA 可解析的
-//! XML 报文。报文格式为单行、以 `\0` 结尾：
+//! Mirrors penumbra `core/src/da/xml/cmd.rs`: serializes each command into a
+//! XML message the DA can parse. The message is a single line terminated by `\0`:
 //!
 //! ```text
 //! <?xml version="1.0" encoding="utf-8"?><da><version>1.0</version>
 //! <command>CMD:SET-BOOT-MODE</command><arg>...</arg></da>\0
 //! ```
 //!
-//! 约定：
-//! - 命令名由结构体名的 SCREAMING-KEBAB-CASE 生成（如 `SetBootMode` →
-//!   `SET-BOOT-MODE`），与 penumbra 的 `XmlCommand` derive 宏一致；
-//! - 缺省参数段为 `<arg>`，具名参数段沿用段名（如 `adv`）；
-//! - 标签路径中的 `/` 表示嵌套（如 `arg/message` → `<arg><message>`）。
+//! Conventions:
+//! - Command names derive from struct names in SCREAMING-KEBAB-CASE (e.g. `SetBootMode` →
+//!   `SET-BOOT-MODE`), matching penumbra's `XmlCommand` derive macro;
+//! - The default argument section is `<arg>`; named sections keep their name (e.g. `adv`);
+//! - A `/` in a tag path denotes nesting (e.g. `arg/message` → `<arg><message>`).
 //!
-//! 本模块为纯函数（无 I/O），便于单测覆盖。
+//! Pure functions only (no I/O), which keeps the module easy to unit test.
 
 use crate::obf;
 
-/// 命令生命周期握手的起始标记（设备在每条命令前回发）。
+/// Start marker of the command lifecycle handshake (echoed by the device before each command).
 ///
-/// 明文经 `obf!` 编译期混淆，避免以明文形式暴露 V6/XML 协议指纹。
+/// The plaintext is obfuscated at compile time by `obf!` so the V6/XML protocol fingerprint is not exposed in plaintext.
 pub fn cmd_start() -> Vec<u8> {
     obf!("<command>CMD:START</command>").into_bytes()
 }
 
-/// 命令生命周期握手的结束标记（设备在每条命令后回发）。同 [`cmd_start`]。
+/// End marker of the command lifecycle handshake (echoed after each command). See [`cmd_start`].
 pub fn cmd_end() -> Vec<u8> {
     obf!("<command>CMD:END</command>").into_bytes()
 }
 
-/// 设备 → 主机：下载文件（主机需发送数据给设备）
+/// Device → host: download a file (the host must send data to the device)
 pub const CMD_DOWNLOAD_FILE: &str = "CMD:DOWNLOAD-FILE";
-/// 设备 → 主机：上传文件（设备需发送数据给主机）
+/// Device → host: upload a file (the device sends data to the host)
 pub const CMD_UPLOAD_FILE: &str = "CMD:UPLOAD-FILE";
-/// 设备 → 主机：进度上报
+/// Device → host: progress report
 pub const CMD_PROGRESS_REPORT: &str = "CMD:PROGRESS-REPORT";
-/// 设备 → 主机：文件系统操作（创建目录/查询存在性等）
+/// Device → host: file system operation (mkdir, existence check, etc.)
 pub const CMD_FILE_SYSTEM_OP: &str = "CMD:FILE-SYS-OPERATION";
 
-/// XML 命令生命周期
+/// XML command lifecycle
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum XmlCmdLifetime {
-    /// 命令开始（`CMD:START`）
+    /// Command start (`CMD:START`)
     CmdStart,
-    /// 命令结束（`CMD:END`）
+    /// Command end (`CMD:END`)
     CmdEnd,
 }
 
 impl XmlCmdLifetime {
-    /// 对应的标记字节（由 `obf!` 在运行时还原）
+    /// Corresponding marker bytes (restored at runtime by `obf!`)
     pub fn pattern(self) -> Vec<u8> {
         match self {
             XmlCmdLifetime::CmdStart => cmd_start(),
@@ -58,27 +58,27 @@ impl XmlCmdLifetime {
     }
 }
 
-/// (伪) 文件系统操作
+/// (Pseudo) file system operation
 ///
-/// DA 侧通过 `CMD:FILE-SYS-OPERATION` 询问主机要执行的文件操作，
-/// 主机以 `OK@<op>\0` 回应。SPFT 用它做目录创建/存在性判断；
-/// 这里只需要让协议流程继续，故 `Exists` 直接返回 `NOT-EXISTS`。
+/// The DA asks the host which file operation to run via `CMD:FILE-SYS-OPERATION`,
+/// and the host replies with `OK@<op>\0`. SPFT uses this for mkdir and existence checks;
+/// here we only need the protocol flow to continue, so `Exists` returns `NOT-EXISTS` directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileSystemOp {
-    /// 创建目录
+    /// Create a directory
     MkDir,
-    /// 查询是否存在（为避免额外读，直接返回不存在）
+    /// Query existence (returns not-exists directly to avoid an extra read)
     Exists,
-    /// 告知文件大小（十六进制）
+    /// Report the file size (hex)
     FileSize(usize),
-    /// 删除整个目录
+    /// Remove the whole directory
     RemoveAll,
-    /// 删除文件
+    /// Remove a file
     Remove,
 }
 
 impl FileSystemOp {
-    /// 序列化为 DA 期望的应答文本（不含 `OK@` 前缀与结尾 `\0`）
+    /// Serialize into the reply text expected by the DA (without the `OK@` prefix and trailing `\0`)
     pub fn default_value(&self) -> String {
         match self {
             FileSystemOp::MkDir => "MKDIR\u{0}".to_string(),
@@ -111,12 +111,12 @@ impl From<&str> for FileSystemOp {
 }
 
 // =============================================================================
-// 通用序列化
+// Common serialization
 // =============================================================================
 
-/// 把一个（可能嵌套的）标签路径写入报文体
+/// Write a (possibly nested) tag path into the message body
 ///
-/// `tag_path` 形如 `message` 或 `arg/message`，按 `/` 逐层展开为嵌套标签。
+/// `tag_path` is either `message` or `arg/message`; each `/` level expands into nested tags.
 fn push_tag(xml: &mut String, tag_path: &str, content: &str) {
     let parts: Vec<&str> = tag_path.split('/').collect();
     for p in &parts {
@@ -132,21 +132,21 @@ fn push_tag(xml: &mut String, tag_path: &str, content: &str) {
     }
 }
 
-/// 通用命令构造器
+/// Generic command builder
 ///
-/// `args` 中每项为 `(section, tag_path, content)`：
-/// - `section = None` → 归入缺省 `<arg>` 段；
-/// - `section = Some(name)` → 归入 `<name>` 段。
+/// Each entry in `args` is `(section, tag_path, content)`:
+/// - `section = None` → placed in the default `<arg>` section;
+/// - `section = Some(name)` → placed in the `<name>` section.
 ///
-/// 段顺序：缺省段在前，具名段按首次出现顺序排列（对齐 penumbra 的
-/// `BTreeMap<Option<&str>, _>`：`None` 小于 `Some`）。
+/// Section order: the default section first, then named sections in first-appearance order
+/// (matching penumbra's `BTreeMap<Option<&str>, _>`, where `None` sorts before `Some`).
 pub fn create_cmd(name: &str, version: &str, args: &[(Option<&str>, &str, String)]) -> String {
     let mut xml = format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?><da><version>{}</version><command>CMD:{}</command>",
         version, name
     );
 
-    // 缺省段
+    // Default section
     if args.iter().any(|(s, _, _)| s.is_none()) {
         xml.push_str("<arg>");
         for (section, tag, content) in args.iter().filter(|(s, _, _)| s.is_none()) {
@@ -156,7 +156,7 @@ pub fn create_cmd(name: &str, version: &str, args: &[(Option<&str>, &str, String
         xml.push_str("</arg>");
     }
 
-    // 具名段（按首次出现顺序）
+    // Named sections (in first-appearance order)
     let mut seen: Vec<&str> = Vec::new();
     for (section, _, _) in args {
         if let Some(name) = section {
@@ -182,13 +182,13 @@ pub fn create_cmd(name: &str, version: &str, args: &[(Option<&str>, &str, String
 }
 
 // =============================================================================
-// DA 加载 / 初始化命令
+// DA load / initialization commands
 // =============================================================================
 
-/// `SET-RUNTIME-PARAMETER`：设置 DA 日志级别、日志通道与主机系统
+/// `SET-RUNTIME-PARAMETER`: set the DA log level, log channel, and host OS
 ///
-/// 参考 penumbra `SetRuntimeParameter`（version 1.1），`initialize_dram`
-/// 位于独立的 `adv` 段。
+/// Mirrors penumbra `SetRuntimeParameter` (version 1.1); `initialize_dram`
+/// lives in a separate `adv` section.
 pub fn set_runtime_parameter(log_level: &str, log_channel: &str, system_os: &str) -> String {
     create_cmd(
         &obf!("SET-RUNTIME-PARAMETER"),
@@ -204,7 +204,7 @@ pub fn set_runtime_parameter(log_level: &str, log_channel: &str, system_os: &str
     )
 }
 
-/// `HOST-SUPPORTED-COMMANDS`：告知设备主机支持的命令能力集
+/// `HOST-SUPPORTED-COMMANDS`: advertise the host's supported command capabilities to the device
 pub fn host_supported_commands() -> String {
     create_cmd(
         &obf!("HOST-SUPPORTED-COMMANDS"),
@@ -219,7 +219,7 @@ pub fn host_supported_commands() -> String {
     )
 }
 
-/// `SET-HOST-INFO`：上报主机工具标识
+/// `SET-HOST-INFO`: report the host tool identity
 pub fn set_host_info(info: &str) -> String {
     create_cmd(
         &obf!("SET-HOST-INFO"),
@@ -228,12 +228,12 @@ pub fn set_host_info(info: &str) -> String {
     )
 }
 
-/// `NOTIFY-INIT-HW`：通知设备初始化 DRAM
+/// `NOTIFY-INIT-HW`: ask the device to initialize DRAM
 pub fn notify_init_hw() -> String {
     create_cmd(&obf!("NOTIFY-INIT-HW"), "1.0", &[])
 }
 
-/// `BOOT-TO`：跳转到指定地址执行，数据源为 `MEM://0x0:0x0`
+/// `BOOT-TO`: jump to the given address and execute; the data source is `MEM://0x0:0x0`
 pub fn boot_to(at_addr: u64, jmp_addr: u64) -> String {
     create_cmd(
         &obf!("BOOT-TO"),
@@ -247,10 +247,10 @@ pub fn boot_to(at_addr: u64, jmp_addr: u64) -> String {
 }
 
 // =============================================================================
-// 信息查询命令
+// Information query commands
 // =============================================================================
 
-/// `GET-SYS-PROPERTY`：读取设备系统属性
+/// `GET-SYS-PROPERTY`: read a device system property
 pub fn get_sys_property(key: &str) -> String {
     create_cmd(
         &obf!("GET-SYS-PROPERTY"),
@@ -262,7 +262,7 @@ pub fn get_sys_property(key: &str) -> String {
     )
 }
 
-/// `GET-HW-INFO`：读取存储/硬件信息（结果经 UPLOAD-FILE 回传）
+/// `GET-HW-INFO`: read storage/hardware information (returned via UPLOAD-FILE)
 pub fn get_hw_info() -> String {
     create_cmd(
         &obf!("GET-HW-INFO"),
@@ -272,10 +272,10 @@ pub fn get_hw_info() -> String {
 }
 
 // =============================================================================
-// 分区/闪存命令
+// Partition / flash commands
 // =============================================================================
 
-/// `READ-PARTITION`：按分区名读取
+/// `READ-PARTITION`: read by partition name
 pub fn read_partition(partition: &str) -> String {
     create_cmd(
         &obf!("READ-PARTITION"),
@@ -287,7 +287,7 @@ pub fn read_partition(partition: &str) -> String {
     )
 }
 
-/// `READ-FLASH`：按地址/长度读取
+/// `READ-FLASH`: read by address/length
 pub fn read_flash(partition: &str, length: usize, offset: u64) -> String {
     create_cmd(
         &obf!("READ-FLASH"),
@@ -301,7 +301,7 @@ pub fn read_flash(partition: &str, length: usize, offset: u64) -> String {
     )
 }
 
-/// `WRITE-PARTITION`：按分区名写入
+/// `WRITE-PARTITION`: write by partition name
 pub fn write_partition(partition: &str) -> String {
     create_cmd(
         &obf!("WRITE-PARTITION"),
@@ -313,7 +313,7 @@ pub fn write_partition(partition: &str) -> String {
     )
 }
 
-/// `WRITE-FLASH`：按地址/长度写入
+/// `WRITE-FLASH`: write by address/length
 pub fn write_flash(partition: &str, length: usize, offset: u64) -> String {
     create_cmd(
         &obf!("WRITE-FLASH"),
@@ -326,7 +326,7 @@ pub fn write_flash(partition: &str, length: usize, offset: u64) -> String {
     )
 }
 
-/// `ERASE-PARTITION`：擦除整个分区
+/// `ERASE-PARTITION`: erase an entire partition
 pub fn erase_partition(partition: &str) -> String {
     create_cmd(
         &obf!("ERASE-PARTITION"),
@@ -335,7 +335,7 @@ pub fn erase_partition(partition: &str) -> String {
     )
 }
 
-/// `ERASE-FLASH`：按地址/长度擦除
+/// `ERASE-FLASH`: erase by address/length
 pub fn erase_flash(section: &str, length: usize, offset: u64) -> String {
     create_cmd(
         &obf!("ERASE-FLASH"),
@@ -348,7 +348,7 @@ pub fn erase_flash(section: &str, length: usize, offset: u64) -> String {
     )
 }
 
-/// `FLASH-UPDATE`：进入 scatter 刷写流程
+/// `FLASH-UPDATE`: enter the scatter flashing flow
 pub fn flash_update() -> String {
     let sep = if cfg!(windows) { "\\" } else { "/" };
     create_cmd(
@@ -363,10 +363,10 @@ pub fn flash_update() -> String {
 }
 
 // =============================================================================
-// 重启 / BootMode
+// Reboot / BootMode
 // =============================================================================
 
-/// `REBOOT`：立即重启或断开重启
+/// `REBOOT`: reboot immediately or reboot with disconnect
 pub fn reboot(disconnect: bool) -> String {
     let action = if disconnect {
         "DISCONNECT"
@@ -380,7 +380,7 @@ pub fn reboot(disconnect: bool) -> String {
     )
 }
 
-/// `SET-BOOT-MODE`：设置下次启动模式（FASTBOOT / META 等）
+/// `SET-BOOT-MODE`: set the next boot mode (FASTBOOT / META, etc.)
 pub fn set_boot_mode(mode: &str, connect_type: &str, mobile_log: &str, adb: &str) -> String {
     create_cmd(
         &obf!("SET-BOOT-MODE"),
@@ -395,7 +395,7 @@ pub fn set_boot_mode(mode: &str, connect_type: &str, mobile_log: &str, adb: &str
 }
 
 // =============================================================================
-// Efuse / 安全
+// Efuse / security
 // =============================================================================
 
 /// `READ-EFUSE`
@@ -444,7 +444,7 @@ pub fn security_set_allinone_signature(source_file: &str) -> String {
 }
 
 // =============================================================================
-// 单元测试
+// Unit tests
 // =============================================================================
 
 #[cfg(test)]
@@ -467,7 +467,7 @@ mod tests {
     fn set_boot_mode_layout() {
         let xml = set_boot_mode("FASTBOOT", "USB", "ON", "ON");
         assert!(xml.contains("<command>CMD:SET-BOOT-MODE</command>"));
-        // 缺省段按给定顺序排列
+        // The default section keeps the given order
         assert!(xml.contains(
             "<arg><mode>FASTBOOT</mode><connect_type>USB</connect_type>\
              <mobile_log>ON</mobile_log><adb>ON</adb></arg>"
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn runtime_parameter_has_named_adv_section() {
         let xml = set_runtime_parameter("INFO", "USB", "WINDOWS");
-        // 缺省段在前，adv 段在后
+        // Default section first, `adv` section after
         let arg_pos = xml.find("<arg>").unwrap();
         let adv_pos = xml.find("<adv>").unwrap();
         assert!(arg_pos < adv_pos, "arg 段应先于 adv 段: {}", xml);
@@ -520,7 +520,7 @@ mod tests {
         assert_eq!(FileSystemOp::from("REMOVE"), FileSystemOp::Remove);
         assert_eq!(FileSystemOp::from("NOT-EXISTS"), FileSystemOp::Exists);
         assert_eq!(FileSystemOp::from("1F40"), FileSystemOp::FileSize(0x1F40));
-        // 未知文本回退为 Exists
+        // Unknown text falls back to Exists
         assert_eq!(FileSystemOp::from("what"), FileSystemOp::Exists);
 
         assert_eq!(FileSystemOp::MkDir.default_value(), "MKDIR\u{0}");

@@ -1,7 +1,7 @@
 // #![allow(dead_code)] — removed during dead-code sweep; re-add only if needed
 
-// 纯美化：压制 clippy 风格类 lint（不改变任何运行时行为 / 安全性，仅清理告警）。
-// 覆盖项均为 warn 级纯风格提示；如需收紧代码风格可移除本段后逐项手工重构。
+// Purely cosmetic: suppress clippy style lints (no runtime behavior / safety changes, only warning cleanup).
+// All covered lints are warn-level style hints; remove this block and refactor manually if stricter style is needed.
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::too_many_arguments)]
@@ -39,7 +39,7 @@ unsafe extern "system" {
     fn SetConsoleCP(wCodePage: u32) -> i32;
 }
 
-/// 获取本地时间戳字符串 [YYYY/MM/DD HH:MM:SS.mmm]
+/// Get a local timestamp string [YYYY/MM/DD HH:MM:SS.mmm]
 fn get_local_timestamp() -> String {
     #[cfg(target_os = "windows")]
     {
@@ -89,15 +89,15 @@ fn get_local_timestamp() -> String {
     }
 }
 
-/// 自研终端日志器，替代 env_logger::Logger。
-/// 复刻原 env_logger 终端格式：[时间戳] [LEVEL] 消息，并保留按模块过滤（nusb 限定至 Warn）。
+/// In-house terminal logger, replacing env_logger::Logger.
+/// Mirrors the original env_logger terminal format: `timestamp` `LEVEL` message, keeping per-module filtering (nusb capped at Warn).
 struct TerminalLogger {
-    /// 全局默认日志级别（mtkclient_rs 及其它模块）
+    /// Global default log level (mtkclient_rs and other modules)
     level: log::LevelFilter,
 }
 
 impl TerminalLogger {
-    /// 返回指定 target 的实际生效级别：nusb 强制不超过 Warn，其余用全局默认。
+    /// Return the effective level for a target: nusb is forced to at most Warn, others use the global default.
     fn level_for(&self, target: &str) -> log::LevelFilter {
         if target == "nusb" {
             log::LevelFilter::Warn
@@ -138,7 +138,7 @@ impl log::Log for TerminalLogger {
     }
 }
 
-/// TeeLogger：同时输出到终端（TerminalLogger）和文件（usb_debug.log）
+/// TeeLogger: write to both the terminal (TerminalLogger) and a file (usb_debug.log)
 struct TeeLogger {
     terminal: TerminalLogger,
     file: Mutex<std::fs::File>,
@@ -150,10 +150,10 @@ impl log::Log for TeeLogger {
     }
 
     fn log(&self, record: &log::Record) {
-        // 1. 终端输出（保持原有格式）
+        // 1. Terminal output (keeps the original format)
         self.terminal.log(record);
 
-        // 2. 文件输出（简化格式，含 target 便于排查）
+        // 2. File output (simplified format including target for troubleshooting)
         let line = format!(
             "[{}] [{}] [{}] {}\n",
             get_local_timestamp(),
@@ -178,9 +178,9 @@ mod cancel;
 #[path = "cmd/mod.rs"]
 mod cmd;
 mod color;
-// 注意：这里曾误写成 `#[path = "connection/mod.rs"] mod confirm;`，
-// 导致 `crate::confirm` 实际指向 connection 模块、src/confirm/mod.rs 从未参与编译
-// （危险操作确认器因此形同虚设）。两模块必须各自独立声明。
+// Note: this was once mistakenly written as `#[path = "connection/mod.rs"] mod confirm;`,
+// making `crate::confirm` actually point to the connection module while src/confirm/mod.rs was never compiled
+// (effectively disabling the danger-operation confirmer). The two modules must be declared independently.
 mod confirm;
 mod connection;
 
@@ -189,9 +189,9 @@ mod core;
 mod da;
 mod error;
 mod exec;
-mod fs;
 #[path = "exploit/mod.rs"]
 mod exploit;
+mod fs;
 mod i18n;
 mod ops;
 #[path = "partition/mod.rs"]
@@ -214,7 +214,7 @@ mod util;
 use connection::ConnectionManager;
 use usb::UsbContext;
 
-/// 检查 Windows 版本，要求 Windows 10 或更高
+/// Check the Windows version; Windows 10 or later is required
 #[cfg(target_os = "windows")]
 fn check_windows_version() -> Result<(), String> {
     #[repr(C)]
@@ -270,12 +270,12 @@ fn check_windows_version() -> Result<(), String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 语言选择优先于一切输出：`--language <LANG>` 可出现在任意位置
-    // （如 `mtkclient-rs help --language zh-CN`），未指定时回退环境变量。
+    // Language selection takes priority over all output: `--language <LANG>` may appear anywhere
+    // (e.g. `mtkclient-rs help --language zh-CN`); falls back to the environment variable when unspecified.
     i18n::detect_env();
     let argv: Vec<String> = i18n::extract_from_args(std::env::args().collect());
 
-    // 编译时限制：仅支持 x86_64 架构
+    // Compile-time restriction: only the x86_64 architecture is supported
     #[cfg(not(target_arch = "x86_64"))]
     {
         eprintln!("{}", i18n::t("arch_unsupported"));
@@ -284,19 +284,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(target_os = "windows")]
     {
-        // 1. 运行时检查 Windows 版本（要求 Windows 10+）
+        // 1. Runtime check of the Windows version (Windows 10+ required)
         if let Err(e) = check_windows_version() {
             eprintln!("{}", e);
             std::process::exit(1);
         }
 
-        // 2. 强制设置控制台代码页为 UTF-8（CP_UTF8 = 65001）
-        //    必须在任何输出之前调用，确保中文字符正确显示
+        // 2. Force the console code page to UTF-8 (CP_UTF8 = 65001)
+        //    Must be called before any output so Chinese characters display correctly
         unsafe {
             SetConsoleCP(65001);
             SetConsoleOutputCP(65001);
         }
-        // 3. 启用 Windows ANSI 转义序列支持（CMD.exe 默认关闭）
+        // 3. Enable Windows ANSI escape sequence support (disabled by default in CMD.exe)
         crate::color::enable_virtual_terminal();
     }
 
@@ -307,7 +307,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     cancel::install_ctrlc_handler();
 
-    // 输出版本号（每次代码更新 cargo.toml version +0.0.1）
+    // Print the version (bump cargo.toml version +0.0.1 on every code update)
     println!(
         "{} {}",
         "mtkclient-rs".cyan().bold(),
@@ -315,16 +315,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "{}",
-        "Copyright (c) 无能乐子(wunelezi) | Licensed under Apache-2.0".dimmed()
+        "Copyright (c) 无能乐子(wunelezi) | Licensed under GPL-3.0-or-later".dimmed()
     );
     println!(
-        "{} {}  {} {}",
+        "{} {}",
         i18n::t("get_updates").dimmed(),
-        "https://gitee.com/WUNELEZI1/mtkclient-rs/releases"
+        "https://github.com/WUNELEZI1/mtkclient-rs/releases"
             .blue()
-            .underline(),
-        "QQ:".dimmed(),
-        "3535571067".green()
+            .underline()
     );
     println!("{}", i18n::t("free_tool_notice").red().dimmed());
     println!();
@@ -338,7 +336,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = cmd::cli::Cli::parse_from(argv);
 
-    // === --data-dir 覆盖（GUI 传入的解压数据目录）===
+    // === --data-dir override (extracted data directory passed in by the GUI) ===
     if let Some(ref data_dir) = cli.data_dir {
         let data_path = std::path::PathBuf::from(data_dir);
         if data_path.is_dir() {
@@ -349,31 +347,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Windows: 驱动安装 (pnputil / wdi-rs) 必须管理员，提前提权
-    // 用环境变量 MTKCLIENT_ELEVATED 标记避免子进程重复提权造成死循环
+    // Windows: driver installation (pnputil / wdi-rs) requires admin, so elevate early
+    // Use the MTKCLIENT_ELEVATED env var to prevent child processes from re-elevating in an infinite loop
     #[cfg(target_os = "windows")]
     {
         if !cli.no_elevate
             && !connection::driver::is_admin()
             && std::env::var_os("MTKCLIENT_ELEVATED").is_none()
         {
-            // 提示用户（UAC 弹窗会覆盖这个）
+            // Notify the user (the UAC dialog will cover this)
             eprintln!("{}", i18n::t("elevate_request"));
             if let Err(e) = connection::driver::restart_as_admin() {
                 eprintln!("{}", i18n::tr("elevate_failed", &[&e.to_string()]));
                 eprintln!("{}", i18n::t("elevate_hint"));
                 return Err(e.into());
             }
-            // restart_as_admin 内部 std::process::exit(0)，不会回到这里
+            // restart_as_admin calls std::process::exit(0) internally and never returns here
         }
     }
 
     let app_config = system::config::AppConfig::from_cli(&cli);
 
-    // === 反逆向：调试器探测 ===
-    // 无条件调用以保证符号可达（满足零 dead_code）；是否收敛诊断输出由构建类型决定，
-    // 避免干扰开发期的单步调试。release 下命中调试器时关闭额外的诊断输出，
-    // 不改变任何刷机功能，仅减少对分析者暴露的内部细节。
+    // === Anti-reversing: debugger detection ===
+    // Called unconditionally to keep the symbol reachable (satisfying zero dead_code); whether diagnostic output is reduced
+    // depends on the build type, avoiding interference with step debugging during development. In release, a detected debugger
+    // disables extra diagnostic output without changing any flashing functionality, only reducing internal details exposed to analysts.
     let debugger_attached = security::obfuscate::debugger_present();
     let anti_analysis = debugger_attached && !cfg!(debug_assertions);
     if anti_analysis {
@@ -383,13 +381,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     usb::set_usb_log_switch(effective_usb_log);
 
-    // --quiet-dump: 抑制 USB 读取日志和进度条
+    // --quiet-dump: suppress USB read logs and the progress bar
     if cli.quiet_dump || anti_analysis {
         usb::set_usb_read_quiet(true);
     }
 
     let log_level = if cli.quiet {
-        log::LevelFilter::Error // --quiet: 只输出 ERROR
+        log::LevelFilter::Error // --quiet: emit ERROR only
     } else {
         app_config.log_level
     };
@@ -397,8 +395,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let terminal_logger = TerminalLogger { level: log_level };
 
     if effective_usb_log || cli.log_file.is_some() {
-        // TeeLogger：终端 + 文件。--usb_log 写 tmp/usb_debug.log（覆盖）；
-        // --log_file <path> 写用户指定文件（追加，便于跨会话留档）。
+        // TeeLogger: terminal + file. --usb_log writes tmp/usb_debug.log (truncate);
+        // --log_file <path> writes the user-specified file (append, for cross-session archiving).
         let (path, append) = if let Some(ref p) = cli.log_file {
             (std::path::PathBuf::from(p), true)
         } else {
@@ -425,7 +423,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         log::set_boxed_logger(Box::new(terminal_logger))
             .map_err(|e| format!("设置全局 logger 失败: {}", e))?;
     }
-    // 全局最大级别取各模块过滤指令的最大值（nusb=Warn 可能高于默认）
+    // The global max level takes the maximum of the per-module filter directives (nusb=Warn may exceed the default)
     log::set_max_level(std::cmp::max(log_level, log::LevelFilter::Warn));
 
     let cmd = app_config.command.as_deref().unwrap_or("");
@@ -435,12 +433,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // zyb detect 不需要设备连接，直接进入 Preloader 串口探测
+    // zyb detect needs no device connection; go straight to Preloader serial probing
     if cmd == "zyb" && app_config.cmd_args.first().map(|s| s.as_str()) == Some("detect") {
         return cmd::detect::cmd_detect().map_err(|e| e.to_string().into());
     }
 
-    // boot / proinfo 为离线镜像解析命令，不需要连接设备，直接进入文件解析流程
+    // boot / proinfo are offline image parsing commands that need no device connection; go straight to file parsing
     if cmd == "boot" {
         return cmd::bootimg::cmd_boot(&app_config.cmd_args).map_err(|e| e.to_string().into());
     }
@@ -448,7 +446,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return cmd::proinfo::cmd_proinfo(&app_config.cmd_args).map_err(|e| e.to_string().into());
     }
 
-    // zyb seccfg info <file>：离线解析 seccfg 镜像（无需设备）
+    // zyb seccfg info `<file>`: offline seccfg image parsing (no device needed)
     if cmd == "zyb"
         && app_config.cmd_args.first().map(|s| s.as_str()) == Some("seccfg")
         && app_config.cmd_args.get(1).map(|s| s.as_str()) == Some("info")
@@ -457,8 +455,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return crate::security::seccfg::seccfg_info_file(path).map_err(|e| e.to_string().into());
     }
 
-    // avb 离线命令：解析 / 禁用 vbmeta 镜像文件（自研 avbtool，无需设备）
-    // plan：离线查看规划结果（不连接设备）
+    // avb offline command: parse / disable vbmeta image files (in-house avbtool, no device needed)
+    // plan: offline view of planning results (no device connection)
     if cmd == "plan" {
         let plan_mode = match app_config.work_mode {
             crate::system::config::WorkMode::Brom => "brom",
@@ -477,7 +475,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return cmd_avb_offline(&app_config.cmd_args);
     }
 
-    // 离线仿真（--sim / --port mock://...）：不碰 USB，走 Executor → Orchestrator
+    // Offline simulation (--sim / --port mock://...): no USB, goes through Executor → Orchestrator
     if let Some(spec) = cli.sim.clone() {
         if let Err(e) = cmd::sim::run_sim(&app_config, &spec, cli.log_level) {
             eprintln!();
@@ -491,25 +489,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         error!("{}", e);
     })?;
 
-    // COM 口前置握手 + libusb 后续通信
+    // COM port pre-handshake + libusb for subsequent communication
     let mut conn_mgr = ConnectionManager::new();
 
-    // 工作模式：brom / preloader / auto
+    // Work mode: brom / preloader / auto
     let work_mode = app_config.work_mode;
     debug!("[MAIN] 工作模式: {:?}", work_mode);
 
-    // === DA 会话复用已全面禁用 ===
-    // MTK 设备的 DA 会话不跨进程存活：无论 BROM(PID=0x0003) 还是 Preloader(PID=0x2000)，
-    // 进程退出都会触发设备复位、DA 死掉；但 PID 仍保持原值（BROM 始终 0x0003、Preloader 始终
-    // 0x2000）。旧逻辑据此用 .state(da_loaded) + device_online() 仅凭 PID 字符串比较判定复用，
-    // 必然误命中一个已死的 DA 会话，导致下一条命令发往无 DA 的设备 -> 失败/卡死。
-    // 故所有模式统一走 smart_init 重新握手 + 重载 DA；.state 仅保留作缓存元数据
-    // (gpt_cache / optional_query_failures / preloader_path)，不再做 DA 会话连接复用。
-    // 详见 reconnect.rs smart_init_preloader 注释与 session.rs device_online 实现。
-    // DA 会话复用已全面禁用（见上文注释），统一走 smart_init 重新握手 + 重载 DA。
+    // === DA session reuse is fully disabled ===
+    // MTK device DA sessions do not survive across processes: whether BROM (PID=0x0003) or Preloader (PID=0x2000),
+    // process exit resets the device and kills the DA; but the PID stays the same (BROM always 0x0003, Preloader always
+    // 0x2000). The old logic used .state(da_loaded) + device_online() comparing only PID strings to decide reuse,
+    // inevitably hitting a dead DA session and sending the next command to a device without a DA -> failure/hang.
+    // So all modes uniformly go through smart_init re-handshake + DA reload; .state is kept only as cache metadata
+    // (gpt_cache / optional_query_failures / preloader_path) and no longer reuses DA session connections.
+    // See the smart_init_preloader comment in reconnect.rs and the device_online implementation in session.rs.
+    // DA session reuse is fully disabled (see the comment above); all modes use smart_init re-handshake + DA reload.
     let (mut preloader, _mode) = conn_mgr.smart_init(&usb_context, work_mode)?;
 
-    // 从 .state 恢复 preloader 路径缓存（与 DA 会话复用无关，仅作用户未指定时的默认数据源）。
+    // Restore the preloader path cache from .state (unrelated to DA session reuse; only a default data source when the user specifies none).
     let restored_preloader_path = match crate::connection::SessionState::load() {
         Some(state) => match state.preloader_path {
             Some(ref path) if std::path::Path::new(path).exists() => {
@@ -534,12 +532,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // preloader_path 决定后续策略：
-    //   - Some(path)：使用用户指定的文件作为 EMI 数据源，跳过 dump + bypass
-    //   - None：强制从设备 dump preloader 一次（覆盖同名文件），然后按需 bypass
+    // preloader_path determines the subsequent strategy:
+    //   - Some(path): use the user-specified file as the EMI data source, skipping dump + bypass
+    //   - None: force one preloader dump from the device (overwriting same-named files), then bypass as needed
     //
-    // 注意：dump + load + bypass + upload_da 全部下放到 cmd::handle_command 统一处理，
-    // 避免在 main.rs 与 handle_command 双重执行（之前会 dump 两次）。
+    // Note: dump + load + bypass + upload_da are all delegated to cmd::handle_command for unified handling,
+    // avoiding double execution in main.rs and handle_command (previously it dumped twice).
     let final_preloader_path = app_config.preloader_path.clone().unwrap_or_default();
     if !final_preloader_path.is_empty() {
         debug!("使用指定的 preloader 文件: {}", final_preloader_path);
@@ -547,16 +545,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         debug!("{}", i18n::t("no_preloader_forced_dump").yellow());
     }
 
-    // 传递用户指定的 DA 文件路径给 preloader（供后台线程预解析和 upload_da 使用）
+    // Pass the user-specified DA file path to preloader (for background-thread pre-parsing and upload_da)
     preloader.da_path = app_config.da_path.clone().unwrap_or_default();
 
     let mut da = da::DAXFlash::new(&mut preloader);
     da.patch_da = cli.patch_da;
     da.da_x_speed = app_config.da_x_speed;
 
-    // DA 会话复用已禁用（见上文注释）：统一由 handle_command 内部 upload_da 走新鲜 DA 链路。
+    // DA session reuse is disabled (see the comment above): upload_da inside handle_command always uses a fresh DA path.
 
-    // preloader 路径优先级：用户指定 > .state 恢复 > 从设备 dump
+    // preloader path priority: user-specified > restored from .state > dump from device
     let effective_preloader_path = if !final_preloader_path.is_empty() {
         final_preloader_path.clone()
     } else if let Some(ref path) = restored_preloader_path {
@@ -565,8 +563,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         String::new()
     };
 
-    // dump + load + bypass + upload_da 全部由 handle_command 内部完成
-    // 这里不再调用 dump_preloader_payload / load_preloader_emi / upload_da
+    // dump + load + bypass + upload_da are all handled inside handle_command
+    // dump_preloader_payload / load_preloader_emi / upload_da are no longer called here
     cmd::handle_command(
         &mut da,
         &app_config,
@@ -581,10 +579,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// `mtkclient-rs avb <info|disable> <file> [out]`
 ///
-/// 自研 avbtool 的离线模式：
-/// - `avb info <vbmeta.img>`：`avbtool info-image` 等价格式输出；
-/// - `avb disable <vbmeta.img> [out]`：flags=3（关闭 hashtree+verification）后写出
-///   （默认覆盖原文件，out 省略时写 `<file>.disabled`）。
+/// Offline mode of the in-house avbtool:
+/// - `avb info <vbmeta.img>`: output in the same format as `avbtool info-image`;
+/// - `avb disable <vbmeta.img> [out]`: write out with flags=3 (hashtree+verification disabled)
+///   (overwrites the original file by default; writes `<file>.disabled` when out is omitted).
 fn cmd_avb_offline(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     use crate::color::Colorize;
     use crate::security::avb::{FLAG_HASHTREE_DISABLED, FLAG_VERIFICATION_DISABLED, VbmetaImage};

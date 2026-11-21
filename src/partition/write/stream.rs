@@ -1,4 +1,4 @@
-//! 按原始地址流式写入数据（带进度条/续传）
+//! Stream data to raw addresses (with progress bar / resume)
 
 use crate::progress::{ProgressBar, ProgressStyle};
 use log::{info, trace, warn};
@@ -7,14 +7,14 @@ use crate::da::xflash::{CMD_MAGIC, DAXFlash, pack3};
 
 use super::{format_write_status_error, write_write_resume_file};
 
-/// 参数分块大小：对齐 Python mtkclient，所有 payload 按 0x200 分块发送。
-/// DA 协议要求严格按此分块，整包发送会导致 device-side 死锁。
+/// Parameter chunk size: aligned with Python mtkclient, all payloads are sent in 0x200 chunks.
+/// The DA protocol requires strict chunking; sending the whole payload at once causes a device-side deadlock.
 const XFLASH_PARAM_CHUNK: usize = 0x200;
 
 impl<'a> DAXFlash<'a> {
-    /// 发送参数列表，对齐 Python send_param：
-    /// 每个参数都有独立的 12B header，payload 按 0x200 分块发送，
-    /// 整个列表发送完成后读一次 status。
+    /// Send a parameter list, aligned with Python send_param:
+    /// each parameter has its own 12B header, payloads are sent in 0x200 chunks,
+    /// and status is read once after the whole list is sent.
     pub(crate) fn send_param_list_chunked(
         &mut self,
         params: &[&[u8]],
@@ -35,7 +35,7 @@ impl<'a> DAXFlash<'a> {
             );
             self.write_with_retry(&param_pkt, &format!("{} param {} header", label, param_idx))?;
 
-            // 所有 payload 严格按 0x200 分块（对齐 Python mtkclient）
+            // All payloads strictly chunked at 0x200 (aligned with Python mtkclient)
             for (chunk_idx, chunk) in payload.chunks(XFLASH_PARAM_CHUNK).enumerate() {
                 self.write_with_retry(
                     chunk,
@@ -43,12 +43,12 @@ impl<'a> DAXFlash<'a> {
                 )?;
             }
         }
-        // status 读取：对齐刷机匣，支持 0x00010004 重试
+        // Status read: aligned with the flash tool, supports 0x00010004 retry
         let mut status = self.status()?;
         if status == 0 {
             return Ok(());
         }
-        // 写入时偶发 status=0x00010004，需要 resync + 重读
+        // Writing occasionally yields status=0x00010004, requiring resync + re-read
         if status == 0x00010004 {
             warn!("{} status=0x00010004，尝试 resync 后重读", label);
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -60,15 +60,15 @@ impl<'a> DAXFlash<'a> {
         Err(format_write_status_error(label, status))
     }
 
-    /// 按原始地址流式写入数据，供分区写入、seccfg/frp 等场景复用。
-    /// 接受任意 `Read` 实现（文件、内存缓冲区等），避免大文件全量载入内存。
-    /// 带进度条显示：使用自研进度条（src/progress.rs）实时更新进度，最后输出总耗时和速度。
+    /// Stream data to raw addresses, reused by partition writes, seccfg/frp, etc.
+    /// Accepts any `Read` implementation (file, in-memory buffer, ...) to avoid loading large files entirely into memory.
+    /// Shows progress: the custom progress bar (src/progress.rs) updates live and finally reports total elapsed time and speed.
     ///
-    /// 断点续传参数：
-    /// - `start_offset`: 本次调用前已写入的字节数（用于进度条初始化和恢复文件记录）
-    /// - `resume_input`: 输入文件路径（用于在取消时保存/更新 `.wresume` 文件）
-    /// - `base_addr`: 原始分区起始地址（不含 start_offset 偏移）
-    /// - `original_total`: 原始总写入大小（不含 start_offset 减去）
+    /// Resume parameters:
+    /// - `start_offset`: bytes already written before this call (for progress bar init and resume file records)
+    /// - `resume_input`: input file path (used to save/update the `.wresume` file on cancellation)
+    /// - `base_addr`: original partition start address (without the start_offset adjustment)
+    /// - `original_total`: original total write size (without subtracting start_offset)
     pub(crate) fn write_flash_data_stream(
         &mut self,
         addr: u64,
@@ -79,14 +79,14 @@ impl<'a> DAXFlash<'a> {
         start_offset: u64,
         resume_input: &str,
     ) -> Result<(), String> {
-        // 对齐 Python mtkclient writeflash：先调用 get_packet_length 再 cmd_write_data
-        // 不发送 xflash_sync（SYNC_SIGNAL 会破坏 HACC 后的 DA 状态机）
+        // Aligned with Python mtkclient writeflash: call get_packet_length before cmd_write_data
+        // Do not send xflash_sync (SYNC_SIGNAL would break the DA state machine after HACC)
         let write_packet_size = self.get_packet_length().unwrap_or(0x40000);
 
         self.cmd_write_data(addr, total, storage, parttype)?;
         let start_time = std::time::Instant::now();
 
-        // 创建进度条（total 是本次剩余量，进度条显示已写入总量）
+        // Create the progress bar (total is the remaining amount this call; the bar shows total bytes written)
         let total_written = start_offset + total;
         let bar = if total_written > 0 {
             ProgressBar::new(total_written)
@@ -110,7 +110,7 @@ impl<'a> DAXFlash<'a> {
         let mut pos = 0u64;
         let mut chunk_buf = vec![0u8; write_packet_size];
         let mut last_resume_pos: u64 = 0;
-        const RESUME_INTERVAL: u64 = 64 * 1024 * 1024; // 64MB 续传保存间隔
+        const RESUME_INTERVAL: u64 = 64 * 1024 * 1024; // resume save interval: 64MB
 
         while pos < total {
             if crate::cancel::force_requested() || crate::cancel::requested() {
@@ -137,7 +137,7 @@ impl<'a> DAXFlash<'a> {
             }
             let chunk = &chunk_buf[..n];
 
-            // 16-bit additive checksum（对齐 penumbra download_data，见 chunk_checksum）
+            // 16-bit additive checksum (aligned with penumbra download_data, see chunk_checksum)
             let checksum = crate::da::xflash::chunk_checksum(chunk);
 
             trace!(
@@ -168,7 +168,7 @@ impl<'a> DAXFlash<'a> {
             pos += n as u64;
             bar.set_position(start_offset + pos);
 
-            // 定期保存续传文件（每 64MB），确保断点可恢复
+            // Periodically save the resume file (every 64MB) so the breakpoint remains recoverable
             if !resume_input.is_empty() && pos - last_resume_pos >= RESUME_INTERVAL {
                 let _ = write_write_resume_file(
                     resume_input,
@@ -201,8 +201,8 @@ impl<'a> DAXFlash<'a> {
         Ok(())
     }
 
-    /// 按原始地址写入内存中的数据（向后兼容）。
-    /// 内部转接到流式实现，统一代码路径。
+    /// Write in-memory data to raw addresses (backward compatible).
+    /// Internally delegates to the streaming implementation to unify the code path.
     pub(crate) fn write_flash_data(
         &mut self,
         addr: u64,
@@ -221,14 +221,14 @@ impl<'a> DAXFlash<'a> {
         )
     }
 
-    /// 读取写入最终状态，支持 0x00010004 重试
-    /// 对齐刷机匣：写入完成后偶发 status=0x00010004
+    /// Read the final write status, supporting 0x00010004 retry
+    /// Aligned with the flash tool: after writing, status=0x00010004 occasionally occurs
     fn read_write_final_status(&mut self) -> Result<u32, String> {
         let mut st = self.status()?;
         if st == 0 {
             return Ok(st);
         }
-        // status 0x00010004: resync 后重试
+        // status 0x00010004: resync then retry
         if st == 0x00010004 {
             warn!("writeflash final status=0x00010004，尝试 resync");
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -240,7 +240,7 @@ impl<'a> DAXFlash<'a> {
         Ok(st)
     }
 
-    /// 构建取消错误并保存续传状态
+    /// Build the cancellation error and save resume state
     fn build_cancel_error(
         &self,
         start_offset: u64,

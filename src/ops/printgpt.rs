@@ -1,14 +1,14 @@
-//! `printgpt`：打印 GPT 分区表。
+//! `printgpt`: print the GPT partition table.
 //!
-//! 这是第一个完全走 Orchestrator 的 op：它只声明
-//! `StorageRead | GptParsed`，不再自己决定"先 bypass 还是先 DA"。
+//! This is the first op that goes entirely through the Orchestrator: it only declares
+//! `StorageRead | GptParsed` and no longer decides "bypass first or DA first" itself.
 
 use log::{debug, info};
 
 use super::{Op, OpCtx, OpOutcome};
 use crate::core::capability::{Capability, CapabilitySet};
 
-/// 打印 GPT 分区表。
+/// Print the GPT partition table.
 pub struct PrintGptOp;
 
 impl PrintGptOp {
@@ -74,9 +74,9 @@ impl Op for PrintGptOp {
         let parsed = crate::partition::GptInfo::parse(&gpt)?;
         let count = parsed.partitions().len();
 
-        // super 动态分区：真实设备上读 metadata，仿真设备为 None
+        // super dynamic partitions: read metadata on real devices; None on the simulator
         let sup = ctx.session.super_metadata();
-        // 复用 cmd 层已有的表格渲染，保证与 `printgpt` 老命令输出一致
+        // Reuse the existing table rendering in the cmd layer so output matches the legacy `printgpt` command
         crate::cmd::partition_table::print_gpt_table_public(
             &gpt,
             info.boot1,

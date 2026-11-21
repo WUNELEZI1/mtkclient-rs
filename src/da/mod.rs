@@ -1,13 +1,13 @@
-//! Download Agent 系统
+//! Download Agent system
 //!
-//! 对齐 Python mtkclient Library/DA/ 目录结构：
-//! - `xflash` — XFlash 协议原语、DA 结构体（DAXFlash）、EMI 提取、诊断、IO
-//! - `xml`    — XML (V6) DA 协议（MT6789+ 新平台）：命令构造 + 会话 + 闪存操作
-//! - `engine` — 与 StreamPort 解耦的协议引擎（仿真 / CI 用，阶段完整）
-//! - `loader` — DA 两阶段上传（header 解析 + env 初始化 + upload）
-//! - `ext`    — DA Extension 命令（patch + generate + meta/adb 控制）
+//! Mirrors the Python mtkclient Library/DA/ layout:
+//! - `xflash` — XFlash protocol primitives, DA structs (DAXFlash), EMI extraction, diagnostics, IO
+//! - `xml`    — XML (V6) DA protocol (MT6789+ platforms): command building + session + flash ops
+//! - `engine` — protocol engine decoupled from StreamPort (for simulation / CI, stage-complete)
+//! - `loader` — two-stage DA upload (header parsing + env init + upload)
+//! - `ext`    — DA Extension commands (patch + generate + meta/adb control)
 //!
-//! DAXFlash 是整个 DA 子系统的核心结构体，在此 re-export。
+//! DAXFlash is the core struct of the whole DA subsystem and is re-exported here.
 
 pub mod engine;
 pub mod ext;
@@ -17,5 +17,5 @@ pub mod loader;
 pub mod xflash;
 pub mod xml;
 
-// 核心 re-export：让外部模块通过 crate::da::DAXFlash 使用
+// Core re-export: let external modules use it as crate::da::DAXFlash
 pub use xflash::DAXFlash;

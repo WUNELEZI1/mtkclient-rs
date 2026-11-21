@@ -1,12 +1,12 @@
-//! `write`：把镜像写进分区（带断点续传 + 回读校验 + 危险确认）。
+//! `write`: write an image into a partition (with resume + read-back verify + danger confirmation).
 //!
-//! 流程：
-//! 1. 定位分区、校验镜像大小（**绝不截断**：文件大于分区直接拒绝）；
-//! 2. 重点分区要求确认（加 `--yes` 直接放行；不加则打印风险提示并交互式问 y/N）；
-//! 3. 读 `.resume`：四项指纹（分区/地址/总长/源文件大小+mtime）全对才续传；
-//! 4. 流式写入，每 8 MiB（及失败时）落一次 checkpoint；
-//! 5. 回读校验（默认开），覆盖整个已写范围；
-//! 6. 成功后删除 `.resume`。
+//! Flow:
+//! 1. Locate the partition and check the image size (**never truncate**: a file larger than the partition is rejected);
+//! 2. Critical partitions require confirmation (`--yes` passes directly; otherwise print the risk and ask y/N);
+//! 3. Read `.resume`: resume only if all four fingerprints match (partition/address/total/size+mtime);
+//! 4. Stream the write, persisting a checkpoint every 8 MiB (and on failure);
+//! 5. Read-back verify (on by default) covering the whole written range;
+//! 6. Delete `.resume` on success.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,10 +19,10 @@ use super::checkpoint::{
 use super::{Op, OpCtx, OpOutcome, danger_for_partition, is_critical_partition};
 use crate::core::capability::{Capability, CapabilitySet};
 
-/// 回读校验分块。
+/// Read-back verify chunk size.
 const VERIFY_CHUNK: u64 = 0x10_0000;
 
-/// 写入文件到分区。
+/// Write a file into a partition.
 pub struct WriteOp {
     pub part: String,
     pub file: String,
@@ -56,14 +56,14 @@ impl Op for WriteOp {
             ));
         }
 
-        // 512 字节对齐（DA 要求整块写）
+        // 512-byte alignment (DA writes whole blocks)
         let total = if file_size % 512 == 0 {
             file_size
         } else {
             file_size + (512 - file_size % 512)
         };
 
-        // 危险确认：重点分区必须确认
+        // Danger confirmation: critical partitions must be confirmed
         if is_critical_partition(&self.part) {
             ctx.confirm_action(
                 "write",
@@ -72,8 +72,8 @@ impl Op for WriteOp {
             )?;
         }
 
-        // 续传：GPT 哈希 + 分块 CRC 双重校验（Phase 1.2）
-        // 设备 GPT 变化说明分区布局可能已变，地址不再可信 → 中止而非续写。
+        // Resume: dual check of GPT hash + chunk CRCs (Phase 1.2)
+        // A changed device GPT means the layout may differ, so addresses are untrusted → abort instead of resuming.
         let gpt_crc = ctx.session.gpt().map(super::checkpoint::crc32).unwrap_or(0);
         let cp =
             WriteCheckpoint::load_checked(&self.file, &self.part, span.addr, total, Some(gpt_crc))?;
@@ -87,8 +87,8 @@ impl Op for WriteOp {
                     c.written as f64 / total as f64 * 100.0,
                     c.written
                 );
-                // 写之前先证明"已写前缀还在且没坏"。CRC 不符一律中止：
-                // 接着往后写只会把坏数据留在分区里，且用户会误以为在续传。
+                // Before writing, prove the written prefix is still intact. Any CRC mismatch aborts:
+                // continuing would leave bad data in the partition while the user believes it resumed.
                 self.verify_prefix(ctx, span.addr, &c.chunks)?;
                 info!(
                     "续传前置校验通过: {} 个 CRC 分块（共 {} 字节）",
@@ -127,7 +127,7 @@ impl Op for WriteOp {
             ctx.session
                 .write_stream(span.addr, &mut padded, total, start, &mut |written| {
                     if written - last_persisted >= PERSIST_INTERVAL {
-                        // 只统计"设备已确认落盘"的字节，避免把预读但未写入的数据算进去。
+                        // Count only device-confirmed bytes, so prefetched but unwritten data is not included.
                         if let Err(e) = tracker.borrow_mut().sync_from_file(&file, written) {
                             warn!("计算分块 CRC 失败: {}", e);
                         }
@@ -151,7 +151,7 @@ impl Op for WriteOp {
                 });
 
         if let Err(e) = res {
-            // 失败也要落盘（进程可能马上退出）
+            // Persist even on failure (the process may exit immediately)
             let written = last_persisted;
             if written > 0 && written < total {
                 let _ = tracker.borrow_mut().sync_from_file(&self.file, written);
@@ -177,14 +177,14 @@ impl Op for WriteOp {
         res = Ok(());
         res?;
 
-        // 回读校验（覆盖整个镜像范围，包括续传前已写的部分）。
-        // 续传一律校验：`.resume` 只证明"上次写到哪"，不证明"那部分还在设备里"
-        // （换了台机器 / 期间被别人刷过，都会命中断点但数据不对）。
+        // Read-back verify covering the whole image range, including the part written before resuming.
+        // Always verify on resume: `.resume` only says where the last write stopped, not that the data is still there
+        // (another machine or an intervening flash can hit the checkpoint with wrong data).
         let mut verified = 0u64;
         let do_verify = self.verify || start > 0;
         if do_verify {
-            // 校验失败说明设备里既有的前缀不可信（换了机器 / 中途被刷过），
-            // 此时必须作废断点，否则会一直从错误的偏移续传。
+            // A verify failure means the existing prefix is untrusted (another machine / flashed meanwhile),
+            // so the checkpoint must be invalidated or it will keep resuming from a wrong offset.
             info!("回读校验 {} 字节...", total);
             if let Err(e) = self.verify_range(ctx, span.addr, total) {
                 WriteCheckpoint::clear(&self.file);
@@ -196,7 +196,7 @@ impl Op for WriteOp {
 
         WriteCheckpoint::clear(&self.file);
 
-        // Phase 1.3：写参与 AVB 的分区后强制体检，验证未关则红字警告（不阻断）。
+        // Phase 1.3: after writing an AVB-protected partition run a forced check; warn in red if verify is on (non-blocking).
         super::avb_guard::warn_after_write(ctx.session, &self.part);
 
         info!(
@@ -226,10 +226,10 @@ impl Op for WriteOp {
 }
 
 impl WriteOp {
-    /// 续传前校验设备上已写前缀的 CRC（每 64 MiB 一块）。
+    /// Verify the CRC of the written prefix on the device before resuming (64 MiB per chunk).
     ///
-    /// 不通过就报错中止：这是"绝对防御"——宁可让用户删掉断点重写，
-    /// 也不能把坏数据当good继续往后写。
+    /// Any mismatch aborts: absolute defense — better to make the user delete the checkpoint and
+    /// rewrite than to keep writing past bad data as if it were good.
     fn verify_prefix(
         &self,
         ctx: &mut OpCtx<'_>,
@@ -269,7 +269,7 @@ impl WriteOp {
         Ok(())
     }
 
-    /// 逐块回读比对（覆盖 `[addr, addr+total)`）。
+    /// Read back and compare chunk by chunk (covering `[addr, addr+total)`).
     fn verify_range(&self, ctx: &mut OpCtx<'_>, addr: u64, total: u64) -> Result<(), String> {
         let mut src =
             std::fs::File::open(&self.file).map_err(|e| format!("重新打开镜像失败: {}", e))?;
@@ -283,7 +283,7 @@ impl WriteOp {
                 return Err(format!("校验读回长度不符 @0x{:X}", addr + offset));
             }
             let mut expect = buf[..take as usize].to_vec();
-            // 文件尾部不足一块时按零填充（写入时同样补零）
+            // Zero-pad a short tail block (the write pads the same way)
             if n < take as usize {
                 expect[n..].fill(0);
             }
@@ -305,7 +305,7 @@ impl WriteOp {
     }
 }
 
-/// 读满缓冲区（返回实际读到的字节数，允许末尾不足）。
+/// Fill the buffer (returns bytes actually read; a short tail is allowed).
 fn read_full(src: &mut std::fs::File, buf: &mut [u8]) -> Result<usize, String> {
     use std::io::Read;
     let mut n = 0;
@@ -321,7 +321,7 @@ fn read_full(src: &mut std::fs::File, buf: &mut [u8]) -> Result<usize, String> {
     Ok(n)
 }
 
-/// 尾部补零的 Reader（DA 要求整 512 字节块）。
+/// Zero-padding reader (DA requires whole 512-byte blocks).
 struct PaddedReader {
     inner: std::fs::File,
     remaining: u64,
@@ -333,9 +333,10 @@ impl std::io::Read for PaddedReader {
         if self.remaining == 0 {
             return Ok(0);
         }
-        // 永远读满 `want`（`want` 必为 512 的倍数：total 已对齐、buf 为 1 MiB），
-        // 文件提前结束就补零。这样"实际写入设备的字节"与喂给 CRC 追踪器的字节
-        // 严格一一对应，续传时不会因为补零差异导致 CRC 覆盖长度对不上。
+        // Always fill `want` (`want` is a multiple of 512: total is aligned, buf is 1 MiB),
+        // padding with zeros if the file ends early. This keeps the bytes written to the device
+        // in exact one-to-one correspondence with the bytes fed to the CRC tracker, so resume
+        // cannot mismatch CRC coverage due to padding differences.
         let want = (buf.len() as u64).min(self.remaining) as usize;
         let mut n = 0usize;
         while n < want {

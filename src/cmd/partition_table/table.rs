@@ -1,14 +1,14 @@
-//! GPT 分区表格式化输出
+//! GPT partition table formatted output
 //!
-//! - `print_gpt_table` — ASCII 表格风格打印分区表
+//! - `print_gpt_table` — prints the partition table in ASCII table style
 
 use crate::color::Colorize;
 
 use super::emmc;
 use crate::partition::GptInfo;
 
-/// 打印 GPT 表格到控制台（含 eMMC_Boot1/Boot2 显示）
-/// 使用 ASCII 表格风格: | 和 - 作为分隔符，列标签中文
+/// Print the GPT table to the console (including eMMC_Boot1/Boot2)
+/// Uses ASCII table style: | and - as separators, Chinese column labels
 fn pad_display_width(input: &str, width: usize, align_right: bool) -> String {
     let display_width = crate::util::display_width(input);
     if display_width >= width {
@@ -71,14 +71,14 @@ pub fn print_gpt_table(
         }
     }
 
-    // 列宽定义（地址按 0x%016X = 18 字符，含 0x 前缀）
-    const W_IDX: usize = 4; // "01" 等
-    const W_NAME: usize = 22; // 分区名
+    // Column widths (address printed as 0x%016X = 18 chars, including the 0x prefix)
+    const W_IDX: usize = 4; // "01" etc.
+    const W_NAME: usize = 22; // partition name
     const W_ADDR: usize = 18; // 0x00000000000000
     const W_SIZE: usize = 10; // "1024.00 MB"
     const W_BYTES: usize = 17; // "1,073,741,824"
 
-    // 构建分隔线: +----+--------+...
+    // Build the separator line: +----+--------+...
     let sep = format!(
         "+-{}-+-{}-+-{}-+-{}-+-{}-+-{}-+",
         "-".repeat(W_IDX),
@@ -89,8 +89,8 @@ pub fn print_gpt_table(
         "-".repeat(W_BYTES)
     );
 
-    // 表头行（先格式化定宽纯文本，再整体上色）
-    // 注意：表头含中文字符，必须用 pad_display_width 计算显示宽度
+    // Header row (format as fixed-width plain text first, then color the whole row)
+    // Note: the header contains Chinese characters, so pad_display_width must be used to compute display width
     let header_plain = format!(
         "| {} | {} | {} | {} | {} | {} |",
         pad_display_width("编号", W_IDX, false),
@@ -101,7 +101,7 @@ pub fn print_gpt_table(
         pad_display_width("字节数", W_BYTES, true),
     );
 
-    // 格式化一行为定宽纯文本（不含颜色代码）
+    // Format one row as fixed-width plain text (without color codes)
     fn fmt_row(idx: &str, name: &str, start: &str, end: &str, size: &str, bytes: &str) -> String {
         format!(
             "| {} | {} | {} | {} | {} | {} |",
@@ -121,7 +121,7 @@ pub fn print_gpt_table(
 
     let mut row = 0usize;
 
-    // eMMC Boot 区域（灰色显示，标记为 eMMC_Boot1 / eMMC_Boot2）
+    // eMMC Boot area (shown dimmed, labeled eMMC_Boot1 / eMMC_Boot2)
     if boot1_size > 0 {
         row += 1;
         let line = fmt_row(
@@ -147,7 +147,7 @@ pub fn print_gpt_table(
         println!("{}", line.dimmed());
     }
 
-    // GPT 分区（交替亮度，先 format 定宽再整体上色）
+    // GPT partitions (alternating brightness; format fixed width first, then color the whole row)
     for (i, entry) in partitions.iter().enumerate() {
         row += 1;
         let start_addr = entry.start_addr;
@@ -167,7 +167,7 @@ pub fn print_gpt_table(
             println!("{}", line.bright_white());
         }
 
-        // 遇到 super 分区时，立即展开其 logical partitions
+        // When reaching the super partition, expand its logical partitions immediately
         if entry.name.to_lowercase() == "super" {
             if let Some(ref meta) = super_metadata {
                 if !meta.partitions.is_empty() {
@@ -204,7 +204,7 @@ pub fn print_gpt_table(
         }
     }
 
-    // 底部分隔线 + 总计
+    // Bottom separator line + total
     println!("{}", sep);
     let total_label = format!("| 共 {} 个分区", row);
     let sep_display_width = crate::util::display_width(sep.as_str());

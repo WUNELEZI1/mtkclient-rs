@@ -2,7 +2,7 @@ use log::info;
 
 use crate::da::DAXFlash;
 
-/// vbmeta 候选分区（覆盖 C# 版支持的变体）。
+/// Candidate vbmeta partitions (covering the variants supported by the C# version).
 pub(crate) const VBMETA_CANDIDATES: [&str; 13] = [
     "vbmeta_a",
     "vbmeta_b",
@@ -19,29 +19,29 @@ pub(crate) const VBMETA_CANDIDATES: [&str; 13] = [
     "vbmeta_odm_b",
 ];
 
-/// 槽位判定结果。
+/// Slot determination result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SlotState {
-    /// 已确定活动槽（来自 bootctrl 或 GPT 元数据）
+    /// Active slot determined (from bootctrl or GPT metadata)
     Known(char),
-    /// 设备不是 A/B（不存在 `_a/_b` 成对的 vbmeta）
+    /// Device is not A/B (no paired `_a/_b` vbmeta partitions)
     NotAb,
 }
 
-/// 单个候选分区的处理动作。
+/// Action to take for a single candidate partition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VbAction {
     Patch,
-    /// 非活动槽 / 不适用，跳过并记录原因
+    /// Inactive slot / not applicable; skip and record the reason
     Skip(&'static str),
 }
 
-/// 纯函数：决定某个候选分区是否要改。
+/// Pure function: decide whether a candidate partition should be modified.
 ///
-/// 规则（对应"非活动槽 SKIP + 记录原因；不确定就报错，不猜"）：
-/// - 无 `_a/_b` 后缀（共享 vbmeta）：总是处理；
-/// - 有后缀且槽位已确定：只处理当前槽，另一槽 SKIP；
-/// - 有后缀但设备非 A/B：SKIP（该分区不可能存在，跳过即可）。
+/// Rules (matching "inactive slot SKIP + record reason; error out when unsure, never guess"):
+/// - No `_a/_b` suffix (shared vbmeta): always process;
+/// - Has a suffix and the slot is known: process only the current slot; SKIP the other;
+/// - Has a suffix but the device is not A/B: SKIP (the partition cannot exist; skipping is enough).
 pub(crate) fn decide_action(name: &str, slot: SlotState) -> VbAction {
     let suffix = if name.ends_with("_a") {
         Some('a')
@@ -58,12 +58,11 @@ pub(crate) fn decide_action(name: &str, slot: SlotState) -> VbAction {
     }
 }
 
-
-/// 解析活动槽位：bootctrl → GPT 元数据 → 报错（不猜）。
+/// Resolve the active slot: bootctrl → GPT metadata → error (never guess).
 ///
-/// "GPT 元数据"这里用分区存在性判定：`_a` 与 `_b` 变体同时存在却读不到
-/// bootctrl，说明这台设备是 A/B 但状态未知 → 直接报错，避免一次 `zyb vbmeta`
-/// 把两个槽都改了（用户会丢掉回滚能力）。
+/// "GPT metadata" here means partition existence: if both `_a` and `_b` variants exist but bootctrl
+/// cannot be read, the device is A/B with an unknown state → error out, preventing one `zyb vbmeta`
+/// run from patching both slots (which would cost the user rollback capability).
 pub(crate) fn resolve_slot(da: &mut DAXFlash) -> Result<SlotState, String> {
     if let Ok(Some(c)) = crate::slot::detect_active_slot(da) {
         return Ok(SlotState::Known(c));
@@ -133,7 +132,7 @@ mod tests {
 
     #[test]
     fn mixed_layout_handles_shared_and_slotted_separately() {
-        // 共享 vbmeta + 分槽 vbmeta_system：前者总是改，后者只改活动槽
+        // Shared vbmeta + slotted vbmeta_system: always patch the former, only the active slot for the latter
         let slot = SlotState::Known('b');
         assert_eq!(decide_action("vbmeta", slot), VbAction::Patch);
         assert_eq!(decide_action("vbmeta_system_b", slot), VbAction::Patch);

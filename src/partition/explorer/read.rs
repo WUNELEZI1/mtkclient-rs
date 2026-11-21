@@ -5,12 +5,12 @@ use super::ext4::{
 use super::is_dir_mode;
 use super::lp::{LpTranslator, read_lp_metadata};
 
-/// fs_shell 入口函数
+/// fs_shell entry function
 pub fn run_explorer<F>(read_fn: &mut F) -> Result<(), String>
 where
     F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
 {
-    // banner 在 run_interactive 中打印，此处不再重复
+    // The banner is printed in run_interactive, so it is not repeated here
 
     let (partitions, extents) = read_lp_metadata(read_fn)?;
     println!("解析到 {} 个逻辑分区:", partitions.len());
@@ -30,17 +30,17 @@ where
     Ok(())
 }
 
-/// 从 ext4 分区中按路径读取文件内容（不依赖 LP 元数据）
+/// Read file content from an ext4 partition by path (independent of LP metadata).
 ///
-/// 复用 fs_shell 内部的 ext4 解析逻辑（支持 BGD 32/64 字节、inline symlink、
-/// 空 inode 等），使用 identity translator 直接按分区偏移读取。
+/// Reuses fs_shell's internal ext4 parsing logic (supports 32/64-byte BGD, inline symlinks,
+/// empty inodes, etc.) and uses an identity translator to read directly at partition offsets.
 ///
-/// 参数：
-/// - `read_fn`: 读取回调 `(offset, len) -> Result<Vec<u8>, String>`，offset 从分区起始算
-/// - `partition_size`: 分区总大小
-/// - `path`: 文件路径，如 `"system/build.prop"`
+/// Parameters:
+/// - `read_fn`: read callback `(offset, len) -> Result<Vec<u8>, String>`, offset relative to partition start
+/// - `partition_size`: total partition size
+/// - `path`: file path, e.g. `"system/build.prop"`
 ///
-/// 返回：文件原始数据
+/// Returns: raw file data
 pub fn read_file_by_path<F>(
     read_fn: &mut F,
     partition_size: u64,
@@ -82,20 +82,20 @@ where
 }
 
 // =============================================================================
-// 公共 API：通过 LP translator 从 super 分区读取文件
+// Public API: read files from the super partition via the LP translator
 // =============================================================================
 
-/// 通过 LP metadata 从 super 分区内的逻辑分区读取文件
+/// Read a file from a logical partition inside super via LP metadata.
 ///
-/// 与 fs_shell 的 `cat <super_part>/<partition>/<path>` 完全相同的代码路径。
+/// Uses exactly the same code path as fs_shell's `cat <super_part>/<partition>/<path>`.
 ///
-/// # 参数
-/// - `super_read_fn`: 从 super 分区起始读取数据的函数
-/// - `target_partition`: 目标逻辑分区名（如 "system_b"）
-/// - `file_path`: ext4 内文件路径（如 "system/build.prop"）
+/// # Parameters
+/// - `super_read_fn`: function that reads data from the start of the super partition
+/// - `target_partition`: target logical partition name (e.g. "system_b")
+/// - `file_path`: file path inside ext4 (e.g. "system/build.prop")
 ///
-/// # 返回
-/// 文件内容字节
+/// # Returns
+/// File content bytes
 pub fn read_file_via_lp<F>(
     super_read_fn: &mut F,
     target_partition: &str,
@@ -104,16 +104,16 @@ pub fn read_file_via_lp<F>(
 where
     F: FnMut(u64, u64) -> Result<Vec<u8>, String>,
 {
-    // Step 1: 从 super 读取 LP metadata
+    // Step 1: read LP metadata from super
     let (partitions, _all_extents) = read_lp_metadata(super_read_fn)?;
 
-    // Step 2: 查找目标逻辑分区
+    // Step 2: locate the target logical partition
     let lp_part = partitions
         .iter()
         .find(|p| p.name == target_partition)
         .ok_or_else(|| format!("LP 中未找到分区: {}", target_partition))?;
 
-    // 从 all_extents 中获取该分区的 extents
+    // Collect this partition's extents from all_extents
     let start = lp_part.first_extent_index as usize;
     let count = lp_part.num_extents as usize;
     let part_extents = if start + count <= _all_extents.len() {
@@ -136,13 +136,13 @@ where
         part_size
     );
 
-    // Step 3: 创建 LP translator（从分区的 extents）
+    // Step 3: build an LP translator from the partition's extents
     let lp_translator = LpTranslator {
         extents: part_extents,
         total_size: part_size,
     };
 
-    // Step 4: 读取 ext4 superblock
+    // Step 4: read the ext4 superblock
     let sb = read_ext4_superblock(super_read_fn, &lp_translator)?;
 
     log::info!(
@@ -152,7 +152,7 @@ where
         sb.bgd_entry_size
     );
 
-    // Step 5: 解析路径并读取文件
+    // Step 5: resolve the path and read the file
     let inode_num = resolve_path(
         super_read_fn,
         &lp_translator,

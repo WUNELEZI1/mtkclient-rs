@@ -1,26 +1,26 @@
-//! `xml` 子命令 — XML (V6) DA 协议操作（新平台 MT6789+）
+//! `xml` subcommand — XML (V6) DA protocol operations (new platforms MT6789+)
 //!
-//! 与 XFlash 路径并列，供新平台设备显式使用：
+//! Parallel to the XFlash path, for explicit use on new-platform devices:
 //!
 //! ```text
-//! xml init [主机标识]                 上报主机信息 + 运行参数，初始化 XML 会话
-//! xml hw-info                        读取存储/硬件信息
-//! xml prop <key>                     读取设备系统属性
-//! xml efuse-read                     读取 efuse
-//! xml efuse-write <hex>              写入 efuse（hex 字节串）
-//! xml boot <at_addr> <jmp_addr>      BOOT-TO 跳转执行
-//! xml flash-update                   进入 scatter 刷写流程
-//! xml security dev-fw-info           读取固件安全信息
-//! xml security flash-policy <file>   下发 flash policy（本地文件）
-//! xml security allinone-sig <file>   下发 all-in-one 签名（本地文件）
-//! xml r <part> <file>                READ-PARTITION 整分区回读
-//! xml w <part> <file>                WRITE-PARTITION 整分区写入
-//! xml e <part>                       ERASE-PARTITION 格式化分区
-//! xml rb <section> <off> <size> <file>   READ-FLASH 按地址读取
-//! xml wb <section> <off> <size> <file>   WRITE-FLASH 按地址写入
-//! xml eb <section> <off> <size>          ERASE-FLASH 按地址擦除
-//! xml reboot [disconnect]            REBOOT（disconnect=断开重启）
-//! xml boot-mode <mode>               SET-BOOT-MODE（如 FASTBOOT / META）
+//! xml init [host id]                 report host info + run parameters, initialize an XML session
+//! xml hw-info                        read storage/hardware info
+//! xml prop <key>                     read a device system property
+//! xml efuse-read                     read efuse
+//! xml efuse-write <hex>              write efuse (hex byte string)
+//! xml boot <at_addr> <jmp_addr>      BOOT-TO jump execution
+//! xml flash-update                   enter the scatter flash flow
+//! xml security dev-fw-info           read firmware security info
+//! xml security flash-policy `<file>`   send flash policy (local file)
+//! xml security allinone-sig `<file>`   send all-in-one signature (local file)
+//! xml r `<part>` `<file>`                READ-PARTITION full partition read-back
+//! xml w `<part>` `<file>`                WRITE-PARTITION full partition write
+//! xml e `<part>`                       ERASE-PARTITION format partition
+//! xml rb <section> <off> `<size>` `<file>`   READ-FLASH read by address
+//! xml wb <section> <off> `<size>` `<file>`   WRITE-FLASH write by address
+//! xml eb <section> <off> `<size>`          ERASE-FLASH erase by address
+//! xml reboot [disconnect]            REBOOT (disconnect = reboot while disconnecting)
+//! xml boot-mode `<mode>`               SET-BOOT-MODE (e.g. FASTBOOT / META)
 //! ```
 
 use std::fs::File;
@@ -32,7 +32,7 @@ use crate::color::Colorize;
 use crate::da::DAXFlash;
 use crate::da::xml::XmlSession;
 
-/// 解析地址/长度（支持 `0x` 前缀的十六进制或十进制）
+/// Parse an address/length (hex with a `0x` prefix, or decimal)
 fn parse_num(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
     let s = s.trim();
     let v = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
@@ -43,7 +43,7 @@ fn parse_num(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
     Ok(v)
 }
 
-/// 读取本地文件为字节串（用于 efuse / security 下发）
+/// Read a local file as a byte string (for efuse / security uploads)
 fn read_input_file(path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut f = File::open(path).map_err(|e| format!("打开文件 {} 失败: {}", path, e))?;
     let mut buf = Vec::new();
@@ -51,7 +51,7 @@ fn read_input_file(path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     Ok(buf)
 }
 
-/// 百分位进度打印（每 10% 一行，避免刷屏）
+/// Percentage progress logging (one line per 10% to avoid flooding)
 fn progress_logger() -> impl FnMut(usize, usize) {
     let mut last = usize::MAX;
     move |done: usize, total: usize| {
@@ -66,7 +66,7 @@ fn progress_logger() -> impl FnMut(usize, usize) {
     }
 }
 
-/// `xml` 子命令入口
+/// `xml` subcommand entry point
 pub fn handle_xml_command(
     da: &mut DAXFlash,
     args: &[String],
@@ -76,7 +76,7 @@ pub fn handle_xml_command(
         .map(|s| s.as_str())
         .ok_or("用法: mtkclient xml <init|hw-info|prop|efuse-read|efuse-write|boot|flash-update|security|r|w|e|rb|wb|eb|reboot|boot-mode> ...")?;
 
-    // --via xml 的读/写/擦命令（r/w/e）也复用本会话，故统一在此构建
+    // The read/write/erase commands (r/w/e) of --via xml reuse this session too, so build it here
     let mut session = XmlSession::new(&mut *da.preloader.device);
 
     match sub {
@@ -269,7 +269,7 @@ pub fn handle_xml_command(
     Ok(())
 }
 
-/// 当前主机系统标识（对齐 DA 的 system_os 取值）
+/// Current host OS identifier (matching the DA's system_os values)
 fn system_os() -> &'static str {
     if cfg!(windows) {
         "WINDOWS"

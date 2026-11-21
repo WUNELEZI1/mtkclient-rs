@@ -1,11 +1,11 @@
-//! BROM 设备驱动检测（只查询，不打开）
+//! BROM device driver detection (query only; never opens the device).
 //!
-//! 通过 SetupAPI 枚举 USB 总线，识别 BROM 设备当前使用的驱动类型：
-//! - `BromDriverType::WinUsb` → libwdi 安装的 WinUSB 驱动
-//! - `BromDriverType::Serial` → MediaTek Inc. 串口驱动
-//! - `BromDriverType::Unknown(name)` → 其他驱动（保留名称）
+//! Enumerates the USB bus via SetupAPI to identify the driver currently bound to the BROM device:
+//! - `BromDriverType::WinUsb` → WinUSB driver installed by libwdi
+//! - `BromDriverType::Serial` → MediaTek Inc. serial driver
+//! - `BromDriverType::Unknown(name)` → any other driver (name preserved)
 //!
-//! 优势：只读注册表，不实际打开设备，避免 COM 口占用问题。
+//! Benefit: only reads the registry and never opens the device, avoiding COM port contention.
 
 #[cfg(target_os = "windows")]
 use log::trace;
@@ -17,39 +17,41 @@ use super::setupapi::{
     read_reg_wide,
 };
 
-/// BROM 设备驱动类型
+/// BROM device driver type.
 ///
-/// 仅由 Windows 的 SetupAPI 枚举路径（`check_brom_driver_type` /
-/// `detect_brom_driver_from_usb_bus`）与分类逻辑构造，非 Windows 无驱动类型概念；
-/// 单测（`#[cfg(test)]`）亦直接引用，故仅在 Windows 或测试构建中定义。
+/// Constructed only by the Windows SetupAPI enumeration path (`check_brom_driver_type` /
+/// `detect_brom_driver_from_usb_bus`) and the classification logic; other platforms have no
+/// driver-type concept. Unit tests (`#[cfg(test)]`) reference it directly, so it is defined
+/// only for Windows or test builds.
 #[cfg(any(target_os = "windows", test))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum BromDriverType {
-    /// WinUSB 驱动（libwdi 安装）
+    /// WinUSB driver (installed by libwdi)
     WinUsb,
-    /// 原始串口驱动（MediaTek Inc.）
+    /// Native serial driver (MediaTek Inc.)
     Serial,
-    /// 未知驱动（包含制造商名称）
+    /// Unknown driver (carries the manufacturer name)
     Unknown(String),
 }
 
-/// USB 总线检测结果
+/// USB bus detection result.
 ///
-/// `WinUsbReady` 在非 Windows 下由 nusb 直连探测构造（见本文件非 Windows 版
-/// `detect_brom_driver_from_usb_bus`），故不做平台门控；`SerialPort` / `Unknown`
-/// 仅能由 Windows SetupAPI 驱动分类产生，因此只在 Windows 下定义。
+/// `WinUsbReady` is also constructed on non-Windows by the direct nusb probe (see the
+/// non-Windows `detect_brom_driver_from_usb_bus` below), so it is not platform-gated;
+/// `SerialPort` / `Unknown` can only come from Windows SetupAPI classification, so they are
+/// defined on Windows only.
 #[derive(Debug, Clone)]
 pub enum UsbBusDetectionResult {
-    /// 未找到设备
+    /// No device found
     NotFound,
-    /// WinUSB 驱动（libwdi），可以直接用 libusb 访问
+    /// WinUSB driver (libwdi); accessible directly via libusb
     WinUsbReady,
-    /// 串口驱动（MediaTek），需要先打开串口握手再切换 WinUSB
+    /// Serial driver (MediaTek); requires a port handshake before switching to WinUSB
     #[cfg(target_os = "windows")]
-    SerialPort(String), // COM 口名称
-    /// 未知驱动
+    SerialPort(String), // COM port name
+    /// Unknown driver
     #[cfg(target_os = "windows")]
-    Unknown(String), // 驱动制造商
+    Unknown(String), // driver manufacturer
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -84,31 +86,32 @@ fn classify_brom_driver_from_fields(
     }
 }
 
-/// COM 口对应的 USB 设备信息
+/// USB device info for a COM port
 #[derive(Debug, Clone)]
 pub struct ComPortUsbInfo {
-    /// 设备描述（如 "MediaTek USB Port"）
+    /// Device description (e.g. "MediaTek USB Port")
     pub device_desc: String,
-    /// 驱动制造商（如 "libwdi" 或 "MediaTek Inc."）
+    /// Driver manufacturer (e.g. "libwdi" or "MediaTek Inc.")
     pub driver_mfg: String,
 }
 
-/// 是否应跳过 WinUSB 驱动切换：仅当已确认绑定 WinUSB 时才跳过。
+/// Whether the WinUSB driver switch can be skipped: only when WinUSB is confirmed bound.
 ///
-/// 纯分类逻辑，放此处以便在所有平台单测（不依赖 Windows SetupAPI）。
-/// - WinUsb → 跳过（已是目标驱动）
-/// - Serial → 不跳过（仍需切换，即使 USB 总线可枚举）
-/// - Unknown → 不跳过（驱动未安装/未知，仍需安装）
+/// Pure classification logic kept here so it can be unit-tested on every platform
+/// (no Windows SetupAPI dependency).
+/// - WinUsb → skip (already the target driver)
+/// - Serial → do not skip (switch still needed, even if the USB bus is enumerable)
+/// - Unknown → do not skip (driver missing/unknown, install still needed)
 ///
-/// 仅在 Windows + `winusb-driver` 的生产路径（switch.rs）使用，其余情况由测试引用。
+/// Used only by the Windows + `winusb-driver` production path (switch.rs); otherwise referenced by tests.
 #[cfg(any(all(target_os = "windows", feature = "winusb-driver"), test))]
 pub fn should_skip_switch_for_driver(driver_type: &BromDriverType) -> bool {
     matches!(driver_type, BromDriverType::WinUsb)
 }
 
-/// 枚举系统所有可用 COM 口名称
-/// 使用 serialport crate（查询 Windows 注册表 HARDWARE\DEVICEMAP\SERIALCOMM），
-/// 比 SetupAPI 枚举 Ports 类更可靠。
+/// Enumerate all COM port names available on the system.
+/// Uses the serialport crate (queries the Windows registry HARDWARE\DEVICEMAP\SERIALCOMM),
+/// which is more reliable than enumerating the SetupAPI Ports class.
 pub fn enumerate_all_com_ports() -> Vec<String> {
     match serialport::available_ports() {
         Ok(ports) => ports.into_iter().map(|p| p.port_name).collect(),
@@ -119,7 +122,7 @@ pub fn enumerate_all_com_ports() -> Vec<String> {
     }
 }
 
-/// 仅在 Windows + `winusb-driver` 的驱动切换路径（switch.rs）使用。
+/// Used only by the driver switch path (switch.rs) on Windows + `winusb-driver`.
 #[cfg(all(target_os = "windows", feature = "winusb-driver"))]
 pub fn check_brom_driver_type() -> Result<BromDriverType, String> {
     unsafe {
@@ -161,9 +164,9 @@ pub fn check_brom_driver_type() -> Result<BromDriverType, String> {
     }
 }
 
-// 非 Windows 没有 SetupAPI，`check_brom_driver_type` 无真实调用点（switch.rs 的驱动
-// 切换仅在 Windows + `winusb-driver` 下编译），故删除其占位桩实现，不再保留
-// `#[cfg(not(target_os = "windows"))]` 分支。
+// Non-Windows has no SetupAPI, and `check_brom_driver_type` has no real call site (the
+// switch.rs driver switch compiles only on Windows + `winusb-driver`), so its placeholder
+// stub was removed and no `#[cfg(not(target_os = "windows"))]` branch is kept.
 
 #[cfg(target_os = "windows")]
 pub fn detect_brom_driver_from_usb_bus() -> UsbBusDetectionResult {
@@ -209,7 +212,7 @@ pub fn detect_brom_driver_from_usb_bus() -> UsbBusDetectionResult {
                     &compatible_ids,
                 ) {
                     BromDriverType::WinUsb => UsbBusDetectionResult::WinUsbReady,
-                    // 串口驱动：不在这里找 COM 口名，交给上层枚举所有 COM 口逐个握手
+                    // Serial driver: do not resolve the COM port name here; the caller enumerates all COM ports and tries each
                     BromDriverType::Serial => UsbBusDetectionResult::SerialPort(String::new()),
                     BromDriverType::Unknown(name) => UsbBusDetectionResult::Unknown(name),
                 };
@@ -224,10 +227,11 @@ pub fn detect_brom_driver_from_usb_bus() -> UsbBusDetectionResult {
 
 #[cfg(not(target_os = "windows"))]
 pub fn detect_brom_driver_from_usb_bus() -> UsbBusDetectionResult {
-    // 非 Windows 无 SetupAPI，无法读取驱动类型；改用 nusb 直接枚举是否已存在
-    // BROM 设备（VID=0x0E8D, PID=0x0003）。若可见，说明该设备已能被 nusb 直接
-    // 打开（Linux 走 usbfs，语义等同于 Windows 的 WinUSB 就绪），返回
-    // `WinUsbReady` 让上层走 USB 直连；否则返回 `NotFound` 退回串口枚举。
+    // Non-Windows has no SetupAPI, so the driver type cannot be read; instead use nusb to check
+    // whether a BROM device (VID=0x0E8D, PID=0x0003) is already visible. If so, nusb can open it
+    // directly (usbfs on Linux, equivalent to WinUSB ready on Windows), so return `WinUsbReady`
+    // and let the caller use the direct USB path; otherwise return `NotFound` and fall back to
+    // serial enumeration.
     if crate::usb::get_first_mtk_vid_pid().is_some() {
         UsbBusDetectionResult::WinUsbReady
     } else {

@@ -1,12 +1,12 @@
-//! 执行会话：把"规划出的步骤"落到具体后端。
+//! Execution session: binds "planned steps" to a concrete backend.
 //!
-//! 两个实现：
-//! - [`RealSession`] — 真实设备，复用既有 `DAXFlash` 全流程（USB / 串口）；
-//! - [`SimSession`]  — 离线仿真，`da::engine` 状态机 + `transport::vdev` 虚拟设备。
+//! Two implementations:
+//! - [`RealSession`] — real device, reusing the existing `DAXFlash` pipeline (USB / serial);
+//! - [`SimSession`]  — offline simulation, `da::engine` state machine + `transport::vdev` virtual device.
 //!
-//! 二者实现同一 [`Session`] trait，因此 `ops` 层与 `exec` 层**只写一份**。
-//! 这样"能力驱动"的执行路径在真机与仿真上完全同构，仿真里跑通的步骤序列
-//! 就是真机会走的序列（协议差异由各自后端吸收）。
+//! Both implement the same [`crate::session::Session`] trait, so the `ops` and `exec` layers are written **once**.
+//! The capability-driven path is therefore identical on real hardware and in simulation: a step
+//! sequence proven in simulation is the one the real device follows (protocol gaps are absorbed per backend).
 
 pub mod real;
 
@@ -18,7 +18,7 @@ use crate::da::engine::{DaEngine, EngineError};
 use crate::transport::RetryPolicy;
 use crate::transport::vdev::VirtualDevice;
 
-/// 设备摘要（用于表格表头 / 日志）。
+/// Device summary (used for table headers / logs).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeviceInfo {
     pub name: String,
@@ -30,73 +30,73 @@ pub struct DeviceInfo {
     pub user: u64,
     pub block: u32,
     pub emmc_type: String,
-    /// CID 寄存器（eMMC 查询成功时非空），用于审计与换件核对。
+    /// CID register (non-empty when the eMMC query succeeded); used for auditing and part-swap checks.
     pub cid: Vec<u8>,
-    /// 当前活动槽（A/B），由 GPT 槽位探测填充。
+    /// Current active slot (A/B), filled by GPT slot probing.
     pub slot: Option<char>,
 }
 
-/// 分区定位结果（能力驱动路径统一用字节地址，不暴露 GPT 细节）。
+/// Partition location result (the capability-driven path uses byte addresses only, hiding GPT details).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PartitionSpan {
     pub addr: u64,
     pub size: u64,
-    /// 8 = 用户区（GPT 分区），0/1 = boot1/boot2
+    /// 8 = user area (GPT partition), 0/1 = boot1/boot2
     pub parttype: u32,
 }
 
-/// 一次执行所需的最小会话能力。
+/// Minimal session capabilities required for one execution.
 ///
-/// 方法刻意与 [`crate::core::plan::PlanStep`] 一一对应，Executor 只做"翻译"。
+/// Methods deliberately mirror [`crate::core::plan::PlanStep`] one-to-one; the Executor only translates.
 pub trait Session {
-    /// 后端名（日志用）
+    /// Backend name (for logs)
     fn label(&self) -> &'static str;
-    /// 规划输入：设备状态
+    /// Planning input: device state
     fn state(&self) -> DeviceState;
-    /// 当前已具备的能力（必须真实反映后端状态，Executor 会校验）
+    /// Capabilities currently available (must reflect real backend state; the Executor validates them)
     fn caps(&self) -> CapabilitySet;
-    /// 可用于规划 / 上传的 DA 字节
+    /// DA bytes usable for planning / upload
     fn da(&self) -> Option<&[u8]>;
-    /// DA 来源描述（进决策日志）
+    /// DA source description (recorded in the decision log)
     fn da_source(&self) -> &'static str;
 
-    /// 执行一个 exploit
+    /// Run one exploit
     fn apply_exploit(&mut self, name: &'static str) -> Result<(), String>;
-    /// 加载 DA（含握手 / 上传 / 跳转 / SYNC）
+    /// Load the DA (handshake / upload / jump / SYNC)
     fn load_da(&mut self) -> Result<(), String>;
-    /// 打开存储（查询容量 + SET_STORAGE）
+    /// Open storage (query capacity + SET_STORAGE)
     fn open_storage(&mut self) -> Result<(), String>;
-    /// 读取并解析 GPT（结果进缓存）
+    /// Read and parse the GPT (results are cached)
     fn parse_gpt(&mut self) -> Result<(), String>;
 
-    /// 已读取的 GPT 原始字节
+    /// Raw GPT bytes already read
     fn gpt(&self) -> Option<&[u8]>;
-    /// 设备信息（打印用）
+    /// Device information (for printing)
     fn device_info(&mut self) -> Result<DeviceInfo, String>;
 
-    /// super 动态分区元数据（能读到才返回 Some；仿真设备为 None）
+    /// super dynamic partition metadata (Some only when readable; None on simulated devices)
     fn super_metadata(&mut self) -> Option<crate::partition::lp::SuperMetadata> {
         None
     }
 
-    // ── 分区 IO（读 / 写 / 擦） ─────────────────────────────
+    // ── Partition IO (read / write / erase) ─────────────
     //
-    // 这些方法是 ops 层唯一的数据通道：真机走 DAXFlash，仿真走 da::engine，
-    // 因此同一份 `ops::write` 代码在两边的行为完全同构。
+    // These are the only data channel of the ops layer: real devices go through DAXFlash, simulation
+    // through da::engine, so the same `ops::write` code behaves identically on both sides.
 
-    /// 定位分区（含特殊分区 boot1/boot2）。
+    /// Locate a partition (including the special boot1/boot2 partitions).
     fn find_partition(&mut self, name: &str) -> Result<PartitionSpan, String>;
 
-    /// 按地址读取（一次调用可能很大，由后端自行分块）。
+    /// Read by address (a single call may be large; the backend chunks it).
     fn read_flash(&mut self, addr: u64, size: u64) -> Result<Vec<u8>, String>;
 
-    /// 按地址写入一段内存数据（seccfg / vbmeta / 小镜像）。
+    /// Write an in-memory buffer to an address (seccfg / vbmeta / small images).
     fn write_flash(&mut self, addr: u64, data: &[u8]) -> Result<(), String>;
 
-    /// 流式写入：从 `src` 读 `total` 字节写到 `addr + start`，
-    /// 每写入一块回调 `on_progress(已写入总量)`（断点续传的持久化点）。
+    /// Streaming write: copy `total` bytes from `src` to `addr + start`,
+    /// invoking `on_progress(total_written)` after each chunk (the persistence point for resume).
     ///
-    /// `total` 是**本次要写的总长度**（从 offset 0 起算，含已写部分）。
+    /// `total` is the **total length to write** (counted from offset 0, including already-written parts).
     fn write_stream(
         &mut self,
         addr: u64,
@@ -106,30 +106,30 @@ pub trait Session {
         on_progress: &mut dyn FnMut(u64),
     ) -> Result<(), String>;
 
-    /// 按分区名擦除（后端自行解析地址）。返回擦除字节数。
+    /// Erase by partition name (the backend resolves the address). Returns the number of bytes erased.
     fn erase_partition(&mut self, name: &str) -> Result<u64, String>;
 
-    /// 活动 A/B 槽位。
+    /// Active A/B slot.
     ///
-    /// - `Ok(Some(c))`：确定的活动槽；
-    /// - `Ok(None)`：非 A/B 设备；
-    /// - `Err(_)`：**无法判定**（A/B 但 bootctrl 读不到）——调用方必须报错，不能猜。
+    /// - `Ok(Some(c))`: the confirmed active slot;
+    /// - `Ok(None)`: not an A/B device;
+    /// - `Err(_)`: **undeterminable** (A/B but bootctrl unreadable) — callers must fail, never guess.
     fn active_slot(&mut self) -> Result<Option<char>, String>;
 
-    /// 用设备侧密钥对 seccfg 头部摘要签名（V4 的 32 字节哈希尾）。
+    /// Sign the seccfg header digest with the device-side key (the 32-byte hash tail of V4).
     fn seccfg_sign(&mut self, digest: &[u8; 32], hwtype: &str) -> Result<Vec<u8>, String>;
 
-    /// 设备序列号（危险操作确认 token 用）。
+    /// Device serial number (used as the confirmation token for dangerous operations).
     fn serial(&mut self) -> Option<String> {
         None
     }
 }
 
 // =============================================================================
-// 仿真会话
+// Simulation session
 // =============================================================================
 
-/// 离线仿真会话。
+/// Offline simulation session.
 pub struct SimSession {
     dev: VirtualDevice,
     engine: DaEngine,
@@ -137,11 +137,11 @@ pub struct SimSession {
     gpt: Option<Vec<u8>>,
     info: Option<DeviceInfo>,
     state: DeviceState,
-    /// 设备侧已接受的 exploit 带来的能力（仿真里由设备确认"exploit 生效"）
+    /// Capabilities granted by exploits accepted on the device side (the simulation confirms they took effect)
     granted: CapabilitySet,
-    /// 已打开的存储信息（写/擦时的 storage 参数）
+    /// Opened storage information (the storage parameter for writes/erases)
     storage: Option<crate::da::engine::StorageInfo>,
-    /// 瞬时超时有界重试策略（重连/重载状态后仍保留）
+    /// Bounded transient-timeout retry policy (kept across reconnects and reloads)
     retry: RetryPolicy,
 }
 
@@ -161,30 +161,30 @@ impl SimSession {
         }
     }
 
-    /// 设置瞬时超时重试策略（来自 `--max-retries`）。
+    /// Set the transient-timeout retry policy (from `--max-retries`).
     pub fn with_retry(mut self, policy: RetryPolicy) -> Self {
         self.retry = policy;
         self.engine = std::mem::take(&mut self.engine).with_retry(policy);
         self
     }
 
-    /// 注入 DA 字节（仿真不会校验签名，但会走完整上传流程）。
+    /// Inject DA bytes (the simulation skips signature checks but runs the full upload flow).
     pub fn with_da(mut self, da: Vec<u8>) -> Self {
         self.da = Some(da);
         self
     }
 
-    /// 设备侧事件日志（测试断言 / 诊断用）。
+    /// Device-side event log (for test assertions / diagnostics).
     pub fn events(&self) -> &[String] {
         &self.dev.events
     }
 
-    /// 保存虚拟设备的 flash 状态（跨进程续传演示用）。
+    /// Save the virtual device flash state (for cross-process resume demos).
     pub fn save_state(&self, path: &str) -> Result<(), String> {
         self.dev.save_state(path)
     }
 
-    /// 载入虚拟设备的 flash 状态。
+    /// Load the virtual device flash state.
     pub fn load_state(&mut self, path: &str) -> Result<(), String> {
         self.dev.load_state(path)?;
         self.engine = DaEngine::new().with_retry(self.retry);
@@ -195,7 +195,7 @@ impl SimSession {
     }
 
     #[cfg(test)]
-    /// 模拟拔插重连：协议状态清零、flash 内容保留（断点续传测试用）。
+    /// Simulate a replug: protocol state is reset, flash contents are kept (for resume tests).
     pub fn replug(&mut self) {
         self.dev.replug();
         self.engine = DaEngine::new().with_retry(self.retry);
@@ -229,7 +229,7 @@ impl Session for SimSession {
                 Capability::DaXFlash
             });
         }
-        // 设备侧已清除安全标志时，等价于"BROM 绕过已完成"
+        // A cleared security flag on the device is equivalent to "BROM bypass complete"
         if self.engine.phase() != Phase::Idle && self.dev_bypassed() {
             set.insert(Capability::SafetyBypassed);
             set.insert(Capability::DaAuthBypass);
@@ -257,7 +257,7 @@ impl Session for SimSession {
     }
 
     fn apply_exploit(&mut self, name: &'static str) -> Result<(), String> {
-        // 握手必须先完成：真机上 exploit 也是 BROM 阶段产物
+        // The handshake must be done first: on real devices the exploit is also a BROM-stage artifact
         if self.engine.phase() == crate::da::engine::Phase::Idle {
             self.engine
                 .connect(&mut self.dev)
@@ -266,7 +266,7 @@ impl Session for SimSession {
         self.engine
             .sim_exploit(&mut self.dev, name)
             .map_err(SimSession::map_err)?;
-        // 设备确认 exploit 生效 → 主机获得注册表声明的全部能力
+        // The device confirms the exploit → the host gains every capability declared by the registry
         if let Some(meta) = crate::exploit::registry::ExploitRegistry::builtin().get(name) {
             self.granted = self.granted.union(meta.produces);
         }
@@ -286,7 +286,7 @@ impl Session for SimSession {
         self.engine
             .load_da(&mut self.dev, &da)
             .map_err(SimSession::map_err)?;
-        // DA1 运行后做一次 extensions 握手（真机上这是 patch 后的必要步骤）
+        // Run one extensions handshake after DA1 starts (a required post-patch step on real devices)
         let _ = self.engine.load_da_extensions(&mut self.dev);
         Ok(())
     }
@@ -297,7 +297,7 @@ impl Session for SimSession {
                 .connect(&mut self.dev)
                 .map_err(SimSession::map_err)?;
         }
-        // 查询失败不阻断（老 DA 不支持），此时容量字段为 0 并已打警告
+        // Query failure is non-fatal (older DAs lack support); capacity fields stay 0 and a warning is logged
         let storage = self
             .engine
             .query_storage(&mut self.dev)
@@ -326,7 +326,7 @@ impl Session for SimSession {
     }
 
     fn parse_gpt(&mut self) -> Result<(), String> {
-        // 先读 32KB（主 GPT 头 + 分区项），不足时按需扩展
+        // Read 32KB first (primary GPT header + entries); expand on demand if that is too small
         let mut data = self
             .engine
             .read_flash(&mut self.dev, 0, 32768)
@@ -361,7 +361,7 @@ impl Session for SimSession {
     }
 
     fn find_partition(&mut self, name: &str) -> Result<PartitionSpan, String> {
-        // boot1/boot2 是特殊分区（不在 GPT 里）
+        // boot1/boot2 are special partitions (they are not in the GPT)
         let (parttype, special_size) = match name {
             "boot1" | "boot2" => {
                 let st = self.ensure_storage()?;
@@ -391,7 +391,7 @@ impl Session for SimSession {
     }
 
     fn read_flash(&mut self, addr: u64, size: u64) -> Result<Vec<u8>, String> {
-        // 单次 READ_DATA 上限 1 MiB（真机 DA 同样按包长分块）
+        // A single READ_DATA is capped at 1 MiB (the real DA chunks by packet length too)
         let mut out = Vec::with_capacity(size as usize);
         let mut pos = 0u64;
         while pos < size {
@@ -492,7 +492,7 @@ impl Session for SimSession {
         if !has_a && !has_b {
             return Ok(None);
         }
-        // bootctrl 可读性由画像决定（真机由 misc 的 boot_control 结构决定）
+        // bootctrl readability is profile-driven (on real devices it comes from the misc boot_control struct)
         if self.dev.profile.bootctrl
             && let Some(s) = self.dev.profile.slot
         {
@@ -508,7 +508,7 @@ impl Session for SimSession {
     }
 
     fn seccfg_sign(&mut self, digest: &[u8; 32], _hwtype: &str) -> Result<Vec<u8>, String> {
-        // 仿真设备不校验 seccfg 哈希，直接返回明文摘要（sim-only；真机走 HACC/SEJ）
+        // The simulated device does not verify the seccfg hash and returns the digest as-is (sim-only; real devices use HACC/SEJ)
         Ok(digest.to_vec())
     }
 }
@@ -538,8 +538,8 @@ impl SimSession {
 
 impl SimSession {
     fn dev_bypassed(&self) -> bool {
-        // VirtualDevice 没有暴露 bypassed 字段，用事件日志判定：
-        // 这是设备侧真实状态，而不是会话侧记账。
+        // VirtualDevice exposes no `bypassed` field, so infer from the event log:
+        // this reflects real device-side state, not session-side bookkeeping.
         self.dev
             .events
             .iter()

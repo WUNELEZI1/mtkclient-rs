@@ -1,12 +1,12 @@
-//! XML (V6) DA 协议
+//! XML (V6) DA protocol.
 //!
-//! 面向 MT6789 及更新平台：老平台用 XFlash（[`crate::da::xflash`]），新平台
-//! DA 走 XML 报文。本模块对齐 penumbra `core/src/da/xml/`：
+//! Targets MT6789 and newer platforms: older platforms use XFlash ([`crate::da::xflash`]),
+//! while newer DAs use XML messages. This module mirrors penumbra `core/src/da/xml/`:
 //!
-//! - [`cmd`]      — XML 命令构造（纯函数，无 I/O）
-//! - [`protocol`] — 帧编解码 / ACK / 生命周期 / 数据收发 会话层
-//! - [`flash`]    — 基于 XML 协议的分区读 / 写 / 擦 / 格式化
-//! - [`session`]  — 面向调用方的高层会话门面（把上述原语编排成完整操作）
+//! - [`cmd`]      — XML command builders (pure functions, no I/O)
+//! - [`protocol`] — session layer for frame codec / ACK / lifecycle / data transfer
+//! - [`flash`]    — partition read / write / erase / format over the XML protocol
+//! - [`session`]  — high-level session facade for callers (composes the primitives above)
 
 pub mod cmd;
 pub mod flash;

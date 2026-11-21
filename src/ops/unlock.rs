@@ -1,12 +1,12 @@
-//! `unlock`：一键解锁链（seccfg 解锁 + vbmeta 校验禁用）。
+//! `unlock`: one-shot unlock chain (seccfg unlock + vbmeta verification disable).
 //!
-//! 为什么合成一个 op 而不是串两个 op：
-//! - 能力声明只有一份（`StorageRead | StorageWrite`），规划器只决策一次；
-//! - "解锁后必须处理 vbmeta" 是**业务不变式**，放在同一个 `run` 里由类型保证；
-//! - 日志上仍能清楚看到两段，且第二段失败不会掩盖第一段的成功。
+//! Why a single op instead of chaining two ops:
+//! - Only one capability declaration (`StorageRead | StorageWrite`), so the planner decides once;
+//! - "vbmeta must be handled after unlock" is a **business invariant** enforced by types inside one `run`;
+//! - Logs still show both stages, and a stage-2 failure does not mask stage-1 success.
 //!
-//! 顺序很重要：先写 seccfg（解除锁），再改 vbmeta（关校验）。
-//! 反过来的话，一旦第二步失败，设备会处于"已关校验但仍上锁"的中间态。
+//! Order matters: write seccfg (clear lock) first, then modify vbmeta (disable verification).
+//! Reversed, a failed second step would leave the device "verification off but still locked".
 
 use log::{info, warn};
 
@@ -15,7 +15,7 @@ use super::vbmeta::VbmetaOp;
 use super::{Op, OpCtx, OpOutcome};
 use crate::core::capability::{Capability, CapabilitySet};
 
-/// 解锁时写入的 vbmeta flags（hashtree + verification 全关）。
+/// vbmeta flags written on unlock (hashtree + verification fully disabled).
 pub const UNLOCK_VBMETA_FLAGS: u32 = 3;
 
 pub struct UnlockOp;
@@ -47,7 +47,7 @@ impl Op for UnlockOp {
         {
             Ok(o) => o,
             Err(e) => {
-                // 解锁已生效，vbmeta 失败属于"需要用户跟进"的情况，不当成整体失败
+                // Unlock already took effect; a vbmeta failure needs user follow-up, not overall failure
                 warn!(
                     "vbmeta 自动处理失败: {}（可用 `zyb vbmeta {}` 重试）",
                     e, UNLOCK_VBMETA_FLAGS
@@ -63,8 +63,8 @@ impl Op for UnlockOp {
             }
         };
 
-        // 只读地回读真实锁状态（V3/V4 均由 SeccfgOp 统一判断），替代硬编码 "3"。
-        // 读取失败不掩盖已成功的解锁，仅退回默认值。
+        // Read back the real lock state read-only (SeccfgOp judges both V3/V4), replacing hardcoded "3".
+        // A read failure does not mask a successful unlock; it only falls back to the default.
         let lock_state = SeccfgOp::current_lock_state(ctx)
             .map(|v| v.to_string())
             .unwrap_or_else(|e| {

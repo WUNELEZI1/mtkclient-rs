@@ -1,8 +1,8 @@
-//! USB 连接诊断与状态检测
+//! USB connection diagnostics and status detection
 //!
-//! 使用 nusb 设备枚举替代 libusb unsafe 代码
+//! Uses nusb device enumeration instead of libusb unsafe code
 
-/// 检测 nusb 错误类型并给出诊断信息
+/// Classify a nusb error and return diagnostic information
 pub fn classify_libusb_error(err: &str) -> &'static str {
     if err.contains("Timeout") || err.contains("timeout") {
         "超时 (设备未响应)"

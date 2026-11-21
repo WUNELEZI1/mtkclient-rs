@@ -1,33 +1,33 @@
-//! fixture 回放框架（六段粒度）。
+//! Fixture replay framework (six-segment granularity).
 //!
-//! 粒度对齐规划：`UsbEndpoint → BromHandshake → SocIdentify → HwSetup → DaPush → Readback`。
-//! 存储格式为 JSON Lines，一行一段：
+//! Granularity follows the planning stages: `UsbEndpoint → BromHandshake → SocIdentify → HwSetup → DaPush → Readback`.
+//! Storage format is JSON Lines, one segment per line:
 //!
 //! ```json
 //! {"segment":"brom_handshake","len":8,"bytes":"a1 25 ..."}
 //! ```
 //!
-//! 用途：把真机抓到的“设备侧应答”保存下来，之后用 [`MockPort`] 脱机重放，
-//! 让协议状态机在 CI 里跑，不依赖设备。
+//! Purpose: save device-side responses captured from real hardware, then replay them offline with [`MockPort`],
+//! so the protocol state machine runs in CI without a device.
 
 use std::io::{BufRead, BufReader, Cursor};
 
 use crate::transport::mock::MockPort;
 
-/// 回放粒度。
+/// Replay granularity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Segment {
-    /// USB 端点级（枚举 / 描述符）
+    /// USB endpoint level (enumeration / descriptors)
     UsbEndpoint,
-    /// BROM 握手（0xA0 / 0x0A 等）
+    /// BROM handshake (0xA0 / 0x0A, etc.)
     BromHandshake,
-    /// SoC 识别（hw_code / hw_sub_code / sw_ver）
+    /// SoC identification (hw_code / hw_sub_code / sw_ver)
     SocIdentify,
-    /// 硬件设置（DA 扩展 / 存储类型 / 安全配置）
+    /// Hardware setup (DA extensions / storage type / security config)
     HwSetup,
-    /// DA 下发
+    /// DA push
     DaPush,
-    /// 回读（分区数据 / GPT）
+    /// Readback (partition data / GPT)
     Readback,
 }
 
@@ -78,7 +78,7 @@ impl std::fmt::Display for FixtureError {
 
 impl std::error::Error for FixtureError {}
 
-/// 一条 fixture。
+/// A single fixture.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Fixture {
     pub segments: Vec<(Segment, Vec<u8>)>,
@@ -100,7 +100,7 @@ impl Fixture {
             .map(|(_, b)| b.as_slice())
     }
 
-    /// 序列化为 JSONL。
+    /// Serialize to JSONL.
     pub fn to_jsonl(&self) -> String {
         let mut out = String::new();
         for (seg, bytes) in &self.segments {
@@ -114,7 +114,7 @@ impl Fixture {
         out
     }
 
-    /// 从 JSONL 解析。容忍空行与前后空白，未知段报错（不静默丢弃）。
+    /// Parse from JSONL. Tolerates blank lines and surrounding whitespace; unknown segments are errors (not silently dropped).
     pub fn from_jsonl(text: &str) -> Result<Self, FixtureError> {
         let mut fx = Fixture::new();
         let reader = BufReader::new(Cursor::new(text));
@@ -139,14 +139,14 @@ impl Fixture {
         Ok(fx)
     }
 
-    /// 把各段按顺序灌入 mock 的 rx（模拟设备侧连续应答）。
+    /// Feed the segments in order into the mock's rx (simulating consecutive device responses).
     pub fn replay(&self, port: &mut MockPort) {
         for (_, bytes) in &self.segments {
             port.push_rx(bytes);
         }
     }
 
-    /// 校验段顺序是否为标准六段（可缺段，但不得乱序）。
+    /// Check whether segments follow the standard six-segment order (segments may be missing but must not be out of order).
     pub fn is_ordered(&self) -> bool {
         let mut last = None;
         for (seg, _) in &self.segments {
@@ -197,10 +197,10 @@ fn extract_num<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     Some(&rest[..end])
 }
 
-#[allow(dead_code)] // 供后续 ops 脱机回归使用
-/// 最小 printgpt fixture：BROM 握手 → SoC 识别 → DA 下发 → 回读 GPT 头。
+#[allow(dead_code)] // for later offline ops regression tests
+/// Minimal printgpt fixture: BROM handshake → SoC identification → DA push → read back the GPT header.
 ///
-/// 仅用于验证“fixture → bytes → GPT 签名”的闭环，不模拟完整协议状态机。
+/// Only validates the "fixture → bytes → GPT signature" loop; it does not model the full protocol state machine.
 pub fn printgpt_fixture() -> Fixture {
     let mut fx = Fixture::new();
     fx.push(Segment::UsbEndpoint, vec![0x12, 0x01, 0x00, 0x02]);
@@ -208,7 +208,7 @@ pub fn printgpt_fixture() -> Fixture {
     fx.push(Segment::SocIdentify, vec![0x07, 0x07, 0x68, 0x67]);
     fx.push(Segment::HwSetup, vec![0x00, 0x00, 0x01, 0x00]);
     fx.push(Segment::DaPush, vec![0xDA, 0xDA, 0x00, 0x00]);
-    // GPT 头：签名 "EFI PART" + 版本，其余补零到 512
+    // GPT header: "EFI PART" signature + version, zero-padded to 512 bytes
     let mut gpt = vec![0u8; 512];
     gpt[..8].copy_from_slice(b"EFI PART");
     gpt[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
@@ -260,7 +260,7 @@ mod tests {
         let mut port = MockPort::new(Vec::new());
         fx.replay(&mut port);
 
-        // 顺序读出全部段，最后一段应含 GPT 签名
+        // Read all segments in order; the last one should contain the GPT signature
         let mut all = vec![0u8; 4 + 4 + 4 + 4 + 4 + 512];
         port.read_exact(&mut all).unwrap();
         let gpt = &all[all.len() - 512..];

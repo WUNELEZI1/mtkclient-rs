@@ -1,17 +1,17 @@
-//! Scatter 文件生成（MTK SP Flash Tool YAML 格式）
+//! Scatter file generation (MTK SP Flash Tool YAML format)
 //!
-//! - `parse_gpt_from_data`        — 解析 GPT 数据并打印分区表
-//! - `generate_scatter_header`    — PRELOADER 公共头
-//! - `generate_scatter_from_gpt`  — SP Flash Tool YAML 格式 scatter
+//! - `parse_gpt_from_data`        — parse GPT data and print the partition table
+//! - `generate_scatter_header`    — common PRELOADER header
+//! - `generate_scatter_from_gpt`  — SP Flash Tool YAML scatter
 
 use log::info;
 
 use super::gpt::GptInfo;
 
-/// scatter 文件分隔符（对齐刷机匣 MT6768_Android_scatter.txt 格式）
+/// Scatter file separator (matches the MT6768_Android_scatter.txt format)
 const SEPARATOR: &str = "################################################mtkclient-rs################################################";
 
-/// scatter 分区块参数
+/// Scatter partition block parameters
 struct ScatterEntry<'a> {
     idx: usize,
     name: &'a str,
@@ -24,7 +24,7 @@ struct ScatterEntry<'a> {
     is_reserved: bool,
 }
 
-/// 生成单个 scatter YAML 分区块（标准 SP Flash Tool 格式）
+/// Build one scatter YAML partition block (standard SP Flash Tool format)
 fn scatter_block(e: &ScatterEntry) -> String {
     format!(
         "- partition_index: SYS{}\n\
@@ -56,10 +56,11 @@ fn scatter_block(e: &ScatterEntry) -> String {
     )
 }
 
-/// 根据分区名推断 SP Flash Tool 的 `type` 字段
+/// Infer the SP Flash Tool `type` field from the partition name
 ///
-/// 文件系统分区标注为 EXT4，SPFT 据此执行格式化；其余（boot/recovery/preloader 等）
-/// 标注为 NORMAL_ROM。对齐刷机匣 scatter：仅文件系统分区允许 SPFT 格式化写入。
+/// Filesystem partitions are marked EXT4 so SPFT formats them; everything else
+/// (boot/recovery/preloader, etc.) is NORMAL_ROM. As in the reference scatter, only
+/// filesystem partitions may be format-written by SPFT.
 fn fs_type_for(name: &str) -> &'static str {
     match name.to_ascii_lowercase().as_str() {
         "system" | "system_ext" | "system_other" | "vendor" | "product" | "odm" | "userdata"
@@ -68,7 +69,7 @@ fn fs_type_for(name: &str) -> &'static str {
     }
 }
 
-/// Scatter header 统一生成（PRELOADER）
+/// Common scatter header generation (PRELOADER)
 pub fn generate_scatter_header() -> String {
     scatter_block(&ScatterEntry {
         idx: 0,
@@ -83,23 +84,23 @@ pub fn generate_scatter_header() -> String {
     })
 }
 
-/// 将芯片的 hw_code 映射为 SP Flash Tool scatter 的 `platform:` 字符串。
+/// Map a chip hw_code to the SP Flash Tool scatter `platform:` string.
 ///
-/// 同时匹配 `ChipConfig.hw_code` 与 `ChipConfig.da_code` 两种形式
-/// （如 MT6768 的 hw_code=0x0707、da_code=0x6768，两者都应得到 "MT6768"），
-/// 确保无论调用方传入哪种芯片代码都能正确解析。未知芯片回退为
-/// `MTxxxx` 形式，避免 SPFT 因 platform 字段缺失/非法而拒绝加载。
+/// Matches both `ChipConfig.hw_code` and `ChipConfig.da_code` forms
+/// (e.g. MT6768 hw_code=0x0707 and da_code=0x6768 both yield "MT6768"),
+/// so either chip code resolves correctly. Unknown chips fall back to an
+/// `MTxxxx` form so SPFT does not refuse to load due to a missing/invalid platform field.
 fn hw_code_to_platform(hw_code: u32) -> String {
     match hw_code {
-        // MT6768 / MT6769（Helio P65/G85）
+        // MT6768 / MT6769 (Helio P65/G85)
         0x6768 | 0x0707 => "MT6768".to_string(),
-        // MT6771 / MT8385 / MT8183 / MT8666（Helio P60/P70/G80）
+        // MT6771 / MT8385 / MT8183 / MT8666 (Helio P60/P70/G80)
         0x6771 | 0x0788 => "MT6771".to_string(),
         other => format!("MT{:04X}", other),
     }
 }
 
-/// 从 GPT 数据生成 SP Flash Tool 格式的 scatter 文件（YAML 格式）
+/// Generate an SP Flash Tool scatter file (YAML) from GPT data
 pub fn generate_scatter_from_gpt(
     gpt_data: &[u8],
     output_file: &str,
@@ -118,8 +119,8 @@ pub fn generate_scatter_from_gpt(
     lines.push("- general: MTK_PLATFORM_CFG".to_string());
     lines.push("  info:".to_string());
     lines.push("  - config_version: V1.1.2".to_string());
-    // platform 必须匹配真实芯片，否则 SPFT 在非 MT6768 设备上拒绝加载。
-    // 从 DA 会话状态读取设备上报的 hw_code（device chip），再查表得到平台名。
+    // platform must match the real chip, otherwise SPFT refuses to load on non-MT6768 devices.
+    // Read the device-reported hw_code (device chip) from DA session state, then look up the platform name.
     let platform = hw_code_to_platform(
         crate::connection::session::SessionState::load()
             .map(|s| s.hw_code as u32)
@@ -141,11 +142,11 @@ pub fn generate_scatter_from_gpt(
     lines.push(SEPARATOR.to_string());
     lines.push(String::new());
 
-    // PRELOADER 块
+    // PRELOADER blocks
     lines.push(generate_scatter_header());
     lines.push(String::new());
 
-    // 特殊分区 operation_type 映射（对齐刷机匣 MT6768 scatter）
+    // Special partition operation_type mapping (matching the MT6768 scatter)
     let special_ops: &[(&str, &str, bool)] = &[
         ("nvcfg", "PROTECTED", false),
         ("nvdata", "PROTECTED", false),
@@ -155,7 +156,7 @@ pub fn generate_scatter_from_gpt(
         ("flashinfo", "RESERVED", false),
     ];
 
-    // 遍历 GPT 分区表生成条目
+    // Generate entries by walking the GPT partition table
     for (i, entry) in gpt_info.iter_partitions().enumerate() {
         let idx = i + 1;
 

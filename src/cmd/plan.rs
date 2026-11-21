@@ -1,9 +1,9 @@
-//! `plan <op>`：离线查看规划结果（不连接设备）。
+//! `plan <op>`: inspect planning results offline (no device connection).
 //!
-//! 用途（验收项 1）：`mtkclient plan printgpt --loader DA.bin` 不敲 `chain`，
-//! 也能看到**至少两条路 + 选择理由 + 结构化决策日志**。
+//! Purpose (acceptance item 1): `mtkclient plan printgpt --loader DA.bin` shows
+//! **at least two candidate paths + the rationale + a structured decision log** without `chain`.
 //!
-//! 只读 DA 文件、不做任何设备 IO。
+//! Read-only on the DA file; performs no device I/O.
 
 use crate::core::capability::CapabilitySet;
 use crate::core::device::{DeviceState, ProtocolVersion};
@@ -12,7 +12,7 @@ use crate::exploit::orchestrator::Orchestrator;
 use crate::exploit::planner::Planner;
 use crate::exploit::registry::ExploitRegistry;
 
-/// 命令入口。`args` 形如 `["printgpt", "--chip", "0x6768"]`。
+/// Command entry point. `args` looks like `["printgpt", "--chip", "0x6768"]`.
 pub fn cmd_plan(args: &[String], da_path: Option<&str>, cli_mode: &str) -> Result<(), String> {
     let op = args
         .first()
@@ -22,7 +22,7 @@ pub fn cmd_plan(args: &[String], da_path: Option<&str>, cli_mode: &str) -> Resul
     let required =
         crate::ops::required_caps(op).ok_or_else(|| crate::i18n::tr("plan_unknown_op", &[op]))?;
 
-    // --da 覆盖全局 --loader
+    // --da takes precedence over the global --loader
     let da_file = arg_value(args, "--da").or_else(|| da_path.map(|s| s.to_string()));
     let da = match da_file {
         Some(p) => Some(std::fs::read(&p).map_err(|e| format!("读取 {} 失败: {}", p, e))?),
@@ -47,13 +47,13 @@ pub fn cmd_plan(args: &[String], da_path: Option<&str>, cli_mode: &str) -> Resul
     } else {
         String::new()
     };
-    // 安全标志默认 0（离线无法读取）；用户可用 --safety 0x6 模拟
+    // Safety flags default to 0 (unreadable offline); users can simulate them with --safety 0x6
     if let Some(s) = arg_value(args, "--safety").and_then(|v| parse_u32(&v)) {
         state.safety = crate::core::safety::SafetyFlags::from_raw(s);
     }
 
-    // plan 的默认模式是 auto（CLI 全局 --mode 默认 brom 是为设备流程服务的，
-    // 这里检测用户是否显式传了 --mode，未传则用 auto）。
+    // plan defaults to auto mode (the global CLI --mode defaults to brom for the device flow);
+    // detect whether --mode was passed explicitly and fall back to auto if not.
     let explicit_mode = std::env::args().any(|a| a == "--mode");
     let mode_str = if explicit_mode { cli_mode } else { "auto" };
     let mode =
@@ -73,7 +73,7 @@ pub fn cmd_plan(args: &[String], da_path: Option<&str>, cli_mode: &str) -> Resul
     ) {
         Ok(d) => {
             println!("{}", d.log.human());
-            // 结构化决策日志始终输出（不受 --log 级别影响）
+            // The structured decision log is always printed (independent of --log level)
             println!("{}", d.log.json());
             Ok(())
         }
@@ -94,7 +94,7 @@ pub fn cmd_plan(args: &[String], da_path: Option<&str>, cli_mode: &str) -> Resul
     }
 }
 
-/// op 名需要 `'static`（进决策日志）。
+/// The op name must be `'static` (it is recorded in the decision log).
 fn op_static(op: &str) -> &'static str {
     crate::ops::op_static_name(op)
 }
@@ -122,10 +122,10 @@ fn parse_u32(s: &str) -> Option<u32> {
     }
 }
 
-/// 从 DA 文件解析 `da_code`（0x6C 起的 load table，每项 0xD8/0xDC）。
+/// Parse `da_code` from a DA file (load table at 0x6C, each entry 0xD8/0xDC).
 ///
-/// 与 `da::loader::header` 的判定一致：取 entry 内 [2..4] 的 u16，
-/// 只接受 0x6000..=0x8FFF 的合理范围。
+/// Matches the check in `da::loader::header`: read the u16 at [2..4] of each entry
+/// and accept only the plausible range 0x6000..=0x8FFF.
 fn parse_da_code(da: &[u8]) -> Option<u16> {
     const TABLE: usize = 0x6C;
     if da.len() < TABLE + 0xDC {
@@ -141,7 +141,7 @@ fn parse_da_code(da: &[u8]) -> Option<u16> {
             return Some(code);
         }
     }
-    // V6 DA 的 hw_code 位置可能不同，退回扫描前 4KB 的 0x6xxx 值
+    // V6 DA may place hw_code elsewhere; fall back to scanning the first 4KB for 0x6xxx values
     let limit = da.len().min(0x1000);
     for w in da[..limit].windows(2) {
         let v = u16::from_le_bytes([w[0], w[1]]);
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn unknown_op_rejected_without_da() {
         let err = cmd_plan(&["bogus".to_string()], None, "auto").unwrap_err();
-        // 默认语言为 en-US，错误文本随语言变化；断言 op 名被回显即可
+        // Default locale is en-US, so the error text varies by language; just assert the op name is echoed
         assert!(err.contains("bogus"));
     }
 }

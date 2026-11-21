@@ -1,7 +1,7 @@
-//! Preloader 串口探测模式
+//! Preloader serial-port sniffing mode.
 //!
-//! `zyb detect` — 等待 Preloader COM 口，打开后抓取所有串口数据输出到屏幕。
-//! 用于分析 MTK Preloader UART 协议（如 MABT 的 CMD BootAsFASTBOOT）。
+//! `zyb detect` — wait for the Preloader COM port, then dump all serial data to the screen.
+//! Used to analyze the MTK Preloader UART protocol (e.g. MABT's CMD BootAsFASTBOOT).
 
 use log::info;
 use std::io::{Read, Write};
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::preloader::transport::{BromPortResult, SerialPortTransport};
 
-/// MTK Preloader 已知的命令字节（对齐 mtk_preloader.py Cmd 枚举）
+/// Known MTK Preloader command bytes (matches the mtk_preloader.py Cmd enum)
 const KNOWN_CMDS: &[(&str, u8)] = &[
     ("SEND_PARTITION_DATA", 0x70),
     ("JUMP_TO_PARTITION", 0x71),
@@ -80,7 +80,7 @@ fn describe_cmd(byte: u8) -> String {
     format!("0x{:02X} (未知)", byte)
 }
 
-/// 探测模式：等待 Preloader COM 口，抓取所有串口数据
+/// Sniffing mode: wait for the Preloader COM port and capture all serial data
 pub fn cmd_detect() -> Result<(), Box<dyn std::error::Error>> {
     info!("=== Preloader 串口探测模式 ===");
     info!("等待 MTK Preloader 设备 (VID=0E8D, PID=2000)...");
@@ -130,7 +130,7 @@ pub fn cmd_detect() -> Result<(), Box<dyn std::error::Error>> {
     let mut read_buf = [0u8; 4096];
     let exit_flag = Arc::new(AtomicBool::new(false));
 
-    // stdin 读取线程
+    // stdin reader thread
     let exit_clone = Arc::clone(&exit_flag);
     let stdin_thread = std::thread::spawn(move || {
         let mut stdin_buf = [0u8; 1];
@@ -143,9 +143,9 @@ pub fn cmd_detect() -> Result<(), Box<dyn std::error::Error>> {
             match stdin_lock.read(&mut stdin_buf) {
                 Ok(1) => {
                     let ch = stdin_buf[0];
-                    // 将按键通过 channel 传递给主线程
-                    // 简化处理：直接在这里发送到串口
-                    // （串口不能跨线程发送，所以用全局 stdin_cmd）
+                    // Pass the keypress to the main thread via a channel.
+                    // Simplified: send to the serial port here directly
+                    // (the port cannot be shared across threads, hence the global stdin_cmd)
                     STDIN_CMD.store(ch as u8, Ordering::Release);
                 }
                 _ => break,
@@ -154,7 +154,7 @@ pub fn cmd_detect() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     loop {
-        // 非阻塞读取串口数据
+        // Non-blocking serial read
         match port.read(&mut read_buf) {
             Ok(n) if n > 0 => {
                 let data = &read_buf[..n];
@@ -170,7 +170,7 @@ pub fn cmd_detect() -> Result<(), Box<dyn std::error::Error>> {
                     })
                     .collect();
                 eprintln!("<< [{}] {} | {}", n, hex.join(" "), ascii);
-                // 尝试解析已知命令
+                // Try to parse a known command
                 if n == 1 {
                     eprintln!("   解析: {}", describe_cmd(data[0]));
                 }
@@ -178,7 +178,7 @@ pub fn cmd_detect() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
 
-        // 检查 stdin 输入
+        // Check stdin input
         let cmd_byte = STDIN_CMD.swap(0, Ordering::AcqRel);
         if cmd_byte != 0 {
             match cmd_byte {
@@ -220,13 +220,13 @@ pub fn cmd_detect() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 }
                 other => {
-                    // 用户输入任意十六进制字符对，如 "DC" 发送 0xDC
+                    // User types an arbitrary hex byte pair, e.g. "DC" sends 0xDC
                     eprintln!("   未知按键 0x{:02X} ('{}')，忽略", other, other as char);
                 }
             }
         }
 
-        // Ctrl+C 检测
+        // Ctrl+C detection
         if crate::cancel::requested() {
             eprintln!("\n检测到 Ctrl+C，退出探测模式");
             break;
@@ -241,5 +241,5 @@ pub fn cmd_detect() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// 全局 stdin 按键传递（stdin 线程 → 主线程）
+/// Global stdin keypress handoff (stdin thread → main thread)
 static STDIN_CMD: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);

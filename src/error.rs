@@ -1,53 +1,53 @@
-//! 统一错误类型
+//! Unified error types
 //!
-//! 历史上全项目以 `Result<T, String>` 为主，错误信息是扁平字符串，调用方
-//! 无法程序化区分"超时 / 协议错误 / 设备拒绝 / 会话失效"。本模块在保持
-//! `AppError` 兼容的前提下，引入结构化错误层级（参考 penumbra 的
+//! Historically the project used `Result<T, String>` everywhere, so error messages were flat
+//! strings that callers could not programmatically split into timeout / protocol / device
+//! rejection / session expiry. While keeping `AppError` compatible, this module adds a
 //! `Error → UsbError / ProtocolError / XFlashError / SessionError`）：
 //!
-//! - [`UsbError`]        — USB 传输层（打开失败 / 超时 / 接口缺失）
-//! - [`ProtocolError`]   — 协议层（magic / 长度 / ACK / 握手）
-//! - [`StatusCode`]      — 设备状态码分类（`from_u32` 自动映射）
-//! - [`XFlashError`]     — DA 设备状态错误（携带 [`StatusCode`] 与原始码）
-//! - [`SessionError`]    — `.state` 会话持久化错误
+//! - [`UsbError`]        — USB transport layer (open failure / timeout / missing interface)
+//! - [`ProtocolError`]   — protocol layer (magic / length / ACK / handshake)
+//! - [`StatusCode`]      — device status code classification (`from_u32` maps automatically)
+//! - [`XFlashError`]     — DA device status error (carries [`StatusCode`] and the raw code)
+//! - [`SessionError`]    — `.state` session persistence errors
 //!
-//! 迁移策略：新代码可直接返回上述类型（它们实现 `std::error::Error` 且
-//! 提供到 [`AppError`] 的 `From` 转换），旧代码的 `Result<T, String>` 保持
-//! 不变，逐步替换。
+//! Migration: new code may return the types above directly (they implement `std::error::Error`
+//! and provide `From` conversions to [`AppError`]); old `Result<T, String>` code stays
+//! unchanged and is migrated gradually.
 
 use std::fmt;
 
 // =============================================================================
-// 设备状态码分类
+// Device status code classification
 // =============================================================================
 
-/// 设备状态码分类（对齐 penumbra `XFlashErrorKind` 的简化版）
+/// Device status code classification (simplified penumbra `XFlashErrorKind`)
 ///
-/// DA/BROM 返回的状态码高 4 位为 `0xC` 表示错误；按功能域进一步细分：
-/// - `0xC002____` → 安全域错误（SecurityError）
-/// - `0xC004____` → 设备域错误（DeviceError）
+/// A status code whose top 4 bits are `0xC` means error; it is further split by domain:
+/// - `0xC002____` → security domain error (SecurityError)
+/// - `0xC004____` → device domain error (DeviceError)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusCode {
-    /// 状态 0：成功
+    /// Status 0: success
     Success,
-    /// 不支持的命令
+    /// Unsupported command
     UnsupportedCommand,
-    /// 协议错误
+    /// Protocol error
     ProtocolError,
-    /// 安全域错误（SLA/认证等）
+    /// Security domain error (SLA/auth, etc.)
     SecurityError(u32),
-    /// 设备域错误（存储/分区等）
+    /// Device domain error (storage/partition, etc.)
     DeviceError(u32),
-    /// 其他/未知错误码
+    /// Other/unknown error code
     Unknown(u32),
 }
 
 impl StatusCode {
-    /// 已知的具体错误码
+    /// Known specific error codes
     pub const CODE_UNSUPPORTED_COMMAND: u32 = 0xC001_0003;
     pub const CODE_PROTOCOL_ERROR: u32 = 0xC001_0005;
 
-    /// 由原始状态码映射到分类
+    /// Map a raw status code to its classification
     pub fn from_u32(code: u32) -> Self {
         match code {
             0 => Self::Success,
@@ -59,7 +59,7 @@ impl StatusCode {
         }
     }
 
-    /// 是否为成功状态
+    /// Whether this is the success status
     pub fn is_success(self) -> bool {
         matches!(self, StatusCode::Success)
     }
@@ -79,23 +79,23 @@ impl fmt::Display for StatusCode {
 }
 
 // =============================================================================
-// USB 传输层错误
+// USB transport errors
 // =============================================================================
 
-/// USB 传输层错误
+/// USB transport errors
 ///
-/// 注：各变体对应 USB 路径真实失败原因（枚举设备/打开/接口/控制传输/超时）。
+/// Note: each variant maps to a real USB failure cause (enumeration/open/interface/control/timeout).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UsbError {
-    /// 未找到匹配设备
+    /// No matching device found
     NotFound,
-    /// 打开设备失败
+    /// Failed to open the device
     OpenFailed(String),
-    /// 单笔传输超时
+    /// Single transfer timed out
     Timeout,
-    /// 未找到可用的 bulk/控制接口
+    /// No usable bulk/control interface found
     InterfaceNotFound,
-    /// 控制传输失败
+    /// Control transfer failed
     CtrlTransferFailed,
 }
 
@@ -114,23 +114,23 @@ impl fmt::Display for UsbError {
 impl std::error::Error for UsbError {}
 
 // =============================================================================
-// 协议层错误
+// Protocol layer errors
 // =============================================================================
 
-/// 协议层错误（XFlash / BROM 握手 / 帧解析）
+/// Protocol layer errors (XFlash / BROM handshake / frame parsing)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProtocolError {
-    /// 握手在 N 次尝试后仍失败
+    /// Handshake still failing after N attempts
     HandshakeFailed(u32),
-    /// 包头 magic 不匹配
+    /// Packet header magic mismatch
     BadMagic { got: u32, expected: u32 },
-    /// 包长度非法
+    /// Invalid packet length
     InvalidPacketLength(u32),
-    /// 设备状态非 0
+    /// Device status is non-zero
     StatusNonZero(u32),
-    /// ACK 被拒绝
+    /// ACK rejected
     AckRejected(u32),
-    /// 连续收到过多设备消息包，疑似协议失步
+    /// Too many consecutive device message packets; protocol desync suspected
     MessageFlood { count: u32 },
 }
 
@@ -156,20 +156,20 @@ impl fmt::Display for ProtocolError {
 impl std::error::Error for ProtocolError {}
 
 // =============================================================================
-// DA 设备状态错误
+// DA device status errors
 // =============================================================================
 
-/// DA 设备状态错误：携带分类与原始状态码，便于上层做友好提示/重试决策
+/// DA device status error carrying the classification and raw code for user messages/retry decisions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct XFlashError {
-    /// 状态码分类
+    /// Status code classification
     pub kind: StatusCode,
-    /// 原始状态码
+    /// Raw status code
     pub code: u32,
 }
 
 impl XFlashError {
-    /// 由原始状态码构造；状态为 0（成功）时返回 `None`
+    /// Build from a raw status code; returns `None` when the status is 0 (success)
     pub fn from_status(code: u32) -> Option<Self> {
         let kind = StatusCode::from_u32(code);
         if kind.is_success() {
@@ -189,19 +189,19 @@ impl fmt::Display for XFlashError {
 impl std::error::Error for XFlashError {}
 
 // =============================================================================
-// 会话持久化错误
+// Session persistence errors
 // =============================================================================
 
-/// `.state` 会话持久化错误
+/// `.state` session persistence errors
 ///
-/// 由 `.state` 加载路径构造并上报，用于把"静默降级"变为可诊断的失败原因。
+/// Raised by the `.state` load path so a silent degradation becomes a diagnosable failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionError {
-    /// 状态文件损坏/无法解析
+    /// State file corrupted or unparsable
     StateFileCorrupted(String),
-    /// 设备指纹不匹配（换了设备）
+    /// Device fingerprint mismatch (different device)
     DeviceMismatch(String),
-    /// DA 尚未加载
+    /// DA not loaded yet
     DaNotLoaded,
 }
 
@@ -218,51 +218,51 @@ impl fmt::Display for SessionError {
 impl std::error::Error for SessionError {}
 
 // =============================================================================
-// XML (V6) DA 协议错误
+// XML (V6) DA protocol errors
 // =============================================================================
 
-/// XML/V6 DA 协议返回的错误分类（对齐 penumbra `XmlErrorKind`）
+/// Error classification returned by the XML/V6 DA protocol (mirrors penumbra `XmlErrorKind`)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum XmlErrorKind {
-    /// 未知/未分类
+    /// Unknown/unclassified
     Unknown,
-    /// 设备不支持该命令（`ERR!UNSUPPORTED`）
+    /// Device does not support the command (`ERR!UNSUPPORTED`)
     UnsupportedCmd,
-    /// 命令被取消（`ERR!CANCEL`）
+    /// Command cancelled (`ERR!CANCEL`)
     Cancel,
-    /// DA 反回滚校验失败
+    /// DA anti-rollback check failed
     AntiRollbackViolation,
-    /// 期望收到 `CMD:DOWNLOAD-FILE` 却收到其他命令
+    /// Expected `CMD:DOWNLOAD-FILE` but got another command
     ExpectedCmdDownloadFile,
-    /// 期望收到 `CMD:UPLOAD-FILE` 却收到其他命令
+    /// Expected `CMD:UPLOAD-FILE` but got another command
     ExpectedCmdUploadFile,
-    /// 期望收到 `CMD:PROGRESS-REPORT` 却收到其他命令
+    /// Expected `CMD:PROGRESS-REPORT` but got another command
     ExpectedCmdProgressReport,
-    /// 期望收到 `CMD:FILE-SYS-OPERATION` 却收到其他命令
+    /// Expected `CMD:FILE-SYS-OPERATION` but got another command
     ExpectedFileSysOp,
-    /// DA SLA 签名被拒绝
+    /// DA SLA signature rejected
     SlaSignatureRejected,
-    /// 未知路径分隔符
+    /// Unknown path separator
     UnknownPathSep,
-    /// 其他携带原始文本的错误
+    /// Other error carrying raw text
     Other(String),
-    /// KDF 输出的密钥长度非法（Extensions）
+    /// Invalid KDF output key length (Extensions)
     InvalidKeyDeriveLength,
-    /// KDF 的 label/salt 长度非法（Extensions）
+    /// Invalid KDF label/salt length (Extensions)
     InvalidLabelOrSaltLength,
-    /// SEJ AES 数据长度超限（Extensions）
+    /// SEJ AES data length exceeds the limit (Extensions)
     SejAesLengthExceeded,
-    /// 存储类型未知，无法执行 RPMB 操作
+    /// Unknown storage type; cannot perform RPMB operations
     StorageUnknown,
-    /// RPMB key 格式非法
+    /// Invalid RPMB key format
     InvalidRpmbKey,
-    /// RPMB 分区未初始化
+    /// RPMB partition not initialized
     RpmbNotInitialized,
-    /// RPMB 初始化失败
+    /// RPMB initialization failed
     RpmbInitFailed,
-    /// RPMB 读取失败
+    /// RPMB read failed
     RpmbReadFailed,
-    /// RPMB 写入失败
+    /// RPMB write failed
     RpmbWriteFailed,
 }
 
@@ -294,17 +294,17 @@ impl fmt::Display for XmlErrorKind {
     }
 }
 
-/// XML/V6 DA 协议错误：携带分类与设备原始文本
+/// XML/V6 DA protocol error carrying the classification and the raw device text
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XmlError {
-    /// 设备返回的原始错误文本（已去除结尾 `\0`）
+    /// Raw error text from the device (trailing `\0` removed)
     pub message: String,
-    /// 错误分类
+    /// Error classification
     pub kind: XmlErrorKind,
 }
 
 impl XmlError {
-    /// 由分类构造（`Other` 会保留其内部文本）
+    /// Build from a classification (`Other` keeps its inner text)
     pub fn from_kind(kind: XmlErrorKind) -> Self {
         let message = match &kind {
             XmlErrorKind::Other(msg) => msg.clone(),
@@ -313,15 +313,15 @@ impl XmlError {
         XmlError { message, kind }
     }
 
-    /// 解析设备返回的错误文本，映射到 [`XmlErrorKind`]
+    /// Parse device error text and map it to [`XmlErrorKind`]
     ///
-    /// 对齐 penumbra `XmlError::from_message`：先去除结尾 `\0`，再按已知
-    /// 错误文本精确匹配；未命中则归类为 [`XmlErrorKind::Other`]（保留原文），
-    /// 空文本归类为 [`XmlErrorKind::Unknown`]。
+    /// Mirrors penumbra `XmlError::from_message`: strip the trailing `\0`, then match the known
+    /// error texts exactly; unmatched text becomes [`XmlErrorKind::Other`] (keeping it), and
+    /// empty text becomes [`XmlErrorKind::Unknown`].
     pub fn from_message(resp: &[u8]) -> Self {
         let msg = String::from_utf8_lossy(resp);
         let msg = msg.trim_end_matches('\0');
-        // 空文本（设备未给出原因）归为 Unknown，避免退化成 Other("")
+        // Empty text (no reason from the device) maps to Unknown instead of degrading to Other("")
         if msg.is_empty() {
             return XmlError::from_kind(XmlErrorKind::Unknown);
         }
@@ -359,13 +359,13 @@ impl fmt::Display for XmlError {
 impl std::error::Error for XmlError {}
 
 // =============================================================================
-// 统一应用错误（兼容旧接口）
+// Unified application error (backwards compatible)
 // =============================================================================
 
-/// 统一应用错误类型
+/// Unified application error type
 ///
-/// 替代全项目散落的 `Result<..., String>`，区分不同错误种类。
-/// 目前仅在新代码中使用，逐步替换旧代码。
+/// Replaces the project-wide scattered `Result<..., String>` and distinguishes error kinds.
+/// Currently used only in new code and migrated gradually.
 #[derive(Debug)]
 pub enum AppError {
     Usb(String),
@@ -414,7 +414,7 @@ impl From<String> for AppError {
     }
 }
 
-// --- 结构化错误 → AppError 的转换（保证传输层失败仍被 is_transport_error 识别）---
+// --- Structured error → AppError conversions (transport failures stay visible to is_transport_error) ---
 
 impl From<UsbError> for AppError {
     fn from(err: UsbError) -> Self {
@@ -430,8 +430,8 @@ impl From<ProtocolError> for AppError {
 
 impl From<XFlashError> for AppError {
     fn from(err: XFlashError) -> Self {
-        // 设备状态错误属于协议层交互失败，但并非 USB 传输失败；
-        // 其消息不含传输层关键词，is_transport_error 会正确判为 false。
+        // Device status errors are protocol-layer interaction failures, not USB transport failures;
+        // their messages carry no transport keywords, so is_transport_error correctly returns false.
         AppError::Protocol(err.to_string())
     }
 }
@@ -449,7 +449,7 @@ impl From<XmlError> for AppError {
 }
 
 // =============================================================================
-// 单元测试
+// Unit tests
 // =============================================================================
 
 #[cfg(test)]
@@ -478,17 +478,17 @@ mod tests {
 
     #[test]
     fn status_code_domain_classification() {
-        // 0xC002____ → 安全域
+        // 0xC002____ → security domain
         assert_eq!(
             StatusCode::from_u32(0xC002_0001),
             StatusCode::SecurityError(0xC002_0001)
         );
-        // 0xC004____ → 设备域
+        // 0xC004____ → device domain
         assert_eq!(
             StatusCode::from_u32(0xC004_0040),
             StatusCode::DeviceError(0xC004_0040)
         );
-        // 非 0xC 前缀的错误码 → 未知
+        // Codes without the 0xC prefix → unknown
         assert_eq!(
             StatusCode::from_u32(0x1234_5678),
             StatusCode::Unknown(0x1234_5678)
@@ -500,7 +500,7 @@ mod tests {
         let e = XFlashError::from_status(0xC001_0005).expect("应为错误");
         assert_eq!(e.code, 0xC001_0005);
         assert_eq!(e.kind, StatusCode::ProtocolError);
-        // Display 同时包含分类与原始码
+        // Display contains both the classification and the raw code
         let s = e.to_string();
         assert!(s.contains("协议错误"), "{}", s);
         assert!(s.contains("C0010005"), "{}", s);
@@ -544,11 +544,11 @@ mod tests {
             XmlError::from_message(b"RPMB read failed\0").kind,
             XmlErrorKind::RpmbReadFailed
         );
-        // 未命中 → Other(msg)，并保留原始文本
+        // No match → Other(msg), keeping the raw text
         let e = XmlError::from_message(b"some vendor text\0");
         assert_eq!(e.kind, XmlErrorKind::Other("some vendor text".into()));
         assert_eq!(e.message, "some vendor text");
-        // 空文本 → Unknown
+        // Empty text → Unknown
         assert_eq!(XmlError::from_message(b"\0").kind, XmlErrorKind::Unknown);
     }
 
@@ -556,7 +556,7 @@ mod tests {
     fn xml_error_from_kind_other_keeps_message() {
         let e = XmlError::from_kind(XmlErrorKind::Other("boom".into()));
         assert_eq!(e.message, "boom");
-        // 非 Other 变体使用分类的可读文本
+        // Non-Other variants use the classification's readable text
         let e2 = XmlError::from_kind(XmlErrorKind::UnsupportedCmd);
         assert_eq!(e2.message, "设备不支持该命令");
     }

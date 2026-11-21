@@ -1,10 +1,10 @@
-//! BROM IO 操作：DA 加载/跳转 + ME_ID/SOC_ID 查询
+//! BROM IO operations: DA load/jump + ME_ID/SOC_ID queries
 //!
-//! - `send_da`    — 发送 Download Agent（动态 EP 包大小分块 + 重试 + ZLP）
-//! - `jump_da`    — 跳转到 DA（含 5 次重试，每次重试 clear_halt + flush）
-//! - `jump_bl`    — 跳转到 Bootloader
-//! - `get_me_id`  — 读取 ME_ID
-//! - `get_soc_id` — 读取 SOC_ID
+//! - `send_da`    — send the Download Agent (dynamic EP packet size chunking + retry + ZLP)
+//! - `jump_da`    — jump to DA (5 retries, each with clear_halt + flush)
+//! - `jump_bl`    — jump to Bootloader
+//! - `get_me_id`  — read ME_ID
+//! - `get_soc_id` — read SOC_ID
 
 use super::core::Preloader;
 use log::{info, trace};
@@ -16,8 +16,8 @@ const DA_UPLOAD_RETRY_DELAY_MS: u64 = 50;
 const JUMP_DA_MAX_ATTEMPT: u32 = 5;
 
 impl Preloader {
-    /// SEND_DA: 发送 Download Agent 到设备
-    /// 对齐 Python mtkclient 2.0.1 的实现
+    /// SEND_DA: send the Download Agent to the device
+    /// Matches the Python mtkclient 2.0.1 implementation
     pub fn send_da(
         &mut self,
         address: u32,
@@ -30,14 +30,14 @@ impl Preloader {
             address, size, sig_len
         );
 
-        // 1. echo(0xD7) 命令
-        // 对齐 Python mtk_preloader.py: echo() 将 int 转为 pack(">I")，发送 4 字节
-        // Preloader 串口模式下设备期望 4 字节命令，1 字节会导致超时
+        // 1. echo(0xD7) command
+        // Matches Python mtk_preloader.py: echo() converts the int via pack(">I") and sends 4 bytes.
+        // In Preloader serial mode the device expects a 4-byte command; 1 byte causes a timeout.
         if !self.echo_4byte(0xD7)? {
             return Err("SEND_DA: echo 0xD7 不匹配".into());
         }
 
-        // 2. 发送参数
+        // 2. Send parameters
         if !self.echo_4byte(address)? {
             return Err("SEND_DA: echo addr 不匹配".into());
         }
@@ -48,7 +48,7 @@ impl Preloader {
             return Err("SEND_DA: echo sig_len 不匹配".into());
         }
 
-        // 3. rword() 读状态
+        // 3. rword() reads status
         let status = self.rword()?;
         trace!("SEND_DA status: {:04X}", status);
         if status > 0xFF {
@@ -58,10 +58,10 @@ impl Preloader {
             return Err("SLA required".into());
         }
 
-        // 4. 上传数据
+        // 4. Upload data
         let upload_start = Instant::now();
-        // mtkclient 2.1.4.1 优化：动态使用 EP_OUT.wMaxPacketSize 替代固定 64B
-        // 保留最小值 64，防止端点报告异常值时出问题
+        // mtkclient 2.1.4.1 optimization: use dynamic EP_OUT.wMaxPacketSize instead of fixed 64B.
+        // Keep a minimum of 64 in case the endpoint reports an abnormal value.
         let chunk_size = (self.device.out_ep_max_packet_size() as usize).max(64);
         trace!(
             "[UPLOAD] sending {} bytes, chunk={}",
@@ -69,12 +69,12 @@ impl Preloader {
             chunk_size
         );
 
-        // 4a. 设置超时
+        // 4a. Set timeout
         let orig_timeout = self.device.get_timeout();
         self.device
             .set_timeout(Duration::from_millis(DA_UPLOAD_TIMEOUT_MS));
 
-        // 4b. 发送数据（动态 chunk，末尾自动适配）
+        // 4b. Send data (dynamic chunk, tail auto-fitted)
         let mut pos = 0;
         while pos < dadata.len() {
             let end = (pos + chunk_size).min(dadata.len());
@@ -105,13 +105,13 @@ impl Preloader {
             .write(&[])
             .map_err(|e| format!("upload_data ZLP: {}", e))?;
 
-        // 4d. 对齐 Python: ZLP 后 35ms 延迟，给设备处理数据
+        // 4d. Match Python: 35ms delay after ZLP to let the device process data
         std::thread::sleep(Duration::from_millis(35));
 
-        // 4e. 恢复超时
+        // 4e. Restore timeout
         self.device.set_timeout(orig_timeout);
 
-        // 5. 读校验和 + 状态
+        // 5. Read checksum + status
         let checksum = self.rword()?;
         let status2 = self.rword()?;
         trace!(
@@ -128,9 +128,9 @@ impl Preloader {
         Ok(true)
     }
 
-    /// JUMP_DA: 跳转到 Download Agent
-    /// 协议: echo(0xD5) → echo(addr) → write(addr) → [0x00...] → 0xC0
-    /// 第二个 addr 触发跳转，BROM 可能发 0~2 个 0x00 填充，然后 DA 发 0xC0 同步
+    /// JUMP_DA: jump to the Download Agent
+    /// Protocol: echo(0xD5) → echo(addr) → write(addr) → [0x00...] → 0xC0
+    /// The second addr triggers the jump; BROM may send 0~2 0x00 padding bytes, then DA sends 0xC0 to sync
     pub fn jump_da(&mut self, addr: u32) -> Result<bool, String> {
         let mut last_err = String::new();
         for attempt in 1..=JUMP_DA_MAX_ATTEMPT {
@@ -141,7 +141,7 @@ impl Preloader {
                 trace!("[JUMP_DA] attempt {}: echo 0xD5 不匹配，重试", attempt);
                 continue;
             }
-            // 第一个 addr：BROM 正常回显
+            // First addr: BROM echoes it back normally
             if !self.echo_4byte(addr)? {
                 last_err = "jump_da echo addr(1): mismatch".to_string();
                 trace!(
@@ -151,12 +151,12 @@ impl Preloader {
                 self.flush_input();
                 continue;
             }
-            // 第二个 addr：触发跳转
+            // Second addr: triggers the jump
             self.device
                 .write(&addr.to_be_bytes())
                 .map_err(|e| format!("jump_da write addr(2): {}", e))?;
 
-            // 等待 DA 的 0xC0 同步信号（跳过 0x00 填充字节）
+            // Wait for the DA's 0xC0 sync byte (skip 0x00 padding bytes)
             let orig_timeout = self.device.get_timeout();
             self.device.set_timeout(Duration::from_millis(5000));
             let mut found = false;
@@ -189,11 +189,12 @@ impl Preloader {
         Err(last_err)
     }
 
-    /// JUMP_BL: 跳转到 Bootloader
+    /// JUMP_BL: jump to Bootloader
     /// Python: echo(JUMP_BL) → rword() → if <=0xFF → rword() → if <=0xFF → True
     ///
-    /// 用于 system 重启/跳转路径：当看门狗复位（trigger_meta_reboot 的 WRITE32 流程）
-    /// 失败时作为回退，命令 BROM 直接跳转到 Bootloader，使设备进入 Preloader。
+    /// Used by the system reboot/jump path: falls back when the watchdog reset
+    /// (trigger_meta_reboot's WRITE32 flow) fails, commanding BROM to jump straight to
+    /// the Bootloader so the device enters Preloader.
     pub fn jump_bl(&mut self) -> Result<bool, String> {
         if !self.echo_1byte(0xD6)? {
             return Err("jump_bl: echo 0xD6 不匹配".into());

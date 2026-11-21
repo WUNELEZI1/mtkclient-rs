@@ -1,6 +1,6 @@
-//! multi 命令：一次 DA 会话执行多个子命令
+//! multi command: run several subcommands in one DA session
 //!
-//! 对齐 Python mtkclient 的 multi 命令：分号分隔的多个命令在同一 DA 会话中依次执行。
+//! Mirrors Python mtkclient's multi command: semicolon-separated commands run in order in the same DA session.
 
 use crate::color::Colorize;
 use log::{error, info};
@@ -8,7 +8,7 @@ use log::{error, info};
 use crate::da::DAXFlash;
 use crate::system::config::AppConfig;
 
-/// 执行 multi 命令
+/// Run the multi command
 pub fn cmd_multi(
     da: &mut DAXFlash,
     args: &[String],
@@ -41,7 +41,7 @@ pub fn cmd_multi(
 
         info!("[{}/{}] 执行: {}", i + 1, commands.len(), cmd_str.cyan());
 
-        // 解析子命令
+        // Parse the subcommand
         let parts: Vec<String> = cmd_str.split_whitespace().map(String::from).collect();
         if parts.is_empty() {
             continue;
@@ -71,7 +71,7 @@ pub fn cmd_multi(
                     "{}",
                     format!("[{}/{}] 失败: {}", i + 1, commands.len(), e).red()
                 );
-                // multi 中单个命令失败不中断后续命令
+                // A failing subcommand does not abort the remaining ones
             }
         }
 
