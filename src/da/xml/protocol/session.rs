@@ -60,6 +60,12 @@ impl<'a> XmlProtocol<'a> {
         if length == 0 {
             return Ok(());
         }
+        if length > super::MAX_XML_PACKET_LEN {
+            return Err(XmlProtoError::proto(format!(
+                "Message 包长度超限: {}",
+                length
+            )));
+        }
         let mut payload = vec![0u8; length as usize];
         self.port.read_exact(&mut payload)?;
         // The first 4 bytes are a length prefix; the rest is log text
@@ -75,6 +81,12 @@ impl<'a> XmlProtocol<'a> {
     /// Read the payload of one complete Flow packet
     pub fn read_data(&mut self) -> Result<Vec<u8>, XmlProtoError> {
         let hdr = self.read_next_flow_header()?;
+        if hdr.length > super::MAX_XML_PACKET_LEN {
+            return Err(XmlProtoError::proto(format!(
+                "数据包长度超限: {}",
+                hdr.length
+            )));
+        }
         let mut data = vec![0u8; hdr.length as usize];
         self.port.read_exact(&mut data)?;
         Ok(data)
