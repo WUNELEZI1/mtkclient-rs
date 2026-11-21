@@ -351,6 +351,11 @@ impl SuperMetadata {
         count: u32,
         entry_size: usize,
     ) -> Vec<LpMetadataGroup> {
+        if entry_size < 48 {
+            warn!("Group entry_size {} 过小（至少 48）", entry_size);
+            return Vec::new();
+        }
+
         let mut groups = Vec::with_capacity(count as usize);
         let name_len = 36usize.min(entry_size.saturating_sub(12));
 
