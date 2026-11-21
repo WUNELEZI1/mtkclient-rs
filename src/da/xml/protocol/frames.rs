@@ -26,6 +26,9 @@ impl XmlPacketHeader {
         }
         let data_type = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
         let length = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        if length > super::MAX_XML_PACKET_LEN {
+            return None;
+        }
         Some(XmlPacketHeader {
             magic,
             data_type,

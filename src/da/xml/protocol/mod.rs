@@ -23,6 +23,8 @@ use crate::preloader::transport::BromTransport;
 
 /// Long timeout used during session operations (same as penumbra `MAX_TIMEOUT`)
 pub const MAX_TIMEOUT: Duration = Duration::from_millis(10000);
+/// Max accepted device frame payload length; mirrors the XFlash 64 MiB guard.
+pub const MAX_XML_PACKET_LEN: u32 = 64 * 1024 * 1024;
 /// Max consecutive Message packets skipped while reading a flow header (prevents an endless loop from DA log spam)
 const MAX_MESSAGE_DRAINS: u32 = 64;
 /// Send chunk limit before the packet length is negotiated
