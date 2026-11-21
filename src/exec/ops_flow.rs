@@ -419,6 +419,63 @@ fn seccfg_unlock_writes_dm_verity_zero() {
 }
 
 #[test]
+fn seccfg_v3_unlock_and_lock_roundtrip() {
+    // V3 seccfg 走软件 SEJ（与 V4 的 HACC 路径不同），必须端到端验证全版本支持。
+    let mut s = sim("v5-seccfg-v3");
+    let r = exec_yes()
+        .execute(
+            &SeccfgOp {
+                action: SeccfgAction::Unlock,
+            },
+            &mut s,
+            false,
+            0,
+        )
+        .unwrap();
+    assert_eq!(
+        r.outcome
+            .facts
+            .iter()
+            .find(|(k, _)| k == "seccfg_version")
+            .map(|(_, v)| v.as_str()),
+        Some("V3")
+    );
+    // 读回镜像，确认 V3 结构仍可解析且 attr 已切到 UNLOCK
+    let span = s.find_partition("seccfg").unwrap();
+    let data = s.read_flash(span.addr, span.size.min(0x4000)).unwrap();
+    let v3 = crate::security::seccfg::v3::SecCfgV3::parse(&data).unwrap();
+    assert_eq!(v3.seccfg_attr, crate::security::seccfg::v3::SecCfgV3::ATTR_UNLOCK);
+
+    // 幂等：再解锁一次不重复写
+    let again = exec_yes()
+        .execute(
+            &SeccfgOp {
+                action: SeccfgAction::Unlock,
+            },
+            &mut s,
+            false,
+            0,
+        )
+        .unwrap();
+    assert!(again.outcome.summary.contains("无需修改"));
+
+    // 再上锁，回到 ATTR_DEFAULT
+    exec_yes()
+        .execute(
+            &SeccfgOp {
+                action: SeccfgAction::Lock,
+            },
+            &mut s,
+            false,
+            0,
+        )
+        .unwrap();
+    let data = s.read_flash(span.addr, span.size.min(0x4000)).unwrap();
+    let v3 = crate::security::seccfg::v3::SecCfgV3::parse(&data).unwrap();
+    assert_eq!(v3.seccfg_attr, crate::security::seccfg::v3::SecCfgV3::ATTR_DEFAULT);
+}
+
+#[test]
 fn vbmeta_patches_only_active_slot() {
     let mut s = sim("ufs-ab");
     let r = exec_yes()

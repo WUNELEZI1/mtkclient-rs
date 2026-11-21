@@ -198,6 +198,8 @@ pub struct DeviceProfile {
     pub seccfg_lock_state: u32,
     /// seccfg 的 dm_verity_state（0x10 偏移）
     pub seccfg_dm_verity: u32,
+    /// seccfg 使用 V3 结构（`AND_SECCFG_v` 头 + 软件 SEJ），而非默认 V4
+    pub seccfg_v3: bool,
     /// DA1 是否已应用 Carbonara 加固（强制 DA2 加载地址为 0x40000000）
     pub da1_hardened: bool,
     /// 是否受 CVE-2022-20069 影响（Preloader USB OOB write）。
@@ -231,6 +233,7 @@ impl Default for DeviceProfile {
             bootctrl: true,
             seccfg_lock_state: 1,
             seccfg_dm_verity: 0,
+            seccfg_v3: false,
             da1_hardened: false,
             cve_20069_affected: false,
             cve_20069_patched: false,
@@ -358,6 +361,7 @@ impl DeviceProfile {
                 "bootctrl" => p.bootctrl = truthy(v),
                 "seccfg.lock_state" => p.seccfg_lock_state = num(v)?.as_num::<u32>(k)?,
                 "seccfg.dm_verity" => p.seccfg_dm_verity = num(v)?.as_num::<u32>(k)?,
+                "seccfg.v3" => p.seccfg_v3 = truthy(v),
                 "da1_hardened" => p.da1_hardened = truthy(v),
                 // CVE-2022-20069；`cve_20435.*` 为历史误记编号的兼容别名。
                 "cve_20069.affected" | "cve_20435.affected" => p.cve_20069_affected = truthy(v),
@@ -380,6 +384,12 @@ impl DeviceProfile {
             // 干净的 V5 机器：无安全标志，直接 DA 加载即可读表（cost=690 路径）
             "v5-clean" => {
                 p.name = "MT6768 (V5 clean)".into();
+                p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
+            }
+            // V3 seccfg 机器：验证 bootloader 解锁/上锁的全版本支持
+            "v5-seccfg-v3" => {
+                p.name = "MT6768 (V3 seccfg)".into();
+                p.seccfg_v3 = true;
                 p.exploits = vec!["kamakiri2".into(), "carbonara".into()];
             }
             // SLA 打开的 V5 机器：必须先绕过，否则 SEND_DA 返回 0x1D0D
@@ -1691,18 +1701,26 @@ fn build_pages(profile: &DeviceProfile) -> std::collections::HashMap<u64, Vec<u8
         match name.as_str() {
             // seccfg：真实 V4 结构（28 字节头 + 32 字节哈希），供 unlock 测试
             "seccfg" => {
-                let mut hdr = [0u8; 28];
-                hdr[0..4].copy_from_slice(&0x4D4D_4D4Du32.to_le_bytes());
-                hdr[4..8].copy_from_slice(&4u32.to_le_bytes());
-                hdr[8..12].copy_from_slice(&0x3Cu32.to_le_bytes());
-                hdr[12..16].copy_from_slice(&profile.seccfg_lock_state.to_le_bytes());
-                hdr[16..20].copy_from_slice(&profile.seccfg_dm_verity.to_le_bytes());
-                hdr[20..24].copy_from_slice(&0u32.to_le_bytes()); // sboot_runtime
-                hdr[24..28].copy_from_slice(&0x4545_4545u32.to_le_bytes());
-                let digest = crate::sha::Sha256::digest(&hdr);
-                let mut img = hdr.to_vec();
-                img.extend_from_slice(&digest);
-                put(addr, &img);
+                if profile.seccfg_v3 {
+                    // V3：AND_SECCFG_v 头 + 软件 SEJ 加密段，端到端验证全版本解锁
+                    let img = crate::security::seccfg::v3::synthetic_v3_image(
+                        profile.seccfg_lock_state == 1,
+                    );
+                    put(addr, &img);
+                } else {
+                    let mut hdr = [0u8; 28];
+                    hdr[0..4].copy_from_slice(&0x4D4D_4D4Du32.to_le_bytes());
+                    hdr[4..8].copy_from_slice(&4u32.to_le_bytes());
+                    hdr[8..12].copy_from_slice(&0x3Cu32.to_le_bytes());
+                    hdr[12..16].copy_from_slice(&profile.seccfg_lock_state.to_le_bytes());
+                    hdr[16..20].copy_from_slice(&profile.seccfg_dm_verity.to_le_bytes());
+                    hdr[20..24].copy_from_slice(&0u32.to_le_bytes()); // sboot_runtime
+                    hdr[24..28].copy_from_slice(&0x4545_4545u32.to_le_bytes());
+                    let digest = crate::sha::Sha256::digest(&hdr);
+                    let mut img = hdr.to_vec();
+                    img.extend_from_slice(&digest);
+                    put(addr, &img);
+                }
             }
             // vbmeta / vbmeta_system_*：合法 AVB 镜像（flags=0，含 boot descriptor）
             n if n.starts_with("vbmeta") => {

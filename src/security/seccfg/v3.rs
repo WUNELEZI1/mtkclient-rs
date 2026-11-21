@@ -39,6 +39,48 @@ pub(crate) struct SecCfgV3 {
     pub(crate) seccfg_ext: Vec<u8>,
 }
 
+/// 合成一张合法的 V3 seccfg（SW 加密、单组镜像名），供虚拟设备与单测共用。
+/// `locked=true` 生成 ATTR_DEFAULT（锁定），false 生成 ATTR_UNLOCK。
+pub(crate) fn synthetic_v3_image(locked: bool) -> Vec<u8> {
+    let attr = if locked {
+        SecCfgV3::ATTR_DEFAULT
+    } else {
+        SecCfgV3::ATTR_UNLOCK
+    };
+    let mut plain = vec![0u8; plain::PLAIN_HEAD_LEN];
+    plain[..4].copy_from_slice(b"IIII");
+    let names: &[&str] = &["preloader", "boot", "system"];
+    for (i, n) in names.iter().enumerate() {
+        let off = (i + 1) * plain::IMG_ENTRY_SIZE;
+        plain[off..off + n.len()].copy_from_slice(n.as_bytes());
+        plain[off + 32..off + 36].copy_from_slice(&0x1000u32.to_le_bytes());
+    }
+    plain.extend_from_slice(&0x1234u32.to_le_bytes()); // siu_status
+    plain.extend_from_slice(&plain::STATUS_COMPLETE.to_le_bytes());
+    plain.extend_from_slice(&attr.to_le_bytes());
+    plain.extend(std::iter::repeat_n(0xA5u8, plain::EXT_LEN));
+
+    let enc = sej_sec_cfg_sw_encrypt(&plain).expect("SW 加密不应失败");
+    let size = 0x2C + enc.len() + 4;
+    let mut out = Vec::new();
+    out.extend_from_slice(b"AND_SECCFG_v\0\0\0\0");
+    out.extend_from_slice(&SecCfgV3::MAGIC.to_le_bytes());
+    out.extend_from_slice(&3u32.to_le_bytes());
+    out.extend_from_slice(&(size as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes()); // enc_offset
+    out.extend_from_slice(&0x0100_0000u32.to_le_bytes()); // enc_len
+    out.push(0); // sw_sec_lock_try
+    out.push(0); // sw_sec_lock_done
+    out.extend_from_slice(&0x200u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&enc);
+    out.extend_from_slice(&SecCfgV3::ENDFLAG.to_le_bytes());
+    while !out.len().is_multiple_of(0x200) {
+        out.push(0);
+    }
+    out
+}
+
 impl SecCfgV3 {
     pub(crate) const MAGIC: u32 = 0x4D4D4D4D;
     pub(crate) const ENDFLAG: u32 = 0x45454545;

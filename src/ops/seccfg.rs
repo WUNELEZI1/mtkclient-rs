@@ -15,6 +15,7 @@ use log::{info, warn};
 use super::{Op, OpCtx, OpOutcome};
 use crate::confirm::Danger;
 use crate::core::capability::{Capability, CapabilitySet};
+use crate::security::seccfg::v3::SecCfgV3;
 use crate::security::seccfg::v4::SecCfgV4;
 
 /// 解锁 / 上锁。
@@ -39,11 +40,90 @@ pub struct SeccfgOp {
 
 impl SeccfgOp {
     /// 只读地检查当前锁状态（供 unlock 链判断是否需要动 vbmeta）。
+    /// 同时支持 V3（attr 映射为 1/3）与 V4（lock_state 原生值）。
     pub fn current_lock_state(ctx: &mut OpCtx<'_>) -> Result<u32, String> {
         let span = ctx.session.find_partition("seccfg")?;
         let data = ctx.session.read_flash(span.addr, span.size.min(0x4000))?;
-        let v4 = SecCfgV4::parse(&data)?;
-        Ok(v4.lock_state)
+        if Self::is_v3(&data) {
+            let v3 = SecCfgV3::parse(&data)?;
+            Ok(if v3.seccfg_attr == SecCfgV3::ATTR_UNLOCK {
+                3
+            } else {
+                1
+            })
+        } else {
+            let v4 = SecCfgV4::parse(&data)?;
+            Ok(v4.lock_state)
+        }
+    }
+
+    /// V3 头以 `AND_SECCFG_v\0\0\0` 开头；V4 头首 4 字节是 magic 0x4D4D4D4D。
+    fn is_v3(data: &[u8]) -> bool {
+        data.len() >= 16 && &data[..12] == b"AND_SECCFG_v"
+    }
+
+    /// V3 解锁/上锁：解析 → 幂等检查 → 软件 SEJ 重签 → 写回 → 回读校验 attr。
+    /// V3 的 SEJ 加密是纯软件 AES（不依赖设备 HACC），因此真机与仿真共用本实现。
+    fn run_v3(&self, ctx: &mut OpCtx<'_>, data: &[u8]) -> Result<OpOutcome, String> {
+        let span = ctx.session.find_partition("seccfg")?;
+        let v3 = SecCfgV3::parse(data)?;
+        let target_attr = match self.action {
+            SeccfgAction::Unlock => SecCfgV3::ATTR_UNLOCK,
+            SeccfgAction::Lock => SecCfgV3::ATTR_DEFAULT,
+        };
+        if v3.seccfg_attr == target_attr {
+            return Ok(OpOutcome {
+                summary: format!("seccfg V3 已是 {}，无需修改", self.action.flag()),
+                artifacts: Vec::new(),
+                facts: vec![("changed".into(), "0".into())],
+            });
+        }
+        ctx.confirm_action(
+            if self.action == SeccfgAction::Unlock {
+                "seccfg unlock"
+            } else {
+                "seccfg lock"
+            },
+            Danger::High,
+            &format!(
+                "V3 seccfg {}（attr 0x{:08X} -> 0x{:08X}）",
+                self.action.flag(),
+                v3.seccfg_attr,
+                target_attr
+            ),
+        )?;
+
+        let image = v3.create(self.action.flag(), span.size as usize)?;
+        ctx.session.write_flash(span.addr, &image)?;
+
+        let back = ctx.session.read_flash(span.addr, span.size.min(0x4000))?;
+        let v3b = SecCfgV3::parse(&back)?;
+        if v3b.seccfg_attr != target_attr {
+            return Err(format!(
+                "回读校验失败: V3 attr 期望 0x{:08X} 实际 0x{:08X}",
+                target_attr, v3b.seccfg_attr
+            ));
+        }
+        info!(
+            "seccfg V3 {} 完成: attr=0x{:08X}, hwtype={}",
+            self.action.flag(),
+            v3b.seccfg_attr,
+            v3b.hwtype
+        );
+        Ok(OpOutcome {
+            summary: format!(
+                "seccfg V3 {} 成功（attr=0x{:08X}, hwtype={}）",
+                self.action.flag(),
+                v3b.seccfg_attr,
+                v3b.hwtype
+            ),
+            artifacts: Vec::new(),
+            facts: vec![
+                ("seccfg_version".into(), "V3".into()),
+                ("attr".into(), format!("0x{:08X}", v3b.seccfg_attr)),
+                ("addr".into(), format!("0x{:X}", span.addr)),
+            ],
+        })
     }
 }
 
@@ -69,11 +149,13 @@ impl Op for SeccfgOp {
             data.len()
         );
 
+        // 全版本支持：V3（AND_SECCFG_v 头，软件 SEJ）与 V4（0x4D4D4D4D 头）。
+        if Self::is_v3(&data) {
+            return self.run_v3(ctx, &data);
+        }
         if data.len() < 28 || u32::from_le_bytes(data[0..4].try_into().unwrap()) != SecCfgV4::MAGIC
         {
-            return Err(
-                "seccfg 不是 V4 结构（V3/SW 需要 SEJ 加密，请使用 legacy 命令 zyb seccfg）".into(),
-            );
+            return Err("seccfg 结构无法识别（既非 V3 也非 V4）".into());
         }
         let v4 = SecCfgV4::parse(&data)?;
         info!(

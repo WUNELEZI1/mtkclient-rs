@@ -1,4 +1,3 @@
-use crate::color::Colorize;
 use log::info;
 
 use crate::da::DAXFlash;
@@ -59,92 +58,6 @@ pub(crate) fn decide_action(name: &str, slot: SlotState) -> VbAction {
     }
 }
 
-pub fn vbmeta_disable(da: &mut DAXFlash, mode: u32) -> Result<(), String> {
-    info!("开始 vbmeta 禁用 (mode={})...", mode);
-
-    let slot = resolve_slot(da)?;
-    match slot {
-        SlotState::Known(c) => info!("活动槽位: {}（只处理该槽 + 共享 vbmeta）", c),
-        SlotState::NotAb => info!("未检测到 A/B 槽位（按非 A/B 设备处理）"),
-    }
-
-    let mut patched = Vec::new();
-    let mut skipped = Vec::new();
-    let mut missing = Vec::new();
-
-    for name in VBMETA_CANDIDATES {
-        match decide_action(name, slot) {
-            VbAction::Skip(reason) => {
-                // 只在分区确实存在时记录 SKIP，避免刷一堆"不存在"
-                if da.find_partition_addr(name).is_ok() {
-                    info!("  [SKIP] {}（{}）", name, reason);
-                    skipped.push(name);
-                }
-                continue;
-            }
-            VbAction::Patch => {}
-        }
-
-        let Ok((addr, size)) = da.find_partition_addr(name) else {
-            missing.push(name);
-            continue;
-        };
-        info!(
-            "  找到 vbmeta 分区: {} @ 0x{:X}, 大小: 0x{:X}",
-            name, addr, size
-        );
-
-        let data = da.readflash_data(addr, size)?;
-        info!("  读取到 {} 字节", data.len());
-
-        // 自研 avbtool 解析：descriptor 摘要 + 严格 AVB0 校验
-        let vb = match crate::security::avb::VbmetaImage::parse(&data) {
-            Ok(v) => v,
-            Err(e) => {
-                info!("  {} 跳过（非标准 vbmeta: {}）", name, e);
-                continue;
-            }
-        };
-        for d in &vb.descriptors {
-            if let Some(pn) = &d.partition_name {
-                info!("    descriptor: {} ({})", d.tag_debug_name(), pn);
-            }
-        }
-        info!(
-            "  当前 flags=0x{:02X} -> 目标 0x{:02X}",
-            vb.header.flags, mode
-        );
-
-        let modified = vb.disable_verification(mode);
-        da.write_flash_data(addr, &modified, 1, 8)?;
-        info!("{}", format!("  {} 已修补", name).green());
-        patched.push(name);
-    }
-
-    if patched.is_empty() {
-        return Err(format!(
-            "未找到可修补的 vbmeta 分区（已跳过: {}，缺失: {}）",
-            skipped.join(","),
-            missing.join(",")
-        ));
-    }
-
-    info!(
-        "{}",
-        format!(
-            "vbmeta 禁用成功: 修补 {} 个{}, 跳过 {} 个",
-            patched.len(),
-            if skipped.is_empty() {
-                ""
-            } else {
-                "（另有非活动槽跳过）"
-            },
-            skipped.len()
-        )
-        .green()
-    );
-    Ok(())
-}
 
 /// 解析活动槽位：bootctrl → GPT 元数据 → 报错（不猜）。
 ///

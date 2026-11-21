@@ -63,11 +63,19 @@ impl Op for UnlockOp {
             }
         };
 
+        // 只读地回读真实锁状态（V3/V4 均由 SeccfgOp 统一判断），替代硬编码 "3"。
+        // 读取失败不掩盖已成功的解锁，仅退回默认值。
+        let lock_state = SeccfgOp::current_lock_state(ctx)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|e| {
+                warn!("回读锁状态失败（不影响解锁结果）: {}", e);
+                "3".into()
+            });
         Ok(OpOutcome {
             summary: format!("{}；{}", seccfg_out.summary, vbmeta.summary),
             artifacts: Vec::new(),
             facts: vec![
-                ("lock_state".into(), "3".into()),
+                ("lock_state".into(), lock_state),
                 ("dm_verity_state".into(), "0".into()),
                 ("vbmeta".into(), vbmeta.summary.clone()),
             ],

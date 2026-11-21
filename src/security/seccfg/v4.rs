@@ -103,7 +103,7 @@ impl SecCfgV4 {
             "SW".to_string()
         } else {
             // 非 SW 类型均需要 HACC 硬件验证，在 parse 阶段按 V4 格式默认
-            // 写入时 build_v4_image_online 会用 HACC 硬件签名（legacy=true）
+            // 写入时 sign_v4_digest 会用 HACC 硬件签名（legacy=true）
             "V4".to_string()
         };
 

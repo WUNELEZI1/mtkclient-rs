@@ -25,8 +25,6 @@ pub mod vbmeta;
 #[allow(unused_imports)]
 pub use frp::frp_unlock;
 #[allow(unused_imports)]
-pub use seccfg::{lock_bootloader, unlock_bootloader};
+pub use seccfg::{seccfg_info, seccfg_info_file};
 #[allow(unused_imports)]
 pub use sej::sej_hacc_sign;
-#[allow(unused_imports)]
-pub use vbmeta::vbmeta_disable;

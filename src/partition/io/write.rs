@@ -1,7 +1,6 @@
 //! 分区写入 / 擦除 / Bootloader 锁
 
 use crate::da::xflash::{CMD_FORMAT, CMD_MAGIC, DAXFlash, pack3};
-use crate::partition::GptInfo;
 use crate::partition::write::{check_write_resume, remove_write_resume_file};
 use log::info;
 use std::io::Read;
@@ -48,88 +47,6 @@ impl<R: Read> Read for PaddedReader<R> {
 }
 
 impl<'a> DAXFlash<'a> {
-    /// 写入文件到分区（带校验）
-    /// 分块流式校验：避免大分区全量读入内存导致 OOM。
-    /// 支持断点续传：续传时只校验本次写入的部分。
-    pub fn write_partition_with_verify(
-        &mut self,
-        part_name: &str,
-        in_file: &str,
-    ) -> Result<(), String> {
-        // 先写入（写入分区内部处理断点续传）
-        self.write_partition(part_name, in_file)?;
-
-        // 分块流式校验：只校验本次写入的部分
-        info!("  开始分块校验写入数据...");
-        use std::io::{BufReader, Read, Seek, SeekFrom};
-        let file = std::fs::File::open(in_file).map_err(|e| format!("读取原始文件失败: {}", e))?;
-        let mut reader = BufReader::new(file);
-
-        let gpt_data = self
-            .last_gpt_data
-            .as_ref()
-            .ok_or_else(|| "无 GPT 数据".to_string())?;
-        let gpt_info = GptInfo::parse(gpt_data)?;
-        let entry = gpt_info
-            .find_partition(part_name)
-            .ok_or_else(|| format!("未找到分区: {}", part_name))?;
-
-        // 计算校验起始位置：写入可能续传，只校验本次写入的部分
-        let write_size = {
-            let file_meta =
-                std::fs::metadata(in_file).map_err(|e| format!("无法获取文件元数据: {}", e))?;
-            let file_size = file_meta.len();
-            if file_size % 512 != 0 {
-                file_size + (512 - file_size % 512)
-            } else {
-                file_size
-            }
-        };
-        // 检查是否是续传写入（resume 文件已删除，但可通过写入大小推算）
-        // 实际上 resume 文件已在 写入分区 成功后被删除，
-        // 所以这里始终从 0 开始校验是安全的做法（写入已完成）。
-        let verify_start = 0u64;
-
-        // Seek 到校验起始位置
-        if verify_start > 0 {
-            reader
-                .seek(SeekFrom::Start(verify_start))
-                .map_err(|e| format!("文件 seek 失败: {}", e))?;
-        }
-
-        const VERIFY_CHUNK: usize = 0x100000; // 1MB 校验块（减少读取次数）
-        let mut offset = verify_start;
-        let mut buf = vec![0u8; VERIFY_CHUNK];
-
-        loop {
-            let n = reader
-                .read(&mut buf)
-                .map_err(|e| format!("读取原始文件失败: {}", e))?;
-            if n == 0 {
-                break;
-            }
-            // 不超过文件实际大小（避免校验 padding 的零字节）
-            if offset >= write_size {
-                break;
-            }
-            let effective_n = std::cmp::min(n, (write_size.saturating_sub(offset)) as usize);
-            let chunk = &buf[..effective_n];
-            let device_data = self.readflash_data(entry.start_addr + offset, effective_n as u64)?;
-            if device_data != chunk {
-                return Err(format!(
-                    "校验失败 @ offset 0x{:X}: 写入数据与原始数据不匹配",
-                    entry.start_addr + offset
-                ));
-            }
-            offset += effective_n as u64;
-        }
-
-        info!(
-            "{}",
-            crate::i18n::tr("log_verify_ok", &[&offset.to_string()])
-        );
-        Ok(())
-    }
 
     /// 写入文件到分区（流式，避免大文件 OOM）
     /// 对齐 Python writeflash (xflash_lib.py:writeflash)
@@ -332,18 +249,5 @@ impl<'a> DAXFlash<'a> {
             part_name, size, addr
         );
         Ok(())
-    }
-
-    /// 解锁 Bootloader
-    /// 对齐 Python mtkclient: unlock 命令
-    /// 流程: 读取 seccfg 分区 → 解析 V4/V3 结构 → 修改 lock_state → 重新签名 → 写回
-    pub fn unlock_bootloader(&mut self) -> Result<(), String> {
-        crate::security::seccfg::unlock_bootloader(self)
-    }
-
-    /// 锁定 Bootloader
-    // 预留：unlock/lock 命令使用
-    pub fn lock_bootloader(&mut self) -> Result<(), String> {
-        crate::security::seccfg::lock_bootloader(self)
     }
 }

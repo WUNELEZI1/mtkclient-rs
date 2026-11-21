@@ -1,11 +1,8 @@
-//! SecCfg V4 头构建辅助（在线模式）
+//! SecCfg V4 头构建与 HACC 签名辅助
 //!
 //! - `build_v4_header` — 修改 lock_state + dm_verity_state，构造 28 字节头
-//! - `build_v4_image_online` — 根据 hwtype 选择加密方式，拼装完整 image
-//!   对齐 Python SecCfgV4.create()：SW→sej_sec_cfg_sw, V2→sej_sec_cfg_hw,
-//!   V3→sej_sec_cfg_hw_V3(legacy=False), V4→sej_sec_cfg_hw_V3(legacy=True)
+//! - `sign_v4_digest` — 按 hwtype 对摘要签名（SW/V2/V3/V4），供 RealSession 与单测共用
 
-use crate::sha::Sha256;
 use log::info;
 
 use crate::da::DAXFlash;
@@ -84,33 +81,6 @@ pub(crate) fn build_v4_header(
     ];
 
     Ok((header, new_lock, new_dm_verity, new_sboot))
-}
-
-pub(crate) fn build_v4_image_online(
-    da: &mut DAXFlash,
-    v4: &SecCfgV4,
-    lockflag: &str,
-    partition_size: usize,
-    hw_code: u16,
-) -> Result<Vec<u8>, String> {
-    let (header, new_lock, _, _) = build_v4_header(v4, lockflag)?;
-    let digest = Sha256::digest(header);
-    let enc_hash = sign_v4_digest(da, &v4.hwtype, &digest, hw_code)?;
-
-    let mut result = header.to_vec();
-    result.extend_from_slice(&enc_hash);
-    while !result.len().is_multiple_of(0x200) {
-        result.push(0);
-    }
-    while result.len() < partition_size {
-        result.push(0);
-    }
-
-    info!(
-        "seccfg V4 在线修改成功: lock_state=0x{:08X} -> 0x{:08X}",
-        v4.lock_state, new_lock
-    );
-    Ok(result)
 }
 
 /// 按 hwtype 对 28 字节头的 SHA256 摘要做签名/加密。
