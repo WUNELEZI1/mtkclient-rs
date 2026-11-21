@@ -106,6 +106,21 @@ pub fn parse(buf: &[u8]) -> Result<BootImage, String> {
         4 => Version::V4,
         _ => return Err(format!("未知 header_version: {}", hv)),
     };
+    // The fixed header fields must all be present before any indexed read.
+    // V1 adds recovery_dtbo fields at 1632..1644, V2 adds dtb_size at 1648..1652.
+    let required_len = match version {
+        Version::V1 => 1644,
+        Version::V2 => 1652,
+        _ => 576,
+    };
+    if buf.len() < required_len {
+        return Err(format!(
+            "boot 头长度不足: 版本 {:?} 需要 {} 字节，实际 {} 字节",
+            version,
+            required_len,
+            buf.len()
+        ));
+    }
     let ps = page_size as u64;
     let mut bi = BootImage {
         version,
