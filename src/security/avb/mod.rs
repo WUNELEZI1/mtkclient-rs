@@ -13,6 +13,12 @@
 
 use std::fmt::Write as _;
 
+mod parse;
+
+pub use parse::{Descriptor, DescriptorTag};
+
+use parse::parse_partition_name;
+
 /// vbmeta magic.
 pub const AVB_MAGIC: &[u8; 4] = b"AVB0";
 /// vbmeta header size (0x80 header + 48-byte release_string).
@@ -22,65 +28,6 @@ pub const AVB_HEADER_SIZE: usize = 0xB0;
 pub const FLAG_HASHTREE_DISABLED: u32 = 0x01;
 /// Flag bit: signature verification disabled.
 pub const FLAG_VERIFICATION_DISABLED: u32 = 0x02;
-
-/// Descriptor tags (libavb avb_descriptor.h).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DescriptorTag {
-    Property,
-    Hashtree,
-    Hash,
-    KernelCmdline,
-    ChainPartition,
-    Unknown(u64),
-}
-
-impl From<u64> for DescriptorTag {
-    fn from(v: u64) -> Self {
-        match v {
-            1 => Self::Property,
-            2 => Self::Hashtree,
-            3 => Self::Hash,
-            4 => Self::KernelCmdline,
-            5 => Self::ChainPartition,
-            other => Self::Unknown(other),
-        }
-    }
-}
-
-impl Descriptor {
-    /// Readable name of the descriptor type (for online logs).
-    pub fn tag_debug_name(&self) -> &'static str {
-        match self.tag {
-            DescriptorTag::Property => "Property",
-            DescriptorTag::Hashtree => "Hashtree",
-            DescriptorTag::Hash => "Hash",
-            DescriptorTag::KernelCmdline => "KernelCmdline",
-            DescriptorTag::ChainPartition => "ChainPartition",
-            DescriptorTag::Unknown(_) => "Unknown",
-        }
-    }
-}
-
-impl DescriptorTag {
-    fn name(self) -> String {
-        match self {
-            Self::Property => "Property".into(),
-            Self::Hashtree => "Hashtree".into(),
-            Self::Hash => "Hash".into(),
-            Self::KernelCmdline => "Kernel Cmdline".into(),
-            Self::ChainPartition => "Chain Partition".into(),
-            Self::Unknown(v) => format!("Unknown ({v})"),
-        }
-    }
-}
-
-/// Parsed descriptor (summary info).
-#[derive(Debug, Clone)]
-pub struct Descriptor {
-    pub tag: DescriptorTag,
-    /// Convenience field: partition name associated with Property/ChainPartition/KernelCmdline, if any.
-    pub partition_name: Option<String>,
-}
 
 /// vbmeta header fields (all converted from big-endian).
 #[derive(Debug, Clone)]
@@ -312,43 +259,6 @@ impl VbmetaImage {
     }
 }
 
-/// Parse the partition name inside a descriptor (using real libavb field offsets per descriptor).
-///
-/// Layout (relative to the descriptor start; tag(8)+length(8) prefix is 16 bytes):
-/// - Hash: image_size(8) + `hash_algorithm[32]` + name_len(4)@56 + salt_len(4) +
-///   digest_len(4) + flags(4); name at @72;
-/// - Hashtree v1.1+: dm_verity(8) + image_size(8) + tree_offset(8) + tree_size(8) +
-///   hash_algorithm(4) + name_len(4)@52 + salt_len(4) + root_digest_len(4) + flags(4) +
-///   reserved`60`; name at @128. v1.0 has no reserved; name at @68;
-/// - Chain: location(4) + name_len(4)@20 + key_len(4) + flags(4); name at @32.
-fn parse_partition_name(tag: &DescriptorTag, raw: &[u8]) -> Option<String> {
-    /// Read the length at `name_len_off` and the name at `name_off`, validating it is printable.
-    fn name_at(raw: &[u8], name_len_off: usize, name_off: usize) -> Option<String> {
-        if name_len_off + 4 > raw.len() {
-            return None;
-        }
-        let nlen =
-            u32::from_be_bytes(raw[name_len_off..name_len_off + 4].try_into().ok()?) as usize;
-        if nlen == 0 || nlen > 64 || name_off + nlen > raw.len() {
-            return None;
-        }
-        let name = &raw[name_off..name_off + nlen];
-        if name.iter().all(|c| c.is_ascii_graphic()) {
-            Some(String::from_utf8_lossy(name).into_owned())
-        } else {
-            None
-        }
-    }
-
-    match tag {
-        DescriptorTag::Hash => name_at(raw, 16 + 8 + 32, 16 + 8 + 32 + 16),
-        DescriptorTag::Hashtree => name_at(raw, 16 + 32 + 4, 16 + 32 + 16 + 60)
-            .or_else(|| name_at(raw, 16 + 32 + 4, 16 + 32 + 16)),
-        DescriptorTag::ChainPartition => name_at(raw, 16 + 4, 16 + 16),
-        _ => None,
-    }
-}
-
 /// Build a minimal valid vbmeta image (header + hash descriptor list, no auth block).
 ///
 /// Purpose: simulated devices and unit tests need an image that `VbmetaImage::parse` accepts
@@ -428,105 +338,4 @@ fn encode_header(h: &VbmetaHeader) -> Vec<u8> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Build a minimal valid vbmeta: header + 1 hash descriptor (inside the aux block).
-    fn make_test_vbmeta() -> Vec<u8> {
-        // descriptor: tag=3(Hash), len = payload size
-        let name = b"boot";
-        let d_payload_len = 8 + 32 + 4 + 4 + 4 + 4 + name.len();
-        let mut d = Vec::new();
-        d.extend_from_slice(&3u64.to_be_bytes());
-        d.extend_from_slice(&(d_payload_len as u64).to_be_bytes());
-        d.extend_from_slice(&0x1000u64.to_be_bytes()); // image_size
-        d.extend_from_slice(&[0u8; 32]); // hash algorithm "sha256" padded? lenient test
-        d.extend_from_slice(&(name.len() as u32).to_be_bytes()); // partition_name_len
-        d.extend_from_slice(&0u32.to_be_bytes()); // salt_len
-        d.extend_from_slice(&0u32.to_be_bytes()); // digest_len
-        d.extend_from_slice(&0u32.to_be_bytes()); // flags
-        d.extend_from_slice(name);
-
-        // Aux block: public key (empty) + descriptors
-        let aux = d.clone();
-        // Header
-        let mut hdr = Vec::new();
-        hdr.extend_from_slice(AVB_MAGIC);
-        hdr.extend_from_slice(&1u32.to_be_bytes()); // major
-        hdr.extend_from_slice(&2u32.to_be_bytes()); // minor
-        hdr.extend_from_slice(&0u64.to_be_bytes()); // auth size
-        hdr.extend_from_slice(&(aux.len() as u64).to_be_bytes()); // aux size
-        hdr.extend_from_slice(&0u32.to_be_bytes()); // algorithm
-        hdr.extend_from_slice(&0u64.to_be_bytes()); // hash off
-        hdr.extend_from_slice(&0u64.to_be_bytes()); // hash size
-        hdr.extend_from_slice(&0u64.to_be_bytes()); // sig off
-        hdr.extend_from_slice(&0u64.to_be_bytes()); // sig size
-        hdr.extend_from_slice(&0u64.to_be_bytes()); // pk off
-        hdr.extend_from_slice(&0u64.to_be_bytes()); // pk size
-        hdr.extend_from_slice(&0u64.to_be_bytes()); // pk meta off
-        hdr.extend_from_slice(&0u64.to_be_bytes()); // pk meta size
-        hdr.extend_from_slice(&0u64.to_be_bytes()); // descriptors off = 0 (relative to aux block)
-        hdr.extend_from_slice(&(aux.len() as u64).to_be_bytes());
-        hdr.extend_from_slice(&0u64.to_be_bytes()); // rollback
-        hdr.extend_from_slice(&0u32.to_be_bytes()); // flags
-        hdr.extend_from_slice(&0u32.to_be_bytes()); // rollback loc
-        let mut rel = b"test release".to_vec();
-        rel.resize(48, 0);
-        hdr.extend_from_slice(&rel);
-
-        let mut out = hdr;
-        out.extend_from_slice(&aux);
-        out
-    }
-
-    #[test]
-    fn parse_and_info() {
-        let data = make_test_vbmeta();
-        let v = VbmetaImage::parse(&data).unwrap();
-        assert_eq!(v.header.required_libavb_version_major, 1);
-        assert_eq!(v.header.required_libavb_version_minor, 2);
-        assert_eq!(v.descriptors.len(), 1);
-        assert_eq!(v.descriptors[0].tag, DescriptorTag::Hash);
-        assert_eq!(v.descriptors[0].partition_name.as_deref(), Some("boot"));
-        let info = v.info();
-        assert!(info.contains("Hash: boot"));
-        assert!(info.contains("Verification disabled: false"));
-    }
-
-    #[test]
-    fn disable_verification_sets_flags() {
-        let data = make_test_vbmeta();
-        let v = VbmetaImage::parse(&data).unwrap();
-        let patched = v.disable_verification(FLAG_HASHTREE_DISABLED | FLAG_VERIFICATION_DISABLED);
-        let v2 = VbmetaImage::parse(&patched).unwrap();
-        assert_eq!(v2.header.flags, 3);
-        assert_eq!(v2.descriptors.len(), 1); // descriptors preserved
-        let info = v2.info();
-        assert!(info.contains("Hashtree disabled: true"));
-        assert!(info.contains("Verification disabled: true"));
-    }
-
-    #[test]
-    fn strip_descriptors_empties_them() {
-        let data = make_test_vbmeta();
-        let v = VbmetaImage::parse(&data).unwrap();
-        let stripped = v.strip_descriptors(3);
-        let v2 = VbmetaImage::parse(&stripped).unwrap();
-        assert_eq!(v2.header.flags, 3);
-        assert!(v2.descriptors.is_empty());
-    }
-
-    #[test]
-    fn rejects_bad_magic_and_short() {
-        let mut bad = vec![0u8; AVB_HEADER_SIZE];
-        bad[0..4].copy_from_slice(b"AVB1");
-        assert!(matches!(
-            VbmetaImage::parse(&bad).unwrap_err(),
-            AvbError::BadMagic
-        ));
-        assert!(matches!(
-            VbmetaImage::parse(&[0u8; 16]).unwrap_err(),
-            AvbError::TooSmall
-        ));
-    }
-}
+mod tests;

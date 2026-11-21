@@ -12,7 +12,6 @@
 
 #[path = "context.rs"]
 pub mod context;
-#[path = "device.rs"]
 pub mod device;
 #[path = "device_handshake.rs"]
 pub mod device_handshake;

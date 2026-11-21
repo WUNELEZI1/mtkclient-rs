@@ -27,153 +27,19 @@
 #![allow(clippy::unnecessary_unwrap)]
 #![allow(clippy::unnecessary_find_map)]
 
+use crate::app::TeeLogger;
+use crate::app::TerminalLogger;
+#[cfg(target_os = "windows")]
+use crate::app::check_windows_version;
+use crate::app::cmd_avb_offline;
+#[cfg(target_os = "windows")]
+use crate::app::{SetConsoleCP, SetConsoleOutputCP};
 use crate::color::Colorize;
 use clap::Parser;
 use log::{debug, error, info, warn};
-use std::io::Write;
 use std::sync::Mutex;
 
-#[cfg(target_os = "windows")]
-unsafe extern "system" {
-    fn SetConsoleOutputCP(wCodePage: u32) -> i32;
-    fn SetConsoleCP(wCodePage: u32) -> i32;
-}
-
-/// Get a local timestamp string [YYYY/MM/DD HH:MM:SS.mmm]
-fn get_local_timestamp() -> String {
-    #[cfg(target_os = "windows")]
-    {
-        #[repr(C)]
-        struct SystemTime {
-            w_year: u16,
-            w_month: u16,
-            w_day_of_week: u16,
-            w_day: u16,
-            w_hour: u16,
-            w_minute: u16,
-            w_second: u16,
-            w_milliseconds: u16,
-        }
-        unsafe extern "system" {
-            fn GetLocalTime(lpSystemTime: *mut SystemTime);
-        }
-        let mut st = SystemTime {
-            w_year: 0,
-            w_month: 0,
-            w_day_of_week: 0,
-            w_day: 0,
-            w_hour: 0,
-            w_minute: 0,
-            w_second: 0,
-            w_milliseconds: 0,
-        };
-        unsafe {
-            GetLocalTime(&mut st);
-        }
-        format!(
-            "{:04}/{:02}/{:02} {:02}:{:02}:{:02}.{:03}",
-            st.w_year, st.w_month, st.w_day, st.w_hour, st.w_minute, st.w_second, st.w_milliseconds
-        )
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        let secs = now.as_secs();
-        let millis = now.subsec_millis();
-        let hours = (secs % 86400) / 3600;
-        let minutes = (secs % 3600) / 60;
-        let seconds = secs % 60;
-        format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
-    }
-}
-
-/// In-house terminal logger, replacing env_logger::Logger.
-/// Mirrors the original env_logger terminal format: `timestamp` `LEVEL` message, keeping per-module filtering (nusb capped at Warn).
-struct TerminalLogger {
-    /// Global default log level (mtkclient_rs and other modules)
-    level: log::LevelFilter,
-}
-
-impl TerminalLogger {
-    /// Return the effective level for a target: nusb is forced to at most Warn, others use the global default.
-    fn level_for(&self, target: &str) -> log::LevelFilter {
-        if target == "nusb" {
-            log::LevelFilter::Warn
-        } else {
-            self.level
-        }
-    }
-}
-
-impl log::Log for TerminalLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= self.level_for(metadata.target())
-    }
-
-    fn log(&self, record: &log::Record) {
-        if !self.enabled(record.metadata()) {
-            return;
-        }
-        let level = match record.level() {
-            log::Level::Error => "ERROR",
-            log::Level::Warn => "WARN ",
-            log::Level::Info => "INFO ",
-            log::Level::Debug => "DEBUG",
-            log::Level::Trace => "TRACE",
-        };
-        let timestamp = get_local_timestamp();
-        let _ = writeln!(
-            std::io::stderr(),
-            "[{}] [{}] {}",
-            timestamp,
-            level,
-            record.args()
-        );
-    }
-
-    fn flush(&self) {
-        let _ = std::io::stderr().flush();
-    }
-}
-
-/// TeeLogger: write to both the terminal (TerminalLogger) and a file (usb_debug.log)
-struct TeeLogger {
-    terminal: TerminalLogger,
-    file: Mutex<std::fs::File>,
-}
-
-impl log::Log for TeeLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        self.terminal.enabled(metadata)
-    }
-
-    fn log(&self, record: &log::Record) {
-        // 1. Terminal output (keeps the original format)
-        self.terminal.log(record);
-
-        // 2. File output (simplified format including target for troubleshooting)
-        let line = format!(
-            "[{}] [{}] [{}] {}\n",
-            get_local_timestamp(),
-            record.level(),
-            record.target(),
-            record.args()
-        );
-        if let Ok(mut f) = self.file.lock() {
-            let _ = f.write_all(line.as_bytes());
-        }
-    }
-
-    fn flush(&self) {
-        self.terminal.flush();
-        if let Ok(mut f) = self.file.lock() {
-            let _ = f.flush();
-        }
-    }
-}
-
+mod app;
 mod cancel;
 #[path = "cmd/mod.rs"]
 mod cmd;
@@ -213,61 +79,6 @@ mod util;
 
 use connection::ConnectionManager;
 use usb::UsbContext;
-
-/// Check the Windows version; Windows 10 or later is required
-#[cfg(target_os = "windows")]
-fn check_windows_version() -> Result<(), String> {
-    #[repr(C)]
-    struct OSVERSIONINFOEXW {
-        dw_os_version_info_size: u32,
-        dw_major_version: u32,
-        dw_minor_version: u32,
-        dw_build_number: u32,
-        dw_platform_id: u32,
-        sz_csd_version: [u16; 128],
-        w_service_pack_major: u16,
-        w_service_pack_minor: u16,
-        w_suite_mask: u16,
-        w_product_type: u8,
-        w_reserved: u8,
-    }
-
-    unsafe extern "system" {
-        fn RtlGetVersion(lp_version_information: *mut OSVERSIONINFOEXW) -> i32;
-    }
-
-    let mut info = OSVERSIONINFOEXW {
-        dw_os_version_info_size: std::mem::size_of::<OSVERSIONINFOEXW>() as u32,
-        dw_major_version: 0,
-        dw_minor_version: 0,
-        dw_build_number: 0,
-        dw_platform_id: 0,
-        sz_csd_version: [0; 128],
-        w_service_pack_major: 0,
-        w_service_pack_minor: 0,
-        w_suite_mask: 0,
-        w_product_type: 0,
-        w_reserved: 0,
-    };
-
-    unsafe {
-        RtlGetVersion(&mut info);
-    }
-
-    // Windows 10 = Major 10, Build >= 10240
-    // Windows 11 = Major 10, Build >= 22000
-    if info.dw_major_version < 10 {
-        return Err(i18n::tr(
-            "os_unsupported",
-            &[
-                &info.dw_major_version.to_string(),
-                &info.dw_minor_version.to_string(),
-                &info.dw_build_number.to_string(),
-            ],
-        ));
-    }
-    Ok(())
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Language selection takes priority over all output: `--language <LANG>` may appear anywhere
@@ -575,44 +386,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     Ok(())
-}
-
-/// `mtkclient-rs avb <info|disable> <file> [out]`
-///
-/// Offline mode of the in-house avbtool:
-/// - `avb info <vbmeta.img>`: output in the same format as `avbtool info-image`;
-/// - `avb disable <vbmeta.img> [out]`: write out with flags=3 (hashtree+verification disabled)
-///   (overwrites the original file by default; writes `<file>.disabled` when out is omitted).
-fn cmd_avb_offline(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::color::Colorize;
-    use crate::security::avb::{FLAG_HASHTREE_DISABLED, FLAG_VERIFICATION_DISABLED, VbmetaImage};
-
-    let usage = "用法: mtkclient-rs avb <info|disable> <vbmeta.img> [out]";
-    let action = args.first().ok_or(usage)?;
-    let file = args.get(1).ok_or(usage)?;
-    let data = std::fs::read(file).map_err(|e| format!("读取 {file} 失败: {e}"))?;
-    let vb = VbmetaImage::parse(&data).map_err(|e| format!("解析 vbmeta 失败: {e}"))?;
-
-    match action.as_str() {
-        "info" => {
-            print!("{}", vb.info());
-            Ok(())
-        }
-        "disable" => {
-            let out_path = args
-                .get(2)
-                .cloned()
-                .unwrap_or_else(|| format!("{file}.disabled"));
-            let flags = FLAG_HASHTREE_DISABLED | FLAG_VERIFICATION_DISABLED;
-            let patched = vb.disable_verification(flags);
-            std::fs::write(&out_path, &patched)
-                .map_err(|e| format!("写出 {out_path} 失败: {e}"))?;
-            println!(
-                "{}",
-                format!("vbmeta 已禁用校验 (flags=0x{flags:02X}) -> {out_path}").green()
-            );
-            Ok(())
-        }
-        _ => Err(usage.into()),
-    }
 }

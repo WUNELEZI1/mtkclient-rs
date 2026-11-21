@@ -12,7 +12,18 @@ pub mod mock;
 pub mod vdev;
 pub mod wire;
 
-use std::fmt;
+#[cfg(test)]
+mod diagnostics;
+mod error;
+mod retry;
+
+pub use error::PortError;
+pub use retry::{RetryPolicy, RetryingPort};
+
+#[cfg(test)]
+pub use diagnostics::EnumerateDiagnostics;
+
+#[cfg(test)]
 use std::time::Duration;
 
 /// Port kind.
@@ -77,196 +88,6 @@ impl ControlRequest {
     }
 }
 
-/// Transport-layer error classification (retryable / non-retryable / needs user action).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PortError {
-    /// Timeout, retryable
-    Timeout,
-    /// Device disconnected, user must replug
-    Disconnected,
-    #[cfg(test)]
-    /// Operation not supported by the backend
-    NotSupported(&'static str),
-    #[cfg(test)]
-    /// IO / driver error
-    Io(String),
-}
-
-impl PortError {
-    /// Whether automatic retry is worthwhile.
-    pub const fn retryable(&self) -> bool {
-        matches!(self, PortError::Timeout)
-    }
-
-    #[cfg(test)]
-    /// Whether user action is required (replug / install driver).
-    pub const fn needs_user(&self) -> bool {
-        matches!(self, PortError::Disconnected)
-    }
-}
-
-impl fmt::Display for PortError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PortError::Timeout => write!(f, "传输超时"),
-            PortError::Disconnected => write!(f, "设备已断开"),
-            #[cfg(test)]
-            PortError::NotSupported(op) => write!(f, "后端不支持: {}", op),
-            #[cfg(test)]
-            PortError::Io(e) => write!(f, "IO 错误: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for PortError {}
-
-/// Bounded retry policy (for **transient** timeouts only, not disconnects).
-///
-/// Design trade-offs:
-/// - Retry `Timeout` only. `Disconnected` (including "silent latch") must **fail immediately**,
-///   letting the upper layer trigger checkpoint resume/replug prompts instead of waiting in place.
-/// - Retry **only when the current read has not yet consumed any bytes**. Retrying after a partial protocol frame
-///   would restart from the middle of the frame and misalign; in that case prefer an error (strict defense).
-/// - Never retry writes: writes are not idempotent, and resending pollutes device-side state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RetryPolicy {
-    /// Retries allowed per read transaction (0 = no retry).
-    pub max_retries: u32,
-    /// Initial backoff base (ms), then increasing as powers of 2.
-    pub base_delay_ms: u64,
-    /// Backoff cap (ms).
-    pub max_delay_ms: u64,
-}
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        // Default 3 retries, 10ms start, 100ms cap — enough for transient jitter without slowing normal flows.
-        Self {
-            max_retries: 3,
-            base_delay_ms: 10,
-            max_delay_ms: 100,
-        }
-    }
-}
-
-impl RetryPolicy {
-    #[cfg(test)]
-    /// Disable retry entirely (for strict mode / regression baselines).
-    pub const fn none() -> Self {
-        Self {
-            max_retries: 0,
-            base_delay_ms: 0,
-            max_delay_ms: 0,
-        }
-    }
-
-    /// Construct by retry count (using the default backoff).
-    pub const fn with_max_retries(n: u32) -> Self {
-        Self {
-            max_retries: n,
-            base_delay_ms: 10,
-            max_delay_ms: 100,
-        }
-    }
-
-    /// Backoff duration before retry `attempt` (1-based): exponential backoff + cap.
-    pub fn delay(&self, attempt: u32) -> Duration {
-        if self.base_delay_ms == 0 {
-            return Duration::ZERO;
-        }
-        let shift = attempt.saturating_sub(1).min(6);
-        let ms = (self.base_delay_ms << shift).min(self.max_delay_ms);
-        Duration::from_millis(ms)
-    }
-}
-
-/// Retrying port: wraps any `StreamPort` and provides bounded retries for `read_exact`.
-///
-/// Only a `Timeout` where "the read transaction has not consumed any bytes yet" is retried; all other errors propagate unchanged.
-pub struct RetryingPort<'a> {
-    inner: &'a mut dyn StreamPort,
-    policy: RetryPolicy,
-    retries: u32,
-}
-
-impl<'a> RetryingPort<'a> {
-    pub fn new(inner: &'a mut dyn StreamPort, policy: RetryPolicy) -> Self {
-        Self {
-            inner,
-            policy,
-            retries: 0,
-        }
-    }
-
-    #[cfg(test)]
-    /// Cumulative retry count on this port (for diagnostics / test assertions).
-    pub fn retries(&self) -> u32 {
-        self.retries
-    }
-}
-
-impl StreamPort for RetryingPort<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, PortError> {
-        self.inner.read(buf)
-    }
-
-    fn write(&mut self, buf: &[u8]) -> Result<usize, PortError> {
-        self.inner.write(buf)
-    }
-
-    fn flush(&mut self) -> Result<(), PortError> {
-        self.inner.flush()
-    }
-
-    fn drain(&mut self) -> Result<(), PortError> {
-        self.inner.drain()
-    }
-
-    fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), PortError> {
-        // Resume-style retry: read progress is kept in `buf`, so after a timeout only the **remaining** bytes are read.
-        // This avoids losing a whole frame to a single hiccup, and avoids "starting over" and misaligning.
-        let mut off = 0usize;
-        let mut attempt: u32 = 0;
-        while off < buf.len() {
-            match self.inner.read(&mut buf[off..]) {
-                Ok(0) => return Err(PortError::Disconnected),
-                Ok(n) => {
-                    off += n;
-                    // Any progress resets the budget: the retry budget counts "consecutive no-progress" attempts.
-                    attempt = 0;
-                }
-                Err(e) => {
-                    if !e.retryable() || attempt >= self.policy.max_retries {
-                        log::debug!(
-                            "[retry] 放弃读取：{:?}（已读 {}/{} 字节，重试 {} 次）",
-                            e,
-                            off,
-                            buf.len(),
-                            attempt
-                        );
-                        return Err(e);
-                    }
-                    attempt += 1;
-                    self.retries += 1;
-                    let d = self.policy.delay(attempt);
-                    log::debug!(
-                        "[retry] 瞬时超时（已读 {}/{}），第 {}/{} 次重试，退避 {}ms",
-                        off,
-                        buf.len(),
-                        attempt,
-                        self.policy.max_retries,
-                        d.as_millis()
-                    );
-                    if !d.is_zero() {
-                        std::thread::sleep(d);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
 /// Byte-stream port (implementable by both the Preloader serial port and BROM bulk endpoints).
 pub trait StreamPort: Send {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, PortError>;
@@ -326,56 +147,6 @@ pub trait BromPort: StreamPort {
         data: &mut [u8],
         dir: Direction,
     ) -> Result<usize, PortError>;
-}
-
-/// Enumeration diagnostics: explain "why it cannot connect" instead of just saying NotFound.
-#[derive(Debug, Clone, Default)]
-#[cfg(test)]
-pub struct EnumerateDiagnostics {
-    /// Driver-layer state (device manager view, valid on Windows)
-    pub driver_state: Option<String>,
-    /// Actually enumerated (VID, PID, SN, kind)
-    pub found: Vec<(u16, u16, String, PortKind)>,
-    /// Connection attempt records
-    pub attempts: Vec<String>,
-    /// Expected vs actual
-    pub expected: Option<String>,
-    pub actual: Option<String>,
-}
-
-#[cfg(test)]
-impl EnumerateDiagnostics {
-    pub fn push_attempt(&mut self, msg: impl Into<String>) {
-        self.attempts.push(msg.into());
-    }
-
-    /// Human-readable report.
-    pub fn report(&self) -> String {
-        let mut out = String::new();
-        if let Some(d) = &self.driver_state {
-            out.push_str(&format!("驱动状态: {}\n", d));
-        }
-        if self.found.is_empty() {
-            out.push_str("枚举结果: 未发现 MTK 设备\n");
-        } else {
-            for (vid, pid, sn, kind) in &self.found {
-                out.push_str(&format!(
-                    "枚举结果: {:04X}:{:04X} sn={} kind={:?}\n",
-                    vid, pid, sn, kind
-                ));
-            }
-        }
-        if let Some(e) = &self.expected {
-            out.push_str(&format!("期望: {}\n", e));
-        }
-        if let Some(a) = &self.actual {
-            out.push_str(&format!("实际: {}\n", a));
-        }
-        for a in &self.attempts {
-            out.push_str(&format!("尝试: {}\n", a));
-        }
-        out
-    }
 }
 
 #[cfg(test)]
