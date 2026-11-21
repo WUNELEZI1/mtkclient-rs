@@ -59,14 +59,6 @@ impl WriteCheckpoint {
         PathBuf::from(format!("{}{}", file, RESUME_SUFFIX))
     }
 
-    /// 读取并校验：只有与本文件/本分区完全匹配时才返回。
-    ///
-    /// 不带 GPT 校验的兼容入口（等价于 `gpt_crc = 0` 表示"不校验"）。
-    pub fn load(file: &str, part: &str, addr: u64, total: u64) -> Option<Self> {
-        Self::load_checked(file, part, addr, total, None)
-            .ok()
-            .flatten()
-    }
 
     /// 读取并严格校验。
     ///
@@ -229,6 +221,7 @@ impl WriteCheckpoint {
         let _ = std::fs::remove_file(Self::path_for(file));
     }
 
+    #[cfg(test)]
     /// 是否还有效（供测试/诊断）。
     pub fn exists(file: &str) -> bool {
         Path::new(&format!("{}{}", file, RESUME_SUFFIX)).exists()
@@ -444,6 +437,7 @@ impl CrcTracker {
         out
     }
 
+    #[cfg(test)]
     /// 已完成块数（诊断用）。
     pub fn completed_chunks(&self) -> usize {
         self.chunks.len()

@@ -7,6 +7,7 @@
 //! 现有 `usb` / `preloader::transport` 为具体实现；后续逐步适配到这两个 trait。
 //! `mock` 提供内存 pipe + 故障注入，供 fixture 回放与单测脱机运行。
 
+#[cfg(test)]
 pub mod mock;
 pub mod vdev;
 pub mod wire;
@@ -89,6 +90,7 @@ impl PortError {
         matches!(self, PortError::Timeout)
     }
 
+    #[cfg(test)]
     /// 是否需要用户介入（重插 / 装驱动）。
     pub const fn needs_user(&self) -> bool {
         matches!(self, PortError::Disconnected)

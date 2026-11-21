@@ -27,16 +27,6 @@ pub enum Stage {
     Da,
 }
 
-impl Stage {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Stage::Brom => "brom",
-            Stage::Preloader => "preloader",
-            Stage::Da => "da",
-        }
-    }
-}
-
 /// 工作模式：约束 Planner 搜索空间。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {

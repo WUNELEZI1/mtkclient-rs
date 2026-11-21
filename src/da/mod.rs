@@ -11,6 +11,7 @@
 
 pub mod engine;
 pub mod ext;
+#[cfg(test)]
 pub mod fixture;
 pub mod loader;
 pub mod xflash;

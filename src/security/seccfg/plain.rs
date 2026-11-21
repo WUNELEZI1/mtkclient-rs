@@ -40,6 +40,7 @@ pub(crate) const ALT_MARKER_OFFSET: usize = 0x850;
 pub(crate) const STATUS_COMPLETE: u32 = 0x4343_4343; // "CCCC"
 pub(crate) const STATUS_INCOMPLETE: u32 = 0x4949_4949; // "IIII"
 
+#[cfg(test)]
 pub(crate) fn status_label(status: u32) -> &'static str {
     match status {
         STATUS_COMPLETE => "完整(CCCC)",
@@ -101,14 +102,17 @@ impl LockState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn is_locked(self) -> bool {
         matches!(self, LockState::Locked)
     }
 
+    #[cfg(test)]
     pub(crate) fn is_unlocked(self) -> bool {
         matches!(self, LockState::Unlocked)
     }
 
+    #[cfg(test)]
     pub(crate) fn label_zh(self) -> &'static str {
         match self {
             LockState::Locked => "已锁定",
@@ -300,6 +304,7 @@ impl Plain {
         score.min(100)
     }
 
+    #[cfg(test)]
     pub(crate) fn lock_state(&self) -> LockState {
         LockState::from_attr(self.attr)
     }

@@ -191,6 +191,7 @@ impl CapabilitySet {
             .collect()
     }
 
+    #[cfg(test)]
     /// 从名称列表构造（测试与外部资源包用）。
     pub fn from_names(names: &[&str]) -> Option<Self> {
         let mut set = CapabilitySet::EMPTY;

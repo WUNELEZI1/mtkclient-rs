@@ -1,6 +1,6 @@
 //! 自研终端着色（替代 colored crate）
 //!
-//! 仅实现项目实际用到的 13 个 `Colorize` 方法，全部为纯 ANSI 转义码，零外部依赖。
+//! 仅实现项目实际用到的 10 个 `Colorize` 方法，全部为纯 ANSI 转义码，零外部依赖。
 //! - 非 Windows 平台：终端原生支持 ANSI，直接输出即可。
 //! - Windows 平台：需启用控制台虚拟终端处理（见 `enable_virtual_terminal`，
 //!   复刻 `colored::control::set_virtual_terminal` 的行为），否则 CMD/PowerShell
@@ -12,20 +12,16 @@
 /// 所有着色方法返回的类型统一为 [`String`]，与 `colored` 的 `ColoredString`
 /// 一样实现 `Display`，但比 `ColoredString` 更轻、且天然可参与 `String` 运算。
 pub trait Colorize {
-    fn black(self) -> String;
     fn red(self) -> String;
     fn green(self) -> String;
     fn yellow(self) -> String;
     fn blue(self) -> String;
     fn magenta(self) -> String;
     fn cyan(self) -> String;
-    fn white(self) -> String;
     fn bright_white(self) -> String;
     fn bold(self) -> String;
     fn dimmed(self) -> String;
     fn underline(self) -> String;
-    fn on_red(self) -> String;
-    fn on_yellow(self) -> String;
 }
 
 const RESET: &str = "\x1b[0m";
@@ -50,20 +46,16 @@ macro_rules! impl_colorize {
 }
 
 impl_colorize! {
-    black    => "30",
     red      => "31",
     green    => "32",
     yellow   => "33",
     blue     => "34",
     magenta  => "35",
     cyan     => "36",
-    white    => "37",
     bright_white => "97",
     bold     => "1",
     dimmed   => "2",
     underline => "4",
-    on_red   => "41",
-    on_yellow => "43",
 }
 
 /// 启用 Windows 控制台虚拟终端处理，使 ANSI 转义序列在 CMD/PowerShell 中生效。

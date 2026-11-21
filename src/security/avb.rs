@@ -273,6 +273,7 @@ impl VbmetaImage {
         out
     }
 
+    #[cfg(test)]
     /// 激进模式：清空全部 hash/hashtree descriptor（重打包为空 vbmeta），
     /// 同时保留 chain 分区链。等价 `avbtool make_vbmeta_image --flags 3` 全空镜像。
     pub fn strip_descriptors(&self, flags: u32) -> Vec<u8> {

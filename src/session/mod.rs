@@ -190,6 +190,7 @@ impl SimSession {
         Ok(())
     }
 
+    #[cfg(test)]
     /// 模拟拔插重连：协议状态清零、flash 内容保留（断点续传测试用）。
     pub fn replug(&mut self) {
         self.dev.replug();
