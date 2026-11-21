@@ -61,7 +61,7 @@ fn shell_boot(da: &mut DAXFlash, args: &[String]) -> Result<(), Box<dyn std::err
     if bi.ramdisk_size == 0 {
         return Err("该 boot 镜像无 ramdisk（cpio 浏览不可用）".into());
     }
-    let ramdisk = &buf[bi.ramdisk_off as usize..(bi.ramdisk_off + bi.ramdisk_size as u64) as usize];
+    let ramdisk = crate::format::boot::slice(&buf, bi.ramdisk_off, bi.ramdisk_size)?;
     let cpio = decompress(ramdisk).map_err(|e| format!("ramdisk 解压失败: {e}"))?;
     let entries = parse_cpio(&cpio).map_err(|e| format!("cpio 解析失败: {e}"))?;
 
